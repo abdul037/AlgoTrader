@@ -1,0 +1,13 @@
+{
+  "name": "market-pilot",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev --prefix frontend\" \"npm run dev:backend\"",
+    "dev:backend": "python3 -m uvicorn app.main:app --reload --app-dir backend",
+    "build": "npm run build --prefix frontend",
+    "lint": "npm run lint --prefix frontend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

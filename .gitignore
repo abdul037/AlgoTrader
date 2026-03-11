@@ -1,0 +1,26 @@
+node_modules/
+dist/
+.DS_Store
+
+# Legacy app artifacts
+client/
+server/
+manifest.xml
+generate-icons.js
+package-lock.json
+client/node_modules/
+client/dist/
+server/node_modules/
+server/dist/
+server/.env
+
+# New project artifacts
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+backend/.venv/
+backend/__pycache__/
+backend/.pytest_cache/
+backend/.mypy_cache/
+backend/.env
+*.pyc
