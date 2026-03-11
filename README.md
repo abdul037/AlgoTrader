@@ -1,6 +1,6 @@
 # AlgoTrader
 
-AlgoTrader is a greenfield stock trading support platform built with `Next.js` on the frontend and `FastAPI` on the backend.
+Automated trading support platform built with `Next.js` on the frontend and `FastAPI` on the backend.
 
 ## Stack
 
