@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "Market Pilot API"
+    app_name: str = "AlgoTrader API"
     client_origin: str = "http://localhost:3000"
     market_data_provider: str = "demo"
     alpha_vantage_api_key: str = ""

@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Market Pilot",
+  title: "AlgoTrader",
   description: "Trading support dashboard for stock signals, backtests, and guarded execution.",
 };
 

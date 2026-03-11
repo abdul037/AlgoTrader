@@ -1,4 +1,4 @@
-# Market Pilot Backend
+# AlgoTrader Backend
 
 FastAPI service for:
 

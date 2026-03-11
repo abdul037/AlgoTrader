@@ -134,7 +134,7 @@ export function TradingTerminal() {
       <section className="hero">
         <div>
           <p className="eyebrow">Next.js + FastAPI</p>
-          <h1>Market Pilot</h1>
+          <h1>AlgoTrader</h1>
           <p className="lede">
             Stock-focused trading support workspace for indicator-based signals,
             lightweight backtesting, and broker-safe execution commands.
