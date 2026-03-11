@@ -31,16 +31,20 @@ uvicorn app.main:app --reload
 
 ### Run Together
 
+From the repo root, one terminal is enough once dependencies are installed:
+
 ```bash
 npm install
 npm run dev
 ```
 
+If you want backend auto-reload while editing Python files, run `npm run dev:backend:reload` separately.
+
 The frontend expects the backend at `http://127.0.0.1:8000` by default. Override it with `NEXT_PUBLIC_API_BASE_URL`.
 
 ## Environment
 
-Copy [backend/.env.example](/Users/abdul/Desktop/ExcelSolver/backend/.env.example) to `backend/.env` before using live integrations.
+Copy `backend/.env.example` to `backend/.env` before using live integrations.
 
 ## Notes
 
