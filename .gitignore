@@ -7,7 +7,7 @@ client/
 server/
 manifest.xml
 generate-icons.js
-package-lock.json
+/package-lock.json
 client/node_modules/
 client/dist/
 server/node_modules/
@@ -20,6 +20,8 @@ frontend/.next/
 frontend/out/
 backend/.venv/
 backend/__pycache__/
+backend/**/*.egg-info/
+backend/**/__pycache__/
 backend/.pytest_cache/
 backend/.mypy_cache/
 backend/.env
