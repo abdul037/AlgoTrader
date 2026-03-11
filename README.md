@@ -1,0 +1,2 @@
+# AlgoTrader
+Automated Trading
