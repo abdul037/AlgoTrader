@@ -4,7 +4,7 @@ FastAPI service for:
 
 - indicator-driven stock analysis
 - lightweight backtesting
-- guarded broker command execution
+- signal-only trade support
 
 Start it with:
 

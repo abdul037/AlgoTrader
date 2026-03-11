@@ -1,9 +1,8 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from app.config import get_settings
-from app.schemas import BacktestRequest, ExecuteRequest, SupportedInterval, TradingConfig
+from app.schemas import BacktestRequest, SupportedInterval, TradingConfig
 from app.services.backtester import run_backtest
-from app.services.execution import execute_command, get_execution_status
 from app.services.market_data import fetch_market_data, get_market_data_status
 from app.services.signal_engine import generate_signal_report
 
@@ -16,7 +15,10 @@ async def trading_config() -> TradingConfig:
     return TradingConfig(
         appName=settings.app_name.replace(" API", ""),
         marketData=get_market_data_status(),
-        execution=get_execution_status(),
+        analysisMode={
+            "executionEnabled": False,
+            "note": "Execution is disabled in this build. Use the live signal and backtest outputs to make the trade manually.",
+        },
         recommendations=[
             {
                 "area": "Open-source engine",
@@ -29,9 +31,9 @@ async def trading_config() -> TradingConfig:
                 "reason": "Simple stock API with free access for prototyping and indicator-driven dashboards.",
             },
             {
-                "area": "Broker execution",
-                "choice": "Alpaca paper trading",
-                "reason": "Free paper environment with the same API shape you can later promote to live trading.",
+                "area": "Workflow",
+                "choice": "Signal-only trading desk",
+                "reason": "Keep the stack focused on analysis quality and backtest confidence before adding broker automation.",
             },
         ],
     )
@@ -64,13 +66,5 @@ async def backtest_strategy(payload: BacktestRequest):
             bars,
             payload.starting_capital,
         )
-    except Exception as error:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=str(error)) from error
-
-
-@router.post("/execute", response_model_by_alias=True)
-async def execute_trade(payload: ExecuteRequest):
-    try:
-        return await execute_command(payload.model_dump())
     except Exception as error:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(error)) from error

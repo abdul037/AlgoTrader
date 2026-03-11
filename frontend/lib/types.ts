@@ -76,11 +76,8 @@ export interface ProviderStatus {
 export interface TradingConfig {
   appName: string;
   marketData: ProviderStatus;
-  execution: {
-    provider: string;
-    ready: boolean;
-    liveEnabled: boolean;
-    paper: boolean;
+  analysisMode: {
+    executionEnabled: boolean;
     note: string;
   };
   recommendations: Array<{
@@ -88,26 +85,4 @@ export interface TradingConfig {
     choice: string;
     reason: string;
   }>;
-}
-
-export interface ExecuteTradePayload {
-  commandText: string;
-  dryRun: boolean;
-}
-
-export interface ExecutionResult {
-  accepted: boolean;
-  simulated: boolean;
-  broker: string;
-  message: string;
-  submittedAt: string;
-  order: {
-    symbol: string;
-    side: "buy" | "sell";
-    quantity: number;
-    orderType: "market";
-    timeInForce: "day";
-    externalId?: string;
-    status: string;
-  };
 }

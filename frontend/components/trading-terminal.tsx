@@ -1,19 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import {
-  BacktestResult,
-  ExecuteTradePayload,
-  ExecutionResult,
-  SignalReport,
-  TradingConfig,
-} from "../lib/types";
-import {
-  fetchTradingConfig,
-  fetchTradingSignal,
-  postExecutionCommand,
-  runBacktest,
-} from "../lib/api";
+import { BacktestResult, SignalReport, TradingConfig } from "../lib/types";
+import { fetchTradingConfig, fetchTradingSignal, runBacktest } from "../lib/api";
 
 const intervals = ["1min", "5min", "15min", "30min", "60min", "daily"] as const;
 
@@ -53,17 +42,62 @@ const createPath = (values: number[]) => {
     .join(" ");
 };
 
+const getSignalPlaybook = (signal: SignalReport | null) => {
+  if (!signal) {
+    return {
+      deskCall: "WAIT",
+      command: "Run a signal scan first",
+      exitRule: "No position plan yet",
+      note: "The app is in analysis mode. Load a symbol to generate a buy, sell, or hold call.",
+    };
+  }
+
+  if (signal.signal === "buy") {
+    return {
+      deskCall: "BUY",
+      command: `BUY ${signal.symbol}`,
+      exitRule:
+        signal.risk.longStopLoss === null
+          ? "Close if the signal weakens materially."
+          : `Close long below ${formatMoney(signal.risk.longStopLoss)}.`,
+      note:
+        signal.risk.longTakeProfit === null
+          ? "Bullish bias is active."
+          : `Bullish bias is active. First upside objective is ${formatMoney(signal.risk.longTakeProfit)}.`,
+    };
+  }
+
+  if (signal.signal === "sell") {
+    return {
+      deskCall: "SELL",
+      command: `SELL ${signal.symbol}`,
+      exitRule:
+        signal.risk.shortStopLoss === null
+          ? "Close the bearish view if momentum reverses."
+          : `Close bearish bias above ${formatMoney(signal.risk.shortStopLoss)}.`,
+      note:
+        signal.risk.shortTakeProfit === null
+          ? "Bearish bias is active."
+          : `Bearish bias is active. First downside objective is ${formatMoney(signal.risk.shortTakeProfit)}.`,
+    };
+  }
+
+  return {
+    deskCall: "HOLD",
+    command: `HOLD ${signal.symbol}`,
+    exitRule: "Wait for a stronger setup before opening a new position.",
+    note: "Indicator mix is neutral. Stand aside until momentum and trend align.",
+  };
+};
+
 export function TradingTerminal() {
   const [config, setConfig] = useState<TradingConfig | null>(null);
   const [signal, setSignal] = useState<SignalReport | null>(null);
   const [backtest, setBacktest] = useState<BacktestResult | null>(null);
-  const [executionResult, setExecutionResult] = useState<ExecutionResult | null>(null);
   const [symbol, setSymbol] = useState("AAPL");
   const [interval, setInterval] = useState<(typeof intervals)[number]>("15min");
-  const [loading, setLoading] = useState<"signal" | "backtest" | "execute" | null>(null);
+  const [loading, setLoading] = useState<"signal" | "backtest" | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [commandText, setCommandText] = useState("BUY 10 AAPL");
-  const [dryRun, setDryRun] = useState(true);
 
   useEffect(() => {
     fetchTradingConfig()
@@ -85,7 +119,6 @@ export function TradingTerminal() {
     try {
       const nextSignal = await fetchTradingSignal(symbol, interval);
       setSignal(nextSignal);
-      setCommandText(`BUY 10 ${symbol.toUpperCase()}`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load signal.");
     } finally {
@@ -107,27 +140,9 @@ export function TradingTerminal() {
     }
   };
 
-  const handleExecute = async () => {
-    setLoading("execute");
-    setError(null);
-
-    const payload: ExecuteTradePayload = {
-      commandText,
-      dryRun,
-    };
-
-    try {
-      const result = await postExecutionCommand(payload);
-      setExecutionResult(result);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not execute order.");
-    } finally {
-      setLoading(null);
-    }
-  };
-
   const pricePath = createPath(signal?.bars.map((bar) => bar.close) ?? []);
   const equityPath = createPath(backtest?.equityCurve.map((point) => point.equity) ?? []);
+  const playbook = getSignalPlaybook(signal);
 
   return (
     <main className="shell">
@@ -136,8 +151,8 @@ export function TradingTerminal() {
           <p className="eyebrow">Next.js + FastAPI</p>
           <h1>AlgoTrader</h1>
           <p className="lede">
-            Stock-focused trading support workspace for indicator-based signals,
-            lightweight backtesting, and broker-safe execution commands.
+            Stock-focused trading support workspace for indicator-based signals
+            and lightweight backtesting.
           </p>
         </div>
 
@@ -147,7 +162,7 @@ export function TradingTerminal() {
             <li>Frontend: Next.js App Router</li>
             <li>Backend: FastAPI</li>
             <li>Free data path: Alpha Vantage</li>
-            <li>Execution path: Alpaca paper trading</li>
+            <li>Workflow: signal and backtesting only</li>
           </ul>
         </div>
       </section>
@@ -325,37 +340,28 @@ export function TradingTerminal() {
         <article className="panel">
           <div className="panel-heading">
             <div>
-              <p className="card-label">Execution</p>
-              <h2>Command gate</h2>
+              <p className="card-label">Trading call</p>
+              <h2>Suggested action</h2>
             </div>
-            <span className={`pill ${config?.execution.liveEnabled ? "pill-live" : "pill-paper"}`}>
-              {config?.execution.liveEnabled ? "Live armed" : "Paper / simulated"}
+            <span className={`pill ${signal?.signal === "sell" ? "pill-live" : "pill-paper"}`}>
+              {playbook.deskCall}
             </span>
           </div>
 
-          <label htmlFor="commandText">Order command</label>
-          <input
-            id="commandText"
-            value={commandText}
-            onChange={(event) => setCommandText(event.target.value.toUpperCase())}
-            placeholder="BUY 10 AAPL"
-          />
+          <div className="signal-columns">
+            <div>
+              <p className="card-label">Desk command</p>
+              <div className="callout-code">{playbook.command}</div>
+            </div>
+            <div>
+              <p className="card-label">Position rule</p>
+              <div className="callout-code">{playbook.exitRule}</div>
+            </div>
+          </div>
 
-          <label className="checkbox">
-            <input
-              type="checkbox"
-              checked={dryRun}
-              onChange={(event) => setDryRun(event.target.checked)}
-            />
-            Simulate only
-          </label>
-
-          <button onClick={() => void handleExecute()} disabled={loading !== null}>
-            {loading === "execute" ? "Submitting..." : "Submit Command"}
-          </button>
-
+          <p className="summary">{playbook.note}</p>
           <p className="summary">
-            {executionResult?.message ?? config?.execution.note ?? "Execution status will appear here."}
+            {config?.analysisMode.note ?? "Execution is disabled. Use the signal and backtest outputs to make the decision manually."}
           </p>
         </article>
 

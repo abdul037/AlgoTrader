@@ -116,11 +116,8 @@ class ProviderStatus(BaseModel):
     note: str
 
 
-class ExecutionStatus(BaseModel):
-    provider: str
-    ready: bool
-    live_enabled: bool = Field(alias="liveEnabled")
-    paper: bool
+class AnalysisMode(BaseModel):
+    execution_enabled: bool = Field(alias="executionEnabled")
     note: str
 
     model_config = {"populate_by_name": True}
@@ -135,7 +132,7 @@ class Recommendation(BaseModel):
 class TradingConfig(BaseModel):
     app_name: str = Field(alias="appName")
     market_data: ProviderStatus = Field(alias="marketData")
-    execution: ExecutionStatus
+    analysis_mode: AnalysisMode = Field(alias="analysisMode")
     recommendations: list[Recommendation]
 
     model_config = {"populate_by_name": True}
@@ -146,38 +143,5 @@ class BacktestRequest(BaseModel):
     interval: SupportedInterval = "15min"
     lookback: int = 320
     starting_capital: int = Field(default=10000, alias="startingCapital")
-
-    model_config = {"populate_by_name": True}
-
-
-class ExecuteRequest(BaseModel):
-    command_text: str | None = Field(default=None, alias="commandText")
-    symbol: str | None = None
-    side: Literal["buy", "sell"] | None = None
-    quantity: float | None = None
-    dry_run: bool = Field(default=True, alias="dryRun")
-
-    model_config = {"populate_by_name": True}
-
-
-class ExecutionOrder(BaseModel):
-    symbol: str
-    side: Literal["buy", "sell"]
-    quantity: float
-    order_type: Literal["market"] = Field(alias="orderType")
-    time_in_force: Literal["day"] = Field(alias="timeInForce")
-    external_id: str | None = Field(default=None, alias="externalId")
-    status: str
-
-    model_config = {"populate_by_name": True}
-
-
-class ExecutionResult(BaseModel):
-    accepted: bool
-    simulated: bool
-    broker: str
-    message: str
-    submitted_at: str = Field(alias="submittedAt")
-    order: ExecutionOrder
 
     model_config = {"populate_by_name": True}

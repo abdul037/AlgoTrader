@@ -1,10 +1,4 @@
-import {
-  BacktestResult,
-  ExecuteTradePayload,
-  ExecutionResult,
-  SignalReport,
-  TradingConfig,
-} from "./types";
+import { BacktestResult, SignalReport, TradingConfig } from "./types";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "http://127.0.0.1:8000";
@@ -48,18 +42,4 @@ export async function runBacktest(symbol: string, interval: string): Promise<Bac
   });
 
   return parseResponse<BacktestResult>(response);
-}
-
-export async function postExecutionCommand(
-  payload: ExecuteTradePayload
-): Promise<ExecutionResult> {
-  const response = await fetch(`${API_BASE_URL}/api/trading/execute`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-
-  return parseResponse<ExecutionResult>(response);
 }

@@ -315,6 +315,16 @@ button:disabled {
   width: auto;
 }
 
+.callout-code {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(3, 12, 24, 0.8);
+  border: 1px solid rgba(147, 197, 253, 0.14);
+  color: var(--accent);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.95rem;
+}
+
 .table-shell {
   overflow: auto;
   border-radius: 16px;

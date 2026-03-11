@@ -29,7 +29,7 @@ async def health() -> dict:
     return {
         "status": "ok",
         "marketDataProvider": settings.market_data_provider,
-        "liveExecutionEnabled": settings.enable_live_execution,
+        "analysisOnly": True,
     }
 
 

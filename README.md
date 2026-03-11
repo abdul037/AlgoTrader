@@ -4,10 +4,10 @@ Automated trading support platform built with `Next.js` on the frontend and `Fas
 
 ## Stack
 
-- `frontend/`: Next.js App Router dashboard for live signal review, backtesting, and guarded execution commands
-- `backend/`: FastAPI API for market data, indicator scoring, backtesting, and broker execution
+- `frontend/`: Next.js App Router dashboard for live signal review and backtesting
+- `backend/`: FastAPI API for market data, indicator scoring, and backtesting
 - Recommended data provider: `Alpha Vantage` for free stock market prototyping
-- Recommended broker for execution: `Alpaca` paper trading
+- Workflow: signal-only and manual trade decisions
 
 ## Quick Start
 
@@ -44,10 +44,10 @@ The frontend expects the backend at `http://127.0.0.1:8000` by default. Override
 
 ## Environment
 
-Copy `backend/.env.example` to `backend/.env` before using live integrations.
+Copy `backend/.env.example` to `backend/.env` before using live data integrations.
 
 ## Notes
 
-- Execution defaults to simulated mode.
-- Live order routing requires Alpaca credentials and `ENABLE_LIVE_EXECUTION=true`.
+- Execution has been removed from this build.
+- The app now focuses on buy/sell/hold signals and strategy backtesting only.
 - The existing `client/` and `server/` folders are legacy code from the previous app and are not used by the new scaffold.
