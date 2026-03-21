@@ -2,11 +2,14 @@
   "name": "algo-trader",
   "private": true,
   "scripts": {
-    "dev": "concurrently \"npm run dev --prefix frontend\" \"npm run dev:backend\"",
+    "dev": "concurrently --names frontend,backend --prefix-colors blue,green --kill-others-on-fail \"npm --prefix frontend run dev\" \"npm run dev:backend\"",
+    "dev:frontend": "npm --prefix frontend run dev",
     "dev:backend": "backend/.venv/bin/python -m uvicorn app.main:app --app-dir backend",
     "dev:backend:reload": "backend/.venv/bin/python -m uvicorn app.main:app --reload --reload-dir backend/app --app-dir backend",
-    "build": "npm run build --prefix frontend",
-    "lint": "npm run lint --prefix frontend"
+    "build": "npm run build:frontend && npm run build:backend",
+    "build:frontend": "npm --prefix frontend run build",
+    "build:backend": "backend/.venv/bin/python -m compileall backend/app",
+    "lint": "npm --prefix frontend run lint"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

@@ -70,6 +70,7 @@ export interface ProviderStatus {
   provider: string;
   ready: boolean;
   mode: "live" | "delayed" | "demo";
+  feed?: string | null;
   note: string;
 }
 

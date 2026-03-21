@@ -26,9 +26,9 @@ async def trading_config() -> TradingConfig:
                 "reason": "Best upgrade path when you outgrow a lightweight in-app backtest engine.",
             },
             {
-                "area": "Free market data",
-                "choice": "Alpha Vantage",
-                "reason": "Simple stock API with free access for prototyping and indicator-driven dashboards.",
+                "area": "Market data",
+                "choice": "Alpaca or Alpha Vantage",
+                "reason": "Alpaca gives a stronger upgrade path for live stock data, while Alpha Vantage remains useful as a lightweight fallback.",
             },
             {
                 "area": "Workflow",

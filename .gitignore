@@ -18,6 +18,7 @@ server/.env
 frontend/node_modules/
 frontend/.next/
 frontend/out/
+frontend/tsconfig.tsbuildinfo
 backend/.venv/
 backend/__pycache__/
 backend/**/*.egg-info/

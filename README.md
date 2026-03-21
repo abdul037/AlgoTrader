@@ -6,7 +6,7 @@ Automated trading support platform built with `Next.js` on the frontend and `Fas
 
 - `frontend/`: Next.js App Router dashboard for live signal review and backtesting
 - `backend/`: FastAPI API for market data, indicator scoring, and backtesting
-- Recommended data provider: `Alpha Vantage` for free stock market prototyping
+- Supported data providers: `demo`, `Alpha Vantage`, and `Alpaca`
 - Workflow: signal-only and manual trade decisions
 
 ## Quick Start
@@ -40,11 +40,35 @@ npm run dev
 
 If you want backend auto-reload while editing Python files, run `npm run dev:backend:reload` separately.
 
+Single-service commands:
+
+```bash
+npm run dev:frontend
+npm run dev:backend
+```
+
+Build checks:
+
+```bash
+npm run build
+```
+
 The frontend expects the backend at `http://127.0.0.1:8000` by default. Override it with `NEXT_PUBLIC_API_BASE_URL`.
 
 ## Environment
 
 Copy `backend/.env.example` to `backend/.env` before using live data integrations.
+
+Example `backend/.env` for Alpaca market data:
+
+```env
+MARKET_DATA_PROVIDER=alpaca
+ALPACA_API_KEY=your_key_here
+ALPACA_API_SECRET=your_secret_here
+ALPACA_DATA_FEED=iex
+```
+
+Use `ALPACA_DATA_FEED=sip` only if your Alpaca subscription supports it.
 
 ## Notes
 

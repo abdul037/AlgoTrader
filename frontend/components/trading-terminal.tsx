@@ -161,9 +161,19 @@ export function TradingTerminal() {
           <ul className="stack-list">
             <li>Frontend: Next.js App Router</li>
             <li>Backend: FastAPI</li>
-            <li>Free data path: Alpha Vantage</li>
+            <li>Data path: Alpaca or Alpha Vantage</li>
             <li>Workflow: signal and backtesting only</li>
           </ul>
+          <div className="provider-status">
+            <p className="card-label">Current provider</p>
+            <strong>
+              {(config?.marketData.provider ?? "demo").toUpperCase()}
+              {config?.marketData.feed ? ` / ${config.marketData.feed.toUpperCase()}` : ""}
+            </strong>
+            <p className="summary provider-note">
+              {config?.marketData.note ?? "The app is currently using demo candles until a provider is configured."}
+            </p>
+          </div>
         </div>
       </section>
 

@@ -113,6 +113,7 @@ class ProviderStatus(BaseModel):
     provider: str
     ready: bool
     mode: DataMode
+    feed: str | None = None
     note: str
 
 

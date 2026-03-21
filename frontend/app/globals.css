@@ -125,6 +125,23 @@ select {
   border-bottom: 1px solid rgba(147, 197, 253, 0.1);
 }
 
+.provider-status {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(147, 197, 253, 0.12);
+}
+
+.provider-status strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 1rem;
+  color: var(--text);
+}
+
+.provider-note {
+  margin: 10px 0 0;
+}
+
 .controls {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   align-items: end;

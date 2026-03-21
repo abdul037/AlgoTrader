@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     client_origin: str = "http://localhost:3000"
     market_data_provider: str = "demo"
     alpha_vantage_api_key: str = ""
+    alpaca_api_key: str = ""
+    alpaca_api_secret: str = ""
+    alpaca_data_feed: str = "iex"
 
     model_config = SettingsConfigDict(
         env_file=str(Path(__file__).resolve().parents[1] / ".env"),
