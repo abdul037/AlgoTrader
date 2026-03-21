@@ -38,14 +38,14 @@ npm install
 npm run dev
 ```
 
-If you want backend auto-reload while editing Python files, run `npm run dev:backend:reload` separately.
-
 Single-service commands:
 
 ```bash
 npm run dev:frontend
 npm run dev:backend
 ```
+
+If you want backend auto-reload while editing Python files, run `npm run dev:backend:reload`.
 
 Build checks:
 
