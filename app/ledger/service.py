@@ -49,15 +49,41 @@ class LedgerService:
 
     def run_cycle(self) -> dict[str, Any]:
         """One full pass: snapshot -> match -> refresh closed -> expire stale."""
-        snapshot = self.snapshot_portfolio()
+        expired = self.expire_stale_pending(older_than_hours=int(self.settings.ledger_pending_expiry_hours))
+        pending = self.repository.list_pending_match()
+        open_outcomes = self.repository.list_open_outcomes()
+        manual_tracking = bool(getattr(self.settings, "ledger_track_manual_positions_enabled", False))
+
+        if not pending and not open_outcomes and not manual_tracking:
+            summary = {
+                "snapshot_ts": utc_now().isoformat(),
+                "positions_seen": 0,
+                "matched_new": 0,
+                "manual_imported": 0,
+                "closed_new": 0,
+                "expired_pending": expired,
+                "skipped": True,
+                "skip_reason": "no_active_ledger_work",
+            }
+            logger.info("Ledger cycle skipped: %s", summary)
+            return summary
+
+        pending_symbols = {
+            str(row.get("symbol") or "").upper()
+            for row in pending
+            if row.get("symbol")
+        }
+        snapshot = self.snapshot_portfolio(
+            candidate_symbols=pending_symbols,
+            resolve_all_symbols=manual_tracking,
+        )
         matched = self.match_open_positions(match_window_minutes=int(self.settings.ledger_match_window_minutes))
         manual_imported = (
             self.import_new_manual_positions(snapshot)
-            if bool(getattr(self.settings, "ledger_track_manual_positions_enabled", False))
+            if manual_tracking
             else 0
         )
         closed = self.refresh_closed_outcomes()
-        expired = self.expire_stale_pending(older_than_hours=int(self.settings.ledger_pending_expiry_hours))
         summary = {
             "snapshot_ts": snapshot["snapshot_ts"],
             "positions_seen": snapshot["position_count"],
@@ -73,7 +99,12 @@ class LedgerService:
     # 1. Snapshot
     # ------------------------------------------------------------------
 
-    def snapshot_portfolio(self) -> dict[str, Any]:
+    def snapshot_portfolio(
+        self,
+        *,
+        candidate_symbols: set[str] | None = None,
+        resolve_all_symbols: bool = False,
+    ) -> dict[str, Any]:
         """Poll eToro, persist one snapshot row, return the snapshot dict."""
         raw = self.broker.fetch_raw_portfolio()
         client_portfolio = raw.get("clientPortfolio", {}) or {}
@@ -91,7 +122,11 @@ class LedgerService:
                 {
                     "position_id": position_id,
                     "instrument_id": instrument_id,
-                    "symbol": self._resolve_symbol_for_id(instrument_id),
+                    "symbol": self._resolve_symbol_for_id(
+                        instrument_id,
+                        candidate_symbols=candidate_symbols,
+                        resolve_all=resolve_all_symbols,
+                    ),
                     "is_buy": bool(item.get("isBuy", True)),
                     "leverage": _safe_int(item.get("leverage")) or 1,
                     "open_rate": _safe_float(item.get("openRate")) or 0.0,
@@ -411,18 +446,35 @@ class LedgerService:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _resolve_symbol_for_id(self, instrument_id: int) -> str:
+    def _resolve_symbol_for_id(
+        self,
+        instrument_id: int,
+        *,
+        candidate_symbols: set[str] | None = None,
+        resolve_all: bool = False,
+    ) -> str:
         """Best-effort reverse lookup of instrument_id -> symbol."""
         # Quick path: cache
         for symbol, iid in self._symbol_to_instrument_id.items():
             if iid == instrument_id:
                 return symbol
 
-        # Ask the broker to resolve each known symbol until we find a match.
-        # Limited scope: only symbols the bot actually cares about. Unknown
-        # instrument ids fall back to the numeric id as a string.
-        for instrument in self._resolver.list_supported():
+        if not resolve_all and not candidate_symbols:
+            return str(instrument_id)
+
+        supported = self._resolver.list_supported()
+        candidates = (
+            {symbol.upper() for symbol in candidate_symbols}
+            if candidate_symbols is not None
+            else {instrument.symbol.upper() for instrument in supported}
+        )
+
+        # Ask the broker to resolve only the symbols needed for active pending
+        # alerts unless manual-position importing explicitly needs full symbols.
+        for instrument in supported:
             sym = instrument.symbol.upper()
+            if sym not in candidates:
+                continue
             if sym in self._symbol_to_instrument_id:
                 continue
             try:
@@ -432,6 +484,10 @@ class LedgerService:
             self._symbol_to_instrument_id[sym] = int(resolved["instrument_id"])
             if int(resolved["instrument_id"]) == instrument_id:
                 return sym
+
+        for symbol, iid in self._symbol_to_instrument_id.items():
+            if iid == instrument_id:
+                return symbol
         return str(instrument_id)
 
     def _find_last_sighting(
