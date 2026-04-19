@@ -57,6 +57,12 @@ def make_settings(tmp_path: Path, **overrides) -> AppSettings:
         "etoro_api_key": "",
         "etoro_user_key": "",
         "etoro_base_url": "https://api.etoro.example",
+        "screener_active_strategy_names": ["all"],
+        "screener_min_final_score_to_alert": 65.0,
+        "screener_min_final_score_to_keep": 55.0,
+        "screener_min_accuracy_score": 0.52,
+        "screener_min_confirmation_score": 0.45,
+        "screener_max_false_positive_risk": 0.68,
     }
     defaults.update(overrides)
     return AppSettings(**defaults)

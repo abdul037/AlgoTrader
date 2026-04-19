@@ -69,6 +69,8 @@ class AppSettings(BaseSettings):
     screener_intraday_timeframes: list[str] = Field(default_factory=lambda: ["1m", "5m", "15m"])
     intelligent_scan_timeframes: list[str] = Field(default_factory=lambda: ["5m", "15m", "1h", "1d"])
     single_symbol_analysis_timeframes: list[str] = Field(default_factory=lambda: ["1m", "5m", "15m", "1h", "1d"])
+    screener_active_strategy_names: list[str] = Field(default_factory=lambda: ["rsi_vwap_ema_confluence"])
+    screener_primary_strategy_name: str = "rsi_vwap_ema_confluence"
     screener_top_k: int = 20
     screener_min_confidence: float = 0.45
     screener_scheduler_enabled: bool = True
@@ -157,6 +159,16 @@ class AppSettings(BaseSettings):
     screener_score_weight_regime_alignment: float = 10.0
     screener_score_weight_indicator_confluence: float = 10.0
     screener_score_weight_accuracy_quality: float = 12.0
+    confluence_minimum_score: float = 0.84
+    confluence_minimum_relative_volume: float = 1.25
+    confluence_minimum_adx: float = 20.0
+    confluence_rsi_long_min: float = 54.0
+    confluence_rsi_long_max: float = 66.0
+    confluence_rsi_short_min: float = 34.0
+    confluence_rsi_short_max: float = 46.0
+    confluence_max_extension_atr: float = 1.6
+    confluence_min_body_to_range: float = 0.32
+    confluence_min_close_location: float = 0.62
 
     max_risk_per_trade_pct: float = 1.0
     max_daily_loss_usd: float = 100.0
@@ -247,6 +259,7 @@ class AppSettings(BaseSettings):
         "screener_intraday_timeframes",
         "intelligent_scan_timeframes",
         "single_symbol_analysis_timeframes",
+        "screener_active_strategy_names",
         mode="before",
     )
     @classmethod

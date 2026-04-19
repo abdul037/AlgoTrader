@@ -71,6 +71,8 @@ STRATEGY_SPECS: list[StrategySpec] = [
     StrategySpec("rsi_vwap_ema_confluence", timeframe="1m", style="scalp", default_kwargs={"timeframe": "1m", "minimum_relative_volume": 1.35}),
     StrategySpec("ema_trend_stack", timeframe="1d", style="position", default_kwargs={"timeframe": "1d"}),
     StrategySpec("rsi_trend_continuation", timeframe="1d", style="position", default_kwargs={"timeframe": "1d"}),
+    StrategySpec("rsi_vwap_ema_confluence", timeframe="1h", style="confluence", default_kwargs={"timeframe": "1h"}),
+    StrategySpec("rsi_vwap_ema_confluence", timeframe="1d", style="confluence", default_kwargs={"timeframe": "1d", "minimum_relative_volume": 1.15}),
 ]
 
 

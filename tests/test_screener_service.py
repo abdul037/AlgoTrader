@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pandas as pd
 
 from app.live_signal_schema import MarketQuote
-from app.screener.service import MarketScreenerService
+from app.screener.service import MarketScreenerService, _strategy_specs
 from tests.conftest import make_settings
 
 
@@ -135,6 +135,18 @@ def _frame(closes: list[float], *, start: str = "2026-01-01T00:00:00Z", step: st
             }
         )
     return pd.DataFrame(rows)
+
+
+def test_primary_strategy_mode_limits_specs_to_confluence(tmp_path) -> None:
+    settings = make_settings(
+        tmp_path,
+        screener_active_strategy_names=["rsi_vwap_ema_confluence"],
+    )
+
+    for timeframe in ["1m", "5m", "15m", "1h", "1d"]:
+        specs = _strategy_specs(settings, timeframe=timeframe)
+        assert specs
+        assert {spec.name for spec in specs} == {"rsi_vwap_ema_confluence"}
 
 
 def test_screener_scan_returns_ranked_candidates(tmp_path) -> None:

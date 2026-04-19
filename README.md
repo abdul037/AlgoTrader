@@ -575,6 +575,8 @@ PRIMARY_MARKET_DATA_PROVIDER=auto
 FALLBACK_MARKET_DATA_PROVIDER=yfinance
 SCREENER_DEFAULT_TIMEFRAMES=1d,1h,15m
 SCREENER_INTRADAY_TIMEFRAMES=15m,1h
+SCREENER_ACTIVE_STRATEGY_NAMES=rsi_vwap_ema_confluence
+SCREENER_PRIMARY_STRATEGY_NAME=rsi_vwap_ema_confluence
 SCREENER_TOP_K=20
 SCREENER_MIN_CONFIDENCE=0.45
 REQUIRE_BACKTEST_VALIDATION_FOR_ALERTS=true
@@ -597,6 +599,30 @@ Current strategy catalog:
 - `rsi_reversal`
 - `vwap_reclaim`
 - `rsi_vwap_ema_confluence`
+
+Default alert/proposal mode is intentionally narrower than the full catalog:
+
+- `SCREENER_ACTIVE_STRATEGY_NAMES=rsi_vwap_ema_confluence` makes RSI + VWAP + EMA confluence the only live alert/proposal strategy.
+- Set `SCREENER_ACTIVE_STRATEGY_NAMES=all` only for research or broad comparative backtests.
+- The confluence strategy is available on `1m`, `5m`, `15m`, `1h`, and `1d`.
+- Other strategies remain available for explicit backtest requests and future comparison, but they do not produce live alerts unless enabled.
+
+Primary confluence controls:
+
+```env
+CONFLUENCE_MINIMUM_SCORE=0.84
+CONFLUENCE_MINIMUM_RELATIVE_VOLUME=1.25
+CONFLUENCE_MINIMUM_ADX=20
+CONFLUENCE_RSI_LONG_MIN=54
+CONFLUENCE_RSI_LONG_MAX=66
+CONFLUENCE_RSI_SHORT_MIN=34
+CONFLUENCE_RSI_SHORT_MAX=46
+CONFLUENCE_MAX_EXTENSION_ATR=1.6
+CONFLUENCE_MIN_BODY_TO_RANGE=0.32
+CONFLUENCE_MIN_CLOSE_LOCATION=0.62
+```
+
+These gates intentionally reduce signal frequency. The objective is not a 99% win-rate claim; it is fewer A+ setups with controlled risk, better reward-to-risk, and cleaner forward-test evidence.
 
 ## Future Execution Layer
 

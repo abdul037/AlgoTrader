@@ -20,6 +20,51 @@ from app.universe import resolve_universe
 from app.utils.time import utc_now
 
 
+def _active_strategy_names(settings: Any, *, requested: set[str] | None = None) -> set[str] | None:
+    if requested:
+        return {item.strip().lower() for item in requested if item.strip()}
+    configured = {
+        item.strip().lower()
+        for item in getattr(settings, "screener_active_strategy_names", []) or []
+        if item.strip()
+    }
+    if not configured or "all" in configured:
+        return None
+    return configured
+
+
+def _strategy_specs(settings: Any, *, timeframe: str, requested: set[str] | None = None) -> list[Any]:
+    active = _active_strategy_names(settings, requested=requested)
+    specs = get_strategy_specs(timeframe=timeframe)
+    if active is None:
+        return specs
+    return [spec for spec in specs if spec.name.lower() in active]
+
+
+def _strategy_kwargs(settings: Any, spec: Any) -> dict[str, object]:
+    kwargs = dict(spec.default_kwargs)
+    if spec.name != getattr(settings, "screener_primary_strategy_name", "rsi_vwap_ema_confluence"):
+        return kwargs
+    kwargs.update(
+        {
+            "minimum_confluence_score": float(settings.confluence_minimum_score),
+            "minimum_relative_volume": max(
+                float(kwargs.get("minimum_relative_volume") or 0.0),
+                float(settings.confluence_minimum_relative_volume),
+            ),
+            "minimum_adx": float(settings.confluence_minimum_adx),
+            "rsi_long_min": float(settings.confluence_rsi_long_min),
+            "rsi_long_max": float(settings.confluence_rsi_long_max),
+            "rsi_short_min": float(settings.confluence_rsi_short_min),
+            "rsi_short_max": float(settings.confluence_rsi_short_max),
+            "max_extension_atr": float(settings.confluence_max_extension_atr),
+            "minimum_body_to_range": float(settings.confluence_min_body_to_range),
+            "minimum_close_location": float(settings.confluence_min_close_location),
+        }
+    )
+    return kwargs
+
+
 class MarketScreenerService:
     """Evaluate a configurable market universe across multiple strategies and timeframes."""
 
@@ -115,13 +160,13 @@ class MarketScreenerService:
                     errors.append(f"{symbol} {timeframe}: {exc}")
                     continue
 
-                for spec in get_strategy_specs(timeframe=timeframe):
+                for spec in _strategy_specs(self.settings, timeframe=timeframe):
                     if self._scan_cancelled(cancel_event):
                         errors.append("scan_cancelled")
                         abort_scan = True
                         break
                     evaluated_strategy_runs += 1
-                    strategy = get_strategy(spec.name, **spec.default_kwargs)
+                    strategy = get_strategy(spec.name, **_strategy_kwargs(self.settings, spec))
                     try:
                         signal = strategy.generate_signal(history.copy(), symbol)
                     except Exception as exc:
@@ -1229,11 +1274,9 @@ class BatchBacktestService:
                     errors.append(f"{symbol} {timeframe}: {exc}")
                     continue
 
-                for spec in get_strategy_specs(timeframe=timeframe):
-                    if requested and spec.name not in requested:
-                        continue
+                for spec in _strategy_specs(self.settings, timeframe=timeframe, requested=requested):
                     run_count += 1
-                    strategy = get_strategy(spec.name, **spec.default_kwargs)
+                    strategy = get_strategy(spec.name, **_strategy_kwargs(self.settings, spec))
                     try:
                         result = engine.run(
                             symbol=symbol,
