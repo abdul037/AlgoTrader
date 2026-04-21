@@ -47,6 +47,7 @@ from app.ledger.repository import LedgerRepository
 from app.ledger.service import LedgerService
 from app.runtime_settings import get_settings
 from app.storage.db import Database
+from app.storage.repositories import RuntimeStateRepository
 from app.utils.time import utc_now
 
 
@@ -181,6 +182,8 @@ def main() -> int:
         )
 
     result = service.run_cycle()
+    if not result.get("skipped"):
+        RuntimeStateRepository(db).set("workflow:last_ledger_cycle_at", result["snapshot_ts"])
     print("\nCycle result:")
     print(json.dumps(result, indent=2, default=str))
 
