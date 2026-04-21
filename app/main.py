@@ -55,6 +55,16 @@ class HealthResponse(BaseModel):
     status: str
     account_mode: str
     require_approval: bool
+    reason: str = "healthy"
+    last_successful_screener_run_at: str | None = None
+    last_successful_ledger_cycle_at: str | None = None
+    pending_match_count: int = 0
+    pending_match_older_than_24h_count: int = 0
+    active_meta_model_version: str | None = None
+    model_deployment_mode: str = "shadow"
+    current_regime_label: str | None = None
+    last_etoro_api_error: str | None = None
+    last_etoro_api_error_at: str | None = None
 
 
 class BacktestRunRequest(BaseModel):
@@ -140,6 +150,13 @@ def create_app(
     alert_history_repository = AlertHistoryRepository(database)
     scan_decision_repository = ScanDecisionRepository(database)
     ledger_repository = LedgerRepository(database)
+    app.state.ledger_repository = ledger_repository
+    app.state.ledger_service = LedgerService(
+        settings=app_settings,
+        broker=app.state.broker,
+        repository=ledger_repository,
+        database=database,
+    )
     app.state.live_signal_service = LiveSignalService(
         settings=app_settings,
         market_data_client=app.state.market_data_client,
@@ -148,6 +165,7 @@ def create_app(
         run_log_repository=run_log_repository,
         backtest_repository=backtest_repository,
         telegram_notifier=app.state.telegram_notifier,
+        ledger_service=app.state.ledger_service,
     )
     app.state.market_screener_service = MarketScreenerService(
         settings=app_settings,
@@ -196,13 +214,6 @@ def create_app(
         trades=paper_trade_repository,
         run_logs=run_log_repository,
         scan_decisions=scan_decision_repository,
-    )
-    app.state.ledger_repository = ledger_repository
-    app.state.ledger_service = LedgerService(
-        settings=app_settings,
-        broker=app.state.broker,
-        repository=ledger_repository,
-        database=database,
     )
     app.state.execution_coordinator = ExecutionCoordinator(
         settings=app_settings,
@@ -295,10 +306,23 @@ def create_app(
 
     @app.get("/health", response_model=HealthResponse, tags=["system"])
     def health() -> HealthResponse:
+        workflow_health = app.state.workflow_service.health_summary()
         return HealthResponse(
-            status="ok",
+            status=str(workflow_health.get("status") or "ok"),
             account_mode=app_settings.etoro_account_mode,
             require_approval=app_settings.require_approval,
+            reason=str(workflow_health.get("reason") or "healthy"),
+            last_successful_screener_run_at=workflow_health.get("last_successful_screener_run_at"),
+            last_successful_ledger_cycle_at=workflow_health.get("last_successful_ledger_cycle_at"),
+            pending_match_count=int(workflow_health.get("pending_match_count") or 0),
+            pending_match_older_than_24h_count=int(
+                workflow_health.get("pending_match_older_than_24h_count") or 0
+            ),
+            active_meta_model_version=workflow_health.get("active_meta_model_version") or None,
+            model_deployment_mode=str(workflow_health.get("model_deployment_mode") or "shadow"),
+            current_regime_label=workflow_health.get("current_regime_label"),
+            last_etoro_api_error=workflow_health.get("last_etoro_api_error"),
+            last_etoro_api_error_at=workflow_health.get("last_etoro_api_error_at"),
         )
 
     @app.post("/backtests/run", tags=["backtests"])

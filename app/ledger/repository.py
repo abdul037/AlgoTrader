@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from typing import Any
 
 from app.storage.db import Database
@@ -152,6 +153,31 @@ class LedgerRepository:
             rows = connection.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
+    def pending_match_count(self) -> int:
+        """Count outcomes still waiting for an eToro position match."""
+        with self.db.connect() as connection:
+            return int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM signal_outcomes WHERE outcome_status = 'pending_match'"
+                ).fetchone()[0]
+            )
+
+    def pending_match_older_than_count(self, *, hours: int) -> int:
+        """Count pending outcomes older than the supplied age."""
+        cutoff = (utc_now() - timedelta(hours=max(hours, 0))).isoformat()
+        with self.db.connect() as connection:
+            return int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM signal_outcomes
+                    WHERE outcome_status = 'pending_match'
+                      AND alert_created_at < ?
+                    """,
+                    (cutoff,),
+                ).fetchone()[0]
+            )
+
     def list_open_outcomes(self) -> list[dict[str, Any]]:
         """Outcomes that are matched to a live position but not yet closed."""
         with self.db.connect() as connection:
@@ -289,10 +315,35 @@ class LedgerRepository:
             ).fetchall()
             closed_rows = connection.execute(
                 """
-                SELECT realized_pnl_usd, realized_r_multiple
+                SELECT realized_pnl_usd, realized_r_multiple, position_open_at, closed_at
                 FROM signal_outcomes
                 WHERE outcome_status IN ('target_hit', 'stop_hit', 'closed_manual')
                   AND realized_pnl_usd IS NOT NULL
+                """
+            ).fetchall()
+            strategy_rows = connection.execute(
+                """
+                SELECT
+                    COALESCE(strategy_name, '-') AS strategy_name,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN outcome_status = 'pending_match' THEN 1 ELSE 0 END) AS pending,
+                    SUM(CASE WHEN outcome_status = 'open' THEN 1 ELSE 0 END) AS open_count,
+                    SUM(CASE WHEN outcome_status IN ('target_hit', 'stop_hit', 'closed_manual') THEN 1 ELSE 0 END) AS closed,
+                    SUM(CASE WHEN realized_pnl_usd > 0 THEN 1 ELSE 0 END) AS wins,
+                    SUM(CASE WHEN realized_pnl_usd <= 0 AND realized_pnl_usd IS NOT NULL THEN 1 ELSE 0 END) AS losses,
+                    SUM(CASE WHEN realized_pnl_usd > 0 THEN realized_pnl_usd ELSE 0 END) AS gross_wins,
+                    SUM(CASE WHEN realized_pnl_usd < 0 THEN realized_pnl_usd ELSE 0 END) AS gross_losses,
+                    AVG(realized_r_multiple) AS avg_r_multiple,
+                    AVG(
+                        CASE
+                            WHEN position_open_at IS NOT NULL AND closed_at IS NOT NULL
+                            THEN (julianday(closed_at) - julianday(position_open_at)) * 24.0
+                            ELSE NULL
+                        END
+                    ) AS avg_hold_hours
+                FROM signal_outcomes
+                GROUP BY COALESCE(strategy_name, '-')
+                ORDER BY closed DESC, total DESC
                 """
             ).fetchall()
 
@@ -301,12 +352,54 @@ class LedgerRepository:
         wins = [r for r in closed if (r.get("realized_pnl_usd") or 0) > 0]
         losses = [r for r in closed if (r.get("realized_pnl_usd") or 0) <= 0]
         total_pnl = sum((r.get("realized_pnl_usd") or 0) for r in closed)
+        gross_wins = sum((r.get("realized_pnl_usd") or 0) for r in wins)
+        gross_losses = sum((r.get("realized_pnl_usd") or 0) for r in losses)
+        profit_factor = (
+            gross_wins / abs(gross_losses)
+            if gross_wins > 0 and gross_losses < 0
+            else None
+        )
         avg_r = (
             sum(r.get("realized_r_multiple") or 0 for r in closed) / len(closed)
             if closed
             else None
         )
         win_rate = (len(wins) / len(closed)) if closed else None
+        hold_hours = [
+            (r.get("closed_at"), r.get("position_open_at"))
+            for r in closed
+            if r.get("closed_at") and r.get("position_open_at")
+        ]
+        avg_hold_hours = None
+        if hold_hours:
+            with self.db.connect() as connection:
+                avg_hold_hours = connection.execute(
+                    """
+                    SELECT AVG((julianday(closed_at) - julianday(position_open_at)) * 24.0)
+                    FROM signal_outcomes
+                    WHERE outcome_status IN ('target_hit', 'stop_hit', 'closed_manual')
+                      AND position_open_at IS NOT NULL
+                      AND closed_at IS NOT NULL
+                    """
+                ).fetchone()[0]
+
+        by_strategy = []
+        for row in strategy_rows:
+            item = dict(row)
+            item_gross_wins = float(item.get("gross_wins") or 0.0)
+            item_gross_losses = float(item.get("gross_losses") or 0.0)
+            closed_count = int(item.get("closed") or 0)
+            item["win_rate"] = (
+                int(item.get("wins") or 0) / closed_count
+                if closed_count
+                else None
+            )
+            item["profit_factor"] = (
+                item_gross_wins / abs(item_gross_losses)
+                if item_gross_wins > 0 and item_gross_losses < 0
+                else None
+            )
+            by_strategy.append(item)
 
         return {
             "total_outcomes": total,
@@ -315,6 +408,9 @@ class LedgerRepository:
             "wins": len(wins),
             "losses": len(losses),
             "win_rate": win_rate,
+            "profit_factor": profit_factor,
             "total_realized_pnl_usd": total_pnl,
             "avg_r_multiple": avg_r,
+            "avg_hold_hours": avg_hold_hours,
+            "by_strategy": by_strategy,
         }

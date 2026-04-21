@@ -37,6 +37,7 @@ def _normalize_history(frame: pd.DataFrame) -> pd.DataFrame:
     rename_map: dict[str, Any] = {
         "date": "timestamp",
         "datetime": "timestamp",
+        "index": "timestamp",
     }
     frame = frame.rename(columns=rename_map)
 

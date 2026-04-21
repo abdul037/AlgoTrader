@@ -194,6 +194,8 @@ class AppSettings(BaseSettings):
     ledger_match_window_minutes: int = 120
     ledger_pending_expiry_hours: int = 48
     ledger_track_manual_positions_enabled: bool = False
+    model_deployment_mode: Literal["shadow", "advisory", "gating"] = "shadow"
+    meta_model_path: str = ""
 
     allowed_instruments: list[str] = Field(
         default_factory=lambda: ["NVDA", "GOOG", "GOOGL", "AMD", "MU", "GOLD"]

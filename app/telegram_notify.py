@@ -235,6 +235,9 @@ class TelegramNotifier:
             f"Timing: {timing_label} | Source: {source} | Verified: {verified}",
             provider_status,
         ]
+        outcome_line = TelegramNotifier._format_ledger_outcome_line(metadata)
+        if outcome_line:
+            lines.append(outcome_line)
         if verdict == "NO_TRADE":
             if bool(metadata.get("data_gate_blocked")):
                 lines.append("Gate: blocked by live market-data verification")
@@ -340,6 +343,7 @@ class TelegramNotifier:
             f"Setup: {snapshot.strategy_name} | {snapshot.timeframe} | "
             f"Score {snapshot.score:.1f}/100 | {snapshot.confidence_label or 'n/a'}"
         )
+        outcome_line = TelegramNotifier._format_ledger_outcome_line(metadata)
         freshness = f"Freshness: {snapshot.freshness or 'fresh'} | Verdict: {trade_plan.get('timing_label', 'n/a')}"
         entry = TelegramNotifier._format_entry_zone(trade_plan, snapshot)
         stop = TelegramNotifier._fmt_number(snapshot.stop_loss)
@@ -353,6 +357,7 @@ class TelegramNotifier:
             [
                 header,
                 setup_line,
+                *([outcome_line] if outcome_line else []),
                 f"Context: {metadata.get('market_context_summary') or 'n/a'}",
                 freshness,
                 provider_status,
@@ -364,6 +369,13 @@ class TelegramNotifier:
                 "Execution: manual approval required before any broker action.",
             ]
         )
+
+    @staticmethod
+    def _format_ledger_outcome_line(metadata: dict[str, Any]) -> str | None:
+        outcome_id = metadata.get("ledger_outcome_id")
+        if outcome_id in (None, ""):
+            return None
+        return f"Ledger outcome: #{outcome_id}"
 
     @staticmethod
     def format_screener_summary(response: "ScreenerRunResponse", *, task_label: str | None = None) -> str:

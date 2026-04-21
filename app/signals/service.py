@@ -13,6 +13,7 @@ from app.live_signal_schema import (
     SignalState,
     TelegramAlertResponse,
 )
+from app.models.signal import Signal
 from app.runtime_settings import AppSettings
 from app.telegram_notify import TelegramNotifier
 from app.utils.time import utc_now
@@ -35,6 +36,7 @@ class LiveSignalService:
         run_log_repository: "RunLogRepository" | Any,
         backtest_repository: "BacktestRepository" | Any | None = None,
         telegram_notifier: TelegramNotifier | Any | None = None,
+        ledger_service: Any | None = None,
     ):
         self.settings = settings
         self.market_data = market_data_client
@@ -43,6 +45,7 @@ class LiveSignalService:
         self.logs = run_log_repository
         self.backtests = backtest_repository
         self.notifier = telegram_notifier
+        self.ledger_service = ledger_service
         from app.broker.instrument_resolver import InstrumentResolver
 
         self.resolver = InstrumentResolver(settings)
@@ -195,6 +198,10 @@ class LiveSignalService:
                 symbol=snapshot.symbol,
             )
 
+        snapshot = self._snapshot_with_ledger_outcome(
+            snapshot,
+            alert_source=f"telegram_{previous_state}",
+        )
         sent = bool(self.notifier.send_signal_change(snapshot, previous_state=previous_state))
         if sent:
             self.logs.log(
@@ -434,9 +441,13 @@ class LiveSignalService:
                     )
                     return False
                 if self.notifier and hasattr(self.notifier, "send_signal_change"):
+                    snapshot_to_send = self._snapshot_with_ledger_outcome(
+                        snapshot,
+                        alert_source="signal_notification",
+                    )
                     sent = bool(
                         self.notifier.send_signal_change(
-                            snapshot,
+                            snapshot_to_send,
                             previous_state=previous.state.value if previous else None,
                         )
                     )
@@ -451,6 +462,76 @@ class LiveSignalService:
                         )
                     return sent
         return False
+
+    def _snapshot_with_ledger_outcome(self, snapshot: LiveSignalSnapshot, *, alert_source: str) -> LiveSignalSnapshot:
+        if self.ledger_service is None:
+            return snapshot
+        if not bool(getattr(self.settings, "ledger_enabled", False)):
+            return snapshot
+        if not bool(getattr(self.settings, "ledger_record_alerts_enabled", False)):
+            return snapshot
+        try:
+            generated_at = snapshot.generated_at or snapshot.signal_generated_at or utc_now().isoformat()
+            target = snapshot.take_profit or (snapshot.targets[0] if snapshot.targets else None)
+            alert_id = (
+                f"{alert_source}:{snapshot.symbol}:{snapshot.strategy_name}:"
+                f"{snapshot.timeframe}:{generated_at}"
+            )
+            payload = snapshot.model_dump()
+            payload.update(
+                {
+                    "alert_source": alert_source,
+                    "direction": str(snapshot.direction_label or snapshot.state.value),
+                    "timestamp_utc": generated_at,
+                    "score": snapshot.score,
+                    "target": target,
+                    "stop": snapshot.stop_loss,
+                    "confluence_vector": {
+                        "score_breakdown": dict(snapshot.score_breakdown or {}),
+                        "indicators": dict(snapshot.indicators or {}),
+                        "pass_reasons": list(snapshot.pass_reasons or []),
+                        "reject_reasons": list(snapshot.reject_reasons or []),
+                        "metadata": dict(snapshot.metadata or {}),
+                    },
+                }
+            )
+            outcome_id = self.ledger_service.record_alert(
+                alert_source=alert_source,
+                alert_id=alert_id,
+                symbol=snapshot.symbol,
+                strategy_name=snapshot.strategy_name,
+                timeframe=snapshot.timeframe,
+                alert_created_at=generated_at,
+                alert_entry_price=snapshot.entry_price or snapshot.current_price,
+                alert_stop=snapshot.stop_loss,
+                alert_target=target,
+                alert_score=snapshot.score,
+                alert_payload=payload,
+            )
+            metadata = dict(snapshot.metadata or {})
+            metadata.update({"ledger_outcome_id": outcome_id, "ledger_alert_id": alert_id})
+            self.logs.log(
+                "ledger_alert_recorded",
+                {
+                    "outcome_id": outcome_id,
+                    "alert_source": alert_source,
+                    "symbol": snapshot.symbol,
+                    "strategy_name": snapshot.strategy_name,
+                    "timeframe": snapshot.timeframe,
+                    "alert_id": alert_id,
+                },
+            )
+            return snapshot.model_copy(update={"metadata": metadata})
+        except Exception as exc:  # noqa: BLE001
+            self.logs.log(
+                "ledger_alert_record_error",
+                {
+                    "alert_source": alert_source,
+                    "symbol": snapshot.symbol,
+                    "error": str(exc),
+                },
+            )
+            return snapshot
 
     def _signal_from_snapshot(self, snapshot: LiveSignalSnapshot) -> Signal:
         return Signal(

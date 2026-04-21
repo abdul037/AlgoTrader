@@ -193,6 +193,42 @@ class SignalWorkflowService:
             alert_history_count=self.alert_history.count(),
         )
 
+    def health_summary(self) -> dict[str, Any]:
+        """Return operator-facing workflow and ledger health."""
+
+        pending_count = 0
+        stale_pending_count = 0
+        if self.ledger_service is not None:
+            repository = getattr(self.ledger_service, "repository", None)
+            if repository is not None:
+                pending_count = int(repository.pending_match_count())
+                stale_pending_count = int(repository.pending_match_older_than_count(hours=24))
+
+        last_etoro_error = self.runtime_state.get("etoro:last_api_error")
+        last_etoro_error_at = self.runtime_state.get("etoro:last_api_error_at")
+        status = "ok"
+        reasons: list[str] = []
+        if stale_pending_count > 0:
+            status = "degraded"
+            reasons.append(f"{stale_pending_count} pending_match older than 24h")
+        if last_etoro_error:
+            status = "degraded"
+            reasons.append("last eToro API error present")
+
+        return {
+            "status": status,
+            "reason": "; ".join(reasons) if reasons else "healthy",
+            "last_successful_screener_run_at": self._last_successful_screener_run_at(),
+            "last_successful_ledger_cycle_at": self.runtime_state.get("workflow:last_ledger_cycle_at"),
+            "pending_match_count": pending_count,
+            "pending_match_older_than_24h_count": stale_pending_count,
+            "active_meta_model_version": getattr(self.settings, "meta_model_path", None),
+            "model_deployment_mode": getattr(self.settings, "model_deployment_mode", "shadow"),
+            "current_regime_label": self.runtime_state.get("intelligence:current_regime_label"),
+            "last_etoro_api_error": last_etoro_error,
+            "last_etoro_api_error_at": last_etoro_error_at,
+        }
+
     def _run_scan_task(
         self,
         *,
@@ -419,11 +455,11 @@ class SignalWorkflowService:
         if self.settings.screener_alert_mode == "single":
             sent = 0
             for item in alert_candidates:
+                item = self._candidate_with_ledger_outcome(task=task, candidate=item)
                 message = self.notifier.format_screener_candidate(item)
                 delivered = self.notifier.send_text(message)
                 if delivered:
                     sent += 1
-                    self._record_ledger_alert(task=task, candidate=item)
                 self.alert_history.create(
                     category=task,
                     status="sent" if delivered else "generated",
@@ -435,15 +471,16 @@ class SignalWorkflowService:
                 )
             return sent
 
-        digest = response.model_copy(update={"candidates": alert_candidates})
+        recorded_candidates = [
+            self._candidate_with_ledger_outcome(task=task, candidate=item)
+            for item in alert_candidates
+        ]
+        digest = response.model_copy(update={"candidates": recorded_candidates})
         try:
             message = self.notifier.format_screener_summary(digest, task_label=task)
         except TypeError:
             message = self.notifier.format_screener_summary(digest)
         alerts_sent = 1 if self.notifier.send_text(message) else 0
-        if alerts_sent:
-            for item in alert_candidates:
-                self._record_ledger_alert(task=task, candidate=item)
         self.alert_history.create(
             category=task,
             status="sent" if alerts_sent else "generated",
@@ -452,13 +489,13 @@ class SignalWorkflowService:
         )
         return alerts_sent
 
-    def _record_ledger_alert(self, *, task: str, candidate: Any) -> None:
+    def _candidate_with_ledger_outcome(self, *, task: str, candidate: Any) -> Any:
         if self.ledger_service is None:
-            return
+            return candidate
         if not bool(getattr(self.settings, "ledger_enabled", False)):
-            return
+            return candidate
         if not bool(getattr(self.settings, "ledger_record_alerts_enabled", False)):
-            return
+            return candidate
         try:
             generated_at = candidate.generated_at or candidate.signal_generated_at or utc_now().isoformat()
             alert_id = (
@@ -468,7 +505,13 @@ class SignalWorkflowService:
             target = candidate.take_profit
             if target is None and candidate.targets:
                 target = candidate.targets[0]
-            self.ledger_service.record_alert(
+            payload = self._ledger_alert_payload(
+                task=task,
+                candidate=candidate,
+                generated_at=generated_at,
+                target=target,
+            )
+            outcome_id = self.ledger_service.record_alert(
                 alert_source=task,
                 alert_id=alert_id,
                 symbol=candidate.symbol,
@@ -479,11 +522,19 @@ class SignalWorkflowService:
                 alert_stop=candidate.stop_loss,
                 alert_target=target,
                 alert_score=candidate.score,
-                alert_payload=candidate.model_dump() if hasattr(candidate, "model_dump") else {},
+                alert_payload=payload,
+            )
+            candidate = self._copy_candidate_with_metadata(
+                candidate,
+                {
+                    "ledger_outcome_id": outcome_id,
+                    "ledger_alert_id": alert_id,
+                },
             )
             self.run_logs.log(
                 "ledger_alert_recorded",
                 {
+                    "outcome_id": outcome_id,
                     "task": task,
                     "symbol": candidate.symbol,
                     "strategy_name": candidate.strategy_name,
@@ -500,6 +551,51 @@ class SignalWorkflowService:
                     "error": str(exc),
                 },
             )
+        return candidate
+
+    @staticmethod
+    def _ledger_alert_payload(
+        *,
+        task: str,
+        candidate: Any,
+        generated_at: str,
+        target: float | None,
+    ) -> dict[str, Any]:
+        payload = candidate.model_dump() if hasattr(candidate, "model_dump") else {}
+        metadata = dict(getattr(candidate, "metadata", {}) or {})
+        payload.update(
+            {
+                "alert_source": task,
+                "direction": str(
+                    getattr(candidate, "direction_label", None)
+                    or getattr(getattr(candidate, "state", None), "value", None)
+                    or ""
+                ),
+                "timestamp_utc": generated_at,
+                "score": getattr(candidate, "score", None),
+                "target": target,
+                "stop": getattr(candidate, "stop_loss", None),
+                "confluence_vector": {
+                    "score_breakdown": dict(getattr(candidate, "score_breakdown", {}) or {}),
+                    "indicators": dict(getattr(candidate, "indicators", {}) or {}),
+                    "strategy_checks": metadata.get("strategy_checks"),
+                    "strategy_diagnostics": metadata.get("strategy_diagnostics"),
+                    "pass_reasons": list(getattr(candidate, "pass_reasons", []) or []),
+                    "reject_reasons": list(getattr(candidate, "reject_reasons", []) or []),
+                    "metadata": metadata,
+                },
+            }
+        )
+        return payload
+
+    @staticmethod
+    def _copy_candidate_with_metadata(candidate: Any, metadata_updates: dict[str, Any]) -> Any:
+        metadata = dict(getattr(candidate, "metadata", {}) or {})
+        metadata.update(metadata_updates)
+        if hasattr(candidate, "model_copy"):
+            return candidate.model_copy(update={"metadata": metadata})
+        candidate.metadata = metadata
+        return candidate
 
     def _run_ledger_cycle_impl(self) -> WorkflowTaskResponse:
         if self.ledger_service is None:
@@ -565,6 +661,30 @@ class SignalWorkflowService:
     @staticmethod
     def _lock_key(task: str) -> str:
         return f"workflow:lock:{task}"
+
+    def _last_successful_screener_run_at(self) -> str | None:
+        values = [
+            self.runtime_state.get(key)
+            for key in (
+                "workflow:last_premarket_scan_at",
+                "workflow:last_market_open_scan_at",
+                "workflow:last_intelligent_scan_at",
+                "workflow:last_swing_scan_at",
+                "workflow:last_intraday_scan_at",
+                "workflow:last_end_of_day_scan_at",
+            )
+        ]
+        parsed: list[datetime] = []
+        for value in values:
+            if not value:
+                continue
+            try:
+                parsed.append(datetime.fromisoformat(value))
+            except ValueError:
+                continue
+        if not parsed:
+            return None
+        return max(parsed).isoformat()
 
     def _named_scan_due(self, state_key: str, enabled: bool, scheduled_time: str) -> bool:
         if not enabled:

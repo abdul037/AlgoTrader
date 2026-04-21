@@ -48,6 +48,8 @@ class TelegramBotService:
         "/queue - list execution queue\n"
         "/process_queue QUEUE_ID|all - process queued paper/live execution\n"
         "/open_signals - tracked active signals\n"
+        "/outcomes - ledger outcome quality summary\n"
+        "/health - bot operations health\n"
         "/daily_summary - latest workflow summary\n"
         "/notify SYMBOL - force-send the current signal snapshot\n"
     )
@@ -337,6 +339,14 @@ class TelegramBotService:
             self.notifier.send_text(message, chat_id=chat_id)
             return
 
+        if command == "/outcomes":
+            self.notifier.send_text(self._outcomes_message(), chat_id=chat_id)
+            return
+
+        if command == "/health":
+            self.notifier.send_text(self._health_message(), chat_id=chat_id)
+            return
+
         if command == "/daily_summary":
             if self.workflow_service is None:
                 self.notifier.send_text("Workflow service is not configured.", chat_id=chat_id)
@@ -589,6 +599,85 @@ class TelegramBotService:
         record = self._run_with_timeout(self.execution_coordinator.process_queue_item, target)
         return self._format_queue_record(record, header="Queue processed")
 
+    def _outcomes_message(self) -> str:
+        repository = self._ledger_repository()
+        if repository is None:
+            return "Outcome ledger is not configured."
+        stats = self._run_with_timeout(repository.summary_stats)
+        by_status = stats.get("by_status") or {}
+        lines = [
+            "Outcome ledger",
+            f"Total outcomes: {int(stats.get('total_outcomes') or 0)}",
+            (
+                "Status: "
+                + (
+                    ", ".join(f"{status}={count}" for status, count in sorted(by_status.items()))
+                    if by_status
+                    else "none"
+                )
+            ),
+            (
+                f"Closed: {int(stats.get('closed_count') or 0)} | "
+                f"W/L: {int(stats.get('wins') or 0)}/{int(stats.get('losses') or 0)} | "
+                f"Win rate: {self._fmt_pct(stats.get('win_rate'))}"
+            ),
+            (
+                f"PF: {self._fmt_decimal(stats.get('profit_factor'))} | "
+                f"Avg R: {self._fmt_r(stats.get('avg_r_multiple'))} | "
+                f"Avg hold: {self._fmt_hours(stats.get('avg_hold_hours'))}"
+            ),
+        ]
+        strategies = list(stats.get("by_strategy") or [])
+        if strategies:
+            lines.append("By strategy:")
+            for item in strategies[:5]:
+                lines.append(
+                    f"{item.get('strategy_name')}: "
+                    f"closed {int(item.get('closed') or 0)}, "
+                    f"WR {self._fmt_pct(item.get('win_rate'))}, "
+                    f"PF {self._fmt_decimal(item.get('profit_factor'))}, "
+                    f"avgR {self._fmt_r(item.get('avg_r_multiple'))}"
+                )
+        return "\n".join(lines)
+
+    def _health_message(self) -> str:
+        if self.workflow_service is None:
+            return "Workflow service is not configured."
+        health = self.workflow_service.health_summary()
+        return "\n".join(
+            [
+                "Bot health",
+                f"Status: {str(health.get('status') or 'unknown').upper()}",
+                f"Reason: {health.get('reason') or 'n/a'}",
+                f"Last screener: {health.get('last_successful_screener_run_at') or 'never'}",
+                f"Last ledger cycle: {health.get('last_successful_ledger_cycle_at') or 'never'}",
+                (
+                    f"Pending matches: {int(health.get('pending_match_count') or 0)} | "
+                    f">24h: {int(health.get('pending_match_older_than_24h_count') or 0)}"
+                ),
+                f"Model mode: {health.get('model_deployment_mode') or 'shadow'}",
+                f"Meta-model: {health.get('active_meta_model_version') or 'not deployed'}",
+                f"Regime: {health.get('current_regime_label') or 'not deployed'}",
+                (
+                    "Last eToro error: "
+                    f"{health.get('last_etoro_api_error') or 'none'}"
+                    + (
+                        f" at {health.get('last_etoro_api_error_at')}"
+                        if health.get("last_etoro_api_error_at")
+                        else ""
+                    )
+                ),
+            ]
+        )
+
+    def _ledger_repository(self):
+        if self.workflow_service is None:
+            return None
+        ledger_service = getattr(self.workflow_service, "ledger_service", None)
+        if ledger_service is None:
+            return None
+        return getattr(ledger_service, "repository", None)
+
     def _next_update_offset(self) -> int | None:
         last_update_id = self.state.get("telegram_last_update_id")
         if last_update_id is None:
@@ -714,6 +803,45 @@ class TelegramBotService:
             return f"{float(value):.2f}"
         except (TypeError, ValueError):
             return str(value)
+
+    @staticmethod
+    def _fmt_decimal(value: Any) -> str:
+        if value in (None, ""):
+            return "n/a"
+        try:
+            return f"{float(value):.2f}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    @staticmethod
+    def _fmt_pct(value: Any) -> str:
+        if value in (None, ""):
+            return "n/a"
+        try:
+            return f"{float(value) * 100:.1f}%"
+        except (TypeError, ValueError):
+            return str(value)
+
+    @staticmethod
+    def _fmt_r(value: Any) -> str:
+        if value in (None, ""):
+            return "n/a"
+        try:
+            return f"{float(value):+.2f}R"
+        except (TypeError, ValueError):
+            return str(value)
+
+    @staticmethod
+    def _fmt_hours(value: Any) -> str:
+        if value in (None, ""):
+            return "n/a"
+        try:
+            hours = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        if hours < 48:
+            return f"{hours:.1f}h"
+        return f"{hours / 24.0:.1f}d"
 
     @staticmethod
     def _join_items(items: list[Any], *, limit: int = 4) -> str:
