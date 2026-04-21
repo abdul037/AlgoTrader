@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 import json
 from datetime import timedelta
 from typing import Any
@@ -414,3 +415,186 @@ class LedgerRepository:
             "avg_hold_hours": avg_hold_hours,
             "by_strategy": by_strategy,
         }
+
+    def strategy_audit(self, *, min_closed: int = 20) -> dict[str, Any]:
+        """Return strategy/symbol/timeframe/score-bucket quality diagnostics."""
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM signal_outcomes
+                ORDER BY alert_created_at ASC
+                """
+            ).fetchall()
+
+        outcomes = [dict(row) for row in rows]
+        groups: dict[str, dict[str, list[dict[str, Any]]]] = {
+            "strategies": defaultdict(list),
+            "symbols": defaultdict(list),
+            "timeframes": defaultdict(list),
+            "score_buckets": defaultdict(list),
+        }
+        for row in outcomes:
+            groups["strategies"][str(row.get("strategy_name") or "-")].append(row)
+            groups["symbols"][str(row.get("symbol") or "-").upper()].append(row)
+            groups["timeframes"][str(row.get("timeframe") or "-")].append(row)
+            groups["score_buckets"][_score_bucket(row.get("alert_score"))].append(row)
+
+        return {
+            "generated_at": utc_now().isoformat(),
+            "min_closed_for_decision": max(int(min_closed), 1),
+            "overall": _audit_metrics("all", outcomes, min_closed=min_closed),
+            "by_strategy": [
+                _audit_metrics(name, items, min_closed=min_closed)
+                for name, items in sorted(groups["strategies"].items())
+            ],
+            "by_symbol": [
+                _audit_metrics(name, items, min_closed=min_closed)
+                for name, items in sorted(groups["symbols"].items())
+            ],
+            "by_timeframe": [
+                _audit_metrics(name, items, min_closed=min_closed)
+                for name, items in sorted(groups["timeframes"].items())
+            ],
+            "by_score_bucket": [
+                _audit_metrics(name, items, min_closed=min_closed)
+                for name, items in sorted(
+                    groups["score_buckets"].items(),
+                    key=lambda item: _score_bucket_sort_key(item[0]),
+                )
+            ],
+        }
+
+
+CLOSED_OUTCOME_STATUSES = {"target_hit", "stop_hit", "closed_manual"}
+
+
+def _audit_metrics(name: str, rows: list[dict[str, Any]], *, min_closed: int) -> dict[str, Any]:
+    total = len(rows)
+    status_counts: dict[str, int] = {}
+    for row in rows:
+        status = str(row.get("outcome_status") or "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    closed = [
+        row
+        for row in rows
+        if str(row.get("outcome_status") or "") in CLOSED_OUTCOME_STATUSES
+        and row.get("realized_pnl_usd") is not None
+    ]
+    wins = [row for row in closed if float(row.get("realized_pnl_usd") or 0.0) > 0.0]
+    losses = [row for row in closed if float(row.get("realized_pnl_usd") or 0.0) <= 0.0]
+    gross_wins = sum(float(row.get("realized_pnl_usd") or 0.0) for row in wins)
+    gross_losses = sum(float(row.get("realized_pnl_usd") or 0.0) for row in losses)
+    r_values = [
+        float(row["realized_r_multiple"])
+        for row in closed
+        if row.get("realized_r_multiple") is not None
+    ]
+    matched_count = sum(
+        1
+        for row in rows
+        if row.get("matched_position_id") is not None
+        or str(row.get("outcome_status") or "") in CLOSED_OUTCOME_STATUSES
+    )
+    expired_count = int(status_counts.get("expired_unmatched", 0))
+
+    win_rate = len(wins) / len(closed) if closed else None
+    profit_factor = (
+        gross_wins / abs(gross_losses)
+        if gross_wins > 0.0 and gross_losses < 0.0
+        else None
+    )
+    avg_r = sum(r_values) / len(r_values) if r_values else None
+    avg_score = _avg([row.get("alert_score") for row in rows])
+
+    recommendation, reason = _recommendation(
+        closed_count=len(closed),
+        win_rate=win_rate,
+        profit_factor=profit_factor,
+        avg_r=avg_r,
+        min_closed=max(int(min_closed), 1),
+        expired_count=expired_count,
+        total=total,
+    )
+    return {
+        "name": name,
+        "total_alerts": total,
+        "matched_count": matched_count,
+        "match_rate": matched_count / total if total else None,
+        "expired_unmatched": expired_count,
+        "open_count": int(status_counts.get("open", 0)),
+        "pending_match": int(status_counts.get("pending_match", 0)),
+        "closed_count": len(closed),
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate": win_rate,
+        "profit_factor": profit_factor,
+        "avg_r_multiple": avg_r,
+        "avg_score": avg_score,
+        "status_counts": status_counts,
+        "recommendation": recommendation,
+        "recommendation_reason": reason,
+    }
+
+
+def _recommendation(
+    *,
+    closed_count: int,
+    win_rate: float | None,
+    profit_factor: float | None,
+    avg_r: float | None,
+    min_closed: int,
+    expired_count: int,
+    total: int,
+) -> tuple[str, str]:
+    if total == 0:
+        return "needs_more_data", "no alerts recorded yet"
+    if closed_count < min_closed:
+        return "needs_more_data", f"only {closed_count}/{min_closed} closed outcomes"
+    if profit_factor is None:
+        return "needs_more_data", "no realized losses yet, PF not stable"
+    if profit_factor >= 1.5 and (win_rate or 0.0) >= 0.55 and (avg_r or 0.0) >= 0.3:
+        return "keep", "meets PF, win-rate, and avg-R targets"
+    if profit_factor < 1.0 or (win_rate is not None and win_rate < 0.45) or (avg_r is not None and avg_r < 0.0):
+        return "disable_or_reduce", "negative expectancy or weak hit rate"
+    if profit_factor < 1.5 or (win_rate is not None and win_rate < 0.55):
+        return "reduce", "positive but below target quality"
+    if expired_count / total > 0.5:
+        return "reduce", "more than half of alerts expired unmatched"
+    return "keep", "acceptable live ledger metrics"
+
+
+def _score_bucket(value: Any) -> str:
+    if value in (None, ""):
+        return "no_score"
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return "no_score"
+    if score < 65:
+        return "<65"
+    if score < 70:
+        return "65-70"
+    if score < 80:
+        return "70-80"
+    if score < 90:
+        return "80-90"
+    return "90+"
+
+
+def _score_bucket_sort_key(bucket: str) -> int:
+    order = {"<65": 0, "65-70": 1, "70-80": 2, "80-90": 3, "90+": 4, "no_score": 5}
+    return order.get(bucket, 99)
+
+
+def _avg(values: list[Any]) -> float | None:
+    numeric = []
+    for value in values:
+        if value in (None, ""):
+            continue
+        try:
+            numeric.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    return sum(numeric) / len(numeric) if numeric else None

@@ -49,6 +49,7 @@ class TelegramBotService:
         "/process_queue QUEUE_ID|all - process queued paper/live execution\n"
         "/open_signals - tracked active signals\n"
         "/outcomes - ledger outcome quality summary\n"
+        "/strategy_report - ledger-backed strategy audit\n"
         "/health - bot operations health\n"
         "/daily_summary - latest workflow summary\n"
         "/notify SYMBOL - force-send the current signal snapshot\n"
@@ -341,6 +342,10 @@ class TelegramBotService:
 
         if command == "/outcomes":
             self.notifier.send_text(self._outcomes_message(), chat_id=chat_id)
+            return
+
+        if command in {"/strategy_report", "/strategy_audit"}:
+            self.notifier.send_text(self._strategy_report_message(), chat_id=chat_id)
             return
 
         if command == "/health":
@@ -639,6 +644,45 @@ class TelegramBotService:
                     f"avgR {self._fmt_r(item.get('avg_r_multiple'))}"
                 )
         return "\n".join(lines)
+
+    def _strategy_report_message(self) -> str:
+        repository = self._ledger_repository()
+        if repository is None:
+            return "Outcome ledger is not configured."
+        audit = self._run_with_timeout(repository.strategy_audit, min_closed=20)
+        overall = audit.get("overall") or {}
+        lines = [
+            "Strategy quality audit",
+            f"Generated: {audit.get('generated_at') or 'n/a'}",
+            f"Decision floor: {int(audit.get('min_closed_for_decision') or 20)} closed outcomes",
+            "Overall:",
+            self._format_audit_item(overall),
+            f"Recommendation: {overall.get('recommendation') or 'n/a'} - {overall.get('recommendation_reason') or 'n/a'}",
+        ]
+        self._append_audit_section(lines, "By strategy", audit.get("by_strategy") or [], limit=5)
+        self._append_audit_section(lines, "By score bucket", audit.get("by_score_bucket") or [], limit=6)
+        self._append_audit_section(lines, "By timeframe", audit.get("by_timeframe") or [], limit=5)
+        return "\n".join(lines)
+
+    def _append_audit_section(self, lines: list[str], title: str, items: list[dict[str, Any]], *, limit: int) -> None:
+        lines.append(title + ":")
+        if not items:
+            lines.append("no data")
+            return
+        for item in items[:limit]:
+            lines.append(self._format_audit_item(item))
+
+    def _format_audit_item(self, item: dict[str, Any]) -> str:
+        return (
+            f"{item.get('name') or '-'} | "
+            f"alerts {int(item.get('total_alerts') or 0)} | "
+            f"matched {int(item.get('matched_count') or 0)} ({self._fmt_pct(item.get('match_rate'))}) | "
+            f"closed {int(item.get('closed_count') or 0)} | "
+            f"WR {self._fmt_pct(item.get('win_rate'))} | "
+            f"PF {self._fmt_decimal(item.get('profit_factor'))} | "
+            f"avgR {self._fmt_r(item.get('avg_r_multiple'))} | "
+            f"{item.get('recommendation') or 'n/a'}"
+        )
 
     def _health_message(self) -> str:
         if self.workflow_service is None:

@@ -67,6 +67,39 @@ class FakeLedgerRepository:
             ],
         }
 
+    def strategy_audit(self, *, min_closed=20):
+        return {
+            "generated_at": "2026-04-21T02:00:00+00:00",
+            "min_closed_for_decision": min_closed,
+            "overall": {
+                "name": "all",
+                "total_alerts": 3,
+                "matched_count": 2,
+                "match_rate": 2 / 3,
+                "closed_count": 1,
+                "win_rate": 1.0,
+                "profit_factor": None,
+                "avg_r_multiple": 2.0,
+                "recommendation": "needs_more_data",
+                "recommendation_reason": "only 1/20 closed outcomes",
+            },
+            "by_strategy": [
+                {
+                    "name": "rsi_vwap_ema_confluence",
+                    "total_alerts": 3,
+                    "matched_count": 2,
+                    "match_rate": 2 / 3,
+                    "closed_count": 1,
+                    "win_rate": 1.0,
+                    "profit_factor": None,
+                    "avg_r_multiple": 2.0,
+                    "recommendation": "needs_more_data",
+                }
+            ],
+            "by_score_bucket": [],
+            "by_timeframe": [],
+        }
+
 
 class FakeLedgerService:
     repository = FakeLedgerRepository()
@@ -125,3 +158,21 @@ def test_health_command_returns_phase_zero_fields() -> None:
     assert "Bot health" in notifier.sent[0][0]
     assert "Last screener: 2026-04-21T01:00:00+00:00" in notifier.sent[0][0]
     assert "Pending matches: 1 | >24h: 0" in notifier.sent[0][0]
+
+
+def test_strategy_report_command_returns_audit() -> None:
+    notifier = FakeNotifier()
+    bot = TelegramBotService(
+        settings=FakeSettings(),
+        notifier=notifier,
+        live_signals=FakeLiveSignals(),
+        workflow_service=FakeWorkflow(),
+        runtime_state_repository=FakeState(),
+        run_log_repository=FakeLogs(),
+    )
+
+    bot.handle_text("1", "/strategy_report")
+
+    assert "Strategy quality audit" in notifier.sent[0][0]
+    assert "Decision floor: 20 closed outcomes" in notifier.sent[0][0]
+    assert "rsi_vwap_ema_confluence" in notifier.sent[0][0]
