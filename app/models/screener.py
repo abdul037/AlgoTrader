@@ -29,6 +29,8 @@ class ScreenerRunResponse(BaseModel):
     suppressed: int = 0
     alerts_sent: int = 0
     errors: list[str] = Field(default_factory=list)
+    rejection_summary: dict[str, int] = Field(default_factory=dict)
+    closest_rejections: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ScanDecisionRecord(BaseModel):

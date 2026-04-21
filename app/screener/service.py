@@ -113,6 +113,8 @@ class MarketScreenerService:
         scan_timeframes = [timeframe.lower() for timeframe in (timeframes or self.settings.screener_default_timeframes)]
         candidates: list[LiveSignalSnapshot] = []
         errors: list[str] = []
+        rejection_summary: dict[str, int] = {}
+        closest_rejections: list[dict[str, Any]] = []
         suppressed = 0
         evaluated_strategy_runs = 0
         evaluated_symbols = 0
@@ -154,10 +156,28 @@ class MarketScreenerService:
                     )
                 except EToroRateLimitError as exc:
                     errors.append(f"{symbol} {timeframe}: {exc}")
+                    self._add_scan_diagnostic(
+                        rejection_summary,
+                        closest_rejections,
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        strategy_name="market_data",
+                        status="error",
+                        rejection_reasons=["market_data_rate_limited"],
+                    )
                     abort_scan = True
                     break
                 except Exception as exc:
                     errors.append(f"{symbol} {timeframe}: {exc}")
+                    self._add_scan_diagnostic(
+                        rejection_summary,
+                        closest_rejections,
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        strategy_name="market_data",
+                        status="error",
+                        rejection_reasons=["market_data_error"],
+                    )
                     continue
 
                 for spec in _strategy_specs(self.settings, timeframe=timeframe):
@@ -171,8 +191,18 @@ class MarketScreenerService:
                         signal = strategy.generate_signal(history.copy(), symbol)
                     except Exception as exc:
                         errors.append(f"{symbol} {timeframe} {spec.name}: {exc}")
+                        self._add_scan_diagnostic(
+                            rejection_summary,
+                            closest_rejections,
+                            symbol=symbol,
+                            timeframe=timeframe,
+                            strategy_name=spec.name,
+                            status="error",
+                            rejection_reasons=["strategy_error"],
+                        )
                         continue
                     if signal is None:
+                        self._increment_rejection(rejection_summary, "no_strategy_signal")
                         continue
                     signal.metadata.setdefault("timeframe", timeframe)
                     signal.metadata.setdefault("strategy_style", spec.style)
@@ -220,6 +250,16 @@ class MarketScreenerService:
                     market_data_status = self._market_data_status(history=history, quote=quote)
                     if self.settings.require_verified_market_data_for_alerts and not market_data_status["verified"]:
                         suppressed += 1
+                        self._add_scan_diagnostic(
+                            rejection_summary,
+                            closest_rejections,
+                            symbol=signal.symbol,
+                            timeframe=timeframe,
+                            strategy_name=signal.strategy_name,
+                            status="suppressed",
+                            rejection_reasons=[market_data_status["verification_reason"]],
+                            measurements=market_data_status,
+                        )
                         self._record_scan_decision(
                             scan_task=scan_task,
                             signal=signal,
@@ -256,6 +296,17 @@ class MarketScreenerService:
                     filter_outcome.measurements.update(market_data_status)
                     if not filter_outcome.passed:
                         suppressed += 1
+                        self._add_scan_diagnostic(
+                            rejection_summary,
+                            closest_rejections,
+                            symbol=signal.symbol,
+                            timeframe=timeframe,
+                            strategy_name=signal.strategy_name,
+                            status="rejected",
+                            rejection_reasons=filter_outcome.rejection_reasons,
+                            final_score=None,
+                            measurements=filter_outcome.measurements,
+                        )
                         self._record_scan_decision(
                             scan_task=scan_task,
                             signal=signal,
@@ -301,6 +352,17 @@ class MarketScreenerService:
                     )
                     if suppress_repeat:
                         suppressed += 1
+                        self._add_scan_diagnostic(
+                            rejection_summary,
+                            closest_rejections,
+                            symbol=signal.symbol,
+                            timeframe=timeframe,
+                            strategy_name=signal.strategy_name,
+                            status="suppressed",
+                            rejection_reasons=["recent_alert_without_material_score_improvement"],
+                            final_score=float(ranking["final_score"]),
+                            measurements=filter_outcome.measurements,
+                        )
                         self._record_scan_decision(
                             scan_task=scan_task,
                             signal=signal,
@@ -335,6 +397,17 @@ class MarketScreenerService:
                     )
                     if ranking["actionability"] == "reject":
                         suppressed += 1
+                        self._add_scan_diagnostic(
+                            rejection_summary,
+                            closest_rejections,
+                            symbol=signal.symbol,
+                            timeframe=timeframe,
+                            strategy_name=signal.strategy_name,
+                            status="rejected",
+                            rejection_reasons=["final_score_below_keep_threshold"],
+                            final_score=float(ranking["final_score"]),
+                            measurements={**filter_outcome.measurements, **intelligence.measurements},
+                        )
                         self._record_scan_decision(
                             scan_task=scan_task,
                             signal=signal,
@@ -374,6 +447,17 @@ class MarketScreenerService:
                     )
                     if validated_only and not bool(snapshot.metadata.get("backtest_validated")):
                         suppressed += 1
+                        self._add_scan_diagnostic(
+                            rejection_summary,
+                            closest_rejections,
+                            symbol=snapshot.symbol,
+                            timeframe=timeframe,
+                            strategy_name=snapshot.strategy_name,
+                            status="suppressed",
+                            rejection_reasons=["validated_only_filter"],
+                            final_score=snapshot.score,
+                            measurements=filter_outcome.measurements,
+                        )
                         self._record_scan_decision(
                             scan_task=scan_task,
                             signal=signal,
@@ -426,6 +510,8 @@ class MarketScreenerService:
             suppressed=suppressed,
             alerts_sent=0,
             errors=errors,
+            rejection_summary=dict(sorted(rejection_summary.items(), key=lambda item: (-item[1], item[0]))),
+            closest_rejections=self._rank_closest_rejections(closest_rejections),
         )
         if notify and self.notifier is not None and hasattr(self.notifier, "send_text"):
             sent = bool(self.notifier.send_text(self.notifier.format_screener_summary(response)))
@@ -444,6 +530,8 @@ class MarketScreenerService:
                 "suppressed": suppressed,
                 "alerts_sent": response.alerts_sent,
                 "errors": errors,
+                "rejection_summary": response.rejection_summary,
+                "closest_rejections": response.closest_rejections,
             },
         )
         return response
@@ -692,6 +780,86 @@ class MarketScreenerService:
         validated = 1 if bool(snapshot.metadata.get("backtest_validated")) else 0
         confidence = float(snapshot.confidence or 0.0)
         return alert_eligible, validated, snapshot.score, confidence
+
+    @classmethod
+    def _add_scan_diagnostic(
+        cls,
+        rejection_summary: dict[str, int],
+        closest_rejections: list[dict[str, Any]],
+        *,
+        symbol: str,
+        timeframe: str,
+        strategy_name: str,
+        status: str,
+        rejection_reasons: list[str],
+        final_score: float | None = None,
+        measurements: dict[str, Any] | None = None,
+    ) -> None:
+        reasons = cls._normalize_rejection_reasons(rejection_reasons)
+        for reason in reasons:
+            cls._increment_rejection(rejection_summary, reason)
+        closest_rejections.append(
+            {
+                "symbol": symbol.upper(),
+                "timeframe": timeframe,
+                "strategy_name": strategy_name,
+                "status": status,
+                "score": round(float(final_score), 2) if final_score is not None else None,
+                "rejection_reasons": reasons[:5],
+                "measurements": cls._diagnostic_measurements(measurements or {}),
+            }
+        )
+
+    @staticmethod
+    def _increment_rejection(rejection_summary: dict[str, int], reason: str) -> None:
+        rejection_summary[reason] = rejection_summary.get(reason, 0) + 1
+
+    @staticmethod
+    def _normalize_rejection_reasons(rejection_reasons: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for raw_reason in rejection_reasons or ["unknown_rejection"]:
+            for reason in str(raw_reason or "unknown_rejection").split(","):
+                cleaned = reason.strip() or "unknown_rejection"
+                if cleaned not in normalized:
+                    normalized.append(cleaned)
+        return normalized or ["unknown_rejection"]
+
+    @classmethod
+    def _rank_closest_rejections(cls, closest_rejections: list[dict[str, Any]], *, limit: int = 5) -> list[dict[str, Any]]:
+        return sorted(
+            closest_rejections,
+            key=lambda item: (
+                item.get("score") is not None,
+                float(item.get("score") or 0.0),
+                item.get("symbol") or "",
+            ),
+            reverse=True,
+        )[:limit]
+
+    @staticmethod
+    def _diagnostic_measurements(measurements: dict[str, Any]) -> dict[str, Any]:
+        keys = [
+            "accuracy_score",
+            "confirmation_score",
+            "false_positive_risk_score",
+            "indicator_confluence_score",
+            "relative_volume",
+            "risk_reward_ratio",
+            "market_regime_score",
+            "timeframe_alignment_score",
+            "verification_reason",
+            "freshness_status",
+        ]
+        compact: dict[str, Any] = {}
+        for key in keys:
+            value = measurements.get(key)
+            if value is None:
+                continue
+            if isinstance(value, float):
+                compact[key] = round(value, 4)
+            else:
+                compact[key] = value
+        return compact
 
     def _record_scan_decision(
         self,

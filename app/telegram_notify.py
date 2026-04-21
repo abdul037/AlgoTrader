@@ -394,6 +394,9 @@ class TelegramNotifier:
                 ),
                 "No actionable candidates passed the current filters.",
             ]
+            diagnostics = TelegramNotifier._format_scan_diagnostics(response)
+            if diagnostics:
+                lines.extend(diagnostics)
             if response.errors:
                 first_error = str(response.errors[0]).replace("\n", " ")
                 if len(first_error) > 180:
@@ -419,9 +422,45 @@ class TelegramNotifier:
         for item in response.candidates:
             lines.append("")
             lines.append(TelegramNotifier.format_screener_candidate(item, rank=item.rank))
+        diagnostics = TelegramNotifier._format_scan_diagnostics(response)
+        if diagnostics:
+            lines.append("")
+            lines.extend(diagnostics)
         if response.errors:
             lines.append(f"Errors: {len(response.errors)}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_scan_diagnostics(response: "ScreenerRunResponse") -> list[str]:
+        summary = dict(getattr(response, "rejection_summary", {}) or {})
+        closest = list(getattr(response, "closest_rejections", []) or [])
+        if not summary and not closest:
+            return []
+        lines = ["Diagnostics:"]
+        if summary:
+            top_reasons = sorted(summary.items(), key=lambda item: (-int(item[1]), item[0]))[:5]
+            lines.append(
+                "Top blockers: "
+                + ", ".join(f"{TelegramNotifier._humanize_reason(reason)} ({count})" for reason, count in top_reasons)
+            )
+        if closest:
+            lines.append("Closest rejected:")
+            for item in closest[:3]:
+                score = item.get("score")
+                score_text = f"{float(score):.1f}" if score is not None else "n/a"
+                reasons = ", ".join(
+                    TelegramNotifier._humanize_reason(reason)
+                    for reason in list(item.get("rejection_reasons") or [])[:3]
+                )
+                lines.append(
+                    f"- {item.get('symbol')} {item.get('timeframe')} "
+                    f"{item.get('strategy_name')} | score {score_text} | {reasons or 'rejected'}"
+                )
+        return lines
+
+    @staticmethod
+    def _humanize_reason(reason: str) -> str:
+        return str(reason or "unknown").replace("_", " ")
 
     @staticmethod
     def format_tracked_signal_update(record: "TrackedSignalRecord", *, event_type: str) -> str:

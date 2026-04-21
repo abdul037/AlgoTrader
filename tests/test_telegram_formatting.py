@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.live_signal_schema import LiveSignalSnapshot, SignalState
+from app.models.screener import ScreenerRunResponse
 from app.telegram_notify import TelegramNotifier
 
 
@@ -58,3 +59,35 @@ def test_verified_no_trade_message_includes_diagnostic_context() -> None:
     assert "Confirm 0.38" in message
     assert "FP-risk 0.71" in message
     assert "Gate: blocked" not in message
+
+
+def test_screener_summary_includes_rejection_diagnostics() -> None:
+    response = ScreenerRunResponse(
+        generated_at="2026-04-21T10:00:00+00:00",
+        universe_name="top100_us",
+        timeframes=["15m", "1h", "1d"],
+        evaluated_symbols=8,
+        evaluated_strategy_runs=24,
+        candidates=[],
+        suppressed=3,
+        rejection_summary={
+            "final_score_below_keep_threshold": 2,
+            "confirmation_too_weak": 1,
+        },
+        closest_rejections=[
+            {
+                "symbol": "NVDA",
+                "timeframe": "1h",
+                "strategy_name": "rsi_vwap_ema_confluence",
+                "status": "rejected",
+                "score": 53.4,
+                "rejection_reasons": ["final_score_below_keep_threshold", "confirmation_too_weak"],
+            }
+        ],
+    )
+
+    message = TelegramNotifier.format_screener_summary(response)
+
+    assert "Diagnostics:" in message
+    assert "Top blockers: final score below keep threshold (2), confirmation too weak (1)" in message
+    assert "- NVDA 1h rsi_vwap_ema_confluence | score 53.4" in message

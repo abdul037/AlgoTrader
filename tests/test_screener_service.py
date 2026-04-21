@@ -325,3 +325,7 @@ def test_screener_strict_market_data_gate_blocks_unverified_candidates(tmp_path)
 
     assert response.candidates == []
     assert response.suppressed >= 1
+    assert response.rejection_summary["missing_quote_provider"] >= 1
+    assert response.rejection_summary["missing_history_provider"] >= 1
+    assert response.closest_rejections
+    assert response.closest_rejections[0]["symbol"] == "NVDA"
