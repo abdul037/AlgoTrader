@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from concurrent.futures import Future
+from datetime import timedelta
+
 from app.live_signal_schema import LiveSignalSnapshot, SignalScanResponse, SignalState
 from app.models.approval import ApprovalStatus, TradeProposal
 from app.models.execution_queue import ExecutionQueueRecord
 from app.notifications.telegram_bot import TelegramBotService
+from app.utils.time import utc_now
 
 
 class FakeNotifier:
@@ -150,6 +154,27 @@ def test_poll_once_handles_signal_and_scan_commands() -> None:
     assert processed == 2
     assert notifier.sent[0][0].startswith("signal NVDA")
     assert notifier.sent[1][0] == "scan 1"
+
+
+def test_scan_in_progress_message_includes_task_and_elapsed() -> None:
+    bot = TelegramBotService(
+        settings=FakeSettings(),
+        notifier=FakeNotifier(),
+        live_signals=FakeLiveSignals(),
+        market_screener=FakeMarketScreener(),
+        runtime_state_repository=FakeStateRepo(),
+        run_log_repository=FakeRunLogRepo(),
+    )
+    bot._active_scan_future = Future()
+    bot._active_scan_started_at = utc_now() - timedelta(seconds=7)
+    bot._active_scan_label = "manual_scan"
+
+    message = bot._scan_in_progress_message()
+
+    assert "A screener scan is already running." in message
+    assert "Task: manual_scan" in message
+    assert "Elapsed:" in message
+    assert "/scan_status" in message
 
 
 class FakeMarketScreener:

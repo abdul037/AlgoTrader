@@ -958,6 +958,20 @@ class TelegramBotService:
             "Use /cancel_scan to request stop, or wait for the current scan to finish."
         )
 
+    def _scan_in_progress_message(self) -> str:
+        future = self._active_scan_future
+        if future is None or future.done():
+            return "A screener scan is already running. Use /scan_status before starting another scan."
+        started = self._active_scan_started_at
+        elapsed = int((utc_now() - started).total_seconds()) if started else 0
+        label = self._active_scan_label or "scan"
+        return (
+            "A screener scan is already running.\n"
+            f"Task: {label}\n"
+            f"Elapsed: {elapsed}s\n"
+            "Use /scan_status before starting another scan, or /cancel_scan to request stop."
+        )
+
     def _cancel_scan_message(self) -> str:
         future = self._active_scan_future
         if future is None or future.done() or self._active_scan_cancel_event is None:
