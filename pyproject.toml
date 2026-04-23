@@ -14,6 +14,7 @@ dependencies = [
   "pandas>=2.2.0",
   "pydantic>=2.7.0",
   "pydantic-settings>=2.2.1",
+  "python-dateutil>=2.9.0",
   "requests>=2.32.0",
   "python-dotenv>=1.0.1",
   "uvicorn[standard]>=0.30.0",
@@ -22,12 +23,47 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "black>=24.0.0",
+  "hypothesis>=6.112.0",
+  "mypy>=1.11.0",
   "pytest>=8.0.0",
+  "ruff>=0.6.0",
+]
+ml = [
+  "fredapi>=0.5.2",
+  "lightgbm>=4.5.0",
+  "scikit-learn>=1.5.0",
+  "scipy>=1.13.0",
+  "shap>=0.46.0",
 ]
 
 [tool.setuptools]
-packages = ["app"]
+[tool.setuptools.packages.find]
+include = ["app*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = false
+strict_optional = true
+exclude = [
+  "tests/",
+]

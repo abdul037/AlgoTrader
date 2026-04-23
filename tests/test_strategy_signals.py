@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from app.models.signal import SignalAction
+from app.strategies import ema_trend_stack as ema_trend_stack_module
+from app.strategies.ema_trend_stack import EMATrendStackStrategy
 from app.strategies.gold_momentum import GoldMomentumStrategy
 from app.strategies.ma_crossover import MACrossoverStrategy
 from app.strategies.rsi_vwap_ema_confluence import RSIVWAPEMAConfluenceStrategy
@@ -130,3 +133,25 @@ def test_rsi_vwap_ema_confluence_volume_ready_is_session_aware_only_on_slow_time
     assert daily_mode == "session_aware_relaxed"
     assert far_ready is False
     assert far_mode == "strict_relative_volume"
+
+
+def test_ema_trend_stack_suppresses_signal_when_atr_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    strategy = EMATrendStackStrategy(timeframe="1h")
+    frame = make_frame([100 + (index * 0.5) for index in range(140)])
+
+    enriched = frame.copy()
+    for column in ["ema_9", "ema_20", "ema_50", "ema_20_slope", "ema_50_slope", "swing_low_10", "swing_high_10"]:
+        enriched[column] = enriched["close"]
+    enriched["atr_14"] = None
+
+    monkeypatch.setattr(
+        ema_trend_stack_module,
+        "enrich_technical_indicators",
+        lambda data, timeframe="1h": enriched,
+    )
+
+    signal = strategy.generate_signal(frame, "NVDA")
+
+    assert signal is None
+    assert strategy.last_diagnostics is not None
+    assert "atr_unavailable" in strategy.last_diagnostics["rejection_reasons"]

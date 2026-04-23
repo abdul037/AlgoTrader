@@ -17,15 +17,28 @@ class EMATrendStackStrategy(BaseStrategy):
 
     def __init__(self, *, timeframe: str = "1h"):
         self.timeframe = timeframe
+        self.last_diagnostics: dict[str, object] | None = None
 
     def generate_signal(self, data: pd.DataFrame, symbol: str) -> Signal | None:
+        self.last_diagnostics = None
         if len(data) < self.required_bars:
             return None
 
         frame = enrich_technical_indicators(data, timeframe=self.timeframe)
         last = frame.iloc[-1]
         prev = frame.iloc[-2]
-        atr = float(last.get("atr_14") or max(float(last["close"]) * 0.008, 0.01))
+        atr_raw = last.get("atr_14")
+        atr = float(atr_raw) if atr_raw is not None and pd.notna(atr_raw) else None
+        if atr is None or atr <= 0:
+            self.last_diagnostics = {
+                "status": "no_signal",
+                "rejection_reasons": ["atr_unavailable"],
+                "measurements": {
+                    "timeframe": self.timeframe,
+                    "close": float(last["close"]),
+                },
+            }
+            return None
 
         long_stack = (
             float(last["ema_9"]) > float(last["ema_20"]) > float(last["ema_50"])

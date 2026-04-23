@@ -117,12 +117,14 @@ def test_attach_backtest_context_marks_validated_summary() -> None:
             "symbol": "NVDA",
             "strategy_name": "pullback_trend",
             "completed_at": "2026-04-10T00:00:00Z",
+            "out_of_sample": True,
             "metrics": {
                 "number_of_trades": 25,
                 "profit_factor": 1.8,
                 "annualized_return_pct": 18.0,
                 "max_drawdown_pct": 20.0,
                 "win_rate": 55.0,
+                "out_of_sample": True,
             },
             "trades": [],
         }
@@ -139,12 +141,14 @@ def test_send_signal_alert_suppressed_when_backtest_gate_fails() -> None:
             "symbol": "NVDA",
             "strategy_name": "pullback_trend",
             "completed_at": "2026-04-10T00:00:00Z",
+            "out_of_sample": True,
             "metrics": {
                 "number_of_trades": 2,
                 "profit_factor": 0.8,
                 "annualized_return_pct": -5.0,
                 "max_drawdown_pct": 60.0,
                 "win_rate": 30.0,
+                "out_of_sample": True,
             },
             "trades": [],
         }
@@ -165,12 +169,14 @@ def test_send_signal_alert_suppressed_when_ledger_timestamp_missing() -> None:
             "symbol": "NVDA",
             "strategy_name": "pullback_trend",
             "completed_at": "2026-04-10T00:00:00Z",
+            "out_of_sample": True,
             "metrics": {
                 "number_of_trades": 25,
                 "profit_factor": 1.8,
                 "annualized_return_pct": 18.0,
                 "max_drawdown_pct": 20.0,
                 "win_rate": 55.0,
+                "out_of_sample": True,
             },
             "trades": [],
         },
@@ -204,3 +210,28 @@ def test_commit_snapshot_suppresses_notification_when_ledger_recording_fails() -
     assert sent is False
     assert len(ledger.calls) == 1
     assert service.notifier.calls == []
+
+
+def test_backtest_validation_rejects_in_sample_only_summary() -> None:
+    service = build_service(
+        {
+            "symbol": "NVDA",
+            "strategy_name": "pullback_trend",
+            "completed_at": "2026-04-10T00:00:00Z",
+            "out_of_sample": False,
+            "metrics": {
+                "number_of_trades": 40,
+                "profit_factor": 1.8,
+                "annualized_return_pct": 18.0,
+                "max_drawdown_pct": 20.0,
+                "win_rate": 55.0,
+                "out_of_sample": False,
+            },
+            "trades": [],
+        }
+    )
+
+    validation = service._backtest_validation(sample_snapshot())
+
+    assert validation["passes"] is False
+    assert "in_sample_only" in validation["reason"]

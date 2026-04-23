@@ -6,6 +6,11 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.backtesting.engine import BacktestEngine
+from app.backtesting.strategy_selection import (
+    active_strategy_names as _active_strategy_names,
+    strategy_kwargs_for as _strategy_kwargs,
+    strategy_specs_for as _strategy_specs,
+)
 from app.broker.etoro_rate_limit import EToroRateLimitError
 from app.intelligence import MarketIntelligenceService, build_trade_plan
 from app.live_signal_schema import LiveSignalSnapshot, SignalState
@@ -20,49 +25,9 @@ from app.universe import resolve_universe
 from app.utils.time import utc_now
 
 
-def _active_strategy_names(settings: Any, *, requested: set[str] | None = None) -> set[str] | None:
-    if requested:
-        return {item.strip().lower() for item in requested if item.strip()}
-    configured = {
-        item.strip().lower()
-        for item in getattr(settings, "screener_active_strategy_names", []) or []
-        if item.strip()
-    }
-    if not configured or "all" in configured:
-        return None
-    return configured
-
-
-def _strategy_specs(settings: Any, *, timeframe: str, requested: set[str] | None = None) -> list[Any]:
-    active = _active_strategy_names(settings, requested=requested)
-    specs = get_strategy_specs(timeframe=timeframe)
-    if active is None:
-        return specs
-    return [spec for spec in specs if spec.name.lower() in active]
-
-
-def _strategy_kwargs(settings: Any, spec: Any) -> dict[str, object]:
-    kwargs = dict(spec.default_kwargs)
-    if spec.name != getattr(settings, "screener_primary_strategy_name", "rsi_vwap_ema_confluence"):
-        return kwargs
-    kwargs.update(
-        {
-            "minimum_confluence_score": float(settings.confluence_minimum_score),
-            "minimum_relative_volume": max(
-                float(kwargs.get("minimum_relative_volume") or 0.0),
-                float(settings.confluence_minimum_relative_volume),
-            ),
-            "minimum_adx": float(settings.confluence_minimum_adx),
-            "rsi_long_min": float(settings.confluence_rsi_long_min),
-            "rsi_long_max": float(settings.confluence_rsi_long_max),
-            "rsi_short_min": float(settings.confluence_rsi_short_min),
-            "rsi_short_max": float(settings.confluence_rsi_short_max),
-            "max_extension_atr": float(settings.confluence_max_extension_atr),
-            "minimum_body_to_range": float(settings.confluence_min_body_to_range),
-            "minimum_close_location": float(settings.confluence_min_close_location),
-        }
-    )
-    return kwargs
+# Strategy-selection helpers now live in ``app.backtesting.strategy_selection``.
+# Imported above under their original private names so the rest of this module
+# keeps working without edits.
 
 
 class MarketScreenerService:
@@ -740,6 +705,8 @@ class MarketScreenerService:
             return {"passes": False, "reason": "no_backtest_summary", "summary": None}
         metrics = summary.get("metrics", {})
         failures: list[str] = []
+        if not bool(summary.get("out_of_sample", metrics.get("out_of_sample", False))):
+            failures.append("in_sample_only")
         if int(metrics.get("number_of_trades", 0) or 0) < self.settings.min_backtest_trades_for_alerts:
             failures.append("too_few_trades")
         if float(metrics.get("profit_factor", 0.0) or 0.0) < self.settings.min_backtest_profit_factor:
@@ -1439,113 +1406,10 @@ class MarketScreenerService:
         )
 
 
-class BatchBacktestService:
-    """Run backtests across a universe and aggregate summary statistics."""
+# BatchBacktestService was extracted to app.backtesting.batch in the April 2026
+# audit so the screener module can shrink toward the brief's 600-line ceiling.
+# Re-exported for backward compatibility with callers that imported it from
+# this module or from ``app.screener``.
+from app.backtesting.batch import BatchBacktestService  # noqa: E402  (back-compat re-export)
 
-    def __init__(
-        self,
-        *,
-        settings: AppSettings,
-        market_data_engine: Any,
-        backtest_repository: Any,
-        run_log_repository: Any,
-    ):
-        self.settings = settings
-        self.market_data = market_data_engine
-        self.backtests = backtest_repository
-        self.logs = run_log_repository
-
-    def run(
-        self,
-        *,
-        symbols: list[str] | None = None,
-        timeframes: list[str] | None = None,
-        strategy_names: list[str] | None = None,
-        provider: str | None = None,
-        initial_cash: float = 10000.0,
-        limit: int | None = None,
-        force_refresh: bool = False,
-    ) -> BatchBacktestSummary:
-        universe = [symbol.upper() for symbol in (symbols or resolve_universe(self.settings, limit=limit))]
-        scan_timeframes = [timeframe.lower() for timeframe in (timeframes or ["1d"])]
-        requested = set(strategy_names or [])
-        errors: list[str] = []
-        results: list[dict[str, Any]] = []
-        run_count = 0
-        engine = BacktestEngine(self.backtests)
-
-        for symbol in universe:
-            for timeframe in scan_timeframes:
-                try:
-                    history = self.market_data.get_history(
-                        symbol,
-                        timeframe=timeframe,
-                        bars=500 if timeframe == "1d" else 350,
-                        provider=provider,
-                        force_refresh=force_refresh,
-                    )
-                except Exception as exc:
-                    errors.append(f"{symbol} {timeframe}: {exc}")
-                    continue
-
-                for spec in _strategy_specs(self.settings, timeframe=timeframe, requested=requested):
-                    run_count += 1
-                    strategy = get_strategy(spec.name, **_strategy_kwargs(self.settings, spec))
-                    try:
-                        result = engine.run(
-                            symbol=symbol,
-                            strategy=strategy,
-                            data=history.copy(),
-                            file_path=f"{provider or self.settings.primary_market_data_provider}:{timeframe}:{symbol}",
-                            initial_cash=initial_cash,
-                        )
-                    except Exception as exc:
-                        errors.append(f"{symbol} {timeframe} {spec.name}: {exc}")
-                        continue
-                    result_payload = {
-                        "symbol": result.symbol,
-                        "strategy_name": result.strategy_name,
-                        "timeframe": timeframe,
-                        "provider": provider or self.settings.primary_market_data_provider,
-                        **result.metrics,
-                    }
-                    results.append(result_payload)
-
-        aggregate = self._aggregate_metrics(results)
-        summary = BatchBacktestSummary(
-            generated_at=utc_now().isoformat(),
-            symbols_evaluated=len(universe),
-            strategy_runs=run_count,
-            timeframe=",".join(scan_timeframes),
-            provider=provider or self.settings.primary_market_data_provider,
-            results=sorted(results, key=lambda item: item.get("annualized_return_pct", 0.0), reverse=True),
-            aggregate_metrics=aggregate,
-            errors=errors,
-        )
-        self.logs.log(
-            "batch_backtest_run",
-            {
-                "symbols": len(universe),
-                "timeframes": scan_timeframes,
-                "strategy_runs": run_count,
-                "results": len(results),
-                "errors": len(errors),
-            },
-        )
-        return summary
-
-    @staticmethod
-    def _aggregate_metrics(results: list[dict[str, Any]]) -> dict[str, float]:
-        if not results:
-            return {}
-        total = len(results)
-        profitable = [item for item in results if float(item.get("total_return_pct", 0.0) or 0.0) > 0]
-        avg = lambda key: round(sum(float(item.get(key, 0.0) or 0.0) for item in results) / total, 4)
-        return {
-            "profitable_run_pct": round((len(profitable) / total) * 100.0, 2),
-            "average_total_return_pct": avg("total_return_pct"),
-            "average_annualized_return_pct": avg("annualized_return_pct"),
-            "average_profit_factor": avg("profit_factor"),
-            "average_win_rate": avg("win_rate"),
-            "average_max_drawdown_pct": avg("max_drawdown_pct"),
-        }
+__all__ = ["MarketScreenerService", "BatchBacktestService"]

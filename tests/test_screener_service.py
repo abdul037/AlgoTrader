@@ -6,6 +6,7 @@ import pandas as pd
 
 from app.live_signal_schema import MarketQuote
 from app.screener.service import MarketScreenerService, _strategy_specs
+from app.screener.scoring import build_backtest_snapshot
 from tests.conftest import make_settings
 
 
@@ -157,12 +158,14 @@ def test_screener_scan_returns_ranked_candidates(tmp_path) -> None:
     backtest_summary = {
         "strategy_name": "momentum_breakout",
         "completed_at": "2026-04-10T12:00:00Z",
+        "out_of_sample": True,
         "metrics": {
             "number_of_trades": 24,
             "profit_factor": 1.8,
             "annualized_return_pct": 16.5,
             "max_drawdown_pct": 18.0,
             "win_rate": 54.0,
+            "out_of_sample": True,
         },
     }
     service = MarketScreenerService(
@@ -221,12 +224,14 @@ def test_screener_candidate_includes_backtest_snapshot_and_reasons(tmp_path) -> 
     backtest_summary = {
         "strategy_name": "momentum_breakout",
         "completed_at": "2026-04-10T12:00:00Z",
+        "out_of_sample": True,
         "metrics": {
             "number_of_trades": 28,
             "profit_factor": 1.9,
             "annualized_return_pct": 18.5,
             "max_drawdown_pct": 16.0,
             "win_rate": 58.0,
+            "out_of_sample": True,
         },
         "trades": [{"pnl_usd": 120.0, "pnl_pct": 1.4}, {"pnl_usd": -45.0, "pnl_pct": -0.5}],
     }
@@ -274,6 +279,32 @@ def test_diagnostic_measurements_preserve_volume_thresholds() -> None:
     assert compacted["volume_check_mode"] == "session_aware_relaxed"
 
 
+def test_build_backtest_snapshot_zeroes_in_sample_evidence() -> None:
+    built = build_backtest_snapshot(
+        {
+            "strategy_name": "momentum_breakout",
+            "completed_at": "2026-04-10T12:00:00Z",
+            "file_path": "auto:1d:NVDA",
+            "out_of_sample": False,
+            "metrics": {
+                "number_of_trades": 50,
+                "profit_factor": 1.8,
+                "annualized_return_pct": 18.5,
+                "win_rate": 58.0,
+                "out_of_sample": False,
+            },
+            "trades": [{"pnl_usd": 120.0, "pnl_pct": 1.4}],
+        },
+        validated=True,
+        validation_reason="passed",
+    )
+
+    assert built["validated"] is False
+    assert built["validation_reason"] == "in_sample_only"
+    assert built["profit_factor"] == 0.0
+    assert built["profile_label"] == "in_sample_only"
+
+
 def test_scheduled_scan_suppresses_flat_repeat_without_score_improvement(tmp_path) -> None:
     daily = _frame([100 + (index * 0.8) for index in range(120)] + [198, 202, 206, 211, 218])
     daily.loc[daily.index[-1], "volume"] = daily["volume"].tail(20).mean() * 2.0
@@ -281,12 +312,14 @@ def test_scheduled_scan_suppresses_flat_repeat_without_score_improvement(tmp_pat
     backtest_summary = {
         "strategy_name": "momentum_breakout",
         "completed_at": "2026-04-10T12:00:00Z",
+        "out_of_sample": True,
         "metrics": {
             "number_of_trades": 28,
             "profit_factor": 1.9,
             "annualized_return_pct": 18.5,
             "max_drawdown_pct": 16.0,
             "win_rate": 58.0,
+            "out_of_sample": True,
         },
         "trades": [{"pnl_usd": 120.0, "pnl_pct": 1.4}, {"pnl_usd": -45.0, "pnl_pct": -0.5}],
     }

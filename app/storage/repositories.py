@@ -478,20 +478,30 @@ class BacktestRepository:
         if timeframe:
             query += " AND file_path LIKE ?"
             params.append(f"%:{timeframe.lower()}:%")
-        query += " ORDER BY completed_at DESC LIMIT 1"
+        query += " ORDER BY completed_at DESC LIMIT 25"
         with self.db.connect() as connection:
-            row = connection.execute(query, tuple(params)).fetchone()
-        if row is None:
+            rows = connection.execute(query, tuple(params)).fetchall()
+        if not rows:
             return None
-        return {
-            "symbol": row["symbol"],
-            "strategy_name": row["strategy_name"],
-            "file_path": row["file_path"],
-            "started_at": row["started_at"],
-            "completed_at": row["completed_at"],
-            "metrics": json.loads(row["metrics_json"]),
-            "trades": json.loads(row["trades_json"]),
-        }
+        parsed: list[dict[str, Any]] = []
+        for row in rows:
+            metrics = json.loads(row["metrics_json"])
+            parsed.append(
+                {
+                    "symbol": row["symbol"],
+                    "strategy_name": row["strategy_name"],
+                    "file_path": row["file_path"],
+                    "started_at": row["started_at"],
+                    "completed_at": row["completed_at"],
+                    "metrics": metrics,
+                    "trades": json.loads(row["trades_json"]),
+                    "out_of_sample": bool(metrics.get("out_of_sample", False)),
+                }
+            )
+        for item in parsed:
+            if item["out_of_sample"]:
+                return item
+        return parsed[0]
 
 
 class ScanDecisionRepository:

@@ -641,6 +641,8 @@ class LiveSignalService:
         max_drawdown = float(metrics.get("max_drawdown_pct", 9999.0) or 9999.0)
 
         failures: list[str] = []
+        if not bool(summary.get("out_of_sample", metrics.get("out_of_sample", False))):
+            failures.append("in_sample_only")
         if trade_count < self.settings.min_backtest_trades_for_alerts:
             failures.append("too_few_trades")
         if profit_factor < self.settings.min_backtest_profit_factor:

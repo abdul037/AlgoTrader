@@ -20,6 +20,8 @@ def build_backtest_snapshot(
             "validated": False,
             "validation_reason": validation_reason,
             "strategy_name": None,
+            "out_of_sample": False,
+            "fold_count": 0,
             "timeframe_specific": False,
             "total_trades": 0,
             "win_rate": 0.0,
@@ -40,6 +42,42 @@ def build_backtest_snapshot(
         }
 
     metrics = dict(summary.get("metrics") or {})
+    out_of_sample = bool(summary.get("out_of_sample", metrics.get("out_of_sample", False)))
+    fold_count = int(summary.get("fold_count", metrics.get("fold_count", 0)) or 0)
+    effective_reason = validation_reason
+    effective_validated = bool(validated)
+    if not out_of_sample:
+        effective_validated = False
+        effective_reason = "in_sample_only"
+
+    if not out_of_sample:
+        return {
+            "validated": False,
+            "validation_reason": effective_reason,
+            "strategy_name": summary.get("strategy_name"),
+            "completed_at": summary.get("completed_at"),
+            "file_path": str(summary.get("file_path") or ""),
+            "out_of_sample": False,
+            "fold_count": fold_count,
+            "timeframe_specific": str(summary.get("file_path") or "").count(":") >= 2,
+            "total_trades": 0,
+            "win_rate": 0.0,
+            "profit_factor": 0.0,
+            "expectancy_pct": 0.0,
+            "average_return_pct": 0.0,
+            "max_drawdown_pct": None,
+            "annualized_return_pct": None,
+            "recent_trade_count": 0,
+            "recent_win_rate": 0.0,
+            "recent_average_return_pct": 0.0,
+            "recent_profit_factor": 0.0,
+            "recent_consistency_score": 0.0,
+            "sample_reliability_score": 0.0,
+            "recent_vs_long_run_score": 0.0,
+            "credibility_score": 0.0,
+            "profile_label": "in_sample_only",
+        }
+
     trades = list(summary.get("trades") or [])
     file_path = str(summary.get("file_path") or "")
     expectancy = compute_expectancy(trades)
@@ -79,11 +117,13 @@ def build_backtest_snapshot(
         profile_label = "fragile"
 
     return {
-        "validated": bool(validated),
-        "validation_reason": validation_reason,
+        "validated": effective_validated,
+        "validation_reason": effective_reason,
         "strategy_name": summary.get("strategy_name"),
         "completed_at": summary.get("completed_at"),
         "file_path": file_path,
+        "out_of_sample": out_of_sample,
+        "fold_count": fold_count,
         "timeframe_specific": file_path.count(":") >= 2,
         "total_trades": int(metrics.get("number_of_trades", 0) or 0),
         "win_rate": float(metrics.get("win_rate", 0.0) or 0.0),

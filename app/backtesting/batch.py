@@ -25,6 +25,7 @@ from app.models.screener import BatchBacktestSummary
 from app.runtime_settings import AppSettings
 from app.strategies import get_strategy
 from app.universe import resolve_universe
+from app.utils.ids import generate_id
 from app.utils.time import utc_now
 
 
@@ -185,6 +186,8 @@ class BatchBacktestService:
 
         aggregated = aggregate_out_of_sample(per_fold_trades, per_fold_metrics)
         metrics = aggregated["metrics"]
+        metrics["out_of_sample"] = True
+        metrics["fold_count"] = int(metrics.get("fold_count", 0) or 0)
         # Fold-weighted return / DD aggregates. Fine-grained equity curves are
         # not persisted here; callers who want them should use the engine
         # directly and store results themselves.
@@ -199,6 +202,18 @@ class BatchBacktestService:
             (float(item.get("max_drawdown_pct", 0.0) or 0.0) for item in per_fold_metrics),
             default=0.0,
         )
+        completed_at = utc_now().isoformat()
+        if self.backtests is not None:
+            self.backtests.create(
+                backtest_id=generate_id("bt"),
+                symbol=symbol.upper(),
+                strategy_name=strategy.name,
+                file_path=f"{file_path}:walk_forward_oos",
+                started_at=completed_at,
+                completed_at=completed_at,
+                metrics=metrics,
+                trades=aggregated["merged_trades"],
+            )
         return {
             "symbol": symbol.upper(),
             "strategy_name": strategy.name,
