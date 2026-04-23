@@ -72,6 +72,7 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
         confluence_long = compute_confluence_score(last, is_short=False)
         confluence_short = compute_confluence_score(last, is_short=True)
         quality = self._quality_metrics(last, atr=atr)
+        thresholds = self._threshold_profile()
 
         long_diagnostics = self._side_diagnostics(
             side="long",
@@ -82,6 +83,8 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
             adx=adx,
             confluence=confluence_long,
             quality=quality,
+            atr=atr,
+            thresholds=thresholds,
         )
         short_diagnostics = self._side_diagnostics(
             side="short",
@@ -92,6 +95,8 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
             adx=adx,
             confluence=confluence_short,
             quality=quality,
+            atr=atr,
+            thresholds=thresholds,
         )
 
         long_conditions = long_diagnostics["passed"]
@@ -101,12 +106,18 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
             risk = max(entry - stop, atr * 0.9, 0.01)
             target = entry + (risk * 2.5)
             quality_score = self._quality_score(confluence_long, rv=rv, adx=adx, quality=quality)
+            breakout_confirmed = bool(long_diagnostics["measurements"].get("breakout_confirmed"))
+            confidence = round(min(0.96, 0.70 + quality_score * 0.24 - (0.03 if not breakout_confirmed else 0.0)), 4)
             return Signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.BUY,
-                rationale="A+ RSI/VWAP/EMA confluence long: trend stack, VWAP support, controlled RSI, breakout, RVOL, ADX, candle quality, and entry extension all aligned.",
-                confidence=round(min(0.96, 0.70 + quality_score * 0.24), 4),
+                rationale=(
+                    "A+ RSI/VWAP/EMA confluence long: trend stack, VWAP support, controlled RSI, "
+                    + ("breakout confirmed" if breakout_confirmed else "near-breakout pressure")
+                    + ", RVOL, ADX, candle quality, and entry extension aligned."
+                ),
+                confidence=confidence,
                 price=entry,
                 stop_loss=stop,
                 take_profit=target,
@@ -116,6 +127,7 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
                     "setup_type": "rsi_vwap_ema_confluence",
                     "primary_strategy": True,
                     "a_plus_setup": True,
+                    "entry_trigger": "breakout_confirmed" if breakout_confirmed else "near_breakout",
                     "indicator_confluence_score": round(confluence_long, 4),
                     "confluence_quality_score": round(quality_score, 4),
                     "trend_quality": round(min(1.0, confluence_long + 0.18), 4),
@@ -136,12 +148,18 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
             risk = max(stop - entry, atr * 0.9, 0.01)
             target = entry - (risk * 2.5)
             quality_score = self._quality_score(confluence_short, rv=rv, adx=adx, quality=quality)
+            breakdown_confirmed = bool(short_diagnostics["measurements"].get("breakout_confirmed"))
+            confidence = round(min(0.96, 0.70 + quality_score * 0.24 - (0.03 if not breakdown_confirmed else 0.0)), 4)
             return Signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.SELL,
-                rationale="A+ RSI/VWAP/EMA confluence short: trend stack, VWAP rejection, controlled RSI, breakdown, RVOL, ADX, candle quality, and entry extension all aligned.",
-                confidence=round(min(0.96, 0.70 + quality_score * 0.24), 4),
+                rationale=(
+                    "A+ RSI/VWAP/EMA confluence short: trend stack, VWAP rejection, controlled RSI, "
+                    + ("breakdown confirmed" if breakdown_confirmed else "near-breakdown pressure")
+                    + ", RVOL, ADX, candle quality, and entry extension aligned."
+                ),
+                confidence=confidence,
                 price=entry,
                 stop_loss=stop,
                 take_profit=target,
@@ -151,6 +169,7 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
                     "setup_type": "rsi_vwap_ema_confluence",
                     "primary_strategy": True,
                     "a_plus_setup": True,
+                    "entry_trigger": "breakdown_confirmed" if breakdown_confirmed else "near_breakdown",
                     "indicator_confluence_score": round(confluence_short, 4),
                     "confluence_quality_score": round(quality_score, 4),
                     "trend_quality": round(min(1.0, confluence_short + 0.18), 4),
@@ -213,8 +232,18 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
         adx: float,
         confluence: float,
         quality: dict[str, float],
+        atr: float,
+        thresholds: dict[str, float],
     ) -> dict[str, Any]:
         is_long = side == "long"
+        breakout_level = float(last.get("range_high_20") or prev["high"]) if is_long else float(last.get("range_low_20") or prev["low"])
+        breakout_ready, breakout_gap_atr, breakout_confirmed = self._breakout_ready(
+            side=side,
+            close=float(last["close"]),
+            trigger=breakout_level,
+            atr=atr,
+            tolerance_atr=thresholds["breakout_tolerance_atr"],
+        )
         checks = [
             (
                 "price_vs_vwap_ok",
@@ -242,14 +271,12 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
             ),
             (
                 "relative_volume_ok",
-                rv >= self.minimum_relative_volume,
+                rv >= thresholds["minimum_relative_volume"],
                 "relative_volume_too_low",
             ),
             (
                 "breakout_level_ok",
-                float(last["close"]) > float(last.get("range_high_20") or prev["high"])
-                if is_long
-                else float(last["close"]) < float(last.get("range_low_20") or prev["low"]),
+                breakout_ready,
                 "breakout_level_not_cleared" if is_long else "breakdown_level_not_cleared",
             ),
             (
@@ -259,7 +286,7 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
             ),
             (
                 "confluence_score_ok",
-                confluence >= self.minimum_confluence_score,
+                confluence >= thresholds["minimum_confluence_score"],
                 "confluence_score_too_low",
             ),
             (
@@ -269,14 +296,14 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
             ),
             (
                 "body_to_range_ok",
-                quality["body_to_range"] >= self.minimum_body_to_range,
+                quality["body_to_range"] >= thresholds["minimum_body_to_range"],
                 "candle_body_too_small",
             ),
             (
                 "close_location_ok",
-                quality["close_location"] >= self.minimum_close_location
+                quality["close_location"] >= thresholds["minimum_close_location"]
                 if is_long
-                else quality["close_location_short"] >= self.minimum_close_location,
+                else quality["close_location_short"] >= thresholds["minimum_close_location"],
                 "close_location_too_low" if is_long else "close_location_short_too_low",
             ),
             (
@@ -296,8 +323,8 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
         pass_ratio = len(passed_checks) / max(total_checks, 1)
         quality_score = (
             (pass_ratio * 0.65)
-            + (min(confluence / max(self.minimum_confluence_score, 0.01), 1.2) / 1.2 * 0.15)
-            + (min(rv / max(self.minimum_relative_volume, 0.01), 1.2) / 1.2 * 0.10)
+            + (min(confluence / max(thresholds["minimum_confluence_score"], 0.01), 1.2) / 1.2 * 0.15)
+            + (min(rv / max(thresholds["minimum_relative_volume"], 0.01), 1.2) / 1.2 * 0.10)
             + (min(adx / max(self.minimum_adx, 0.01), 1.2) / 1.2 * 0.10)
         )
         measurements = {
@@ -306,16 +333,21 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
             "relative_volume": round(rv, 4),
             "adx": round(adx, 4),
             "indicator_confluence_score": round(confluence, 4),
+            "breakout_level": round(breakout_level, 4),
+            "breakout_gap_atr": round(breakout_gap_atr, 4),
+            "breakout_tolerance_atr": thresholds["breakout_tolerance_atr"],
+            "breakout_confirmed": breakout_confirmed,
             "extension_atr": quality["extension_atr"],
             "body_to_range": quality["body_to_range"],
             "close_location": quality["close_location"],
             "close_location_short": quality["close_location_short"],
-            "minimum_relative_volume": self.minimum_relative_volume,
-            "minimum_confluence_score": self.minimum_confluence_score,
+            "minimum_relative_volume": thresholds["minimum_relative_volume"],
+            "minimum_confluence_score": thresholds["minimum_confluence_score"],
             "minimum_adx": self.minimum_adx,
-            "minimum_body_to_range": self.minimum_body_to_range,
-            "minimum_close_location": self.minimum_close_location,
+            "minimum_body_to_range": thresholds["minimum_body_to_range"],
+            "minimum_close_location": thresholds["minimum_close_location"],
             "max_extension_atr": self.max_extension_atr,
+            "timeframe_profile": thresholds["timeframe_profile"],
             "pass_ratio": round(pass_ratio, 4),
             "passed_checks": len(passed_checks),
             "total_checks": total_checks,
@@ -328,6 +360,60 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
             "reason_codes": [*passed_checks, *rejection_reasons],
             "measurements": measurements,
         }
+
+    def _threshold_profile(self) -> dict[str, float]:
+        timeframe = str(self.timeframe or "").lower()
+        profile = {
+            "minimum_relative_volume": self.minimum_relative_volume,
+            "minimum_confluence_score": self.minimum_confluence_score,
+            "minimum_body_to_range": self.minimum_body_to_range,
+            "minimum_close_location": self.minimum_close_location,
+            "breakout_tolerance_atr": 0.0,
+            "timeframe_profile": "strict_intraday",
+        }
+        if timeframe in {"1h", "60m"}:
+            profile.update(
+                {
+                    "minimum_relative_volume": round(max(1.10, self.minimum_relative_volume - 0.15), 4),
+                    "minimum_confluence_score": round(max(0.80, self.minimum_confluence_score - 0.03), 4),
+                    "minimum_body_to_range": round(max(0.28, self.minimum_body_to_range - 0.04), 4),
+                    "minimum_close_location": round(max(0.58, self.minimum_close_location - 0.04), 4),
+                    "breakout_tolerance_atr": 0.20,
+                    "timeframe_profile": "swing_hourly",
+                }
+            )
+        elif timeframe in {"1d", "1day", "day"}:
+            profile.update(
+                {
+                    "minimum_relative_volume": round(max(1.05, self.minimum_relative_volume - 0.20), 4),
+                    "minimum_confluence_score": round(max(0.78, self.minimum_confluence_score - 0.04), 4),
+                    "minimum_body_to_range": round(max(0.24, self.minimum_body_to_range - 0.06), 4),
+                    "minimum_close_location": round(max(0.56, self.minimum_close_location - 0.05), 4),
+                    "breakout_tolerance_atr": 0.35,
+                    "timeframe_profile": "position_daily",
+                }
+            )
+        return profile
+
+    @staticmethod
+    def _breakout_ready(
+        *,
+        side: str,
+        close: float,
+        trigger: float,
+        atr: float,
+        tolerance_atr: float,
+    ) -> tuple[bool, float, bool]:
+        normalized_atr = max(float(atr), 0.01)
+        if side == "long":
+            if close > trigger:
+                return True, 0.0, True
+            gap_atr = max(trigger - close, 0.0) / normalized_atr
+            return gap_atr <= tolerance_atr, gap_atr, False
+        if close < trigger:
+            return True, 0.0, True
+        gap_atr = max(close - trigger, 0.0) / normalized_atr
+        return gap_atr <= tolerance_atr, gap_atr, False
 
     def _select_near_miss(
         self,

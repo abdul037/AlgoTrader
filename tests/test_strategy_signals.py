@@ -52,3 +52,44 @@ def test_rsi_vwap_ema_confluence_captures_near_miss_diagnostics() -> None:
     assert strategy.last_diagnostics["score"] is not None
     assert "relative_volume_too_low" in strategy.last_diagnostics["rejection_reasons"]
     assert "adx_too_low" in strategy.last_diagnostics["rejection_reasons"]
+
+
+def test_rsi_vwap_ema_confluence_timeframe_profile_relaxes_hourly_and_daily() -> None:
+    strict = RSIVWAPEMAConfluenceStrategy(timeframe="15m")._threshold_profile()
+    hourly = RSIVWAPEMAConfluenceStrategy(timeframe="1h")._threshold_profile()
+    daily = RSIVWAPEMAConfluenceStrategy(timeframe="1d")._threshold_profile()
+
+    assert strict["timeframe_profile"] == "strict_intraday"
+    assert hourly["minimum_relative_volume"] < strict["minimum_relative_volume"]
+    assert daily["minimum_relative_volume"] < strict["minimum_relative_volume"]
+    assert hourly["minimum_confluence_score"] < strict["minimum_confluence_score"]
+    assert daily["minimum_confluence_score"] < strict["minimum_confluence_score"]
+    assert strict["breakout_tolerance_atr"] == 0.0
+    assert hourly["breakout_tolerance_atr"] > 0.0
+    assert daily["breakout_tolerance_atr"] > hourly["breakout_tolerance_atr"]
+
+
+def test_rsi_vwap_ema_confluence_breakout_ready_allows_daily_near_breakout_only() -> None:
+    strict = RSIVWAPEMAConfluenceStrategy(timeframe="15m")._threshold_profile()
+    daily = RSIVWAPEMAConfluenceStrategy(timeframe="1d")._threshold_profile()
+
+    strict_ready, strict_gap, strict_confirmed = RSIVWAPEMAConfluenceStrategy._breakout_ready(
+        side="long",
+        close=100.0,
+        trigger=100.2,
+        atr=1.0,
+        tolerance_atr=strict["breakout_tolerance_atr"],
+    )
+    daily_ready, daily_gap, daily_confirmed = RSIVWAPEMAConfluenceStrategy._breakout_ready(
+        side="long",
+        close=100.0,
+        trigger=100.2,
+        atr=1.0,
+        tolerance_atr=daily["breakout_tolerance_atr"],
+    )
+
+    assert round(strict_gap, 4) == round(daily_gap, 4) == 0.2
+    assert strict_confirmed is False
+    assert daily_confirmed is False
+    assert strict_ready is False
+    assert daily_ready is True
