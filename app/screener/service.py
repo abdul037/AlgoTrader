@@ -885,6 +885,7 @@ class MarketScreenerService:
             "breakout_gap_atr",
             "breakout_tolerance_atr",
             "breakout_confirmed",
+            "minimum_relative_volume",
             "minimum_relative_volume_relaxed",
             "session_volume_ratio",
             "session_volume_floor",

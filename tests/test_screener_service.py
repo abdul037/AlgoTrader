@@ -258,6 +258,22 @@ def test_screener_candidate_includes_backtest_snapshot_and_reasons(tmp_path) -> 
     assert decisions.items[-1].status == "candidate"
 
 
+def test_diagnostic_measurements_preserve_volume_thresholds() -> None:
+    compacted = MarketScreenerService._diagnostic_measurements(
+        {
+            "relative_volume": 0.87,
+            "minimum_relative_volume": 1.08,
+            "minimum_relative_volume_relaxed": 1.03,
+            "volume_check_mode": "session_aware_relaxed",
+        }
+    )
+
+    assert compacted["relative_volume"] == 0.87
+    assert compacted["minimum_relative_volume"] == 1.08
+    assert compacted["minimum_relative_volume_relaxed"] == 1.03
+    assert compacted["volume_check_mode"] == "session_aware_relaxed"
+
+
 def test_scheduled_scan_suppresses_flat_repeat_without_score_improvement(tmp_path) -> None:
     daily = _frame([100 + (index * 0.8) for index in range(120)] + [198, 202, 206, 211, 218])
     daily.loc[daily.index[-1], "volume"] = daily["volume"].tail(20).mean() * 2.0
