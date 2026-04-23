@@ -5,6 +5,7 @@ import pandas as pd
 from app.models.signal import SignalAction
 from app.strategies.gold_momentum import GoldMomentumStrategy
 from app.strategies.ma_crossover import MACrossoverStrategy
+from app.strategies.rsi_vwap_ema_confluence import RSIVWAPEMAConfluenceStrategy
 
 
 def make_frame(prices: list[float]) -> pd.DataFrame:
@@ -37,3 +38,17 @@ def test_gold_momentum_emits_buy_signal() -> None:
     assert signal is not None
     assert signal.action == SignalAction.BUY
     assert signal.price == prices[-1]
+
+
+def test_rsi_vwap_ema_confluence_captures_near_miss_diagnostics() -> None:
+    strategy = RSIVWAPEMAConfluenceStrategy(timeframe="1d")
+    prices = [100.0 for _ in range(90)]
+
+    signal = strategy.generate_signal(make_frame(prices), "NVDA")
+
+    assert signal is None
+    assert strategy.last_diagnostics is not None
+    assert strategy.last_diagnostics["status"] == "no_signal"
+    assert strategy.last_diagnostics["score"] is not None
+    assert "relative_volume_too_low" in strategy.last_diagnostics["rejection_reasons"]
+    assert "adx_too_low" in strategy.last_diagnostics["rejection_reasons"]

@@ -329,3 +329,32 @@ def test_screener_strict_market_data_gate_blocks_unverified_candidates(tmp_path)
     assert response.rejection_summary["missing_history_provider"] >= 1
     assert response.closest_rejections
     assert response.closest_rejections[0]["symbol"] == "NVDA"
+
+
+def test_screener_uses_strategy_near_miss_diagnostics_when_no_signal_fires(tmp_path) -> None:
+    flat = _frame([100.0 for _ in range(90)])
+    quote = MarketQuote(symbol="NVDA", bid=100.0, ask=100.1, last_execution=100.05, timestamp="2026-04-11T10:00:00Z")
+    service = MarketScreenerService(
+        settings=make_settings(
+            tmp_path,
+            market_universe_symbols=["NVDA"],
+            screener_default_timeframes=["1d"],
+            screener_active_strategy_names=["rsi_vwap_ema_confluence"],
+        ),
+        market_data_engine=FakeMarketDataEngine({("NVDA", "1d"): flat}, {"NVDA": quote}),
+        signal_state_repository=FakeSignalStateRepository(),
+        run_log_repository=FakeRunLogRepository(),
+        backtest_repository=FakeBacktestRepository(summary=None),
+        scan_decision_repository=FakeScanDecisionRepository(),
+        telegram_notifier=FakeTelegramNotifier(),
+    )
+
+    response = service.scan_universe(limit=3)
+
+    assert response.candidates == []
+    assert response.rejection_summary.get("no_strategy_signal", 0) == 0
+    assert response.rejection_summary["relative_volume_too_low"] >= 1
+    assert response.rejection_summary["adx_too_low"] >= 1
+    assert response.closest_rejections
+    assert response.closest_rejections[0]["status"] == "no_signal"
+    assert response.closest_rejections[0]["strategy_name"] == "rsi_vwap_ema_confluence"

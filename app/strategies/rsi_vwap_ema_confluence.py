@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pandas as pd
 
 from app.indicators import compute_confluence_score, enrich_technical_indicators, indicator_summary
@@ -41,9 +43,23 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
         self.max_extension_atr = max_extension_atr
         self.minimum_body_to_range = minimum_body_to_range
         self.minimum_close_location = minimum_close_location
+        self.last_diagnostics: dict[str, Any] | None = None
 
     def generate_signal(self, data: pd.DataFrame, symbol: str) -> Signal | None:
+        self.last_diagnostics = None
         if len(data) < self.required_bars:
+            self.last_diagnostics = {
+                "status": "insufficient_bars",
+                "symbol": symbol.upper(),
+                "strategy_name": self.name,
+                "timeframe": self.timeframe,
+                "score": None,
+                "rejection_reasons": ["insufficient_bars"],
+                "measurements": {
+                    "bars_available": len(data),
+                    "bars_required": self.required_bars,
+                },
+            }
             return None
 
         frame = enrich_technical_indicators(data, timeframe=self.timeframe)
@@ -57,21 +73,28 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
         confluence_short = compute_confluence_score(last, is_short=True)
         quality = self._quality_metrics(last, atr=atr)
 
-        long_conditions = (
-            float(last["close"]) > float(last["vwap"])
-            and float(last["ema_9"]) > float(last["ema_20"]) > float(last["ema_50"])
-            and self.rsi_long_min <= rsi <= self.rsi_long_max
-            and float(last.get("macd_hist") or 0.0) > 0.0
-            and rv >= self.minimum_relative_volume
-            and float(last["close"]) > float(last.get("range_high_20") or prev["high"])
-            and adx >= self.minimum_adx
-            and confluence_long >= self.minimum_confluence_score
-            and quality["extension_atr"] <= self.max_extension_atr
-            and quality["body_to_range"] >= self.minimum_body_to_range
-            and quality["close_location"] >= self.minimum_close_location
-            and float(last.get("ema_9_slope") or 0.0) > 0.0
-            and float(last.get("ema_20_slope") or 0.0) > 0.0
+        long_diagnostics = self._side_diagnostics(
+            side="long",
+            last=last,
+            prev=prev,
+            rsi=rsi,
+            rv=rv,
+            adx=adx,
+            confluence=confluence_long,
+            quality=quality,
         )
+        short_diagnostics = self._side_diagnostics(
+            side="short",
+            last=last,
+            prev=prev,
+            rsi=rsi,
+            rv=rv,
+            adx=adx,
+            confluence=confluence_short,
+            quality=quality,
+        )
+
+        long_conditions = long_diagnostics["passed"]
         if long_conditions:
             entry = float(last["close"])
             stop = float(min(last.get("vwap") or last["low"], last.get("ema_20") or last["low"], entry - atr))
@@ -99,27 +122,14 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
                     "momentum_quality": round(min(1.0, (rsi - 50.0) / 18.0), 4),
                     "liquidity_quality": round(min(1.0, rv / 2.0), 4),
                     "execution_quality": 0.9,
+                    "strategy_diagnostics": long_diagnostics["measurements"],
                     **quality,
                     "risk_reward_ratio": round((target - entry) / risk, 2),
                     **indicator_summary(last),
                 },
             )
 
-        short_conditions = (
-            float(last["close"]) < float(last["vwap"])
-            and float(last["ema_9"]) < float(last["ema_20"]) < float(last["ema_50"])
-            and self.rsi_short_min <= rsi <= self.rsi_short_max
-            and float(last.get("macd_hist") or 0.0) < 0.0
-            and rv >= self.minimum_relative_volume
-            and float(last["close"]) < float(last.get("range_low_20") or prev["low"])
-            and adx >= self.minimum_adx
-            and confluence_short >= self.minimum_confluence_score
-            and quality["extension_atr"] <= self.max_extension_atr
-            and quality["body_to_range"] >= self.minimum_body_to_range
-            and quality["close_location_short"] >= self.minimum_close_location
-            and float(last.get("ema_9_slope") or 0.0) < 0.0
-            and float(last.get("ema_20_slope") or 0.0) < 0.0
-        )
+        short_conditions = short_diagnostics["passed"]
         if short_conditions:
             entry = float(last["close"])
             stop = float(max(last.get("vwap") or last["high"], last.get("ema_20") or last["high"], entry + atr))
@@ -147,12 +157,14 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
                     "momentum_quality": round(min(1.0, (50.0 - rsi) / 18.0), 4),
                     "liquidity_quality": round(min(1.0, rv / 2.0), 4),
                     "execution_quality": 0.9,
+                    "strategy_diagnostics": short_diagnostics["measurements"],
                     **quality,
                     "risk_reward_ratio": round((entry - target) / risk, 2),
                     **indicator_summary(last),
                 },
             )
 
+        self.last_diagnostics = self._select_near_miss(symbol, long_diagnostics, short_diagnostics)
         return None
 
     @staticmethod
@@ -189,3 +201,154 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
             ),
             4,
         )
+
+    def _side_diagnostics(
+        self,
+        *,
+        side: str,
+        last: pd.Series,
+        prev: pd.Series,
+        rsi: float,
+        rv: float,
+        adx: float,
+        confluence: float,
+        quality: dict[str, float],
+    ) -> dict[str, Any]:
+        is_long = side == "long"
+        checks = [
+            (
+                "price_vs_vwap_ok",
+                float(last["close"]) > float(last["vwap"]) if is_long else float(last["close"]) < float(last["vwap"]),
+                "close_below_vwap" if is_long else "close_above_vwap",
+            ),
+            (
+                "ema_stack_ok",
+                float(last["ema_9"]) > float(last["ema_20"]) > float(last["ema_50"])
+                if is_long
+                else float(last["ema_9"]) < float(last["ema_20"]) < float(last["ema_50"]),
+                "ema_stack_not_bullish" if is_long else "ema_stack_not_bearish",
+            ),
+            (
+                "rsi_band_ok",
+                self.rsi_long_min <= rsi <= self.rsi_long_max
+                if is_long
+                else self.rsi_short_min <= rsi <= self.rsi_short_max,
+                "rsi_not_in_long_band" if is_long else "rsi_not_in_short_band",
+            ),
+            (
+                "macd_hist_ok",
+                float(last.get("macd_hist") or 0.0) > 0.0 if is_long else float(last.get("macd_hist") or 0.0) < 0.0,
+                "macd_hist_not_positive" if is_long else "macd_hist_not_negative",
+            ),
+            (
+                "relative_volume_ok",
+                rv >= self.minimum_relative_volume,
+                "relative_volume_too_low",
+            ),
+            (
+                "breakout_level_ok",
+                float(last["close"]) > float(last.get("range_high_20") or prev["high"])
+                if is_long
+                else float(last["close"]) < float(last.get("range_low_20") or prev["low"]),
+                "breakout_level_not_cleared" if is_long else "breakdown_level_not_cleared",
+            ),
+            (
+                "adx_ok",
+                adx >= self.minimum_adx,
+                "adx_too_low",
+            ),
+            (
+                "confluence_score_ok",
+                confluence >= self.minimum_confluence_score,
+                "confluence_score_too_low",
+            ),
+            (
+                "extension_ok",
+                quality["extension_atr"] <= self.max_extension_atr,
+                "entry_too_extended",
+            ),
+            (
+                "body_to_range_ok",
+                quality["body_to_range"] >= self.minimum_body_to_range,
+                "candle_body_too_small",
+            ),
+            (
+                "close_location_ok",
+                quality["close_location"] >= self.minimum_close_location
+                if is_long
+                else quality["close_location_short"] >= self.minimum_close_location,
+                "close_location_too_low" if is_long else "close_location_short_too_low",
+            ),
+            (
+                "ema_9_slope_ok",
+                float(last.get("ema_9_slope") or 0.0) > 0.0 if is_long else float(last.get("ema_9_slope") or 0.0) < 0.0,
+                "ema_9_slope_not_positive" if is_long else "ema_9_slope_not_negative",
+            ),
+            (
+                "ema_20_slope_ok",
+                float(last.get("ema_20_slope") or 0.0) > 0.0 if is_long else float(last.get("ema_20_slope") or 0.0) < 0.0,
+                "ema_20_slope_not_positive" if is_long else "ema_20_slope_not_negative",
+            ),
+        ]
+        passed_checks = [name for name, passed, _ in checks if passed]
+        rejection_reasons = [fail_code for _, passed, fail_code in checks if not passed]
+        total_checks = len(checks)
+        pass_ratio = len(passed_checks) / max(total_checks, 1)
+        quality_score = (
+            (pass_ratio * 0.65)
+            + (min(confluence / max(self.minimum_confluence_score, 0.01), 1.2) / 1.2 * 0.15)
+            + (min(rv / max(self.minimum_relative_volume, 0.01), 1.2) / 1.2 * 0.10)
+            + (min(adx / max(self.minimum_adx, 0.01), 1.2) / 1.2 * 0.10)
+        )
+        measurements = {
+            "side": side,
+            "rsi": round(rsi, 4),
+            "relative_volume": round(rv, 4),
+            "adx": round(adx, 4),
+            "indicator_confluence_score": round(confluence, 4),
+            "extension_atr": quality["extension_atr"],
+            "body_to_range": quality["body_to_range"],
+            "close_location": quality["close_location"],
+            "close_location_short": quality["close_location_short"],
+            "minimum_relative_volume": self.minimum_relative_volume,
+            "minimum_confluence_score": self.minimum_confluence_score,
+            "minimum_adx": self.minimum_adx,
+            "minimum_body_to_range": self.minimum_body_to_range,
+            "minimum_close_location": self.minimum_close_location,
+            "max_extension_atr": self.max_extension_atr,
+            "pass_ratio": round(pass_ratio, 4),
+            "passed_checks": len(passed_checks),
+            "total_checks": total_checks,
+        }
+        return {
+            "side": side,
+            "passed": not rejection_reasons,
+            "score": round(min(99.0, quality_score * 100.0), 2),
+            "rejection_reasons": rejection_reasons,
+            "reason_codes": [*passed_checks, *rejection_reasons],
+            "measurements": measurements,
+        }
+
+    def _select_near_miss(
+        self,
+        symbol: str,
+        long_diagnostics: dict[str, Any],
+        short_diagnostics: dict[str, Any],
+    ) -> dict[str, Any]:
+        best = long_diagnostics if float(long_diagnostics["score"]) >= float(short_diagnostics["score"]) else short_diagnostics
+        alternate = short_diagnostics if best is long_diagnostics else long_diagnostics
+        return {
+            "status": "no_signal",
+            "symbol": symbol.upper(),
+            "strategy_name": self.name,
+            "timeframe": self.timeframe,
+            "score": best["score"],
+            "rejection_reasons": list(best["rejection_reasons"]),
+            "reason_codes": list(best["reason_codes"])[:12],
+            "measurements": {
+                **best["measurements"],
+                "near_miss_side": best["side"],
+                "alternate_side": alternate["side"],
+                "alternate_side_score": alternate["score"],
+            },
+        }

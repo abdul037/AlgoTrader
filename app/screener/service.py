@@ -202,7 +202,21 @@ class MarketScreenerService:
                         )
                         continue
                     if signal is None:
-                        self._increment_rejection(rejection_summary, "no_strategy_signal")
+                        strategy_diagnostics = getattr(strategy, "last_diagnostics", None)
+                        if isinstance(strategy_diagnostics, dict):
+                            self._add_scan_diagnostic(
+                                rejection_summary,
+                                closest_rejections,
+                                symbol=signal.symbol if signal is not None else symbol,
+                                timeframe=timeframe,
+                                strategy_name=spec.name,
+                                status=str(strategy_diagnostics.get("status") or "no_signal"),
+                                rejection_reasons=list(strategy_diagnostics.get("rejection_reasons") or ["no_strategy_signal"]),
+                                final_score=strategy_diagnostics.get("score"),
+                                measurements=dict(strategy_diagnostics.get("measurements") or {}),
+                            )
+                        else:
+                            self._increment_rejection(rejection_summary, "no_strategy_signal")
                         continue
                     signal.metadata.setdefault("timeframe", timeframe)
                     signal.metadata.setdefault("strategy_style", spec.style)
@@ -839,11 +853,24 @@ class MarketScreenerService:
     @staticmethod
     def _diagnostic_measurements(measurements: dict[str, Any]) -> dict[str, Any]:
         keys = [
+            "side",
+            "near_miss_side",
+            "alternate_side",
+            "alternate_side_score",
             "accuracy_score",
             "confirmation_score",
             "false_positive_risk_score",
             "indicator_confluence_score",
             "relative_volume",
+            "rsi",
+            "adx",
+            "extension_atr",
+            "body_to_range",
+            "close_location",
+            "close_location_short",
+            "pass_ratio",
+            "passed_checks",
+            "total_checks",
             "risk_reward_ratio",
             "market_regime_score",
             "timeframe_alignment_score",
