@@ -481,28 +481,52 @@ class TelegramNotifier:
         relaxed_rvol = measurements.get("minimum_relative_volume_relaxed")
         strict_rvol = measurements.get("minimum_relative_volume")
         volume_mode = measurements.get("volume_check_mode")
-        volume_bits: list[str] = []
-        if rvol not in (None, ""):
-            volume_bits.append(f"RVOL {TelegramNotifier._fmt_scan_num(rvol)}")
+        volume_need = TelegramNotifier._format_volume_need(
+            current_rvol=rvol,
+            relaxed_rvol=relaxed_rvol,
+            strict_rvol=strict_rvol,
+            volume_mode=volume_mode,
+        )
+        trigger_text = TelegramNotifier._trigger_instruction(trigger, entry)
+        line1 = f"  Status: do not enter yet | current {TelegramNotifier._fmt_scan_num(current)}"
+        line2 = f"  Trigger: {trigger_text} | gap {TelegramNotifier._fmt_scan_num(gap_atr)} ATR"
+        line3 = f"  Volume: {volume_need}"
+        line4 = (
+            f"  If triggered: stop {TelegramNotifier._fmt_scan_num(stop)} | "
+            f"target {TelegramNotifier._fmt_scan_num(target)} | "
+            f"RR {TelegramNotifier._fmt_scan_num(rr)}R | "
+            f"target move {TelegramNotifier._fmt_scan_num(move_pct)}%"
+        )
+        return [line1, line2, line3, line4]
+
+    @staticmethod
+    def _trigger_instruction(trigger: Any, entry: Any) -> str:
+        entry_text = TelegramNotifier._fmt_scan_num(entry)
+        trigger_value = str(trigger or "")
+        if trigger_value in {"breakout_above", "breakout_confirmed"}:
+            return f"enter only above {entry_text}"
+        if trigger_value in {"breakdown_below", "breakdown_confirmed"}:
+            return f"enter only below {entry_text}"
+        return f"watch {entry_text}"
+
+    @staticmethod
+    def _format_volume_need(
+        *,
+        current_rvol: Any,
+        relaxed_rvol: Any,
+        strict_rvol: Any,
+        volume_mode: Any,
+    ) -> str:
+        current_text = TelegramNotifier._fmt_scan_num(current_rvol)
+        relaxed_text = TelegramNotifier._fmt_scan_num(relaxed_rvol)
+        strict_text = TelegramNotifier._fmt_scan_num(strict_rvol)
+        mode_text = str(volume_mode or "strict_relative_volume").replace("_", " ")
         if relaxed_rvol not in (None, "") and strict_rvol not in (None, "") and relaxed_rvol != strict_rvol:
-            volume_bits.append(
-                f"need {TelegramNotifier._fmt_scan_num(relaxed_rvol)} relaxed / {TelegramNotifier._fmt_scan_num(strict_rvol)} strict"
+            return (
+                f"current RVOL {current_text} | need >= {relaxed_text} relaxed "
+                f"or {strict_text} strict | mode {mode_text}"
             )
-        elif strict_rvol not in (None, ""):
-            volume_bits.append(f"need {TelegramNotifier._fmt_scan_num(strict_rvol)}")
-        if volume_mode:
-            volume_bits.append(str(volume_mode).replace("_", " "))
-        line1 = (
-            f"  Watch: {trigger_label} | now {TelegramNotifier._fmt_scan_num(current)} | "
-            f"entry {TelegramNotifier._fmt_scan_num(entry)} | stop {TelegramNotifier._fmt_scan_num(stop)} | "
-            f"target {TelegramNotifier._fmt_scan_num(target)}"
-        )
-        line2 = (
-            f"  Plan: RR {TelegramNotifier._fmt_scan_num(rr)}R | target move {TelegramNotifier._fmt_scan_num(move_pct)}% | "
-            f"gap {TelegramNotifier._fmt_scan_num(gap_atr)} ATR | "
-            + " | ".join(volume_bits)
-        )
-        return [line1, line2]
+        return f"current RVOL {current_text} | need >= {strict_text} | mode {mode_text}"
 
     @staticmethod
     def _fmt_scan_num(value: Any) -> str:

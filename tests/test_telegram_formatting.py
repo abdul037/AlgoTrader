@@ -105,5 +105,7 @@ def test_screener_summary_includes_rejection_diagnostics() -> None:
     assert "Diagnostics:" in message
     assert "Top blockers: final score below keep threshold (2), confirmation too weak (1)" in message
     assert "- NVDA 1h rsi_vwap_ema_confluence | score 53.4" in message
-    assert "Watch: breakout above | now 210.40 | entry 211.00 | stop 207.20 | target 220.50" in message
-    assert "Plan: RR 2.50R | target move 4.50% | gap 0.18 ATR" in message
+    assert "Status: do not enter yet | current 210.40" in message
+    assert "Trigger: enter only above 211.00 | gap 0.18 ATR" in message
+    assert "Volume: current RVOL 0.98 | need >= 1.03 relaxed or 1.08 strict | mode session aware relaxed" in message
+    assert "If triggered: stop 207.20 | target 220.50 | RR 2.50R | target move 4.50%" in message
