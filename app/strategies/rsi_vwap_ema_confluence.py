@@ -72,6 +72,7 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
         confluence_long = compute_confluence_score(last, is_short=False)
         confluence_short = compute_confluence_score(last, is_short=True)
         quality = self._quality_metrics(last, atr=atr)
+        volume_context = self._volume_context(frame)
         thresholds = self._threshold_profile()
 
         long_diagnostics = self._side_diagnostics(
@@ -83,6 +84,7 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
             adx=adx,
             confluence=confluence_long,
             quality=quality,
+            volume_context=volume_context,
             atr=atr,
             thresholds=thresholds,
         )
@@ -95,6 +97,7 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
             adx=adx,
             confluence=confluence_short,
             quality=quality,
+            volume_context=volume_context,
             atr=atr,
             thresholds=thresholds,
         )
@@ -207,6 +210,27 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
         }
 
     @staticmethod
+    def _volume_context(frame: pd.DataFrame) -> dict[str, float]:
+        recent_volume = frame["volume"].tail(20).astype("float64")
+        if recent_volume.empty:
+            return {
+                "last_volume": 0.0,
+                "average_volume_20": 0.0,
+                "median_volume_20": 0.0,
+                "session_volume_ratio": 0.0,
+            }
+        last_volume = float(recent_volume.iloc[-1] or 0.0)
+        average_volume = float(recent_volume.mean() or 0.0)
+        median_volume = float(recent_volume.median() or 0.0)
+        session_ratio = last_volume / max(median_volume, 0.01)
+        return {
+            "last_volume": round(last_volume, 2),
+            "average_volume_20": round(average_volume, 2),
+            "median_volume_20": round(median_volume, 2),
+            "session_volume_ratio": round(session_ratio, 4),
+        }
+
+    @staticmethod
     def _quality_score(confluence: float, *, rv: float, adx: float, quality: dict[str, float]) -> float:
         extension_score = max(0.0, min(1.0, 1.0 - (quality["extension_atr"] / 2.2)))
         return round(
@@ -232,6 +256,7 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
         adx: float,
         confluence: float,
         quality: dict[str, float],
+        volume_context: dict[str, float],
         atr: float,
         thresholds: dict[str, float],
     ) -> dict[str, Any]:
@@ -243,6 +268,12 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
             trigger=breakout_level,
             atr=atr,
             tolerance_atr=thresholds["breakout_tolerance_atr"],
+        )
+        volume_ready, volume_mode = self._volume_ready(
+            rv=rv,
+            breakout_gap_atr=breakout_gap_atr,
+            volume_context=volume_context,
+            thresholds=thresholds,
         )
         checks = [
             (
@@ -271,7 +302,7 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
             ),
             (
                 "relative_volume_ok",
-                rv >= thresholds["minimum_relative_volume"],
+                volume_ready,
                 "relative_volume_too_low",
             ),
             (
@@ -321,16 +352,26 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
         rejection_reasons = [fail_code for _, passed, fail_code in checks if not passed]
         total_checks = len(checks)
         pass_ratio = len(passed_checks) / max(total_checks, 1)
+        effective_volume_strength = rv / max(thresholds["minimum_relative_volume"], 0.01)
+        if thresholds["timeframe_profile"] != "strict_intraday":
+            relaxed_strength = min(
+                float(volume_context.get("session_volume_ratio") or 0.0)
+                / max(thresholds["session_volume_floor"], 0.01),
+                1.15,
+            ) * 0.95
+            if breakout_gap_atr <= thresholds["volume_relaxation_gap_atr"]:
+                effective_volume_strength = max(effective_volume_strength, relaxed_strength)
         quality_score = (
             (pass_ratio * 0.65)
             + (min(confluence / max(thresholds["minimum_confluence_score"], 0.01), 1.2) / 1.2 * 0.15)
-            + (min(rv / max(thresholds["minimum_relative_volume"], 0.01), 1.2) / 1.2 * 0.10)
+            + (min(effective_volume_strength, 1.2) / 1.2 * 0.10)
             + (min(adx / max(self.minimum_adx, 0.01), 1.2) / 1.2 * 0.10)
         )
         measurements = {
             "side": side,
             "rsi": round(rsi, 4),
             "relative_volume": round(rv, 4),
+            **volume_context,
             "adx": round(adx, 4),
             "indicator_confluence_score": round(confluence, 4),
             "breakout_level": round(breakout_level, 4),
@@ -342,6 +383,10 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
             "close_location": quality["close_location"],
             "close_location_short": quality["close_location_short"],
             "minimum_relative_volume": thresholds["minimum_relative_volume"],
+            "minimum_relative_volume_relaxed": thresholds["minimum_relative_volume_relaxed"],
+            "session_volume_floor": thresholds["session_volume_floor"],
+            "volume_relaxation_gap_atr": thresholds["volume_relaxation_gap_atr"],
+            "volume_check_mode": volume_mode,
             "minimum_confluence_score": thresholds["minimum_confluence_score"],
             "minimum_adx": self.minimum_adx,
             "minimum_body_to_range": thresholds["minimum_body_to_range"],
@@ -365,19 +410,25 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
         timeframe = str(self.timeframe or "").lower()
         profile = {
             "minimum_relative_volume": self.minimum_relative_volume,
+            "minimum_relative_volume_relaxed": self.minimum_relative_volume,
             "minimum_confluence_score": self.minimum_confluence_score,
             "minimum_body_to_range": self.minimum_body_to_range,
             "minimum_close_location": self.minimum_close_location,
+            "session_volume_floor": self.minimum_relative_volume,
+            "volume_relaxation_gap_atr": 0.0,
             "breakout_tolerance_atr": 0.0,
             "timeframe_profile": "strict_intraday",
         }
         if timeframe in {"1h", "60m"}:
             profile.update(
                 {
-                    "minimum_relative_volume": round(max(1.10, self.minimum_relative_volume - 0.15), 4),
+                    "minimum_relative_volume": round(max(1.08, self.minimum_relative_volume - 0.17), 4),
+                    "minimum_relative_volume_relaxed": 1.03,
                     "minimum_confluence_score": round(max(0.80, self.minimum_confluence_score - 0.03), 4),
                     "minimum_body_to_range": round(max(0.28, self.minimum_body_to_range - 0.04), 4),
                     "minimum_close_location": round(max(0.58, self.minimum_close_location - 0.04), 4),
+                    "session_volume_floor": 0.98,
+                    "volume_relaxation_gap_atr": 0.12,
                     "breakout_tolerance_atr": 0.20,
                     "timeframe_profile": "swing_hourly",
                 }
@@ -385,15 +436,41 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
         elif timeframe in {"1d", "1day", "day"}:
             profile.update(
                 {
-                    "minimum_relative_volume": round(max(1.05, self.minimum_relative_volume - 0.20), 4),
+                    "minimum_relative_volume": 1.05,
+                    "minimum_relative_volume_relaxed": 1.00,
                     "minimum_confluence_score": round(max(0.78, self.minimum_confluence_score - 0.04), 4),
                     "minimum_body_to_range": round(max(0.24, self.minimum_body_to_range - 0.06), 4),
                     "minimum_close_location": round(max(0.56, self.minimum_close_location - 0.05), 4),
+                    "session_volume_floor": 0.95,
+                    "volume_relaxation_gap_atr": 0.18,
                     "breakout_tolerance_atr": 0.35,
                     "timeframe_profile": "position_daily",
                 }
             )
         return profile
+
+    @staticmethod
+    def _volume_ready(
+        *,
+        rv: float,
+        breakout_gap_atr: float,
+        volume_context: dict[str, float],
+        thresholds: dict[str, float],
+    ) -> tuple[bool, str]:
+        strict_ready = rv >= thresholds["minimum_relative_volume"]
+        if strict_ready:
+            return True, "strict_relative_volume"
+        if thresholds["timeframe_profile"] == "strict_intraday":
+            return False, "strict_relative_volume"
+        session_ratio = float(volume_context.get("session_volume_ratio") or 0.0)
+        session_aware_ready = (
+            rv >= thresholds["minimum_relative_volume_relaxed"]
+            and session_ratio >= thresholds["session_volume_floor"]
+            and breakout_gap_atr <= thresholds["volume_relaxation_gap_atr"]
+        )
+        if session_aware_ready:
+            return True, "session_aware_relaxed"
+        return False, "strict_relative_volume"
 
     @staticmethod
     def _breakout_ready(

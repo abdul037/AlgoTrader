@@ -62,11 +62,16 @@ def test_rsi_vwap_ema_confluence_timeframe_profile_relaxes_hourly_and_daily() ->
     assert strict["timeframe_profile"] == "strict_intraday"
     assert hourly["minimum_relative_volume"] < strict["minimum_relative_volume"]
     assert daily["minimum_relative_volume"] < strict["minimum_relative_volume"]
+    assert hourly["minimum_relative_volume_relaxed"] < hourly["minimum_relative_volume"]
+    assert daily["minimum_relative_volume_relaxed"] < daily["minimum_relative_volume"]
     assert hourly["minimum_confluence_score"] < strict["minimum_confluence_score"]
     assert daily["minimum_confluence_score"] < strict["minimum_confluence_score"]
     assert strict["breakout_tolerance_atr"] == 0.0
     assert hourly["breakout_tolerance_atr"] > 0.0
     assert daily["breakout_tolerance_atr"] > hourly["breakout_tolerance_atr"]
+    assert strict["session_volume_floor"] == strict["minimum_relative_volume"]
+    assert hourly["session_volume_floor"] < hourly["minimum_relative_volume"]
+    assert daily["session_volume_floor"] < daily["minimum_relative_volume"]
 
 
 def test_rsi_vwap_ema_confluence_breakout_ready_allows_daily_near_breakout_only() -> None:
@@ -93,3 +98,35 @@ def test_rsi_vwap_ema_confluence_breakout_ready_allows_daily_near_breakout_only(
     assert daily_confirmed is False
     assert strict_ready is False
     assert daily_ready is True
+
+
+def test_rsi_vwap_ema_confluence_volume_ready_is_session_aware_only_on_slow_timeframes() -> None:
+    strict = RSIVWAPEMAConfluenceStrategy(timeframe="15m")._threshold_profile()
+    daily = RSIVWAPEMAConfluenceStrategy(timeframe="1d")._threshold_profile()
+    volume_context = {"session_volume_ratio": 0.97}
+
+    strict_ready, strict_mode = RSIVWAPEMAConfluenceStrategy._volume_ready(
+        rv=1.00,
+        breakout_gap_atr=0.10,
+        volume_context=volume_context,
+        thresholds=strict,
+    )
+    daily_ready, daily_mode = RSIVWAPEMAConfluenceStrategy._volume_ready(
+        rv=1.00,
+        breakout_gap_atr=0.10,
+        volume_context=volume_context,
+        thresholds=daily,
+    )
+    far_ready, far_mode = RSIVWAPEMAConfluenceStrategy._volume_ready(
+        rv=1.00,
+        breakout_gap_atr=0.30,
+        volume_context=volume_context,
+        thresholds=daily,
+    )
+
+    assert strict_ready is False
+    assert strict_mode == "strict_relative_volume"
+    assert daily_ready is True
+    assert daily_mode == "session_aware_relaxed"
+    assert far_ready is False
+    assert far_mode == "strict_relative_volume"
