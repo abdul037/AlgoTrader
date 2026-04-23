@@ -448,6 +448,7 @@ class TelegramNotifier:
             for item in closest[:3]:
                 score = item.get("score")
                 score_text = f"{float(score):.1f}" if score is not None else "n/a"
+                measurements = dict(item.get("measurements") or {})
                 reasons = ", ".join(
                     TelegramNotifier._humanize_reason(reason)
                     for reason in list(item.get("rejection_reasons") or [])[:3]
@@ -456,7 +457,66 @@ class TelegramNotifier:
                     f"- {item.get('symbol')} {item.get('timeframe')} "
                     f"{item.get('strategy_name')} | score {score_text} | {reasons or 'rejected'}"
                 )
+                watchlist_plan = TelegramNotifier._format_watchlist_plan(measurements)
+                if watchlist_plan:
+                    lines.extend(watchlist_plan)
         return lines
+
+    @staticmethod
+    def _format_watchlist_plan(measurements: dict[str, Any]) -> list[str]:
+        if not measurements:
+            return []
+        entry = measurements.get("indicative_entry")
+        stop = measurements.get("indicative_stop")
+        target = measurements.get("indicative_target")
+        if entry in (None, "") or stop in (None, "") or target in (None, ""):
+            return []
+        current = measurements.get("current_price")
+        trigger = measurements.get("watchlist_trigger") or "watch"
+        trigger_label = str(trigger).replace("_", " ")
+        gap_atr = measurements.get("breakout_gap_atr")
+        rr = measurements.get("indicative_rr")
+        move_pct = measurements.get("indicative_target_move_pct")
+        rvol = measurements.get("relative_volume")
+        relaxed_rvol = measurements.get("minimum_relative_volume_relaxed")
+        strict_rvol = measurements.get("minimum_relative_volume")
+        volume_mode = measurements.get("volume_check_mode")
+        volume_bits: list[str] = []
+        if rvol not in (None, ""):
+            volume_bits.append(f"RVOL {TelegramNotifier._fmt_scan_num(rvol)}")
+        if relaxed_rvol not in (None, "") and strict_rvol not in (None, "") and relaxed_rvol != strict_rvol:
+            volume_bits.append(
+                f"need {TelegramNotifier._fmt_scan_num(relaxed_rvol)} relaxed / {TelegramNotifier._fmt_scan_num(strict_rvol)} strict"
+            )
+        elif strict_rvol not in (None, ""):
+            volume_bits.append(f"need {TelegramNotifier._fmt_scan_num(strict_rvol)}")
+        if volume_mode:
+            volume_bits.append(str(volume_mode).replace("_", " "))
+        line1 = (
+            f"  Watch: {trigger_label} | now {TelegramNotifier._fmt_scan_num(current)} | "
+            f"entry {TelegramNotifier._fmt_scan_num(entry)} | stop {TelegramNotifier._fmt_scan_num(stop)} | "
+            f"target {TelegramNotifier._fmt_scan_num(target)}"
+        )
+        line2 = (
+            f"  Plan: RR {TelegramNotifier._fmt_scan_num(rr)}R | target move {TelegramNotifier._fmt_scan_num(move_pct)}% | "
+            f"gap {TelegramNotifier._fmt_scan_num(gap_atr)} ATR | "
+            + " | ".join(volume_bits)
+        )
+        return [line1, line2]
+
+    @staticmethod
+    def _fmt_scan_num(value: Any) -> str:
+        if value in (None, ""):
+            return "n/a"
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        if abs(number) >= 100:
+            return f"{number:.2f}"
+        if abs(number) >= 10:
+            return f"{number:.2f}"
+        return f"{number:.2f}"
 
     @staticmethod
     def _humanize_reason(reason: str) -> str:

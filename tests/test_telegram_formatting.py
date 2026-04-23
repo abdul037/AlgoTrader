@@ -82,6 +82,20 @@ def test_screener_summary_includes_rejection_diagnostics() -> None:
                 "status": "rejected",
                 "score": 53.4,
                 "rejection_reasons": ["final_score_below_keep_threshold", "confirmation_too_weak"],
+                "measurements": {
+                    "current_price": 210.4,
+                    "watchlist_trigger": "breakout_above",
+                    "indicative_entry": 211.0,
+                    "indicative_stop": 207.2,
+                    "indicative_target": 220.5,
+                    "indicative_rr": 2.5,
+                    "indicative_target_move_pct": 4.5,
+                    "breakout_gap_atr": 0.18,
+                    "relative_volume": 0.98,
+                    "minimum_relative_volume_relaxed": 1.03,
+                    "minimum_relative_volume": 1.08,
+                    "volume_check_mode": "session_aware_relaxed",
+                },
             }
         ],
     )
@@ -91,3 +105,5 @@ def test_screener_summary_includes_rejection_diagnostics() -> None:
     assert "Diagnostics:" in message
     assert "Top blockers: final score below keep threshold (2), confirmation too weak (1)" in message
     assert "- NVDA 1h rsi_vwap_ema_confluence | score 53.4" in message
+    assert "Watch: breakout above | now 210.40 | entry 211.00 | stop 207.20 | target 220.50" in message
+    assert "Plan: RR 2.50R | target move 4.50% | gap 0.18 ATR" in message

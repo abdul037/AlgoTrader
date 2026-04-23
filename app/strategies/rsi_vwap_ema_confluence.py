@@ -261,10 +261,13 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
         thresholds: dict[str, float],
     ) -> dict[str, Any]:
         is_long = side == "long"
+        current_price = float(last["close"])
+        ema20 = float(last.get("ema_20") or current_price)
+        vwap = float(last.get("vwap") or current_price)
         breakout_level = float(last.get("range_high_20") or prev["high"]) if is_long else float(last.get("range_low_20") or prev["low"])
         breakout_ready, breakout_gap_atr, breakout_confirmed = self._breakout_ready(
             side=side,
-            close=float(last["close"]),
+            close=current_price,
             trigger=breakout_level,
             atr=atr,
             tolerance_atr=thresholds["breakout_tolerance_atr"],
@@ -352,6 +355,15 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
         rejection_reasons = [fail_code for _, passed, fail_code in checks if not passed]
         total_checks = len(checks)
         pass_ratio = len(passed_checks) / max(total_checks, 1)
+        indicative_plan = self._indicative_trade_plan(
+            side=side,
+            current_price=current_price,
+            breakout_level=breakout_level,
+            breakout_confirmed=breakout_confirmed,
+            atr=atr,
+            ema20=ema20,
+            vwap=vwap,
+        )
         effective_volume_strength = rv / max(thresholds["minimum_relative_volume"], 0.01)
         if thresholds["timeframe_profile"] != "strict_intraday":
             relaxed_strength = min(
@@ -369,6 +381,10 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
         )
         measurements = {
             "side": side,
+            "current_price": round(current_price, 4),
+            "atr": round(float(atr), 4),
+            "ema20": round(ema20, 4),
+            "vwap": round(vwap, 4),
             "rsi": round(rsi, 4),
             "relative_volume": round(rv, 4),
             **volume_context,
@@ -387,6 +403,7 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
             "session_volume_floor": thresholds["session_volume_floor"],
             "volume_relaxation_gap_atr": thresholds["volume_relaxation_gap_atr"],
             "volume_check_mode": volume_mode,
+            **indicative_plan,
             "minimum_confluence_score": thresholds["minimum_confluence_score"],
             "minimum_adx": self.minimum_adx,
             "minimum_body_to_range": thresholds["minimum_body_to_range"],
@@ -471,6 +488,39 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
         if session_aware_ready:
             return True, "session_aware_relaxed"
         return False, "strict_relative_volume"
+
+    @staticmethod
+    def _indicative_trade_plan(
+        *,
+        side: str,
+        current_price: float,
+        breakout_level: float,
+        breakout_confirmed: bool,
+        atr: float,
+        ema20: float,
+        vwap: float,
+    ) -> dict[str, float | str]:
+        is_long = side == "long"
+        entry = current_price if breakout_confirmed else breakout_level
+        if is_long:
+            stop = min(vwap, ema20, entry - atr)
+            risk = max(entry - stop, atr * 0.9, 0.01)
+            target = entry + (risk * 2.5)
+        else:
+            stop = max(vwap, ema20, entry + atr)
+            risk = max(stop - entry, atr * 0.9, 0.01)
+            target = entry - (risk * 2.5)
+        target_move_pct = abs(target - entry) / max(entry, 0.01) * 100.0
+        return {
+            "watchlist_trigger": "breakout_confirmed" if breakout_confirmed and is_long else
+            "breakdown_confirmed" if breakout_confirmed else
+            "breakout_above" if is_long else "breakdown_below",
+            "indicative_entry": round(entry, 4),
+            "indicative_stop": round(stop, 4),
+            "indicative_target": round(target, 4),
+            "indicative_rr": round(abs(target - entry) / max(abs(entry - stop), 0.01), 2),
+            "indicative_target_move_pct": round(target_move_pct, 2),
+        }
 
     @staticmethod
     def _breakout_ready(
