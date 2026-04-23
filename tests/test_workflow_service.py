@@ -186,6 +186,7 @@ def _snapshot() -> LiveSignalSnapshot:
         strategy_name="momentum_breakout",
         state=SignalState.BUY,
         timeframe="1d",
+        generated_at="2026-04-11T00:00:00+00:00",
         current_price=101.0,
         entry_price=100.0,
         stop_loss=95.0,

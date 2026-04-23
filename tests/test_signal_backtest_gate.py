@@ -57,12 +57,26 @@ class DummyNotifier:
         return True
 
 
-def build_service(backtest_summary=None) -> LiveSignalService:
-    settings = AppSettings(
-        etoro_account_mode="demo",
-        require_backtest_validation_for_alerts=True,
-        allowed_instruments=["NVDA", "AMD", "MU", "GOOG", "GOOGL", "GOLD"],
-    )
+class DummyLedgerService:
+    def __init__(self, *, raises: Exception | None = None) -> None:
+        self.raises = raises
+        self.calls = []
+
+    def record_alert(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.raises is not None:
+            raise self.raises
+        return 123
+
+
+def build_service(backtest_summary=None, *, ledger_service=None, **setting_overrides) -> LiveSignalService:
+    settings_kwargs = {
+        "etoro_account_mode": "demo",
+        "require_backtest_validation_for_alerts": True,
+        "allowed_instruments": ["NVDA", "AMD", "MU", "GOOG", "GOOGL", "GOLD"],
+    }
+    settings_kwargs.update(setting_overrides)
+    settings = AppSettings(**settings_kwargs)
     return LiveSignalService(
         settings=settings,
         market_data_client=DummyMarketData(),
@@ -71,6 +85,7 @@ def build_service(backtest_summary=None) -> LiveSignalService:
         run_log_repository=DummyRunLogRepo(),
         backtest_repository=DummyBacktestRepo(backtest_summary),
         telegram_notifier=DummyNotifier(),
+        ledger_service=ledger_service,
     )
 
 
@@ -140,4 +155,52 @@ def test_send_signal_alert_suppressed_when_backtest_gate_fails() -> None:
 
     assert response.sent is False
     assert "backtest gate" in response.detail
+    assert service.notifier.calls == []
+
+
+def test_send_signal_alert_suppressed_when_ledger_timestamp_missing() -> None:
+    ledger = DummyLedgerService()
+    service = build_service(
+        {
+            "symbol": "NVDA",
+            "strategy_name": "pullback_trend",
+            "completed_at": "2026-04-10T00:00:00Z",
+            "metrics": {
+                "number_of_trades": 25,
+                "profit_factor": 1.8,
+                "annualized_return_pct": 18.0,
+                "max_drawdown_pct": 20.0,
+                "win_rate": 55.0,
+            },
+            "trades": [],
+        },
+        ledger_service=ledger,
+        ledger_enabled=True,
+        ledger_record_alerts_enabled=True,
+    )
+
+    snapshot = sample_snapshot().model_copy(update={"generated_at": None, "signal_generated_at": None})
+    service.get_latest_signal = lambda symbol, commit=True, notify=False: service._attach_backtest_context(snapshot)  # type: ignore[method-assign]
+
+    response = service.send_signal_alert_with_label("NVDA", previous_state="scheduled")
+
+    assert response.sent is False
+    assert "ledger gate" in response.detail
+    assert service.notifier.calls == []
+    assert ledger.calls == []
+
+
+def test_commit_snapshot_suppresses_notification_when_ledger_recording_fails() -> None:
+    ledger = DummyLedgerService(raises=RuntimeError("db unavailable"))
+    service = build_service(
+        ledger_service=ledger,
+        ledger_enabled=True,
+        ledger_record_alerts_enabled=True,
+        require_backtest_validation_for_alerts=False,
+    )
+
+    sent = service._commit_snapshot(sample_snapshot(), notify=True)
+
+    assert sent is False
+    assert len(ledger.calls) == 1
     assert service.notifier.calls == []

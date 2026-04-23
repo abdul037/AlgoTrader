@@ -23,6 +23,10 @@ if TYPE_CHECKING:
     from app.storage.repositories import BacktestRepository, RunLogRepository, SignalRepository, SignalStateRepository
 
 
+class LedgerRecordingError(RuntimeError):
+    """Raised when a Telegram-bound live signal cannot be persisted to the ledger."""
+
+
 class LiveSignalService:
     """Evaluate live market-data signals and scan ranked candidates."""
 
@@ -198,10 +202,28 @@ class LiveSignalService:
                 symbol=snapshot.symbol,
             )
 
-        snapshot = self._snapshot_with_ledger_outcome(
-            snapshot,
-            alert_source=f"telegram_{previous_state}",
-        )
+        try:
+            snapshot = self._snapshot_with_ledger_outcome(
+                snapshot,
+                alert_source=f"telegram_{previous_state}",
+            )
+        except LedgerRecordingError as exc:
+            self.logs.log(
+                "telegram_signal_suppressed_ledger_gate",
+                {
+                    "symbol": snapshot.symbol,
+                    "strategy_name": snapshot.strategy_name,
+                    "state": snapshot.state.value,
+                    "label": previous_state,
+                    "reason": str(exc),
+                },
+            )
+            return TelegramAlertResponse(
+                sent=False,
+                detail=f"Telegram signal suppressed by ledger gate: {exc}",
+                symbol=snapshot.symbol,
+                chat_id=self.settings.telegram_chat_id or None,
+            )
         sent = bool(self.notifier.send_signal_change(snapshot, previous_state=previous_state))
         if sent:
             self.logs.log(
@@ -438,13 +460,25 @@ class LiveSignalService:
                             "state": snapshot.state.value,
                             "reason": validation["reason"],
                         },
-                    )
+                )
                     return False
                 if self.notifier and hasattr(self.notifier, "send_signal_change"):
-                    snapshot_to_send = self._snapshot_with_ledger_outcome(
-                        snapshot,
-                        alert_source="signal_notification",
-                    )
+                    try:
+                        snapshot_to_send = self._snapshot_with_ledger_outcome(
+                            snapshot,
+                            alert_source="signal_notification",
+                        )
+                    except LedgerRecordingError as exc:
+                        self.logs.log(
+                            "signal_notification_suppressed_ledger_gate",
+                            {
+                                "symbol": snapshot.symbol,
+                                "strategy_name": snapshot.strategy_name,
+                                "state": snapshot.state.value,
+                                "reason": str(exc),
+                            },
+                        )
+                        return False
                     sent = bool(
                         self.notifier.send_signal_change(
                             snapshot_to_send,
@@ -471,7 +505,19 @@ class LiveSignalService:
         if not bool(getattr(self.settings, "ledger_record_alerts_enabled", False)):
             return snapshot
         try:
-            generated_at = snapshot.generated_at or snapshot.signal_generated_at or utc_now().isoformat()
+            generated_at = snapshot.generated_at or snapshot.signal_generated_at
+            if not generated_at:
+                self.logs.log(
+                    "ledger_alert_record_error",
+                    {
+                        "alert_source": alert_source,
+                        "symbol": snapshot.symbol,
+                        "error": "missing generated_at on snapshot",
+                    },
+                )
+                raise LedgerRecordingError(
+                    f"snapshot {snapshot.symbol} lacks generated_at"
+                )
             target = snapshot.take_profit or (snapshot.targets[0] if snapshot.targets else None)
             alert_id = (
                 f"{alert_source}:{snapshot.symbol}:{snapshot.strategy_name}:"
@@ -531,7 +577,9 @@ class LiveSignalService:
                     "error": str(exc),
                 },
             )
-            return snapshot
+            if isinstance(exc, LedgerRecordingError):
+                raise
+            raise LedgerRecordingError(str(exc)) from exc
 
     def _signal_from_snapshot(self, snapshot: LiveSignalSnapshot) -> Signal:
         return Signal(
