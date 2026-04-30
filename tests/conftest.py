@@ -59,6 +59,7 @@ def make_settings(tmp_path: Path, **overrides) -> AppSettings:
         "etoro_base_url": "https://api.etoro.example",
         "allowed_instruments": ["NVDA", "GOOG", "GOOGL", "AMD", "MU", "GOLD"],
         "blocked_instruments": ["OIL", "NATGAS", "SILVER"],
+        "market_universe_symbols": [],
         "screener_active_strategy_names": ["all"],
         "require_backtest_validation_for_alerts": False,
         "screener_min_final_score_to_alert": 65.0,
