@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -277,13 +277,22 @@ class AppSettings(BaseSettings):
         mode="before",
     )
     @classmethod
-    def _parse_csv_list(cls, value: Any) -> list[str]:
+    def _parse_csv_list(cls, value: Any, info: ValidationInfo) -> list[str]:
+        lowercase_fields = {
+            "screener_default_timeframes",
+            "screener_intraday_timeframes",
+            "intelligent_scan_timeframes",
+            "single_symbol_analysis_timeframes",
+            "swing_scan_timeframes",
+            "screener_active_strategy_names",
+        }
+        normalize = str.lower if info.field_name in lowercase_fields else str.upper
         if value is None:
             return []
         if isinstance(value, str):
-            return [item.strip().upper() for item in value.split(",") if item.strip()]
+            return [normalize(item.strip()) for item in value.split(",") if item.strip()]
         if isinstance(value, (list, tuple, set)):
-            return [str(item).strip().upper() for item in value if str(item).strip()]
+            return [normalize(str(item).strip()) for item in value if str(item).strip()]
         raise TypeError("Expected a comma-separated string or iterable")
 
     @field_validator("telegram_allowed_chat_ids", mode="before")
