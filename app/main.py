@@ -14,6 +14,8 @@ from app.notifications.routes import router as telegram_router
 from app.notifications.scheduler import TelegramAlertScheduler
 from app.telegram_notify import TelegramNotifier
 from app.notifications.telegram_bot import TelegramBotService
+from app.automation.routes import router as automation_router
+from app.automation.service import AutomationService
 from app.execution.routes import router as execution_router
 from app.execution.coordinator import ExecutionCoordinator
 from app.execution.trader import TraderService
@@ -86,6 +88,7 @@ class ConfigSummary(BaseModel):
     blocked_instruments: list[str]
     max_risk_per_trade_pct: float
     max_daily_loss_usd: float
+    max_trades_per_day: int
     max_open_positions: int
     default_equity_leverage: int
     max_equity_leverage: int
@@ -97,6 +100,10 @@ class ConfigSummary(BaseModel):
     fallback_market_data_provider: str
     screener_default_timeframes: list[str]
     screener_top_k: int
+    auto_propose_enabled: bool
+    auto_execute_after_approval: bool
+    automation_paused: bool
+    automation_kill_switch_enabled: bool
 
 
 def create_app(
@@ -156,6 +163,11 @@ def create_app(
         broker=app.state.broker,
         repository=ledger_repository,
         database=database,
+    )
+    app.state.automation_service = AutomationService(
+        settings=app_settings,
+        runtime_state=runtime_state_repository,
+        run_logs=run_log_repository,
     )
     app.state.live_signal_service = LiveSignalService(
         settings=app_settings,
@@ -224,6 +236,7 @@ def create_app(
         paper_trading_service=app.state.paper_trading_service,
         market_data_engine=app.state.market_data_engine,
         run_logs=run_log_repository,
+        automation_service=app.state.automation_service,
     )
     app.state.tracked_signal_repository = tracked_signal_repository
     app.state.alert_history_repository = alert_history_repository
@@ -238,6 +251,8 @@ def create_app(
         runtime_state=runtime_state_repository,
         run_logs=run_log_repository,
         ledger_service=app.state.ledger_service,
+        proposal_service=app.state.proposal_service,
+        automation_service=app.state.automation_service,
     )
     app.state.telegram_command_service = TelegramBotService(
         settings=app_settings,
@@ -248,6 +263,8 @@ def create_app(
         proposal_service=app.state.proposal_service,
         execution_coordinator=app.state.execution_coordinator,
         execution_queue_repository=execution_queue_repository,
+        paper_trading_service=app.state.paper_trading_service,
+        automation_service=app.state.automation_service,
         runtime_state_repository=runtime_state_repository,
         run_log_repository=run_log_repository,
     )
@@ -263,6 +280,7 @@ def create_app(
     app.include_router(screener_router)
     app.include_router(telegram_router)
     app.include_router(workflow_router)
+    app.include_router(automation_router)
     app.include_router(execution_router)
     app.include_router(paper_router)
 
@@ -365,6 +383,7 @@ def create_app(
             blocked_instruments=app_settings.blocked_instruments,
             max_risk_per_trade_pct=app_settings.max_risk_per_trade_pct,
             max_daily_loss_usd=app_settings.max_daily_loss_usd,
+            max_trades_per_day=app_settings.max_trades_per_day,
             max_open_positions=app_settings.max_open_positions,
             default_equity_leverage=app_settings.default_equity_leverage,
             max_equity_leverage=app_settings.max_equity_leverage,
@@ -376,6 +395,10 @@ def create_app(
             fallback_market_data_provider=app_settings.fallback_market_data_provider,
             screener_default_timeframes=app_settings.screener_default_timeframes,
             screener_top_k=app_settings.screener_top_k,
+            auto_propose_enabled=app_settings.auto_propose_enabled,
+            auto_execute_after_approval=app_settings.auto_execute_after_approval,
+            automation_paused=app.state.automation_service.is_paused(),
+            automation_kill_switch_enabled=app.state.automation_service.kill_switch_enabled(),
         )
 
     return app

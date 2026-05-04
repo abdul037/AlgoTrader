@@ -243,4 +243,5 @@ def test_bars_per_year_mapping_for_known_timeframes() -> None:
     assert bars_per_year_for("15m") == 6552
     assert bars_per_year_for("5m") == 19656
     assert bars_per_year_for("1m") == 98280
+    assert bars_per_year_for("1w") == 52
     assert bars_per_year_for("unknown") == 252  # safe default

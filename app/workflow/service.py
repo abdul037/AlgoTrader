@@ -5,7 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+from app.execution.interfaces import SignalApprovalAdapter
+from app.models.approval import ApprovalStatus
 from app.models.workflow import WorkflowStatusResponse, WorkflowTaskResponse
+from app.universe import resolve_universe
 from app.utils.time import utc_now
 from app.workflow.operations import (
     candidate_with_ledger_outcome,
@@ -55,6 +58,8 @@ class SignalWorkflowService:
         runtime_state: Any,
         run_logs: Any,
         ledger_service: Any | None = None,
+        proposal_service: Any | None = None,
+        automation_service: Any | None = None,
     ):
         self.settings = settings
         self.market_screener = market_screener
@@ -65,6 +70,9 @@ class SignalWorkflowService:
         self.runtime_state = runtime_state
         self.run_logs = run_logs
         self.ledger_service = ledger_service
+        self.proposal_service = proposal_service
+        self.automation = automation_service
+        self._approval_adapter = SignalApprovalAdapter()
 
     def run_scheduled_tasks(self) -> dict[str, int]:
         summary = {"alerts_sent": 0, "closed_signals": 0, "ledger_cycles": 0}
@@ -75,6 +83,11 @@ class SignalWorkflowService:
 
         if not self.settings.screener_scheduler_enabled:
             return summary
+        if self.automation is not None:
+            blockers = self.automation.scan_blockers()
+            if blockers:
+                self.run_logs.log("workflow_scheduler_paused", {"blockers": blockers})
+                return summary
 
         if self._named_scan_due("workflow:last_premarket_scan_at", self.settings.premarket_scan_enabled, self.settings.premarket_scan_time_local):
             result = self.run_premarket_scan(notify=True, force_refresh=True)
@@ -113,7 +126,7 @@ class SignalWorkflowService:
                 task="premarket_scan",
                 state_key="workflow:last_premarket_scan_at",
                 origin="premarket_scan",
-                timeframes=list(self.settings.screener_default_timeframes),
+                timeframes=self._normalized_timeframes(self.settings.screener_default_timeframes),
                 notify=notify,
                 force_refresh=force_refresh,
             ),
@@ -126,22 +139,27 @@ class SignalWorkflowService:
                 task="market_open_scan",
                 state_key="workflow:last_market_open_scan_at",
                 origin="market_open_scan",
-                timeframes=list(self.settings.screener_intraday_timeframes),
+                timeframes=self._normalized_timeframes(self.settings.screener_intraday_timeframes),
                 notify=notify,
                 force_refresh=force_refresh,
             ),
         )
 
     def run_swing_scan(self, *, notify: bool = True, force_refresh: bool = False) -> WorkflowTaskResponse:
+        symbols = resolve_universe(
+            self.settings,
+            limit=int(getattr(self.settings, "market_universe_limit", 100) or 100),
+        )
         return self._execute_guarded(
             "swing_scan",
             lambda: self._run_scan_task(
                 task="swing_scan",
                 state_key="workflow:last_swing_scan_at",
                 origin="swing_scan",
-                timeframes=list(self.settings.screener_default_timeframes),
+                timeframes=self._normalized_timeframes(getattr(self.settings, "swing_scan_timeframes", ["1d", "1w"])),
                 notify=notify,
                 force_refresh=force_refresh,
+                symbols=symbols,
             ),
         )
 
@@ -152,22 +170,24 @@ class SignalWorkflowService:
                 task="intelligent_scan",
                 state_key="workflow:last_intelligent_scan_at",
                 origin="intelligent_scan",
-                timeframes=list(self.settings.intelligent_scan_timeframes),
+                timeframes=self._normalized_timeframes(self.settings.intelligent_scan_timeframes),
                 notify=notify,
                 force_refresh=force_refresh,
             ),
         )
 
     def run_intraday_scan(self, *, notify: bool = True, force_refresh: bool = False) -> WorkflowTaskResponse:
+        symbols = self._intraday_scan_symbols()
         return self._execute_guarded(
             "intraday_scan",
             lambda: self._run_scan_task(
                 task="intraday_scan",
                 state_key="workflow:last_intraday_scan_at",
                 origin="intraday_scan",
-                timeframes=list(self.settings.screener_intraday_timeframes),
+                timeframes=self._normalized_timeframes(self.settings.screener_intraday_timeframes),
                 notify=notify,
                 force_refresh=force_refresh,
+                symbols=symbols,
             ),
         )
 
@@ -178,7 +198,7 @@ class SignalWorkflowService:
                 task="end_of_day_scan",
                 state_key="workflow:last_end_of_day_scan_at",
                 origin="end_of_day_scan",
-                timeframes=list(self.settings.screener_default_timeframes),
+                timeframes=self._normalized_timeframes(self.settings.screener_default_timeframes),
                 notify=notify,
                 force_refresh=force_refresh,
             ),
@@ -252,6 +272,101 @@ class SignalWorkflowService:
 
     def _run_scan_task(self, **kwargs: Any) -> WorkflowTaskResponse:
         return run_scan_task(self, **kwargs)
+
+    def _auto_propose_candidates(self, response: Any, *, origin: str, notify: bool) -> int:
+        if not bool(getattr(self.settings, "auto_propose_enabled", False)):
+            return 0
+        if self.proposal_service is None:
+            return 0
+        if self.automation is not None and self.automation.scan_blockers():
+            return 0
+        existing_symbols = {
+            proposal.order.symbol.upper()
+            for status in (ApprovalStatus.PENDING, ApprovalStatus.APPROVED)
+            for proposal in self.proposal_service.list_proposals(status=status)
+        }
+        created = 0
+        for candidate in list(getattr(response, "candidates", []) or []):
+            symbol = str(getattr(candidate, "symbol", "") or "").upper()
+            if not symbol or symbol in existing_symbols:
+                continue
+            if not bool(getattr(candidate, "execution_ready", False)):
+                continue
+            if not bool((getattr(candidate, "metadata", {}) or {}).get("alert_eligible", False)):
+                continue
+            if str(getattr(candidate, "signal_role", "") or "").lower() == "entry_short":
+                continue
+            if getattr(candidate, "stop_loss", None) is None:
+                continue
+            try:
+                request = self._approval_adapter.build_proposal_request(
+                    candidate,
+                    amount_usd=float(getattr(self.settings, "default_trade_amount_usd", 1000.0)),
+                    notes=f"Auto-created from {origin}; Telegram approval is required before execution.",
+                )
+                proposal = self.proposal_service.create_proposal(request)
+            except Exception as exc:  # noqa: BLE001
+                self.run_logs.log(
+                    "auto_proposal_failed",
+                    {"origin": origin, "symbol": symbol, "error": str(exc)},
+                )
+                continue
+            existing_symbols.add(symbol)
+            created += 1
+            self.run_logs.log(
+                "auto_proposal_created",
+                {"origin": origin, "proposal_id": proposal.id, "symbol": symbol},
+            )
+            if notify:
+                self.notifier.send_text(
+                    "\n".join(
+                        [
+                            "Auto proposal created",
+                            f"ID: {proposal.id}",
+                            f"Symbol: {proposal.order.symbol}",
+                            f"Entry: {proposal.order.proposed_price:.2f}",
+                            f"Stop: {proposal.order.stop_loss or 'n/a'}",
+                            f"Target: {proposal.order.take_profit or 'n/a'}",
+                            f"Approve: /approve {proposal.id}",
+                            f"Reject: /reject {proposal.id}",
+                        ]
+                    )
+                )
+        return created
+
+    def _intraday_scan_symbols(self) -> list[str]:
+        universe = resolve_universe(
+            self.settings,
+            limit=int(getattr(self.settings, "market_universe_limit", 100) or 100),
+        )
+        if not universe:
+            return []
+        batch_size = max(1, int(getattr(self.settings, "scalp_scan_batch_size", 20) or 20))
+        shortlist_limit = max(0, int(getattr(self.settings, "intraday_active_shortlist_size", 20) or 20))
+        offset_key = "workflow:intraday_scan_offset"
+        try:
+            offset = int(self.runtime_state.get(offset_key) or "0")
+        except ValueError:
+            offset = 0
+        offset = offset % len(universe)
+        rotated = (universe + universe)[offset : offset + min(batch_size, len(universe))]
+        next_offset = (offset + min(batch_size, len(universe))) % len(universe)
+        self.runtime_state.set(offset_key, str(next_offset))
+        active: list[str] = []
+        if shortlist_limit:
+            for record in self.tracked_signals.list(status="open", limit=shortlist_limit):
+                symbol = str(getattr(record, "symbol", "") or "").upper()
+                if symbol:
+                    active.append(symbol)
+        combined: list[str] = []
+        for symbol in [*active, *rotated]:
+            if symbol not in combined:
+                combined.append(symbol)
+        return combined
+
+    @staticmethod
+    def _normalized_timeframes(timeframes: Any) -> list[str]:
+        return [str(item).strip().lower() for item in list(timeframes or []) if str(item).strip()]
 
     def _track_candidates(self, response: Any, *, origin: str) -> None:
         track_candidates(self, response, origin=origin)

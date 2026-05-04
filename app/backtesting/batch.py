@@ -71,7 +71,7 @@ class BatchBacktestService:
                     history = self.market_data.get_history(
                         symbol,
                         timeframe=timeframe,
-                        bars=500 if timeframe == "1d" else 350,
+                        bars=520 if timeframe == "1w" else 500 if timeframe == "1d" else 350,
                         provider=provider,
                         force_refresh=force_refresh,
                     )

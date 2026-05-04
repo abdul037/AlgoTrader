@@ -47,6 +47,7 @@ class AppSettings(BaseSettings):
     telegram_polling_enabled: bool = False
     telegram_poll_interval_seconds: int = 5
     telegram_command_timeout_seconds: int = 20
+    telegram_scan_stale_after_seconds: int = 180
     telegram_scan_default_universe_limit: int = 10
     telegram_propose_top_default_universe_limit: int = 10
     telegram_hourly_alerts_enabled: bool = False
@@ -58,6 +59,8 @@ class AppSettings(BaseSettings):
     market_universe_symbols: list[str] = Field(default_factory=list)
     primary_market_data_provider: str = "auto"
     fallback_market_data_provider: str = "none"
+    market_data_retry_attempts: int = 2
+    market_data_retry_backoff_seconds: float = 0.75
     market_data_cache_dir: str = ".cache/market_data"
     market_data_cache_ttl_seconds: int = 900
     require_verified_market_data_for_alerts: bool = False
@@ -66,9 +69,9 @@ class AppSettings(BaseSettings):
     require_uncached_market_data_for_alerts: bool = False
     max_market_data_age_seconds: int = 120
     screener_default_timeframes: list[str] = Field(default_factory=lambda: ["15m", "1h", "1d"])
-    screener_intraday_timeframes: list[str] = Field(default_factory=lambda: ["1m", "5m", "15m"])
-    intelligent_scan_timeframes: list[str] = Field(default_factory=lambda: ["5m", "15m", "1h", "1d"])
-    single_symbol_analysis_timeframes: list[str] = Field(default_factory=lambda: ["1m", "5m", "15m", "1h", "1d"])
+    screener_intraday_timeframes: list[str] = Field(default_factory=lambda: ["1m", "5m", "10m", "15m"])
+    intelligent_scan_timeframes: list[str] = Field(default_factory=lambda: ["5m", "15m", "1h", "1d", "1w"])
+    single_symbol_analysis_timeframes: list[str] = Field(default_factory=lambda: ["1m", "5m", "15m", "1h", "1d", "1w"])
     screener_active_strategy_names: list[str] = Field(default_factory=lambda: ["rsi_vwap_ema_confluence"])
     screener_primary_strategy_name: str = "rsi_vwap_ema_confluence"
     screener_top_k: int = 20
@@ -90,11 +93,15 @@ class AppSettings(BaseSettings):
     end_of_day_scan_enabled: bool = True
     end_of_day_scan_time_local: str = "15:50"
     workflow_lock_timeout_minutes: int = 45
+    swing_scan_timeframes: list[str] = Field(default_factory=lambda: ["1d", "1w"])
     swing_scan_interval_minutes: int = 60
     intraday_scan_interval_minutes: int = 15
+    scalp_scan_batch_size: int = 20
+    intraday_active_shortlist_size: int = 20
     open_signal_check_interval_minutes: int = 5
     daily_summary_hour_utc: int = 20
     track_alerted_signals: bool = True
+    track_watchlist_signals: bool = True
     require_backtest_validation_for_alerts: bool = True
     min_backtest_trades_for_alerts: int = 10
     min_backtest_profit_factor: float = 1.2
@@ -174,9 +181,13 @@ class AppSettings(BaseSettings):
     max_daily_loss_usd: float = 100.0
     max_weekly_loss_usd: float = 300.0
     max_open_positions: int = 3
+    max_trades_per_day: int = 5
     per_symbol_position_limit: int = 1
     max_consecutive_losses_before_cooldown: int = 2
     kill_switch_enabled: bool = False
+    automation_paused_default: bool = False
+    auto_propose_enabled: bool = False
+    auto_execute_after_approval: bool = False
     execution_recheck_quote_before_order: bool = True
     execution_max_entry_drift_bps: float = 35.0
     execution_queue_enabled: bool = True
@@ -261,6 +272,7 @@ class AppSettings(BaseSettings):
         "screener_intraday_timeframes",
         "intelligent_scan_timeframes",
         "single_symbol_analysis_timeframes",
+        "swing_scan_timeframes",
         "screener_active_strategy_names",
         mode="before",
     )

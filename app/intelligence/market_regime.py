@@ -263,16 +263,16 @@ class MarketIntelligenceService:
 
     @staticmethod
     def _higher_timeframe(timeframe: str) -> str:
-        mapping = {"1m": "5m", "5m": "15m", "15m": "1h", "1h": "1d", "1d": "1d"}
+        mapping = {"1m": "5m", "5m": "10m", "10m": "15m", "15m": "1h", "1h": "1d", "1d": "1w", "1w": "1w"}
         return mapping.get(timeframe.lower(), "1d")
 
     @staticmethod
     def _lower_timeframe(timeframe: str) -> str:
-        mapping = {"1d": "1h", "1h": "15m", "15m": "5m", "5m": "1m", "1m": "1m"}
+        mapping = {"1w": "1d", "1d": "1h", "1h": "15m", "15m": "10m", "10m": "5m", "5m": "1m", "1m": "1m"}
         return mapping.get(timeframe.lower(), "15m")
 
     def _time_of_day_score(self, timeframe: str) -> float:
-        if timeframe == "1d":
+        if timeframe in {"1d", "1w"}:
             return 0.75
         now_local = utc_now().astimezone(ZoneInfo(self.settings.schedule_timezone))
         minutes = (now_local.hour * 60) + now_local.minute

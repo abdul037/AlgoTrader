@@ -19,9 +19,11 @@ def run_scan_task(
     timeframes: list[str],
     notify: bool,
     force_refresh: bool,
+    symbols: list[str] | None = None,
 ) -> WorkflowTaskResponse:
     kwargs = {
-        "symbols": resolve_universe(
+        "symbols": symbols
+        or resolve_universe(
             service.settings,
             limit=int(getattr(service.settings, "workflow_scan_default_universe_limit", 25) or 25),
         ),
@@ -36,6 +38,7 @@ def run_scan_task(
     response = service.market_screener.scan_universe(**kwargs)
     alerts_sent = service._send_scan_alerts(task=task, response=response, notify=notify)
     service._track_candidates(response, origin=origin)
+    proposals_created = service._auto_propose_candidates(response, origin=origin, notify=notify)
     service.runtime_state.set(state_key, utc_now().isoformat())
     service.run_logs.log(
         f"workflow_{task}_completed",
@@ -45,6 +48,7 @@ def run_scan_task(
             "symbols_scanned": response.evaluated_symbols,
             "symbols_passed": [item.symbol for item in response.candidates],
             "alerts_sent": alerts_sent,
+            "proposals_created": proposals_created,
             "timeframes": timeframes,
             "errors": response.errors,
         },
@@ -66,12 +70,16 @@ def track_candidates(service: Any, response: Any, *, origin: str) -> None:
     for candidate in response.candidates:
         if candidate.state.value == "none":
             continue
-        if not bool(
-            candidate.metadata.get(
-                "alert_eligible",
-                (candidate.direction_label or candidate.state.value) != "watchlist",
-            )
-        ):
+        alert_eligible = bool(
+            candidate.metadata.get("alert_eligible", (candidate.direction_label or candidate.state.value) != "watchlist")
+        )
+        classification = str(candidate.metadata.get("signal_classification") or "").lower()
+        should_track_watchlist = bool(getattr(service.settings, "track_watchlist_signals", False)) and classification in {
+            "watchlist",
+            "trigger_ready",
+            "execution_ready",
+        }
+        if not alert_eligible and not should_track_watchlist:
             continue
         service.tracked_signals.upsert_open(candidate, origin=origin)
 

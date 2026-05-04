@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 
-INTRADAY_TIMEFRAMES = {"1m", "5m", "15m"}
+INTRADAY_TIMEFRAMES = {"1m", "5m", "10m", "15m"}
 
 
 def enrich_technical_indicators(data: pd.DataFrame, *, timeframe: str) -> pd.DataFrame:

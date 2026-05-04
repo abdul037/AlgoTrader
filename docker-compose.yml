@@ -1,0 +1,40 @@
+services:
+  cx-algobot:
+    build: .
+    container_name: cx-algobot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: sqlite:////data/etoro_bot.db
+      MARKET_DATA_CACHE_DIR: /data/market_data_cache
+    ports:
+      - "8011:8011"
+    volumes:
+      - cx_algobot_data:/data
+      - cx_algobot_logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8011/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  cx-algobot-backup:
+    image: alpine:3.20
+    container_name: cx-algobot-backup
+    restart: unless-stopped
+    volumes:
+      - cx_algobot_data:/data:ro
+      - ./backups:/backups
+    command: >
+      sh -c "while true; do
+      ts=$$(date -u +%Y%m%dT%H%M%SZ);
+      cp /data/etoro_bot.db /backups/etoro_bot_$${ts}.db 2>/dev/null || true;
+      find /backups -name 'etoro_bot_*.db' -mtime +14 -delete;
+      sleep 86400;
+      done"
+
+volumes:
+  cx_algobot_data:
+  cx_algobot_logs:

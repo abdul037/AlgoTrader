@@ -66,6 +66,10 @@ STRATEGY_SPECS: list[StrategySpec] = [
     StrategySpec("rsi_reversal", timeframe="5m", style="reversal", default_kwargs={"timeframe": "5m"}),
     StrategySpec("ema_trend_stack", timeframe="5m", style="trend", default_kwargs={"timeframe": "5m"}),
     StrategySpec("rsi_vwap_ema_confluence", timeframe="5m", style="confluence", default_kwargs={"timeframe": "5m"}),
+    StrategySpec("vwap_reclaim", timeframe="10m", style="intraday", default_kwargs={"timeframe": "10m"}),
+    StrategySpec("rsi_reversal", timeframe="10m", style="reversal", default_kwargs={"timeframe": "10m"}),
+    StrategySpec("ema_trend_stack", timeframe="10m", style="trend", default_kwargs={"timeframe": "10m"}),
+    StrategySpec("rsi_vwap_ema_confluence", timeframe="10m", style="confluence", default_kwargs={"timeframe": "10m"}),
     StrategySpec("vwap_reclaim", timeframe="1m", style="scalp", default_kwargs={"timeframe": "1m", "relative_volume_floor": 1.25}),
     StrategySpec("rsi_reversal", timeframe="1m", style="scalp", default_kwargs={"timeframe": "1m"}),
     StrategySpec("rsi_vwap_ema_confluence", timeframe="1m", style="scalp", default_kwargs={"timeframe": "1m", "minimum_relative_volume": 1.35}),
@@ -73,6 +77,11 @@ STRATEGY_SPECS: list[StrategySpec] = [
     StrategySpec("rsi_trend_continuation", timeframe="1d", style="position", default_kwargs={"timeframe": "1d"}),
     StrategySpec("rsi_vwap_ema_confluence", timeframe="1h", style="confluence", default_kwargs={"timeframe": "1h"}),
     StrategySpec("rsi_vwap_ema_confluence", timeframe="1d", style="confluence", default_kwargs={"timeframe": "1d", "minimum_relative_volume": 1.15}),
+    StrategySpec("trend_following", timeframe="1w", style="position", default_kwargs={"fast_span": 10, "slow_span": 30, "pullback_window": 4}),
+    StrategySpec("momentum_breakout", timeframe="1w", style="position", default_kwargs={"breakout_window": 12, "volume_window": 12}),
+    StrategySpec("ema_trend_stack", timeframe="1w", style="position", default_kwargs={"timeframe": "1w"}),
+    StrategySpec("rsi_trend_continuation", timeframe="1w", style="position", default_kwargs={"timeframe": "1w"}),
+    StrategySpec("rsi_vwap_ema_confluence", timeframe="1w", style="confluence", default_kwargs={"timeframe": "1w", "minimum_relative_volume": 1.0}),
 ]
 
 

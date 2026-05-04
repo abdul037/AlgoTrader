@@ -113,6 +113,13 @@ def diagnostic_measurements(measurements: dict[str, Any]) -> dict[str, Any]:
         "timeframe_alignment_score",
         "verification_reason",
         "freshness_status",
+        "history_provider",
+        "quote_provider",
+        "history_used_fallback",
+        "quote_used_fallback",
+        "history_from_cache",
+        "quote_from_cache",
+        "quote_derived",
     ]
     compact: dict[str, Any] = {}
     for key in keys:

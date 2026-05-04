@@ -464,6 +464,20 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
                     "timeframe_profile": "position_daily",
                 }
             )
+        elif timeframe in {"1w", "1wk", "week", "weekly"}:
+            profile.update(
+                {
+                    "minimum_relative_volume": 1.00,
+                    "minimum_relative_volume_relaxed": 0.95,
+                    "minimum_confluence_score": round(max(0.76, self.minimum_confluence_score - 0.06), 4),
+                    "minimum_body_to_range": round(max(0.22, self.minimum_body_to_range - 0.08), 4),
+                    "minimum_close_location": round(max(0.55, self.minimum_close_location - 0.06), 4),
+                    "session_volume_floor": 0.90,
+                    "volume_relaxation_gap_atr": 0.25,
+                    "breakout_tolerance_atr": 0.45,
+                    "timeframe_profile": "position_weekly",
+                }
+            )
         return profile
 
     @staticmethod

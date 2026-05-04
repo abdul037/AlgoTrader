@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from concurrent.futures import Future
 from datetime import timedelta
+from types import SimpleNamespace
+import threading
 
 from app.live_signal_schema import LiveSignalSnapshot, SignalScanResponse, SignalState
 from app.models.approval import ApprovalStatus, TradeProposal
 from app.models.execution_queue import ExecutionQueueRecord
+from app.models.paper import PaperPerformanceSummary
 from app.notifications.telegram_bot import TelegramBotService
+from app.universe import DEFAULT_TOP_100_US
 from app.utils.time import utc_now
 
 
@@ -45,8 +49,9 @@ class FakeNotifier:
         return f"scan {len(response.candidates)}"
 
     @staticmethod
-    def format_screener_summary(response):
-        return f"screener {len(response.candidates)} {','.join(response.timeframes)}"
+    def format_screener_summary(response, *, task_label=None, include_other_watches=False):
+        details = "details" if include_other_watches else "simple"
+        return f"screener {len(response.candidates)} {','.join(response.timeframes)} {details}"
 
 
 class FakeStateRepo:
@@ -121,6 +126,8 @@ class FakeSettings:
     telegram_alert_symbols = ["NVDA"]
     telegram_poll_interval_seconds = 0
     telegram_command_timeout_seconds = 5
+    telegram_scan_stale_after_seconds = 30
+    telegram_scan_default_universe_limit = 10
     allowed_instruments = ["NVDA", "AMD"]
     market_universe_symbols = ["NVDA", "AMD"]
     market_universe_tier = "broad_top100"
@@ -129,6 +136,10 @@ class FakeSettings:
     screener_default_timeframes = ["1d", "1h"]
     default_trade_amount_usd = 1000.0
     execution_mode = "paper"
+    enable_real_trading = False
+    require_approval = True
+    auto_propose_enabled = False
+    auto_execute_after_approval = False
 
 
 def test_poll_once_handles_signal_and_scan_commands() -> None:
@@ -177,7 +188,31 @@ def test_scan_in_progress_message_includes_task_and_elapsed() -> None:
     assert "/scan_status" in message
 
 
+def test_stale_scan_status_recovers_lock() -> None:
+    bot = TelegramBotService(
+        settings=FakeSettings(),
+        notifier=FakeNotifier(),
+        live_signals=FakeLiveSignals(),
+        market_screener=FakeMarketScreener(),
+        runtime_state_repository=FakeStateRepo(),
+        run_log_repository=FakeRunLogRepo(),
+    )
+    bot._active_scan_future = Future()
+    bot._active_scan_cancel_event = threading.Event()
+    bot._active_scan_started_at = utc_now() - timedelta(seconds=90)
+    bot._active_scan_label = "manual_scan"
+    assert bot._scan_lock.acquire(blocking=False)
+
+    message = bot._scan_status_message()
+
+    assert "Recovered a stale screener scan" in message
+    assert not bot._scan_lock.locked()
+
+
 class FakeMarketScreener:
+    def __init__(self):
+        self.calls = []
+
     def analyze_symbol(self, symbol: str, *, force_refresh: bool = False):
         return LiveSignalSnapshot(
             symbol=symbol.upper(),
@@ -209,6 +244,14 @@ class FakeMarketScreener:
     ):
         from app.models.screener import ScreenerRunResponse
 
+        self.calls.append(
+            {
+                "symbols": symbols,
+                "timeframes": timeframes,
+                "limit": limit,
+                "validated_only": validated_only,
+            }
+        )
         return ScreenerRunResponse(
             generated_at="2026-04-11T00:00:00+00:00",
             universe_name="top100_us",
@@ -296,6 +339,8 @@ class FakeProposalService:
 
 class FakeExecutionCoordinator:
     def __init__(self):
+        self.enqueued: list[str] = []
+        self.processed: list[str] = []
         self.queue_record = ExecutionQueueRecord(
             id="queue_test",
             proposal_id="prop_test",
@@ -307,10 +352,12 @@ class FakeExecutionCoordinator:
 
     def enqueue_approved_proposal(self, proposal_id):
         assert proposal_id == "prop_test"
+        self.enqueued.append(proposal_id)
         return self.queue_record
 
     def process_queue_item(self, queue_id):
         assert queue_id == "queue_test"
+        self.processed.append(queue_id)
         self.queue_record.status = "executed"
         self.queue_record.ready_for_execution = True
         self.queue_record.latest_quote_price = 101.1
@@ -322,6 +369,62 @@ class FakeExecutionCoordinator:
 
     def list(self, *, status=None, limit=100):
         return [self.queue_record]
+
+
+class FakePaperService:
+    def dashboard(self):
+        return {
+            "paper": PaperPerformanceSummary(
+                total_trades=4,
+                open_positions=1,
+                win_rate=50.0,
+                realized_pnl_usd=120.0,
+                unrealized_pnl_usd=15.0,
+                expectancy_usd=30.0,
+            ),
+            "provider_health": {
+                "history_provider": "yfinance",
+                "quote_provider": "etoro",
+                "freshness_status": "fresh",
+            },
+            "calibration_suggestions": ["Review near-miss outcomes before lowering relative-volume thresholds."],
+        }
+
+
+class FakeAutomation:
+    def __init__(self):
+        self.paused = False
+        self.kill_switch = False
+        self.reason = ""
+
+    def status(self):
+        return SimpleNamespace(
+            paused=self.paused,
+            kill_switch_enabled=self.kill_switch,
+            auto_propose_enabled=False,
+            auto_execute_after_approval=False,
+            execution_mode="paper",
+            require_approval=True,
+            enable_real_trading=False,
+            reason=self.reason,
+        )
+
+    def pause(self, *, reason: str = ""):
+        self.paused = True
+        self.reason = reason
+        return self.status()
+
+    def resume(self, *, reason: str = ""):
+        self.paused = False
+        self.kill_switch = False
+        self.reason = reason
+        return self.status()
+
+    def enable_kill_switch(self, *, reason: str = ""):
+        self.paused = True
+        self.kill_switch = True
+        self.reason = reason
+        return self.status()
 
 
 def test_send_due_alerts_respects_runtime_state() -> None:
@@ -337,6 +440,30 @@ def test_send_due_alerts_respects_runtime_state() -> None:
     )
     assert bot.send_due_alerts() == 1
     assert bot.send_due_alerts() == 0
+
+
+def test_performance_command_formats_dashboard() -> None:
+    notifier = FakeNotifier()
+    notifier.updates = [
+        {
+            "update_id": 1,
+            "message": {"chat": {"id": 7329410595}, "text": "/performance"},
+        },
+    ]
+    bot = TelegramBotService(
+        settings=FakeSettings(),
+        notifier=notifier,
+        live_signals=FakeLiveSignals(),
+        paper_trading_service=FakePaperService(),
+        runtime_state_repository=FakeStateRepo(),
+        run_log_repository=FakeRunLogRepo(),
+    )
+
+    processed = bot.poll_once(timeout_seconds=0)
+
+    assert processed == 1
+    assert "AlgoBot performance" in notifier.sent[0][0]
+    assert "Paper P&L: realized 120.00" in notifier.sent[0][0]
 
 
 def test_poll_once_uses_market_screener_when_available() -> None:
@@ -363,8 +490,136 @@ def test_poll_once_uses_market_screener_when_available() -> None:
     processed = bot.poll_once(timeout_seconds=0)
 
     assert processed == 2
-    assert notifier.sent[0][0] == "screener 1 1d,1h"
-    assert notifier.sent[1][0] == "screener 1 15m,1h"
+    assert notifier.sent[0][0].startswith("screener 1 1d,1h")
+    assert "best setup shown" in notifier.sent[0][0]
+    assert notifier.sent[1][0].startswith("screener 1 15m,1h")
+    assert "best setup shown" in notifier.sent[1][0]
+
+
+def test_scan_command_can_scope_specific_symbols() -> None:
+    notifier = FakeNotifier()
+    notifier.updates = [
+        {
+            "update_id": 1,
+            "message": {"chat": {"id": 7329410595}, "text": "/scan 2 NVDA,AAPL MSFT"},
+        },
+    ]
+    screener = FakeMarketScreener()
+    bot = TelegramBotService(
+        settings=FakeSettings(),
+        notifier=notifier,
+        live_signals=FakeLiveSignals(),
+        market_screener=screener,
+        runtime_state_repository=FakeStateRepo(),
+        run_log_repository=FakeRunLogRepo(),
+    )
+
+    processed = bot.poll_once(timeout_seconds=0)
+
+    assert processed == 1
+    assert screener.calls[0]["symbols"] == ["NVDA", "AAPL", "MSFT"]
+    assert screener.calls[0]["limit"] == 2
+    assert "Scope: requested symbols NVDA, AAPL, MSFT" in notifier.sent[0][0]
+
+
+def test_scan_command_can_override_timeframes() -> None:
+    notifier = FakeNotifier()
+    notifier.updates = [
+        {
+            "update_id": 1,
+            "message": {"chat": {"id": 7329410595}, "text": "/scan 2 NVDA AAPL 1m 10m"},
+        },
+    ]
+    screener = FakeMarketScreener()
+    bot = TelegramBotService(
+        settings=FakeSettings(),
+        notifier=notifier,
+        live_signals=FakeLiveSignals(),
+        market_screener=screener,
+        runtime_state_repository=FakeStateRepo(),
+        run_log_repository=FakeRunLogRepo(),
+    )
+
+    processed = bot.poll_once(timeout_seconds=0)
+
+    assert processed == 1
+    assert screener.calls[0]["symbols"] == ["NVDA", "AAPL"]
+    assert screener.calls[0]["timeframes"] == ["1m", "10m"]
+
+
+def test_scan_details_command_includes_lower_priority_watches() -> None:
+    notifier = FakeNotifier()
+    notifier.updates = [
+        {
+            "update_id": 1,
+            "message": {"chat": {"id": 7329410595}, "text": "/scan details 2 NVDA AAPL"},
+        },
+    ]
+    screener = FakeMarketScreener()
+    bot = TelegramBotService(
+        settings=FakeSettings(),
+        notifier=notifier,
+        live_signals=FakeLiveSignals(),
+        market_screener=screener,
+        runtime_state_repository=FakeStateRepo(),
+        run_log_repository=FakeRunLogRepo(),
+    )
+
+    processed = bot.poll_once(timeout_seconds=0)
+
+    assert processed == 1
+    assert screener.calls[0]["symbols"] == ["NVDA", "AAPL"]
+    assert screener.calls[0]["limit"] == 2
+    assert notifier.sent[0][0].startswith("screener 1 1d,1h details")
+
+
+def test_scan_args_support_top100_and_custom_timeframes() -> None:
+    limit, symbols, details, universe_limit, timeframes = TelegramBotService._parse_scan_args(
+        ["details", "top100", "tf=1m,5m,10m,15m,1h,1d,1w", "4"]
+    )
+
+    assert limit == 4
+    assert symbols is None
+    assert details is True
+    assert universe_limit == 100
+    assert timeframes == ["1m", "5m", "10m", "15m", "1h", "1d", "1w"]
+
+
+def test_top100_scan_ignores_small_configured_quick_universe() -> None:
+    notifier = FakeNotifier()
+    screener = FakeMarketScreener()
+    bot = TelegramBotService(
+        settings=FakeSettings(),
+        notifier=notifier,
+        live_signals=FakeLiveSignals(),
+        market_screener=screener,
+        runtime_state_repository=FakeStateRepo(),
+        run_log_repository=FakeRunLogRepo(),
+    )
+
+    bot._scan_message(
+        limit=3,
+        supported_only=False,
+        validated_only=False,
+        intraday=False,
+        universe_limit=100,
+        requested_timeframes=["1m"],
+    )
+
+    assert screener.calls[0]["symbols"] == DEFAULT_TOP_100_US
+    assert screener.calls[0]["timeframes"] == ["1m"]
+
+
+def test_scan_args_allow_symbol_scan_with_timeframe_tokens() -> None:
+    limit, symbols, details, universe_limit, timeframes = TelegramBotService._parse_scan_args(
+        ["3", "NVDA", "AAPL", "1m", "10m"]
+    )
+
+    assert limit == 3
+    assert symbols == ["NVDA", "AAPL"]
+    assert details is False
+    assert universe_limit is None
+    assert timeframes == ["1m", "10m"]
 
 
 def test_telegram_proposal_approval_and_queue_commands() -> None:
@@ -410,6 +665,88 @@ def test_telegram_proposal_approval_and_queue_commands() -> None:
     assert notifier.sent[2][0].startswith("Proposal queued")
     assert notifier.sent[3][0].startswith("Queue processed")
     assert "Status: executed" in notifier.sent[3][0]
+
+
+def test_telegram_approval_can_auto_execute_after_approval() -> None:
+    class AutoExecuteSettings(FakeSettings):
+        auto_execute_after_approval = True
+
+    notifier = FakeNotifier()
+    proposal_service = FakeProposalService()
+    proposal_service.create_proposal(
+        type(
+            "Request",
+            (),
+            {
+                "to_order": lambda _self: FakeProposalService._sample_order(),
+                "signal": None,
+                "notes": "",
+            },
+        )()
+    )
+    execution = FakeExecutionCoordinator()
+    notifier.updates = [
+        {
+            "update_id": 1,
+            "message": {"chat": {"id": 7329410595}, "text": "/approve prop_test"},
+        },
+    ]
+    bot = TelegramBotService(
+        settings=AutoExecuteSettings(),
+        notifier=notifier,
+        live_signals=FakeLiveSignals(),
+        proposal_service=proposal_service,
+        execution_coordinator=execution,
+        execution_queue_repository=execution,
+        runtime_state_repository=FakeStateRepo(),
+        run_log_repository=FakeRunLogRepo(),
+    )
+
+    processed = bot.poll_once(timeout_seconds=0)
+
+    assert processed == 1
+    assert execution.enqueued == ["prop_test"]
+    assert execution.processed == ["queue_test"]
+    assert "Auto-execute after approval is enabled." in notifier.sent[0][0]
+
+
+def test_telegram_automation_commands() -> None:
+    notifier = FakeNotifier()
+    automation = FakeAutomation()
+    notifier.updates = [
+        {
+            "update_id": 1,
+            "message": {"chat": {"id": 7329410595}, "text": "/auto_status"},
+        },
+        {
+            "update_id": 2,
+            "message": {"chat": {"id": 7329410595}, "text": "/pause_auto testing"},
+        },
+        {
+            "update_id": 3,
+            "message": {"chat": {"id": 7329410595}, "text": "/resume_auto"},
+        },
+        {
+            "update_id": 4,
+            "message": {"chat": {"id": 7329410595}, "text": "/kill_switch emergency"},
+        },
+    ]
+    bot = TelegramBotService(
+        settings=FakeSettings(),
+        notifier=notifier,
+        live_signals=FakeLiveSignals(),
+        automation_service=automation,
+        runtime_state_repository=FakeStateRepo(),
+        run_log_repository=FakeRunLogRepo(),
+    )
+
+    processed = bot.poll_once(timeout_seconds=0)
+
+    assert processed == 4
+    assert notifier.sent[0][0].startswith("Automation status")
+    assert notifier.sent[1][0].startswith("Automation paused")
+    assert notifier.sent[2][0].startswith("Automation resumed")
+    assert notifier.sent[3][0].startswith("Kill switch enabled")
 
 
 def test_telegram_propose_top_scans_and_creates_best_proposal() -> None:

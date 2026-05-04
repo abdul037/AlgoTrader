@@ -136,6 +136,8 @@ class ProposalService:
         return order
 
     def _risk_context(self) -> RiskContext:
+        start_of_day = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
+        trades_today = self.executions.count_since(start_of_day)
         if self.settings.execution_mode == "paper":
             daily_pnl, consecutive_losses = self.executions.daily_loss_stats()
             weekly_pnl = self.executions.period_realized_pnl(days=7)
@@ -146,6 +148,7 @@ class ProposalService:
                 open_positions=0,
                 positions_by_symbol={},
                 consecutive_losses_today=consecutive_losses,
+                trades_today=trades_today,
                 mode="paper",
             )
 
@@ -166,6 +169,7 @@ class ProposalService:
             open_positions=len(portfolio.positions),
             positions_by_symbol=positions_by_symbol,
             consecutive_losses_today=consecutive_losses,
+            trades_today=trades_today,
             mode=self.settings.etoro_account_mode,
         )
 

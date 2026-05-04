@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from time import time
+from time import sleep, time
 from typing import Any
 
 import pandas as pd
@@ -19,11 +19,13 @@ logger = logging.getLogger(__name__)
 
 
 TIMEFRAME_CONFIG: dict[str, dict[str, Any]] = {
-    "1m": {"provider_interval": "1m", "period": "7d", "cache_ttl": 60},
-    "5m": {"provider_interval": "5m", "period": "30d", "cache_ttl": 120},
-    "15m": {"provider_interval": "15m", "period": "60d", "cache_ttl": 300},
-    "1h": {"provider_interval": "60m", "period": "730d", "cache_ttl": 900},
-    "1d": {"provider_interval": "1d", "period": "5y", "cache_ttl": 3600},
+    "1m": {"provider_interval": "1m", "etoro_interval": "OneMinute", "period": "7d", "cache_ttl": 60},
+    "5m": {"provider_interval": "5m", "etoro_interval": "FiveMinutes", "period": "30d", "cache_ttl": 120},
+    "10m": {"provider_interval": "5m", "etoro_interval": "TenMinutes", "period": "30d", "cache_ttl": 180, "resample_rule": "10min"},
+    "15m": {"provider_interval": "15m", "etoro_interval": "FifteenMinutes", "period": "60d", "cache_ttl": 300},
+    "1h": {"provider_interval": "60m", "etoro_interval": "OneHour", "period": "730d", "cache_ttl": 900},
+    "1d": {"provider_interval": "1d", "etoro_interval": "OneDay", "period": "5y", "cache_ttl": 3600},
+    "1w": {"provider_interval": "1wk", "etoro_interval": "OneWeek", "period": "10y", "cache_ttl": 21600},
 }
 
 
@@ -65,17 +67,25 @@ class MarketDataEngine:
 
         fetch_errors: list[str] = []
         for candidate_provider in self._provider_order(normalized_timeframe, provider_name):
-            try:
-                frame = self._fetch_history_from_provider(
-                    normalized_symbol,
-                    timeframe=normalized_timeframe,
-                    bars=bars,
-                    provider=candidate_provider,
-                )
-            except EToroRateLimitError:
-                raise
-            except Exception as exc:
-                fetch_errors.append(f"{candidate_provider}: {exc}")
+            frame = None
+            provider_errors: list[str] = []
+            for attempt in range(self._retry_attempts()):
+                try:
+                    frame = self._fetch_history_from_provider(
+                        normalized_symbol,
+                        timeframe=normalized_timeframe,
+                        bars=bars,
+                        provider=candidate_provider,
+                    )
+                    break
+                except EToroRateLimitError:
+                    raise
+                except Exception as exc:
+                    provider_errors.append(str(exc))
+                    if attempt < self._retry_attempts() - 1:
+                        sleep(self._retry_backoff_seconds(attempt))
+            if frame is None:
+                fetch_errors.append(f"{candidate_provider}: {' | '.join(provider_errors)}")
                 continue
 
             frame = self._annotate_frame(
@@ -113,23 +123,26 @@ class MarketDataEngine:
         quote_provider = self._resolve_quote_provider(provider)
 
         if quote_provider == "etoro" and self.etoro_client is not None:
-            try:
-                quote = self.etoro_client.get_rates([normalized_symbol]).get(normalized_symbol)
-                if quote is not None:
-                    return quote.model_copy(
-                        update={
-                            "source": "etoro",
-                            "is_primary": True,
-                            "used_fallback": False,
-                            "from_cache": False,
-                            "quote_derived_from_history": False,
-                            "data_age_seconds": 0.0,
-                        }
-                    )
-            except EToroRateLimitError:
-                raise
-            except Exception as exc:
-                logger.warning("eToro quote fallback for %s failed: %s", normalized_symbol, exc)
+            for attempt in range(self._retry_attempts()):
+                try:
+                    quote = self.etoro_client.get_rates([normalized_symbol]).get(normalized_symbol)
+                    if quote is not None:
+                        return quote.model_copy(
+                            update={
+                                "source": "etoro",
+                                "is_primary": True,
+                                "used_fallback": False,
+                                "from_cache": False,
+                                "quote_derived_from_history": False,
+                                "data_age_seconds": 0.0,
+                            }
+                        )
+                except EToroRateLimitError:
+                    raise
+                except Exception as exc:
+                    logger.warning("eToro quote fallback for %s failed: %s", normalized_symbol, exc)
+                    if attempt < self._retry_attempts() - 1:
+                        sleep(self._retry_backoff_seconds(attempt))
 
         frame = self.get_history(
             normalized_symbol,
@@ -166,19 +179,25 @@ class MarketDataEngine:
         if provider == "etoro":
             if self.etoro_client is None:
                 raise RuntimeError("eToro client is not configured")
-            if timeframe != "1d":
-                raise RuntimeError("eToro provider currently supports daily bars only in this engine")
-            return self.etoro_client.get_daily_candles(symbol, candles_count=min(max(bars, 50), 1000), interval="OneDay")
+            config = TIMEFRAME_CONFIG[timeframe]
+            interval = str(config["etoro_interval"])
+            candle_count = min(max(bars, 50), 1000)
+            if hasattr(self.etoro_client, "get_candles"):
+                return self.etoro_client.get_candles(symbol, candles_count=candle_count, interval=interval)
+            return self.etoro_client.get_daily_candles(symbol, candles_count=candle_count, interval=interval)
 
         if provider == "yfinance":
             config = TIMEFRAME_CONFIG[timeframe]
             yf_symbol = symbol.replace(".", "-")
-            return self.history_service.load_yfinance(
+            frame = self.history_service.load_yfinance(
                 yf_symbol,
                 period=config["period"],
                 interval=config["provider_interval"],
                 auto_adjust=False,
             )
+            if config.get("resample_rule"):
+                return self._resample_ohlcv(frame, str(config["resample_rule"]))
+            return frame
 
         raise ValueError(f"Unsupported provider: {provider}")
 
@@ -257,16 +276,34 @@ class MarketDataEngine:
         )
         return annotated
 
+    @staticmethod
+    def _resample_ohlcv(frame: pd.DataFrame, rule: str) -> pd.DataFrame:
+        if frame.empty:
+            return frame
+        working = frame.copy()
+        working["timestamp"] = pd.to_datetime(working["timestamp"], utc=True)
+        resampled = (
+            working.set_index("timestamp")
+            .resample(rule, label="right", closed="right")
+            .agg(
+                open=("open", "first"),
+                high=("high", "max"),
+                low=("low", "min"),
+                close=("close", "last"),
+                volume=("volume", "sum"),
+            )
+            .dropna(subset=["open", "high", "low", "close"])
+            .reset_index()
+        )
+        return resampled[["timestamp", "open", "high", "low", "close", "volume"]]
+
     def _resolve_provider(self, timeframe: str, provider: str | None) -> str:
         requested = (provider or self.settings.primary_market_data_provider or "auto").strip().lower()
         if requested == "auto":
-            if timeframe == "1d" and self.etoro_client is not None:
+            if self.etoro_client is not None:
                 return "etoro"
             fallback = (self.settings.fallback_market_data_provider or "yfinance").strip().lower()
             return "yfinance" if fallback in {"", "none"} else fallback
-        if requested == "etoro" and timeframe != "1d":
-            fallback = (self.settings.fallback_market_data_provider or "yfinance").strip().lower()
-            return fallback if fallback != "none" else "yfinance"
         return requested
 
     def _resolve_quote_provider(self, provider: str | None) -> str:
@@ -280,9 +317,15 @@ class MarketDataEngine:
         providers = [primary_provider]
         fallback = (self.settings.fallback_market_data_provider or "").strip().lower()
         if fallback and fallback != "none" and fallback not in providers:
-            if not (fallback == "etoro" and timeframe != "1d"):
-                providers.append(fallback)
+            providers.append(fallback)
         return providers
+
+    def _retry_attempts(self) -> int:
+        return max(1, int(getattr(self.settings, "market_data_retry_attempts", 1) or 1))
+
+    def _retry_backoff_seconds(self, attempt: int) -> float:
+        base = max(0.0, float(getattr(self.settings, "market_data_retry_backoff_seconds", 0.0) or 0.0))
+        return base * float(attempt + 1)
 
     @staticmethod
     def _normalize_timeframe(timeframe: str) -> str:
@@ -291,10 +334,17 @@ class MarketDataEngine:
             "oneday": "1d",
             "1day": "1d",
             "day": "1d",
+            "week": "1w",
+            "weekly": "1w",
+            "1week": "1w",
+            "1wk": "1w",
             "60m": "1h",
             "60min": "1h",
             "hour": "1h",
             "5min": "5m",
+            "10min": "10m",
+            "10minute": "10m",
+            "10minutes": "10m",
             "15min": "15m",
             "1min": "1m",
         }

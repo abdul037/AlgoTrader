@@ -9,8 +9,10 @@ from tests.conftest import make_settings
 class FakeMarketScreener:
     def __init__(self, candidates):
         self.candidates = candidates
+        self.calls = []
 
     def scan_universe(self, **kwargs):
+        self.calls.append(kwargs)
         return ScreenerRunResponse(
             generated_at="2026-04-11T00:00:00+00:00",
             universe_name="top100_us",
@@ -160,6 +162,11 @@ class FakeLogs:
         self.items.append((event_type, payload))
 
 
+class BlockingAutomation:
+    def scan_blockers(self):
+        return ["automation_paused"]
+
+
 class FakeLedgerService:
     def __init__(self):
         self.alerts = []
@@ -229,6 +236,37 @@ def test_run_swing_scan_tracks_and_records_alert(tmp_path) -> None:
     assert ledger.alerts[0]["alert_entry_price"] == 100.0
 
 
+def test_run_swing_scan_tracks_watchlist_candidates(tmp_path) -> None:
+    snapshot = _snapshot().model_copy(
+        update={
+            "metadata": {
+                "alert_eligible": False,
+                "signal_classification": "watchlist",
+                "backtest_validated": True,
+                "data_source": "etoro",
+                "data_source_verified": True,
+            }
+        }
+    )
+    tracked = FakeTrackedSignals()
+    workflow = SignalWorkflowService(
+        settings=make_settings(tmp_path, track_watchlist_signals=True),
+        market_screener=FakeMarketScreener([snapshot]),
+        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="NVDA", last_execution=101.0)),
+        notifier=FakeNotifier(),
+        tracked_signals=tracked,
+        alert_history=FakeAlertHistory(),
+        runtime_state=FakeState(),
+        run_logs=FakeLogs(),
+    )
+
+    result = workflow.run_swing_scan(notify=False)
+
+    assert result.candidates == 1
+    assert len(tracked.list(status="open")) == 1
+    assert tracked.items[0].origin == "swing_scan"
+
+
 def test_scheduled_tasks_runs_ledger_cycle_when_due_even_without_screener_scheduler(tmp_path) -> None:
     ledger = FakeLedgerService()
     state = FakeState()
@@ -255,6 +293,62 @@ def test_scheduled_tasks_runs_ledger_cycle_when_due_even_without_screener_schedu
     assert summary["ledger_cycles"] == 1
     assert ledger.cycles == 1
     assert state.get("workflow:last_ledger_cycle_at") is not None
+
+
+def test_scheduled_tasks_skip_scans_when_automation_paused(tmp_path) -> None:
+    screener = FakeMarketScreener([])
+    logs = FakeLogs()
+    workflow = SignalWorkflowService(
+        settings=make_settings(
+            tmp_path,
+            screener_scheduler_enabled=True,
+            ledger_enabled=False,
+            ledger_cycle_enabled=False,
+        ),
+        market_screener=screener,
+        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="NVDA", last_execution=101.0)),
+        notifier=FakeNotifier(),
+        tracked_signals=FakeTrackedSignals(),
+        alert_history=FakeAlertHistory(),
+        runtime_state=FakeState(),
+        run_logs=logs,
+        automation_service=BlockingAutomation(),
+    )
+
+    summary = workflow.run_scheduled_tasks()
+
+    assert summary["alerts_sent"] == 0
+    assert screener.calls == []
+    assert logs.items[-1][0] == "workflow_scheduler_paused"
+
+
+def test_intraday_scan_rotates_top100_batches(tmp_path) -> None:
+    screener = FakeMarketScreener([])
+    state = FakeState()
+    workflow = SignalWorkflowService(
+        settings=make_settings(
+            tmp_path,
+            market_universe_symbols=["AAPL", "MSFT", "NVDA", "AMD"],
+            market_universe_limit=4,
+            scalp_scan_batch_size=2,
+            intraday_active_shortlist_size=0,
+            screener_intraday_timeframes=["1m", "5m", "10m", "15m"],
+        ),
+        market_screener=screener,
+        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="NVDA", last_execution=101.0)),
+        notifier=FakeNotifier(),
+        tracked_signals=FakeTrackedSignals(),
+        alert_history=FakeAlertHistory(),
+        runtime_state=state,
+        run_logs=FakeLogs(),
+    )
+
+    workflow.run_intraday_scan(notify=False)
+    workflow.run_intraday_scan(notify=False)
+
+    assert screener.calls[0]["symbols"] == ["AAPL", "MSFT"]
+    assert screener.calls[0]["timeframes"] == ["1m", "5m", "10m", "15m"]
+    assert screener.calls[1]["symbols"] == ["NVDA", "AMD"]
 
 
 def test_open_signal_check_closes_target_hit(tmp_path) -> None:

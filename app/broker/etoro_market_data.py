@@ -94,7 +94,7 @@ class EtoroMarketDataClient:
             )
         return quotes
 
-    def get_daily_candles(
+    def get_candles(
         self,
         symbol: str,
         *,
@@ -102,7 +102,7 @@ class EtoroMarketDataClient:
         direction: str = "desc",
         interval: str = "OneDay",
     ) -> pd.DataFrame:
-        """Fetch normalized OHLCV candles for a symbol."""
+        """Fetch normalized OHLCV candles for a symbol and eToro interval."""
 
         if candles_count < 5:
             raise ValueError("candles_count must be at least 5")
@@ -129,6 +129,23 @@ class EtoroMarketDataClient:
             frame[column] = pd.to_numeric(frame[column], errors="raise")
         frame = frame.sort_values("timestamp").reset_index(drop=True)
         return frame[["timestamp", "open", "high", "low", "close", "volume"]].copy()
+
+    def get_daily_candles(
+        self,
+        symbol: str,
+        *,
+        candles_count: int = 250,
+        direction: str = "desc",
+        interval: str = "OneDay",
+    ) -> pd.DataFrame:
+        """Backward-compatible candle fetch used by the single-signal path."""
+
+        return self.get_candles(
+            symbol,
+            candles_count=candles_count,
+            direction=direction,
+            interval=interval,
+        )
 
     def _headers(self) -> dict[str, str]:
         if self.settings.broker_simulation_enabled:

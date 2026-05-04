@@ -19,6 +19,7 @@ class RiskContext(BaseModel):
     open_positions: int = 0
     positions_by_symbol: dict[str, int] = Field(default_factory=dict)
     consecutive_losses_today: int = 0
+    trades_today: int = 0
     mode: str = "demo"
 
 
@@ -53,6 +54,9 @@ class RiskManager:
 
         if context.open_positions >= self.settings.max_open_positions:
             reasons.append("Maximum number of open positions reached")
+
+        if context.trades_today >= int(getattr(self.settings, "max_trades_per_day", 999999)):
+            reasons.append("Maximum number of trades for today reached")
 
         symbol_positions = int(context.positions_by_symbol.get(order.symbol.upper(), 0))
         if symbol_positions >= self.settings.per_symbol_position_limit:

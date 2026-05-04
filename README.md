@@ -7,7 +7,7 @@ Production-minded Python trading system scaffold for backtesting, multi-stock sc
 The codebase now has four primary layers:
 
 - market data and caching: broker-aligned eToro market data plus Yahoo fallback through a shared market-data engine
-- strategy and signal generation: reusable strategy modules for swing, intraday, breakout, trend-following, mean-reversion, RSI, VWAP, EMA, and confluence scans across `1m`, `5m`, `15m`, `1h`, and `1d`
+- strategy and signal generation: reusable strategy modules for swing, intraday, breakout, trend-following, mean-reversion, RSI, VWAP, EMA, and confluence scans across `1m`, `5m`, `10m`, `15m`, `1h`, `1d`, and `1w`
 - backtesting and validation: single-run and batch backtests stored in SQLite, reused to gate live alerts, and compared with paper-trading outcomes
 - delivery and approval: Telegram alerts, webhook command handling, proposal approval flow, execution queue handling, paper trading, and a future-facing execution interface
 
@@ -19,6 +19,7 @@ The active production Telegram path is webhook mode through FastAPI. Polling rem
 - `ENABLE_REAL_TRADING=false` by default.
 - `REQUIRE_APPROVAL=true` by default.
 - `EXECUTION_MODE=paper` by default.
+- `AUTO_PROPOSE_ENABLED=false` and `AUTO_EXECUTE_AFTER_APPROVAL=false` by default.
 - Unsupported and explicitly blocked instruments are rejected before proposal creation.
 - Risk validation runs before proposal creation and again before execution.
 - Orders without stop losses are rejected.
@@ -216,9 +217,14 @@ REQUIRE_DIRECT_QUOTE_FOR_ALERTS=true
 REQUIRE_UNCACHED_MARKET_DATA_FOR_ALERTS=false
 MAX_MARKET_DATA_AGE_SECONDS=120
 SCREENER_DEFAULT_TIMEFRAMES=15m,1h,1d
-SCREENER_INTRADAY_TIMEFRAMES=1m,5m,15m
-INTELLIGENT_SCAN_TIMEFRAMES=5m,15m,1h,1d
-SINGLE_SYMBOL_ANALYSIS_TIMEFRAMES=1m,5m,15m,1h,1d
+SCREENER_INTRADAY_TIMEFRAMES=1m,5m,10m,15m
+INTELLIGENT_SCAN_TIMEFRAMES=5m,15m,1h,1d,1w
+SINGLE_SYMBOL_ANALYSIS_TIMEFRAMES=1m,5m,15m,1h,1d,1w
+SWING_SCAN_TIMEFRAMES=1d,1w
+SCALP_SCAN_BATCH_SIZE=20
+INTRADAY_ACTIVE_SHORTLIST_SIZE=20
+AUTO_PROPOSE_ENABLED=false
+AUTO_EXECUTE_AFTER_APPROVAL=false
 INTELLIGENT_SCAN_ENABLED=true
 INTELLIGENT_SCAN_START_LOCAL=09:45
 INTELLIGENT_SCAN_END_LOCAL=15:45
@@ -305,6 +311,7 @@ Core endpoints:
 - `POST /execution/queue/{proposal_id}/enqueue`
 - `POST /execution/queue/process`
 - `GET /paper/summary`
+- `GET /paper/dashboard`
 - `GET /paper/positions`
 - `GET /paper/trades`
 - `POST /paper/refresh`
@@ -462,6 +469,7 @@ Supported commands in Telegram:
 - `/signal NVDA`
 - `/price AMD`
 - `/scan 5`
+- `/scan 3 NVDA AAPL MSFT`
 - `/intraday_scan 5`
 - `/supported_scan 10`
 - `/validated_scan 10`
@@ -475,6 +483,7 @@ Supported commands in Telegram:
 - `/queue`
 - `/process_queue QUEUE_ID`
 - `/open_signals`
+- `/performance`
 - `/daily_summary`
 - `/notify NVDA`
 
@@ -486,6 +495,8 @@ Approval command notes:
 - `/approve` only approves. Use `/enqueue` and `/process_queue` for the explicit execution step.
 - `/process_queue` follows `EXECUTION_MODE`; default `paper` mode simulates the trade.
 - If `EXECUTION_MODE=live`, `/process_queue` requires `CONFIRM_LIVE` as an extra argument and real trading must still be enabled in config.
+- `/scan 3 NVDA AAPL MSFT` scans only those requested symbols and returns up to 3 ranked results.
+- `/performance` summarizes paper P&L, open positions, provider health, and calibration suggestions from recent scan decisions.
 
 Fallback polling mode still exists for local debugging:
 
@@ -573,6 +584,8 @@ MARKET_UNIVERSE_LIMIT=100
 MARKET_UNIVERSE_SYMBOLS=
 PRIMARY_MARKET_DATA_PROVIDER=auto
 FALLBACK_MARKET_DATA_PROVIDER=yfinance
+MARKET_DATA_RETRY_ATTEMPTS=2
+MARKET_DATA_RETRY_BACKOFF_SECONDS=0.75
 SCREENER_DEFAULT_TIMEFRAMES=1d,1h,15m
 SCREENER_INTRADAY_TIMEFRAMES=15m,1h
 SCREENER_ACTIVE_STRATEGY_NAMES=rsi_vwap_ema_confluence
@@ -580,6 +593,7 @@ SCREENER_PRIMARY_STRATEGY_NAME=rsi_vwap_ema_confluence
 SCREENER_TOP_K=20
 SCREENER_MIN_CONFIDENCE=0.45
 REQUIRE_BACKTEST_VALIDATION_FOR_ALERTS=true
+TRACK_WATCHLIST_SIGNALS=true
 MIN_BACKTEST_TRADES_FOR_ALERTS=10
 MIN_BACKTEST_PROFIT_FACTOR=1.2
 MIN_BACKTEST_ANNUALIZED_RETURN_PCT=5
@@ -829,6 +843,7 @@ The execution path is now staged:
 Paper routes:
 
 - `GET /paper/summary`
+- `GET /paper/dashboard`
 - `GET /paper/positions`
 - `GET /paper/trades`
 - `POST /paper/refresh`
@@ -880,20 +895,24 @@ Then test the upgraded paths:
 ```bash
 curl http://127.0.0.1:8011/health
 curl "http://127.0.0.1:8011/screener/analyze?symbol=NVDA"
-curl "http://127.0.0.1:8011/screener/scan?symbols=NVDA,AMD,AAPL,MSFT&timeframes=1m,5m,15m,1h,1d&limit=5"
+curl "http://127.0.0.1:8011/screener/scan?symbols=NVDA,AMD,AAPL,MSFT&timeframes=1m,5m,10m,15m,1h,1d,1w&limit=5"
 curl -X POST http://127.0.0.1:8011/workflow/run/intelligent-scan
 curl http://127.0.0.1:8011/paper/summary
 curl http://127.0.0.1:8011/execution/queue
+curl http://127.0.0.1:8011/automation/status
 ```
 
 Telegram smoke test:
 
 - `/signal NVDA`
 - `/signal AMD`
-- `/scan 5`
+- `/scan top100 tf=1m,5m,10m,15m,1h,1d,1w`
 - `/intraday_scan 5`
 - `/validated_scan 5`
 - `/open_signals`
+- `/auto_status`
+
+Production deployment notes, backup/restore commands, webhook reset, and emergency stop steps are in [`docs/production_runbook.md`](docs/production_runbook.md).
 - `/daily_summary`
 
 ## Phased Rollout

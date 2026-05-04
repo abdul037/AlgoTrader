@@ -23,6 +23,7 @@ class ExecutionCoordinator:
         paper_trading_service: Any,
         market_data_engine: Any,
         run_logs: Any,
+        automation_service: Any | None = None,
     ):
         self.settings = settings
         self.proposals = proposal_service
@@ -32,6 +33,7 @@ class ExecutionCoordinator:
         self.paper = paper_trading_service
         self.market_data = market_data_engine
         self.logs = run_logs
+        self.automation = automation_service
 
     def enqueue_approved_proposal(self, proposal_id: str) -> ExecutionQueueRecord:
         proposal = self.proposals.get_proposal(proposal_id)
@@ -62,12 +64,16 @@ class ExecutionCoordinator:
         record.status = ExecutionQueueStatus.PROCESSING
         record.updated_at = utc_now().isoformat()
         self.queue.update(record)
+        automation_blockers = self._automation_blockers()
 
         timeframe = record.timeframe or (proposal.signal.metadata.get("timeframe") if proposal.signal is not None else "1d") or "1d"
         quote = self.market_data.get_quote(proposal.order.symbol, timeframe=timeframe, force_refresh=True)
         quote_price = float(quote.last_execution or quote.ask or quote.bid or proposal.order.proposed_price)
         quote_drift_bps = abs((quote_price - float(proposal.order.proposed_price)) / max(float(proposal.order.proposed_price), 0.01)) * 10_000.0
-        validation_reasons = self._quote_validation_reasons(quote)
+        validation_reasons = [*automation_blockers, *self._quote_validation_reasons(quote)]
+        start_of_day = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
+        if self.executions.count_since(start_of_day) >= int(getattr(self.settings, "max_trades_per_day", 999999)):
+            validation_reasons.append("max_trades_per_day_reached")
         if quote_drift_bps > float(self.settings.execution_max_entry_drift_bps):
             validation_reasons.append("entry_drift_too_large")
 
@@ -86,7 +92,7 @@ class ExecutionCoordinator:
             )
             return record
 
-        if self.settings.execution_mode == "paper" or self.settings.paper_trading_enabled:
+        if self.settings.execution_mode == "paper":
             paper_position = self.paper.open_from_approved_proposal(proposal, live_quote=quote)
             execution = ExecutionRecord(
                 proposal_id=proposal.id,
@@ -97,8 +103,10 @@ class ExecutionCoordinator:
             )
             self.executions.create(execution)
             self.proposals.mark_executed(proposal.id, execution.id)
-        else:
+        elif self.settings.execution_mode == "live":
             execution = self.trader.execute_proposal(proposal.id)
+        else:
+            raise ValueError(f"Unsupported execution mode: {self.settings.execution_mode}")
 
         record.status = ExecutionQueueStatus.EXECUTED
         record.executed_at = utc_now().isoformat()
@@ -116,6 +124,21 @@ class ExecutionCoordinator:
         for record in self.queue.list(status=ExecutionQueueStatus.QUEUED, limit=limit):
             results.append(self.process_queue_item(record.id))
         return results
+
+    def _automation_blockers(self) -> list[str]:
+        if self.automation is not None:
+            return list(self.automation.execution_blockers())
+        reasons: list[str] = []
+        if bool(getattr(self.settings, "kill_switch_enabled", False)):
+            reasons.append("automation_kill_switch_enabled")
+        if getattr(self.settings, "execution_mode", "paper") == "live":
+            if not bool(getattr(self.settings, "require_approval", True)):
+                reasons.append("approval_required_must_remain_enabled")
+            if not bool(getattr(self.settings, "enable_real_trading", False)):
+                reasons.append("enable_real_trading_false")
+            if bool(getattr(self.settings, "paper_trading_enabled", True)):
+                reasons.append("paper_trading_enabled_in_live_mode")
+        return reasons
 
     def _quote_validation_reasons(self, quote: Any) -> list[str]:
         reasons: list[str] = []

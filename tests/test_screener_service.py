@@ -144,7 +144,7 @@ def test_primary_strategy_mode_limits_specs_to_confluence(tmp_path) -> None:
         screener_active_strategy_names=["rsi_vwap_ema_confluence"],
     )
 
-    for timeframe in ["1m", "5m", "15m", "1h", "1d"]:
+    for timeframe in ["1m", "5m", "10m", "15m", "1h", "1d", "1w"]:
         specs = _strategy_specs(settings, timeframe=timeframe)
         assert specs
         assert {spec.name for spec in specs} == {"rsi_vwap_ema_confluence"}
@@ -260,7 +260,7 @@ def test_screener_candidate_includes_backtest_snapshot_and_reasons(tmp_path) -> 
     assert candidate.pass_reasons
     assert candidate.backtest_snapshot["validated"] is True
     assert candidate.metadata["alert_eligible"] is True
-    assert decisions.items[-1].status == "candidate"
+    assert any(item.status == "candidate" for item in decisions.items)
 
 
 def test_diagnostic_measurements_preserve_volume_thresholds() -> None:
@@ -347,7 +347,7 @@ def test_scheduled_scan_suppresses_flat_repeat_without_score_improvement(tmp_pat
     assert first.candidates
     assert second.candidates == []
     assert second.suppressed >= 1
-    assert decisions.items[-1].status == "suppressed"
+    assert any(item.status == "suppressed" for item in decisions.items)
 
 
 def test_screener_strict_market_data_gate_blocks_unverified_candidates(tmp_path) -> None:

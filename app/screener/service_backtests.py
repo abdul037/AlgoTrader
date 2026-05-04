@@ -61,5 +61,5 @@ def compute_risk_reward(signal: Any) -> float | None:
 
 
 def bars_for_timeframe(timeframe: str) -> int:
-    mapping = {"1d": 400, "1h": 320, "15m": 300, "5m": 320, "1m": 360}
+    mapping = {"1w": 520, "1d": 400, "1h": 320, "15m": 300, "10m": 320, "5m": 320, "1m": 360}
     return mapping.get(timeframe, 250)

@@ -69,12 +69,30 @@ class PaperPerformanceSummary(BaseModel):
     total_trades: int = 0
     open_positions: int = 0
     win_rate: float = 0.0
+    profit_factor: float = 0.0
     realized_pnl_usd: float = 0.0
     unrealized_pnl_usd: float = 0.0
     expectancy_usd: float = 0.0
     average_reward_to_risk: float = 0.0
+    average_r_multiple: float = 0.0
+    max_drawdown_usd: float = 0.0
+    watchlist_signals: int = 0
+    trigger_ready_signals: int = 0
+    execution_ready_signals: int = 0
     pnl_by_timeframe: dict[str, float] = Field(default_factory=dict)
     pnl_by_strategy: dict[str, float] = Field(default_factory=dict)
     pnl_by_symbol: dict[str, float] = Field(default_factory=dict)
     pnl_by_regime: dict[str, float] = Field(default_factory=dict)
     rejection_reason_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class BotPerformanceDashboard(BaseModel):
+    """Operator dashboard for paper trading, scan quality, and risk controls."""
+
+    paper: PaperPerformanceSummary
+    open_positions: list[PaperPositionRecord] = Field(default_factory=list)
+    recent_trades: list[PaperTradeRecord] = Field(default_factory=list)
+    recent_scan_decisions: list[dict[str, Any]] = Field(default_factory=list)
+    provider_health: dict[str, Any] = Field(default_factory=dict)
+    calibration_suggestions: list[str] = Field(default_factory=list)
+    risk_controls: dict[str, Any] = Field(default_factory=dict)

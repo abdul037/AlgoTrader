@@ -16,7 +16,7 @@ from app.models.approval import ApprovalDecisionRequest, ApprovalStatus
 from app.runtime_settings import AppSettings
 from app.telegram_notify import TelegramNotifier
 from app.signals.service import LiveSignalService
-from app.universe import resolve_universe
+from app.universe import DEFAULT_TOP_100_US, resolve_universe
 from app.utils.time import utc_now
 
 if TYPE_CHECKING:
@@ -34,7 +34,10 @@ class TelegramBotService:
         "/signal SYMBOL - full signal snapshot\n"
         "/price SYMBOL - quick price and watch levels\n"
         "/scan [limit] - ranked screener over a safe live batch\n"
+        "/scan top100 tf=1m,5m,10m,15m,1h,1d,1w - deep top-100 scan\n"
+        "/scan details [limit] - include lower-priority watch setups\n"
         "/intraday_scan [limit] - ranked intraday screener over a safe live batch\n"
+        "/scan [limit] SYMBOL... - ranked screener over specific symbols\n"
         "/scan_status - show whether a screener scan is still running\n"
         "/cancel_scan - request cancellation for the active screener scan\n"
         "/supported_scan [limit] - ranked screener for supported symbols\n"
@@ -50,7 +53,12 @@ class TelegramBotService:
         "/open_signals - tracked active signals\n"
         "/outcomes - ledger outcome quality summary\n"
         "/strategy_report - ledger-backed strategy audit\n"
+        "/performance - paper trading and signal-quality dashboard\n"
         "/health - bot operations health\n"
+        "/auto_status - automation, proposal, and execution safety status\n"
+        "/pause_auto [reason] - pause scheduled scans and auto proposals\n"
+        "/resume_auto [reason] - resume scheduled scans and clear runtime kill switch\n"
+        "/kill_switch [reason] - immediately pause automation and block execution\n"
         "/daily_summary - latest workflow summary\n"
         "/notify SYMBOL - force-send the current signal snapshot\n"
     )
@@ -66,6 +74,8 @@ class TelegramBotService:
         proposal_service: Any | None = None,
         execution_coordinator: Any | None = None,
         execution_queue_repository: Any | None = None,
+        paper_trading_service: Any | None = None,
+        automation_service: Any | None = None,
         runtime_state_repository: "RuntimeStateRepository" | Any,
         run_log_repository: "RunLogRepository" | Any,
     ):
@@ -77,6 +87,8 @@ class TelegramBotService:
         self.proposal_service = proposal_service
         self.execution_coordinator = execution_coordinator
         self.execution_queue_repository = execution_queue_repository
+        self.paper_trading_service = paper_trading_service
+        self.automation = automation_service
         self.state = runtime_state_repository
         self.logs = run_log_repository
         self._approval_adapter = SignalApprovalAdapter()
@@ -86,6 +98,7 @@ class TelegramBotService:
         self._active_scan_cancel_event: threading.Event | None = None
         self._active_scan_started_at: datetime | None = None
         self._active_scan_label: str | None = None
+        self._scan_generation = 0
 
     def run_forever(self) -> None:
         """Run the long-polling command bot and scheduled alert loop."""
@@ -256,8 +269,20 @@ class TelegramBotService:
             )
             return
 
-        if command in {"/scan", "/screener", "/supported_scan", "/intraday_scan", "/validated_scan"}:
-            limit = self._parse_limit(args)
+        if command in {
+            "/scan",
+            "/scan_top100",
+            "/scan_details",
+            "/screener",
+            "/screener_details",
+            "/supported_scan",
+            "/intraday_scan",
+            "/validated_scan",
+        }:
+            limit, requested_symbols, include_details, universe_limit, requested_timeframes = self._parse_scan_args(args)
+            include_details = include_details or command in {"/scan_details", "/screener_details"}
+            if command == "/scan_top100":
+                universe_limit = int(getattr(self.settings, "market_universe_limit", 100) or 100)
             supported_only = command == "/supported_scan"
             validated_only = command == "/validated_scan"
             intraday = command == "/intraday_scan"
@@ -267,6 +292,11 @@ class TelegramBotService:
                     supported_only=supported_only,
                     validated_only=validated_only,
                     intraday=intraday,
+                    requested_symbols=requested_symbols,
+                    include_details=include_details,
+                    universe_limit=universe_limit,
+                    requested_timeframes=requested_timeframes,
+                    chat_id=chat_id,
                 ),
                 chat_id=chat_id,
             )
@@ -348,8 +378,28 @@ class TelegramBotService:
             self.notifier.send_text(self._strategy_report_message(), chat_id=chat_id)
             return
 
+        if command in {"/performance", "/paper_summary"}:
+            self.notifier.send_text(self._performance_message(), chat_id=chat_id)
+            return
+
         if command == "/health":
             self.notifier.send_text(self._health_message(), chat_id=chat_id)
+            return
+
+        if command == "/auto_status":
+            self.notifier.send_text(self._automation_status_message(), chat_id=chat_id)
+            return
+
+        if command == "/pause_auto":
+            self.notifier.send_text(self._automation_change_message("pause", args), chat_id=chat_id)
+            return
+
+        if command == "/resume_auto":
+            self.notifier.send_text(self._automation_change_message("resume", args), chat_id=chat_id)
+            return
+
+        if command == "/kill_switch":
+            self.notifier.send_text(self._automation_change_message("kill_switch", args), chat_id=chat_id)
             return
 
         if command == "/daily_summary":
@@ -537,7 +587,7 @@ class TelegramBotService:
         return self._format_proposal(
             proposal,
             header="Proposal approved",
-            footer=f"Queue it: /enqueue {proposal.id}",
+            footer=self._approval_footer(proposal.id),
         )
 
     def _reject_message(self, chat_id: str, args: list[str]) -> str:
@@ -603,6 +653,77 @@ class TelegramBotService:
             return "\n\n".join(self._format_queue_record(record, header="Queue processed") for record in records)
         record = self._run_with_timeout(self.execution_coordinator.process_queue_item, target)
         return self._format_queue_record(record, header="Queue processed")
+
+    def _approval_footer(self, proposal_id: str) -> str:
+        if not bool(getattr(self.settings, "auto_execute_after_approval", False)):
+            return f"Queue it: /enqueue {proposal_id}"
+        if self.execution_coordinator is None:
+            return "Auto-execute after approval is enabled, but the execution coordinator is not configured."
+        try:
+            queued = self._run_with_timeout(
+                self.execution_coordinator.enqueue_approved_proposal,
+                proposal_id,
+            )
+            processed = self._run_with_timeout(
+                self.execution_coordinator.process_queue_item,
+                queued.id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return (
+                "Auto-execute after approval is enabled, but execution was not completed.\n"
+                f"Reason: {exc}\n"
+                f"Manual queue check: /queue"
+            )
+        return "\n".join(
+            [
+                "Auto-execute after approval is enabled.",
+                f"Queue ID: {processed.id}",
+                f"Status: {processed.status}",
+                f"Reason: {processed.validation_reason or 'ready'}",
+            ]
+        )
+
+    def _automation_status_message(self) -> str:
+        if self.automation is None:
+            return "Automation service is not configured."
+        status = self.automation.status()
+        return "\n".join(
+            [
+                "Automation status",
+                f"Paused: {'yes' if status.paused else 'no'}",
+                f"Kill switch: {'on' if status.kill_switch_enabled else 'off'}",
+                f"Auto propose: {'on' if status.auto_propose_enabled else 'off'}",
+                f"Auto execute after approval: {'on' if status.auto_execute_after_approval else 'off'}",
+                f"Execution mode: {status.execution_mode}",
+                f"Real trading enabled: {'yes' if status.enable_real_trading else 'no'}",
+                f"Require approval: {'yes' if status.require_approval else 'no'}",
+                f"Reason: {status.reason or 'n/a'}",
+            ]
+        )
+
+    def _automation_change_message(self, action: str, args: list[str]) -> str:
+        if self.automation is None:
+            return "Automation service is not configured."
+        reason = " ".join(args)
+        if action == "pause":
+            status = self.automation.pause(reason=reason or "Paused from Telegram.")
+            header = "Automation paused"
+        elif action == "resume":
+            status = self.automation.resume(reason=reason or "Resumed from Telegram.")
+            header = "Automation resumed"
+        elif action == "kill_switch":
+            status = self.automation.enable_kill_switch(reason=reason or "Kill switch from Telegram.")
+            header = "Kill switch enabled"
+        else:
+            return "Unknown automation action."
+        return "\n".join(
+            [
+                header,
+                f"Paused: {'yes' if status.paused else 'no'}",
+                f"Kill switch: {'on' if status.kill_switch_enabled else 'off'}",
+                f"Reason: {status.reason or 'n/a'}",
+            ]
+        )
 
     def _outcomes_message(self) -> str:
         repository = self._ledger_repository()
@@ -714,6 +835,44 @@ class TelegramBotService:
             ]
         )
 
+    def _performance_message(self) -> str:
+        if self.paper_trading_service is None:
+            return "Paper performance service is not configured."
+        dashboard = (
+            self.paper_trading_service.dashboard()
+            if hasattr(self.paper_trading_service, "dashboard")
+            else {"paper": self.paper_trading_service.summary()}
+        )
+        paper = dashboard.get("paper")
+        paper_data = paper.model_dump() if hasattr(paper, "model_dump") else dict(paper or {})
+        lines = [
+            "AlgoBot performance",
+            f"Mode: {paper_data.get('mode', 'paper')}",
+            (
+                f"Paper P&L: realized {self._fmt_decimal(paper_data.get('realized_pnl_usd'))} | "
+                f"unrealized {self._fmt_decimal(paper_data.get('unrealized_pnl_usd'))}"
+            ),
+            (
+                f"Trades: {int(paper_data.get('total_trades') or 0)} | "
+                f"Open: {int(paper_data.get('open_positions') or 0)} | "
+                f"Win rate: {self._fmt_decimal(paper_data.get('win_rate'))}% | "
+                f"Expectancy: {self._fmt_decimal(paper_data.get('expectancy_usd'))}"
+            ),
+        ]
+        provider_health = dict(dashboard.get("provider_health") or {})
+        if provider_health:
+            lines.append(
+                "Data: "
+                f"history {provider_health.get('history_provider', 'n/a')} | "
+                f"quote {provider_health.get('quote_provider', 'n/a')} | "
+                f"freshness {provider_health.get('freshness_status', 'n/a')}"
+            )
+        suggestions = list(dashboard.get("calibration_suggestions") or [])
+        if suggestions:
+            lines.append("Next calibration:")
+            lines.extend(f"- {item}" for item in suggestions[:3])
+        return "\n".join(lines)
+
     def _ledger_repository(self):
         if self.workflow_service is None:
             return None
@@ -746,6 +905,11 @@ class TelegramBotService:
         supported_only: bool,
         validated_only: bool,
         intraday: bool,
+        requested_symbols: list[str] | None = None,
+        include_details: bool = False,
+        universe_limit: int | None = None,
+        requested_timeframes: list[str] | None = None,
+        chat_id: str | None = None,
     ) -> str:
         if self.market_screener is None:
             response = self._run_with_timeout(
@@ -758,14 +922,24 @@ class TelegramBotService:
             return self.notifier.format_scan_message(response)
 
         symbols = None
-        if supported_only:
+        if requested_symbols:
+            symbols = requested_symbols
+        elif supported_only:
             symbols = list(self.settings.allowed_instruments)
         else:
-            symbols = resolve_universe(
-                self.settings,
-                limit=int(getattr(self.settings, "telegram_scan_default_universe_limit", 25) or 25),
+            scan_universe_limit = int(
+                universe_limit
+                or getattr(self.settings, "telegram_scan_default_universe_limit", 25)
+                or 25
             )
-        timeframes = (
+            if universe_limit is not None:
+                symbols = list(DEFAULT_TOP_100_US[: max(1, min(scan_universe_limit, len(DEFAULT_TOP_100_US)))])
+            else:
+                symbols = resolve_universe(
+                    self.settings,
+                    limit=scan_universe_limit,
+                )
+        timeframes = list(requested_timeframes or []) or (
             list(self.settings.screener_intraday_timeframes)
             if intraday
             else list(self.settings.screener_default_timeframes)
@@ -778,7 +952,9 @@ class TelegramBotService:
             "notify": False,
             "force_refresh": False,
         }
-        if "scan_task" in inspect.signature(self.market_screener.scan_universe).parameters:
+        scan_signature = inspect.signature(self.market_screener.scan_universe)
+        supports_scan_task = "scan_task" in scan_signature.parameters
+        if supports_scan_task:
             kwargs["scan_task"] = (
                 "manual_intraday_scan"
                 if intraday
@@ -788,7 +964,7 @@ class TelegramBotService:
                 if supported_only
                 else "manual_scan"
             )
-        response = self._run_scan_with_timeout(str(kwargs.get("scan_task") or "manual_scan"), **kwargs)
+        scan_task = str(kwargs.get("scan_task") or "manual_scan")
         task_label = (
             "intraday_scan"
             if intraday
@@ -798,10 +974,107 @@ class TelegramBotService:
             if supported_only
             else "scan"
         )
+        scope_line = self._scan_scope_line(
+            requested_symbols=requested_symbols,
+            include_details=include_details,
+            limit=limit,
+            universe_limit=universe_limit,
+        )
+        estimated_checks = len(symbols or []) * len(timeframes or [])
+        if estimated_checks > 50 and scan_task == "manual_scan":
+            scan_task = "manual_deep_scan"
+            if supports_scan_task:
+                kwargs["scan_task"] = scan_task
+        if chat_id and estimated_checks > 50:
+            return self._start_scan_background(
+                scan_task,
+                chat_id=chat_id,
+                task_label=task_label,
+                include_details=include_details,
+                scope_line=scope_line,
+                estimated_symbols=len(symbols or []),
+                estimated_timeframes=list(timeframes or []),
+                **kwargs,
+            )
+
+        response = self._run_scan_with_timeout(scan_task, **kwargs)
+        self._track_scan_candidates(response, origin=scan_task)
         try:
-            return self.notifier.format_screener_summary(response, task_label=task_label)
+            message = self.notifier.format_screener_summary(
+                response,
+                task_label=task_label,
+                include_other_watches=include_details,
+            )
         except TypeError:
-            return self.notifier.format_screener_summary(response)
+            message = self.notifier.format_screener_summary(response)
+        return f"{message}\n{scope_line}"
+
+    def _scan_scope_line(
+        self,
+        *,
+        requested_symbols: list[str] | None,
+        include_details: bool,
+        limit: int,
+        universe_limit: int | None,
+    ) -> str:
+        if requested_symbols:
+            scanned = ", ".join(requested_symbols[:8])
+            extra = "..." if len(requested_symbols) > 8 else ""
+            return f"Scope: requested symbols {scanned}{extra}"
+        result_scope = f"showing up to {limit} result(s)" if include_details else "best setup shown"
+        scan_limit = int(
+            universe_limit
+            or getattr(self.settings, "telegram_scan_default_universe_limit", 25)
+            or 25
+        )
+        return f"Scope: scanned up to {scan_limit} symbols; {result_scope}."
+
+    def _start_scan_background(
+        self,
+        label: str,
+        *,
+        chat_id: str,
+        task_label: str,
+        include_details: bool,
+        scope_line: str,
+        estimated_symbols: int,
+        estimated_timeframes: list[str],
+        **kwargs,
+    ) -> str:
+        future, _cancel_event, release_scan = self._submit_scan(label, **kwargs)
+
+        def _send_result(completed_future) -> None:
+            try:
+                response = completed_future.result()
+                self._track_scan_candidates(response, origin=label)
+                try:
+                    message = self.notifier.format_screener_summary(
+                        response,
+                        task_label=task_label,
+                        include_other_watches=include_details,
+                    )
+                except TypeError:
+                    message = self.notifier.format_screener_summary(response)
+                message = f"{message}\n{scope_line}"
+            except Exception as exc:  # noqa: BLE001
+                message = (
+                    f"Deep scan failed for {label.replace('_', ' ')}.\n"
+                    f"{exc}\n"
+                    "Use /scan_status before retrying."
+                )
+                self.logs.log("telegram_deep_scan_error", {"label": label, "error": str(exc)})
+            self.notifier.send_text(message, chat_id=chat_id)
+
+        future.add_done_callback(_send_result)
+        future.add_done_callback(release_scan)
+        timeframe_text = ", ".join(estimated_timeframes)
+        return (
+            "Deep scan started.\n"
+            f"Universe: {estimated_symbols} symbol(s)\n"
+            f"Timeframes: {timeframe_text}\n"
+            "I will send the best trade signal here when it finishes.\n"
+            "Use /scan_status to check progress or /cancel_scan to stop it."
+        )
 
     @staticmethod
     def _format_proposal(proposal: Any, *, header: str, footer: str | None = None) -> str:
@@ -904,13 +1177,28 @@ class TelegramBotService:
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
 
-    def _run_scan_with_timeout(self, label: str, **kwargs):
+    def _track_scan_candidates(self, response: Any, *, origin: str) -> None:
+        workflow = self.workflow_service
+        if workflow is None or not hasattr(workflow, "_track_candidates"):
+            return
+        try:
+            workflow._track_candidates(response, origin=origin)
+        except Exception as exc:  # noqa: BLE001
+            self.logs.log(
+                "telegram_scan_tracking_error",
+                {"origin": origin, "error": str(exc)},
+            )
+
+    def _submit_scan(self, label: str, **kwargs):
         if self.market_screener is None:
             raise RuntimeError("Market screener is not configured.")
+        self._recover_stale_scan_if_needed()
         if not self._scan_lock.acquire(blocking=False):
             raise RuntimeError(self._scan_in_progress_message())
 
         cancel_event = threading.Event()
+        self._scan_generation += 1
+        scan_generation = self._scan_generation
         self._active_scan_cancel_event = cancel_event
         self._active_scan_started_at = utc_now()
         self._active_scan_label = label
@@ -923,6 +1211,8 @@ class TelegramBotService:
         self._active_scan_future = future
 
         def _release_scan(_future) -> None:
+            if scan_generation != self._scan_generation:
+                return
             self._active_scan_future = None
             self._active_scan_cancel_event = None
             self._active_scan_started_at = None
@@ -932,7 +1222,11 @@ class TelegramBotService:
             except RuntimeError:
                 pass
 
-        future.add_done_callback(_release_scan)
+        return future, cancel_event, _release_scan
+
+    def _run_scan_with_timeout(self, label: str, **kwargs):
+        future, cancel_event, release_scan = self._submit_scan(label, **kwargs)
+        future.add_done_callback(release_scan)
         try:
             return future.result(timeout=self.settings.telegram_command_timeout_seconds)
         except FutureTimeoutError as exc:
@@ -943,7 +1237,66 @@ class TelegramBotService:
                 "Use /scan_status before starting another scan."
             ) from exc
 
+    def _recover_stale_scan_if_needed(self) -> bool:
+        future = self._active_scan_future
+        if future is None:
+            if self._scan_lock.locked():
+                self._scan_generation += 1
+                self._clear_active_scan(release_lock=True)
+                self.logs.log("telegram_scan_orphan_lock_recovered", {})
+                return True
+            return False
+        if future.done():
+            self._scan_generation += 1
+            self._clear_active_scan(release_lock=True)
+            return True
+        started = self._active_scan_started_at
+        if started is None:
+            return False
+        elapsed = int((utc_now() - started).total_seconds())
+        stale_after = int(
+            getattr(
+                self.settings,
+                "telegram_scan_stale_after_seconds",
+                max(int(getattr(self.settings, "telegram_command_timeout_seconds", 20) or 20) * 3, 60),
+            )
+            or 180
+        )
+        if str(self._active_scan_label or "").startswith("manual_deep_scan") and elapsed < max(stale_after, 3600):
+            return False
+        if elapsed < max(stale_after, 30):
+            return False
+        if self._active_scan_cancel_event is not None:
+            self._active_scan_cancel_event.set()
+        try:
+            future.cancel()
+        except Exception:
+            pass
+        self._scan_generation += 1
+        self._scan_executor.shutdown(wait=False, cancel_futures=True)
+        self._scan_executor = ThreadPoolExecutor(max_workers=1)
+        self._clear_active_scan(release_lock=True)
+        self.logs.log(
+            "telegram_scan_stale_recovered",
+            {"elapsed_seconds": elapsed, "stale_after_seconds": stale_after},
+        )
+        return True
+
+    def _clear_active_scan(self, *, release_lock: bool) -> None:
+        self._active_scan_future = None
+        self._active_scan_cancel_event = None
+        self._active_scan_started_at = None
+        self._active_scan_label = None
+        if release_lock and self._scan_lock.locked():
+            try:
+                self._scan_lock.release()
+            except RuntimeError:
+                pass
+
     def _scan_status_message(self) -> str:
+        recovered = self._recover_stale_scan_if_needed()
+        if recovered:
+            return "Recovered a stale screener scan. No screener scan is currently running."
         future = self._active_scan_future
         if future is None or future.done():
             return "No screener scan is currently running."
@@ -959,6 +1312,8 @@ class TelegramBotService:
         )
 
     def _scan_in_progress_message(self) -> str:
+        if self._recover_stale_scan_if_needed():
+            return "Recovered a stale screener scan. Please retry the scan command."
         future = self._active_scan_future
         if future is None or future.done():
             return "A screener scan is already running. Use /scan_status before starting another scan."
@@ -973,6 +1328,8 @@ class TelegramBotService:
         )
 
     def _cancel_scan_message(self) -> str:
+        if self._recover_stale_scan_if_needed():
+            return "Recovered a stale screener scan. No screener scan is currently running."
         future = self._active_scan_future
         if future is None or future.done() or self._active_scan_cancel_event is None:
             return "No screener scan is currently running."
@@ -997,6 +1354,102 @@ class TelegramBotService:
             return max(1, min(int(args[0]), 20))
         except ValueError:
             return 5
+
+    @staticmethod
+    def _parse_scan_args(args: list[str]) -> tuple[int, list[str] | None, bool, int | None, list[str] | None]:
+        detail_tokens = {"detail", "details", "verbose"}
+        include_details = False
+        universe_limit: int | None = None
+        requested_timeframes: list[str] = []
+        filtered_args: list[str] = []
+        for arg in args:
+            raw = str(arg or "").strip()
+            lowered = raw.lower()
+            if not raw:
+                continue
+            if lowered in detail_tokens:
+                include_details = True
+                continue
+            if lowered in {"all", "full", "top100", "universe", "universe=top100"}:
+                universe_limit = 100
+                continue
+            top_match = re.fullmatch(r"top(\d{1,3})", lowered)
+            if top_match:
+                universe_limit = max(1, min(int(top_match.group(1)), 100))
+                continue
+            limit_match = re.fullmatch(r"(?:universe|u)=(\d{1,3})", lowered)
+            if limit_match:
+                universe_limit = max(1, min(int(limit_match.group(1)), 100))
+                continue
+            if lowered.startswith(("tf=", "timeframe=", "timeframes=")):
+                _, value = raw.split("=", 1)
+                for token in re.split(r"[,\s]+", value):
+                    timeframe = TelegramBotService._normalize_scan_timeframe(token)
+                    if timeframe and timeframe not in requested_timeframes:
+                        requested_timeframes.append(timeframe)
+                continue
+            filtered_args.append(raw)
+        args = filtered_args
+        if not args:
+            return 5, None, include_details, universe_limit, requested_timeframes or None
+        limit = 5
+        symbol_tokens = list(args)
+        try:
+            limit = max(1, min(int(args[0]), 20))
+            symbol_tokens = args[1:]
+        except ValueError:
+            symbol_tokens = args
+
+        symbols: list[str] = []
+        seen: set[str] = set()
+        for token in symbol_tokens:
+            for raw_symbol in re.split(r"[,\s]+", str(token or "")):
+                timeframe = TelegramBotService._normalize_scan_timeframe(raw_symbol)
+                if timeframe:
+                    if timeframe not in requested_timeframes:
+                        requested_timeframes.append(timeframe)
+                    continue
+                cleaned = raw_symbol.strip().upper().lstrip("$")
+                if not cleaned or cleaned in seen:
+                    continue
+                if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", cleaned):
+                    continue
+                symbols.append(cleaned)
+                seen.add(cleaned)
+        return limit, symbols or None, include_details, universe_limit, requested_timeframes or None
+
+    @staticmethod
+    def _normalize_scan_timeframe(value: str) -> str | None:
+        normalized = str(value or "").strip().lower()
+        mapping = {
+            "1": "1m",
+            "1m": "1m",
+            "1min": "1m",
+            "1minute": "1m",
+            "5": "5m",
+            "5m": "5m",
+            "5min": "5m",
+            "5minute": "5m",
+            "10": "10m",
+            "10m": "10m",
+            "10min": "10m",
+            "10minute": "10m",
+            "15": "15m",
+            "15m": "15m",
+            "15min": "15m",
+            "15minute": "15m",
+            "60m": "1h",
+            "1h": "1h",
+            "hour": "1h",
+            "1d": "1d",
+            "day": "1d",
+            "daily": "1d",
+            "1w": "1w",
+            "1wk": "1w",
+            "week": "1w",
+            "weekly": "1w",
+        }
+        return mapping.get(normalized)
 
     @staticmethod
     def _parse_amount(args: list[str], *, default: float) -> float | None:

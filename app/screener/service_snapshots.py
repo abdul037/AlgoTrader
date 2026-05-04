@@ -65,6 +65,7 @@ def snapshot_from_signal(
         "freshness_status": market_data_status["freshness_status"],
         "data_source_primary": market_data_status["quote_is_primary"],
         "data_source_used_fallback": market_data_status["quote_used_fallback"],
+        "history_used_fallback": market_data_status["history_used_fallback"],
         "data_source_from_cache": market_data_status["history_from_cache"],
         "data_source_quote_derived": market_data_status["quote_derived"],
         "data_source_age_seconds": market_data_status["history_age_seconds"],
@@ -105,11 +106,18 @@ def snapshot_from_signal(
         actionability=str(ranking["actionability"]),
     )
     execution_ready = not execution_blockers
+    signal_classification = classify_signal(
+        execution_ready=execution_ready,
+        trade_plan=trade_plan,
+        actionability=str(ranking["actionability"]),
+        market_data_verified=bool(market_data_status["verified"]),
+    )
     metadata.update(
         {
             "execution_ready": execution_ready,
             "execution_blockers": execution_blockers,
             "alert_eligible": ranking["actionability"] == "alert" and execution_ready,
+            "signal_classification": signal_classification,
         }
     )
     metadata.update(
@@ -319,6 +327,7 @@ def build_no_trade_snapshot(
         "alert_eligible": False,
         "execution_ready": False,
         "execution_blockers": [primary_blocker] if primary_blocker else ["no_clear_edge"],
+        "signal_classification": "blocked",
     }
     return LiveSignalSnapshot(
         symbol=symbol.upper(),
@@ -411,6 +420,7 @@ def build_data_unavailable_snapshot(
         "alert_eligible": False,
         "execution_ready": False,
         "execution_blockers": ["provider_request_failed"],
+        "signal_classification": "blocked",
     }
     return LiveSignalSnapshot(
         symbol=symbol.upper(),
@@ -447,3 +457,25 @@ def build_data_unavailable_snapshot(
         metadata=metadata,
         backtest_snapshot={},
     )
+
+
+def classify_signal(
+    *,
+    execution_ready: bool,
+    trade_plan: dict[str, Any],
+    actionability: str,
+    market_data_verified: bool,
+) -> str:
+    """Classify a scan result into an operator-facing lifecycle bucket."""
+
+    if not market_data_verified:
+        return "blocked"
+    if execution_ready:
+        return "execution_ready"
+    verdict = str(trade_plan.get("verdict") or "").lower()
+    timing = str(trade_plan.get("timing_label") or "").lower()
+    if verdict == "actionable" or actionability == "alert":
+        return "trigger_ready" if timing in {"conditional", "watchlist"} else "execution_ready"
+    if verdict == "watchlist" or actionability == "watchlist":
+        return "watchlist"
+    return "blocked"

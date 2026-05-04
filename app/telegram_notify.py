@@ -333,42 +333,33 @@ class TelegramNotifier:
 
     @staticmethod
     def format_screener_candidate(snapshot: "LiveSignalSnapshot", *, rank: int | None = None) -> str:
-        """Format a premium single-candidate screener alert."""
+        """Format a simple trade-ready screener alert."""
 
-        direction = str(snapshot.direction_label or snapshot.state.value).upper()
         metadata = getattr(snapshot, "metadata", {}) or {}
         trade_plan = dict(metadata.get("trade_plan") or {})
-        header = f"#{rank or snapshot.rank or '-'} {snapshot.symbol} | {direction}"
-        setup_line = (
-            f"Setup: {snapshot.strategy_name} | {snapshot.timeframe} | "
-            f"Score {snapshot.score:.1f}/100 | {snapshot.confidence_label or 'n/a'}"
-        )
+        direction = TelegramNotifier._candidate_side(snapshot)
+        header = f"{rank or snapshot.rank or '-'}. {snapshot.symbol} {snapshot.timeframe} {direction}"
         outcome_line = TelegramNotifier._format_ledger_outcome_line(metadata)
-        freshness = f"Freshness: {snapshot.freshness or 'fresh'} | Verdict: {trade_plan.get('timing_label', 'n/a')}"
+        classification = str(metadata.get("signal_classification") or "unclassified").replace("_", " ")
         entry = TelegramNotifier._format_entry_zone(trade_plan, snapshot)
+        current = TelegramNotifier._fmt_number(snapshot.current_price)
         stop = TelegramNotifier._fmt_number(snapshot.stop_loss)
         rr = TelegramNotifier._fmt_number(snapshot.risk_reward_ratio)
         targets = TelegramNotifier._format_targets(snapshot)
-        backtest = TelegramNotifier._format_backtest_snapshot(snapshot)
         reasons = TelegramNotifier._format_reason_summary(snapshot)
-        timestamp = snapshot.generated_at or snapshot.signal_generated_at or "n/a"
-        provider_status = TelegramNotifier._format_provider_status(snapshot)
-        return "\n".join(
-            [
-                header,
-                setup_line,
-                *([outcome_line] if outcome_line else []),
-                f"Context: {metadata.get('market_context_summary') or 'n/a'}",
-                freshness,
-                provider_status,
-                f"Entry: {entry} | Stop: {stop} | Targets: {targets}",
-                f"RR: {rr} | Price: {snapshot.current_price if snapshot.current_price is not None else 'n/a'} | Time: {timestamp}",
-                f"Indicators: {TelegramNotifier._format_indicator_summary(snapshot)}",
-                f"Backtest: {backtest}",
-                f"Why: {reasons}",
-                "Execution: manual approval required before any broker action.",
-            ]
-        )
+        lines = [
+            header,
+            f"Action: review for manual approval. Bot has not placed an order.",
+            f"Entry: {entry} | current {current}",
+            f"Stop: {stop} | target {targets} | RR {rr}R",
+            f"Score: {snapshot.score:.1f}/100 | status: {classification}",
+            TelegramNotifier._format_snapshot_data_source(snapshot),
+        ]
+        if outcome_line:
+            lines.append(outcome_line)
+        if reasons != "n/a":
+            lines.append(f"Why: {reasons}")
+        return "\n".join(lines)
 
     @staticmethod
     def _format_ledger_outcome_line(metadata: dict[str, Any]) -> str | None:
@@ -378,40 +369,57 @@ class TelegramNotifier:
         return f"Ledger outcome: #{outcome_id}"
 
     @staticmethod
-    def format_screener_summary(response: "ScreenerRunResponse", *, task_label: str | None = None) -> str:
+    def format_screener_summary(
+        response: "ScreenerRunResponse",
+        *,
+        task_label: str | None = None,
+        include_other_watches: bool = False,
+    ) -> str:
         """Format a ranked screener summary for Telegram."""
 
         if not response.candidates:
+            closest = list(getattr(response, "closest_rejections", []) or [])
+            signal_label = "WAIT" if closest else "NO SETUP"
             lines = [
                 "US market screener",
-                f"Run: {(task_label or 'manual_scan').replace('_', ' ')}",
-                f"Universe: {response.universe_name}",
-                f"Timeframes: {', '.join(response.timeframes)}",
-                (
-                    f"Scanned: {response.evaluated_symbols} symbols | "
-                    f"Strategy checks: {response.evaluated_strategy_runs} | "
-                    f"Suppressed: {response.suppressed}"
-                ),
-                "No actionable candidates passed the current filters.",
+                f"TRADE SIGNAL: {signal_label}",
+                "Action: do not open a trade now.",
             ]
-            diagnostics = TelegramNotifier._format_scan_diagnostics(response)
+            diagnostics = TelegramNotifier._format_scan_diagnostics(
+                response,
+                include_other_watches=include_other_watches,
+            )
             if diagnostics:
+                lines.append("")
                 lines.extend(diagnostics)
+            else:
+                lines.append("Reason: no nearby setup passed enough checks.")
             if response.errors:
+                lines.append("")
                 first_error = str(response.errors[0]).replace("\n", " ")
                 if len(first_error) > 180:
                     first_error = f"{first_error[:180]}..."
                 lines.append(f"First issue: {first_error}")
                 lines.append(f"Errors: {len(response.errors)}")
+            lines.append("")
             lines.append(
-                "Meaning: no trade proposal was created; manual approval is still required for any future order."
+                f"Scanned: {response.evaluated_symbols} symbol(s) | "
+                f"Checks: {response.evaluated_strategy_runs} | "
+                f"Timeframes: {', '.join(response.timeframes)}"
+            )
+            lines.append(
+                "Safety: no order created. Manual approval is required for any future order."
             )
             return "\n".join(lines)
 
         lines = [
             "US market screener",
-            f"Run: {(task_label or 'manual_scan').replace('_', ' ')}",
-            f"Universe: {response.universe_name}",
+            "TRADE SIGNAL: READY FOR REVIEW",
+            "Action: review the setup. Manual approval is still required.",
+            (
+                f"Run: {(task_label or 'manual_scan').replace('_', ' ')} | "
+                f"Universe: {response.universe_name}"
+            ),
             f"Timeframes: {', '.join(response.timeframes)}",
             (
                 f"Scanned: {response.evaluated_symbols} symbols | "
@@ -419,10 +427,13 @@ class TelegramNotifier:
                 f"Passed: {len(response.candidates)} | Suppressed: {response.suppressed}"
             ),
         ]
-        for item in response.candidates:
+        for index, item in enumerate(response.candidates, start=1):
             lines.append("")
-            lines.append(TelegramNotifier.format_screener_candidate(item, rank=item.rank))
-        diagnostics = TelegramNotifier._format_scan_diagnostics(response)
+            lines.append(TelegramNotifier.format_screener_candidate(item, rank=item.rank or index))
+        diagnostics = TelegramNotifier._format_scan_diagnostics(
+            response,
+            include_other_watches=include_other_watches,
+        )
         if diagnostics:
             lines.append("")
             lines.extend(diagnostics)
@@ -431,36 +442,65 @@ class TelegramNotifier:
         return "\n".join(lines)
 
     @staticmethod
-    def _format_scan_diagnostics(response: "ScreenerRunResponse") -> list[str]:
+    def _format_scan_diagnostics(
+        response: "ScreenerRunResponse",
+        *,
+        include_other_watches: bool = False,
+    ) -> list[str]:
         summary = dict(getattr(response, "rejection_summary", {}) or {})
         closest = list(getattr(response, "closest_rejections", []) or [])
         if not summary and not closest:
             return []
-        lines = ["Diagnostics:"]
-        if summary:
-            top_reasons = sorted(summary.items(), key=lambda item: (-int(item[1]), item[0]))[:5]
-            lines.append(
-                "Top blockers: "
-                + ", ".join(f"{TelegramNotifier._humanize_reason(reason)} ({count})" for reason, count in top_reasons)
-            )
+        lines = []
         if closest:
-            lines.append("Closest rejected:")
-            for item in closest[:3]:
-                score = item.get("score")
-                score_text = f"{float(score):.1f}" if score is not None else "n/a"
-                measurements = dict(item.get("measurements") or {})
-                reasons = ", ".join(
-                    TelegramNotifier._humanize_reason(reason)
-                    for reason in list(item.get("rejection_reasons") or [])[:3]
-                )
-                lines.append(
-                    f"- {item.get('symbol')} {item.get('timeframe')} "
-                    f"{item.get('strategy_name')} | score {score_text} | {reasons or 'rejected'}"
-                )
-                watchlist_plan = TelegramNotifier._format_watchlist_plan(measurements)
-                if watchlist_plan:
-                    lines.extend(watchlist_plan)
+            lines.append("Best setup to watch:")
+            lines.extend(TelegramNotifier._format_watch_item(1, closest[0], detailed=True))
+            if include_other_watches and len(closest) > 1:
+                lines.append("Other watches:")
+                for item in closest[1:3]:
+                    lines.append(TelegramNotifier._format_compact_watch_item(item))
+        elif summary:
+            top_reasons = sorted(summary.items(), key=lambda item: (-int(item[1]), item[0]))[:3]
+            lines.append(
+                "Reason: "
+                + "; ".join(f"{TelegramNotifier._friendly_reason(reason)} ({count})" for reason, count in top_reasons)
+            )
         return lines
+
+    @staticmethod
+    def _format_watch_item(index: int, item: dict[str, Any], *, detailed: bool = False) -> list[str]:
+        measurements = dict(item.get("measurements") or {})
+        score = item.get("score")
+        score_text = f"{float(score):.1f}" if score is not None else "n/a"
+        side = TelegramNotifier._watch_side(measurements)
+        symbol = item.get("symbol") or "n/a"
+        timeframe = item.get("timeframe") or "n/a"
+        lines = [f"{index}. {symbol} {timeframe} {side} | score {score_text}"]
+
+        watchlist_plan = TelegramNotifier._format_watchlist_plan(measurements)
+        if watchlist_plan:
+            lines.extend(watchlist_plan)
+
+        reasons = "; ".join(
+            TelegramNotifier._friendly_reason(reason)
+            for reason in list(item.get("rejection_reasons") or [])[:3]
+        )
+        prefix = "Why wait" if detailed else "Not ready"
+        lines.append(f"   {prefix}: {reasons or 'setup is not confirmed yet'}")
+        return lines
+
+    @staticmethod
+    def _format_compact_watch_item(item: dict[str, Any]) -> str:
+        measurements = dict(item.get("measurements") or {})
+        symbol = item.get("symbol") or "n/a"
+        timeframe = item.get("timeframe") or "n/a"
+        side = TelegramNotifier._watch_side(measurements)
+        current = TelegramNotifier._fmt_scan_num(measurements.get("current_price"))
+        trigger = TelegramNotifier._compact_trigger_instruction(
+            measurements.get("watchlist_trigger"),
+            measurements.get("indicative_entry"),
+        )
+        return f"- {symbol} {timeframe} {side}: {trigger} | current {current}"
 
     @staticmethod
     def _format_watchlist_plan(measurements: dict[str, Any]) -> list[str]:
@@ -473,7 +513,6 @@ class TelegramNotifier:
             return []
         current = measurements.get("current_price")
         trigger = measurements.get("watchlist_trigger") or "watch"
-        trigger_label = str(trigger).replace("_", " ")
         gap_atr = measurements.get("breakout_gap_atr")
         rr = measurements.get("indicative_rr")
         move_pct = measurements.get("indicative_target_move_pct")
@@ -487,17 +526,21 @@ class TelegramNotifier:
             strict_rvol=strict_rvol,
             volume_mode=volume_mode,
         )
-        trigger_text = TelegramNotifier._trigger_instruction(trigger, entry)
-        line1 = f"  Status: do not enter yet | current {TelegramNotifier._fmt_scan_num(current)}"
-        line2 = f"  Trigger: {trigger_text} | gap {TelegramNotifier._fmt_scan_num(gap_atr)} ATR"
-        line3 = f"  Volume: {volume_need}"
-        line4 = (
-            f"  If triggered: stop {TelegramNotifier._fmt_scan_num(stop)} | "
-            f"target {TelegramNotifier._fmt_scan_num(target)} | "
-            f"RR {TelegramNotifier._fmt_scan_num(rr)}R | "
-            f"target move {TelegramNotifier._fmt_scan_num(move_pct)}%"
+        trigger_text = TelegramNotifier._entry_instruction(trigger, entry)
+        line1 = f"   {trigger_text}"
+        line2 = (
+            f"   Current: {TelegramNotifier._fmt_scan_num(current)} | "
+            f"gap: {TelegramNotifier._fmt_scan_num(gap_atr)} ATR"
         )
-        return [line1, line2, line3, line4]
+        line3 = (
+            f"   Stop: {TelegramNotifier._fmt_scan_num(stop)} | "
+            f"target: {TelegramNotifier._fmt_scan_num(target)} | "
+            f"RR {TelegramNotifier._fmt_scan_num(rr)}R"
+        )
+        line4 = f"   Volume: {volume_need}"
+        line5 = f"   {TelegramNotifier._format_measurement_data_source(measurements)}"
+        line6 = f"   Target move: {TelegramNotifier._fmt_scan_num(move_pct)}%"
+        return [line1, line2, line3, line4, line5, line6]
 
     @staticmethod
     def _trigger_instruction(trigger: Any, entry: Any) -> str:
@@ -510,6 +553,42 @@ class TelegramNotifier:
         return f"watch {entry_text}"
 
     @staticmethod
+    def _entry_instruction(trigger: Any, entry: Any) -> str:
+        entry_text = TelegramNotifier._fmt_scan_num(entry)
+        trigger_value = str(trigger or "")
+        if trigger_value in {"breakout_above", "breakout_confirmed"}:
+            return f"Enter only if price goes above {entry_text}"
+        if trigger_value in {"breakdown_below", "breakdown_confirmed"}:
+            return f"Enter only if price goes below {entry_text}"
+        return f"Watch price near {entry_text}"
+
+    @staticmethod
+    def _compact_trigger_instruction(trigger: Any, entry: Any) -> str:
+        entry_text = TelegramNotifier._fmt_scan_num(entry)
+        trigger_value = str(trigger or "")
+        if trigger_value in {"breakout_above", "breakout_confirmed"}:
+            return f"above {entry_text}"
+        if trigger_value in {"breakdown_below", "breakdown_confirmed"}:
+            return f"below {entry_text}"
+        return f"near {entry_text}"
+
+    @staticmethod
+    def _watch_side(measurements: dict[str, Any]) -> str:
+        raw_side = str(
+            measurements.get("near_miss_side")
+            or measurements.get("side")
+            or ""
+        ).lower()
+        if raw_side in {"long", "short"}:
+            return raw_side.upper()
+        trigger = str(measurements.get("watchlist_trigger") or "")
+        if "breakdown" in trigger:
+            return "SHORT"
+        if "breakout" in trigger:
+            return "LONG"
+        return "SETUP"
+
+    @staticmethod
     def _format_volume_need(
         *,
         current_rvol: Any,
@@ -520,13 +599,44 @@ class TelegramNotifier:
         current_text = TelegramNotifier._fmt_scan_num(current_rvol)
         relaxed_text = TelegramNotifier._fmt_scan_num(relaxed_rvol)
         strict_text = TelegramNotifier._fmt_scan_num(strict_rvol)
-        mode_text = str(volume_mode or "strict_relative_volume").replace("_", " ")
+        threshold = strict_rvol if strict_rvol not in (None, "") else relaxed_rvol
+        try:
+            volume_ok = threshold in (None, "") or float(current_rvol) >= float(threshold)
+        except (TypeError, ValueError):
+            volume_ok = False
+        status = "OK" if volume_ok else "LOW"
         if relaxed_rvol not in (None, "") and strict_rvol not in (None, "") and relaxed_rvol != strict_rvol:
-            return (
-                f"current RVOL {current_text} | need >= {relaxed_text} relaxed "
-                f"or {strict_text} strict | mode {mode_text}"
-            )
-        return f"current RVOL {current_text} | need >= {strict_text} | mode {mode_text}"
+            return f"{status} (RVOL {current_text}, need {relaxed_text}-{strict_text})"
+        return f"{status} (RVOL {current_text}, need {strict_text})"
+
+    @staticmethod
+    def _format_measurement_data_source(measurements: dict[str, Any]) -> str:
+        quote_provider = str(measurements.get("quote_provider") or "unknown")
+        history_provider = str(measurements.get("history_provider") or "unknown")
+        suffixes: list[str] = []
+        if bool(measurements.get("quote_used_fallback")):
+            suffixes.append("quote fallback")
+        if bool(measurements.get("history_used_fallback")):
+            suffixes.append("candle fallback")
+        if bool(measurements.get("history_from_cache")):
+            suffixes.append("cached candles")
+        suffix = f" ({', '.join(suffixes)})" if suffixes else ""
+        return f"Data: {quote_provider} quote + {history_provider} candles{suffix}"
+
+    @staticmethod
+    def _format_snapshot_data_source(snapshot: "LiveSignalSnapshot") -> str:
+        metadata = getattr(snapshot, "metadata", {}) or {}
+        quote_provider = str(metadata.get("data_source_quote") or metadata.get("data_source") or "unknown")
+        history_provider = str(metadata.get("data_source_history") or "unknown")
+        suffixes: list[str] = []
+        if bool(metadata.get("data_source_used_fallback")):
+            suffixes.append("quote fallback")
+        if bool(metadata.get("history_used_fallback")):
+            suffixes.append("candle fallback")
+        if bool(metadata.get("data_source_from_cache")):
+            suffixes.append("cached candles")
+        suffix = f" ({', '.join(suffixes)})" if suffixes else ""
+        return f"Data: {quote_provider} quote + {history_provider} candles{suffix}"
 
     @staticmethod
     def _fmt_scan_num(value: Any) -> str:
@@ -545,6 +655,46 @@ class TelegramNotifier:
     @staticmethod
     def _humanize_reason(reason: str) -> str:
         return str(reason or "unknown").replace("_", " ")
+
+    @staticmethod
+    def _friendly_reason(reason: str) -> str:
+        reason_text = str(reason or "unknown")
+        labels = {
+            "adx_too_low": "trend strength too low",
+            "breakdown_level_not_cleared": "price has not broken below trigger",
+            "breakout_level_not_cleared": "price has not broken above trigger",
+            "candle_body_too_small": "candle is not strong enough",
+            "close_location_short_too_low": "close is weak for short entry",
+            "close_location_too_low": "close is weak for long entry",
+            "confluence_score_too_low": "setup quality below threshold",
+            "confirmation_too_weak": "confirmation is too weak",
+            "false_positive_risk_too_high": "false-positive risk too high",
+            "final_score_below_keep_threshold": "setup quality below threshold",
+            "macd_hist_not_negative": "MACD has not turned bearish",
+            "macd_hist_not_positive": "MACD has not turned bullish",
+            "market_data_error": "market data error",
+            "relative_volume_too_low": "volume is too low",
+            "rsi_not_in_long_band": "RSI is not in long zone",
+            "rsi_not_in_short_band": "RSI is not in short zone",
+            "ema_9_slope_not_negative": "EMA slope has not turned bearish",
+            "ema_9_slope_not_positive": "EMA slope has not turned bullish",
+        }
+        return labels.get(reason_text, TelegramNotifier._humanize_reason(reason_text))
+
+    @staticmethod
+    def _candidate_side(snapshot: "LiveSignalSnapshot") -> str:
+        raw = str(
+            snapshot.signal_role
+            or getattr(snapshot, "direction_label", None)
+            or snapshot.metadata.get("signal_role")
+            or snapshot.state.value
+            or ""
+        ).lower()
+        if "short" in raw or raw == "sell":
+            return "SHORT"
+        if "long" in raw or raw == "buy":
+            return "LONG"
+        return raw.upper() or "SETUP"
 
     @staticmethod
     def format_tracked_signal_update(record: "TrackedSignalRecord", *, event_type: str) -> str:

@@ -303,6 +303,18 @@ class ExecutionRepository:
             ).fetchone()
         return float(row["total_pnl"] if row is not None else 0.0)
 
+    def count_since(self, since: datetime) -> int:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM executions
+                WHERE created_at >= ?
+                """,
+                (since.astimezone(UTC).isoformat(),),
+            ).fetchone()
+        return int(row["count"] if row is not None else 0)
+
 
 class ExecutionQueueRepository:
     """Persist approval-gated execution queue items."""
@@ -1089,27 +1101,49 @@ class PaperTradeRepository:
         trades = self.list(limit=2000)
         total_trades = len(trades)
         winners = [trade for trade in trades if trade.realized_pnl_usd > 0]
+        losers = [trade for trade in trades if trade.realized_pnl_usd < 0]
         realized_pnl = round(sum(trade.realized_pnl_usd for trade in trades), 2)
         unrealized_pnl = round(sum(position.unrealized_pnl_usd for position in open_positions), 2)
         expectancy = round(realized_pnl / total_trades, 2) if total_trades else 0.0
+        gross_profit = sum(trade.realized_pnl_usd for trade in winners)
+        gross_loss = abs(sum(trade.realized_pnl_usd for trade in losers))
+        equity_curve = 0.0
+        peak = 0.0
+        max_drawdown = 0.0
+        for trade in sorted(trades, key=lambda item: item.closed_at):
+            equity_curve += trade.realized_pnl_usd
+            peak = max(peak, equity_curve)
+            max_drawdown = min(max_drawdown, equity_curve - peak)
         average_rr = [
             float((trade.payload or {}).get("risk_reward_ratio") or 0.0)
             for trade in trades
             if float((trade.payload or {}).get("risk_reward_ratio") or 0.0) > 0.0
         ]
+        r_values = [
+            float((trade.payload or {}).get("realized_r_multiple") or 0.0)
+            for trade in trades
+            if (trade.payload or {}).get("realized_r_multiple") not in (None, "")
+        ]
+        rejection_counts = rejection_reason_counts or {}
         return PaperPerformanceSummary(
             total_trades=total_trades,
             open_positions=len(open_positions),
             win_rate=round((len(winners) / total_trades) * 100.0, 2) if total_trades else 0.0,
+            profit_factor=round(gross_profit / gross_loss, 2) if gross_loss > 0 else (round(gross_profit, 2) if gross_profit else 0.0),
             realized_pnl_usd=realized_pnl,
             unrealized_pnl_usd=unrealized_pnl,
             expectancy_usd=expectancy,
             average_reward_to_risk=round(sum(average_rr) / len(average_rr), 2) if average_rr else 0.0,
+            average_r_multiple=round(sum(r_values) / len(r_values), 2) if r_values else 0.0,
+            max_drawdown_usd=round(abs(max_drawdown), 2),
+            watchlist_signals=int(rejection_counts.get("watchlist", 0) or 0),
+            trigger_ready_signals=int(rejection_counts.get("trigger_ready", 0) or 0),
+            execution_ready_signals=int(rejection_counts.get("execution_ready", 0) or 0),
             pnl_by_timeframe=_sum_by_key(trades, "timeframe"),
             pnl_by_strategy=_sum_by_key(trades, "strategy_name"),
             pnl_by_symbol=_sum_by_key(trades, "symbol"),
             pnl_by_regime=_sum_by_key(trades, "regime_label"),
-            rejection_reason_counts=rejection_reason_counts or {},
+            rejection_reason_counts=rejection_counts,
         )
 
     @staticmethod

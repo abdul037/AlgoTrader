@@ -20,6 +20,7 @@ from math import sqrt
 import pandas as pd
 
 DAILY_BARS_PER_YEAR = 252
+WEEKLY_BARS_PER_YEAR = 52
 HOURLY_BARS_PER_YEAR = 1638  # ~6.5h session x 252 days
 FIFTEEN_MIN_BARS_PER_YEAR = 6552
 FIVE_MIN_BARS_PER_YEAR = 19656
@@ -41,6 +42,10 @@ def bars_per_year_for(timeframe: str) -> int:
         "1d": DAILY_BARS_PER_YEAR,
         "d": DAILY_BARS_PER_YEAR,
         "daily": DAILY_BARS_PER_YEAR,
+        "1w": WEEKLY_BARS_PER_YEAR,
+        "1wk": WEEKLY_BARS_PER_YEAR,
+        "week": WEEKLY_BARS_PER_YEAR,
+        "weekly": WEEKLY_BARS_PER_YEAR,
     }
     return mapping.get(normalized, DAILY_BARS_PER_YEAR)
 

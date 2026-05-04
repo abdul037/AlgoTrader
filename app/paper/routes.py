@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
-from app.models.paper import PaperPerformanceSummary, PaperPositionRecord, PaperTradeRecord
+from app.models.paper import BotPerformanceDashboard, PaperPerformanceSummary, PaperPositionRecord, PaperTradeRecord
 
 router = APIRouter(prefix="/paper", tags=["paper"])
 
@@ -16,6 +16,11 @@ def _paper(request: Request):
 @router.get("/summary", response_model=PaperPerformanceSummary)
 def paper_summary(request: Request) -> PaperPerformanceSummary:
     return _paper(request).summary()
+
+
+@router.get("/dashboard", response_model=BotPerformanceDashboard)
+def paper_dashboard(request: Request) -> BotPerformanceDashboard:
+    return _paper(request).dashboard()
 
 
 @router.get("/positions", response_model=list[PaperPositionRecord])

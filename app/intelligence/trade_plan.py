@@ -90,7 +90,7 @@ def build_trade_plan(
     )
 
     hold_style = "swing"
-    if timeframe == "15m":
+    if timeframe in {"5m", "10m", "15m"}:
         hold_style = "intraday"
     elif timeframe == "1h":
         hold_style = "intraday" if "intraday" in style else "swing"

@@ -38,6 +38,7 @@ def scan_universe(
     evaluated_strategy_runs = 0
     evaluated_symbols = 0
     abort_scan = False
+    quote_cache: dict[str, Any] = {}
     service.logs.log(
         "market_universe_scan_started",
         {
@@ -68,11 +69,15 @@ def scan_universe(
                     bars=service._bars_for_timeframe(timeframe),
                     force_refresh=force_refresh,
                 )
-                quote = service.market_data.get_quote(
-                    symbol,
-                    timeframe=timeframe,
-                    force_refresh=force_refresh,
-                )
+                quote = quote_cache.get(symbol)
+                if quote is None:
+                    quote = service.market_data.get_quote(
+                        symbol,
+                        timeframe=timeframe,
+                        force_refresh=force_refresh,
+                    )
+                    quote_cache[symbol] = quote
+                market_data_status = service._market_data_status(history=history, quote=quote)
             except EToroRateLimitError as exc:
                 errors.append(f"{symbol} {timeframe}: {exc}")
                 service._add_scan_diagnostic(
@@ -123,6 +128,11 @@ def scan_universe(
                 if signal is None:
                     strategy_diagnostics = getattr(strategy, "last_diagnostics", None)
                     if isinstance(strategy_diagnostics, dict):
+                        measurements = {
+                            **dict(strategy_diagnostics.get("measurements") or {}),
+                            **market_data_status,
+                        }
+                        rejection_reasons = list(strategy_diagnostics.get("rejection_reasons") or ["no_strategy_signal"])
                         service._add_scan_diagnostic(
                             rejection_summary,
                             closest_rejections,
@@ -130,12 +140,44 @@ def scan_universe(
                             timeframe=timeframe,
                             strategy_name=spec.name,
                             status=str(strategy_diagnostics.get("status") or "no_signal"),
-                            rejection_reasons=list(strategy_diagnostics.get("rejection_reasons") or ["no_strategy_signal"]),
+                            rejection_reasons=rejection_reasons,
                             final_score=strategy_diagnostics.get("score"),
-                            measurements=dict(strategy_diagnostics.get("measurements") or {}),
+                            measurements=measurements,
                         )
+                        if service.scan_decisions is not None:
+                            service.scan_decisions.create(
+                                scan_task=scan_task,
+                                symbol=symbol,
+                                strategy_name=spec.name,
+                                timeframe=timeframe,
+                                status=str(strategy_diagnostics.get("status") or "no_signal"),
+                                final_score=strategy_diagnostics.get("score"),
+                                alert_eligible=False,
+                                freshness=None,
+                                reason_codes=list(strategy_diagnostics.get("reason_codes") or rejection_reasons),
+                                rejection_reasons=rejection_reasons,
+                                payload={
+                                    "measurements": service._diagnostic_measurements(measurements),
+                                    "strategy_diagnostics": strategy_diagnostics,
+                                    "market_data_status": market_data_status,
+                                },
+                            )
                     else:
                         service._increment_rejection(rejection_summary, "no_strategy_signal")
+                        if service.scan_decisions is not None:
+                            service.scan_decisions.create(
+                                scan_task=scan_task,
+                                symbol=symbol,
+                                strategy_name=spec.name,
+                                timeframe=timeframe,
+                                status="no_signal",
+                                final_score=None,
+                                alert_eligible=False,
+                                freshness=None,
+                                reason_codes=["no_strategy_signal"],
+                                rejection_reasons=["no_strategy_signal"],
+                                payload={"market_data_status": market_data_status},
+                            )
                     continue
                 signal.metadata.setdefault("timeframe", timeframe)
                 signal.metadata.setdefault("strategy_style", spec.style)
@@ -180,7 +222,6 @@ def scan_universe(
                     signal=signal,
                     force_refresh=force_refresh,
                 )
-                market_data_status = service._market_data_status(history=history, quote=quote)
                 if service.settings.require_verified_market_data_for_alerts and not market_data_status["verified"]:
                     suppressed += 1
                     service._add_scan_diagnostic(
