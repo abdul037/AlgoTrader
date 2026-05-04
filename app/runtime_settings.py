@@ -41,9 +41,10 @@ class AppSettings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     telegram_webhook_url: str = ""
-    telegram_webhook_secret: str = ""
+    telegram_webhook_secret: str | None = None
     telegram_webhook_auto_register: bool = True
-    telegram_allowed_chat_ids: list[str] = Field(default_factory=list)
+    telegram_allowed_chat_ids: list[int] = Field(default_factory=list)
+    telegram_rate_limit_per_minute: int = 30
     telegram_polling_enabled: bool = False
     telegram_poll_interval_seconds: int = 5
     telegram_command_timeout_seconds: int = 20
@@ -297,13 +298,16 @@ class AppSettings(BaseSettings):
 
     @field_validator("telegram_allowed_chat_ids", mode="before")
     @classmethod
-    def _parse_chat_id_list(cls, value: Any) -> list[str]:
+    def _parse_chat_id_list(cls, value: Any) -> list[int]:
+        def parse_item(item: Any) -> int:
+            return int(str(item).strip())
+
         if value is None:
             return []
         if isinstance(value, str):
-            return [item.strip() for item in value.split(",") if item.strip()]
+            return [parse_item(item) for item in value.split(",") if item.strip()]
         if isinstance(value, (list, tuple, set)):
-            return [str(item).strip() for item in value if str(item).strip()]
+            return [parse_item(item) for item in value if str(item).strip()]
         raise TypeError("Expected a comma-separated string or iterable")
 
     @field_validator("etoro_account_mode", mode="before")

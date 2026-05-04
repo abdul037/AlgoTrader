@@ -1,4 +1,13 @@
 .env
+.env.local
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+logs/
+.cache/
 .pytest_cache/
 __pycache__/
 *.pyc
+.coverage
+htmlcov/
