@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, status
 
 from app.models.screener import ScanDecisionRecord
-from app.models.workflow import AlertHistoryRecord, TrackedSignalRecord, WorkflowStatusResponse, WorkflowTaskResponse
+from app.models.workflow import AlertHistoryRecord, TrackedSignalRecord, WorkflowBucketStatus, WorkflowStatusResponse, WorkflowTaskResponse
 
 router = APIRouter(prefix="/workflow", tags=["workflow"])
 
@@ -17,6 +17,11 @@ def _workflow(request: Request):
 @router.get("/status", response_model=WorkflowStatusResponse)
 def workflow_status(request: Request) -> WorkflowStatusResponse:
     return _workflow(request).status()
+
+
+@router.get("/schedule", response_model=list[WorkflowBucketStatus])
+def workflow_schedule(request: Request) -> list[WorkflowBucketStatus]:
+    return _workflow(request).schedule_statuses()
 
 
 @router.get("/tracked-signals", response_model=list[TrackedSignalRecord])
@@ -90,3 +95,11 @@ def run_daily_summary(request: Request) -> WorkflowTaskResponse:
 @router.post("/run/end-of-day-scan", response_model=WorkflowTaskResponse)
 def run_end_of_day_scan(request: Request) -> WorkflowTaskResponse:
     return _workflow(request).run_end_of_day_scan(notify=True, force_refresh=True)
+
+
+@router.post("/run/{bucket_name}", response_model=WorkflowTaskResponse)
+def run_workflow_bucket(bucket_name: str, request: Request) -> WorkflowTaskResponse:
+    try:
+        return _workflow(request).run_bucket(bucket_name, notify=True, force_refresh=True)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

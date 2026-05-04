@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from app.live_signal_schema import LiveSignalSnapshot, MarketQuote, SignalState
 from app.models.screener import ScreenerRunResponse
 from app.workflow.service import SignalWorkflowService
@@ -24,6 +26,11 @@ class FakeMarketScreener:
             alerts_sent=0,
             errors=[],
         )
+
+
+class FailingMarketScreener:
+    def scan_universe(self, **kwargs):
+        raise RuntimeError("scan provider failed")
 
 
 class FakeMarketDataEngine:
@@ -320,6 +327,8 @@ def test_scheduled_tasks_skip_scans_when_automation_paused(tmp_path) -> None:
     assert summary["alerts_sent"] == 0
     assert screener.calls == []
     assert logs.items[-1][0] == "workflow_scheduler_paused"
+    paused = workflow.schedule_statuses()
+    assert next(item for item in paused if item.name == "intraday_rotation").last_status == "paused"
 
 
 def test_intraday_scan_rotates_top100_batches(tmp_path) -> None:
@@ -349,6 +358,112 @@ def test_intraday_scan_rotates_top100_batches(tmp_path) -> None:
     assert screener.calls[0]["symbols"] == ["AAPL", "MSFT"]
     assert screener.calls[0]["timeframes"] == ["1m", "5m", "10m", "15m"]
     assert screener.calls[1]["symbols"] == ["NVDA", "AMD"]
+
+
+def test_intraday_rotation_includes_active_shortlist_before_batch(tmp_path) -> None:
+    screener = FakeMarketScreener([])
+    tracked = FakeTrackedSignals()
+    tracked.upsert_open(_snapshot(), origin="manual")
+    workflow = SignalWorkflowService(
+        settings=make_settings(
+            tmp_path,
+            market_universe_symbols=["AAPL", "MSFT", "NVDA", "AMD"],
+            market_universe_limit=4,
+            scalp_scan_batch_size=2,
+            intraday_active_shortlist_size=1,
+            screener_intraday_timeframes=["1m", "5m", "10m", "15m"],
+        ),
+        market_screener=screener,
+        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="NVDA", last_execution=101.0)),
+        notifier=FakeNotifier(),
+        tracked_signals=tracked,
+        alert_history=FakeAlertHistory(),
+        runtime_state=FakeState(),
+        run_logs=FakeLogs(),
+    )
+
+    workflow.run_intraday_scan(notify=False)
+
+    assert screener.calls[0]["symbols"] == ["NVDA", "AAPL", "MSFT"]
+    assert screener.calls[0]["timeframes"] == ["1m", "5m", "10m", "15m"]
+
+
+def test_scheduler_bucket_status_respects_new_york_market_weekdays(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("app.workflow.schedule.utc_now", lambda: datetime(2026, 5, 9, 14, 0, tzinfo=UTC))
+    workflow = SignalWorkflowService(
+        settings=make_settings(
+            tmp_path,
+            schedule_timezone="America/New_York",
+            screener_scheduler_enabled=True,
+            market_open_scan_enabled=True,
+            market_open_scan_time_local="09:35",
+        ),
+        market_screener=FakeMarketScreener([]),
+        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="NVDA", last_execution=101.0)),
+        notifier=FakeNotifier(),
+        tracked_signals=FakeTrackedSignals(),
+        alert_history=FakeAlertHistory(),
+        runtime_state=FakeState(),
+        run_logs=FakeLogs(),
+    )
+
+    assert workflow._bucket_due("market_open_scan") is False
+    status = next(item for item in workflow.schedule_statuses() if item.name == "market_open_scan")
+    assert status.enabled is True
+    assert status.paused is False
+    assert status.next_due_at is not None
+    assert "2026-05-11T09:35:00" in status.next_due_at
+
+
+def test_stale_workflow_lock_expires_and_allows_retry(tmp_path) -> None:
+    state = FakeState()
+    state.set("workflow:lock:swing_scan", "2000-01-01T00:00:00+00:00")
+    screener = FakeMarketScreener([])
+    workflow = SignalWorkflowService(
+        settings=make_settings(tmp_path, workflow_lock_timeout_minutes=1),
+        market_screener=screener,
+        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="NVDA", last_execution=101.0)),
+        notifier=FakeNotifier(),
+        tracked_signals=FakeTrackedSignals(),
+        alert_history=FakeAlertHistory(),
+        runtime_state=state,
+        run_logs=FakeLogs(),
+    )
+
+    result = workflow.run_swing_scan(notify=False)
+
+    assert result.status == "ok"
+    assert result.skipped is False
+    assert screener.calls
+    assert state.get("workflow:lock:swing_scan") == ""
+
+
+def test_scheduler_records_bucket_success_and_error(tmp_path) -> None:
+    state = FakeState()
+    workflow = SignalWorkflowService(
+        settings=make_settings(tmp_path),
+        market_screener=FakeMarketScreener([]),
+        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="NVDA", last_execution=101.0)),
+        notifier=FakeNotifier(),
+        tracked_signals=FakeTrackedSignals(),
+        alert_history=FakeAlertHistory(),
+        runtime_state=state,
+        run_logs=FakeLogs(),
+    )
+
+    success = workflow.run_intraday_scan(notify=False)
+    success_status = next(item for item in workflow.schedule_statuses() if item.name == "intraday_rotation")
+
+    workflow.market_screener = FailingMarketScreener()
+    failure = workflow.run_intraday_scan(notify=False)
+    failure_status = next(item for item in workflow.schedule_statuses() if item.name == "intraday_rotation")
+
+    assert success.status == "ok"
+    assert success_status.last_status == "ok"
+    assert success_status.last_success_at is not None
+    assert failure.status == "error"
+    assert failure_status.last_status == "error"
+    assert "scan provider failed" in (failure_status.last_error or "")
 
 
 def test_open_signal_check_closes_target_hit(tmp_path) -> None:

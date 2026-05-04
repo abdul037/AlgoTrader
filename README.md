@@ -897,6 +897,8 @@ curl http://127.0.0.1:8011/health
 curl "http://127.0.0.1:8011/screener/analyze?symbol=NVDA"
 curl "http://127.0.0.1:8011/screener/scan?symbols=NVDA,AMD,AAPL,MSFT&timeframes=1m,5m,10m,15m,1h,1d,1w&limit=5"
 curl -X POST http://127.0.0.1:8011/workflow/run/intelligent-scan
+curl http://127.0.0.1:8011/workflow/schedule
+curl -X POST http://127.0.0.1:8011/workflow/run/intraday_rotation
 curl http://127.0.0.1:8011/paper/summary
 curl http://127.0.0.1:8011/execution/queue
 curl http://127.0.0.1:8011/automation/status
@@ -911,9 +913,10 @@ Telegram smoke test:
 - `/validated_scan 5`
 - `/open_signals`
 - `/auto_status`
+- `/schedule_status`
+- `/daily_summary`
 
 Production deployment notes, backup/restore commands, webhook reset, and emergency stop steps are in [`docs/production_runbook.md`](docs/production_runbook.md).
-- `/daily_summary`
 
 ## Phased Rollout
 

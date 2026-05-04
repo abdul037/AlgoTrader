@@ -7,7 +7,7 @@ from typing import Any
 
 from app.execution.interfaces import SignalApprovalAdapter
 from app.models.approval import ApprovalStatus
-from app.models.workflow import WorkflowStatusResponse, WorkflowTaskResponse
+from app.models.workflow import WorkflowBucketStatus, WorkflowStatusResponse, WorkflowTaskResponse
 from app.universe import resolve_universe
 from app.utils.time import utc_now
 from app.workflow.operations import (
@@ -28,10 +28,12 @@ from app.workflow.schedule import (
     intelligent_scan_due,
     intraday_scan_due,
     is_due,
+    is_market_day,
     last_successful_screener_run_at,
     ledger_cycle_due,
     local_now,
     named_scan_due,
+    next_market_day,
     parse_time,
     schedule_zone,
 )
@@ -45,6 +47,8 @@ class SignalWorkflowService:
     """Coordinate scheduled scans, tracked open signals, and daily summaries."""
 
     LedgerRecordingError = LedgerRecordingError
+    SCAN_BUCKETS = ("premarket_scan", "market_open_scan", "intraday_rotation", "swing_hourly", "end_of_day_scan")
+    SCHEDULER_BUCKETS = (*SCAN_BUCKETS, "maintenance")
 
     def __init__(
         self,
@@ -75,11 +79,14 @@ class SignalWorkflowService:
         self._approval_adapter = SignalApprovalAdapter()
 
     def run_scheduled_tasks(self) -> dict[str, int]:
-        summary = {"alerts_sent": 0, "closed_signals": 0, "ledger_cycles": 0}
-        if self._ledger_cycle_due():
-            result = self.run_ledger_cycle()
+        summary = {"alerts_sent": 0, "closed_signals": 0, "ledger_cycles": 0, "buckets_run": 0}
+        if self._bucket_due("maintenance"):
+            result = self.run_maintenance(notify=True)
             if result.status == "ok":
-                summary["ledger_cycles"] += 1
+                summary["alerts_sent"] += result.alerts_sent
+                summary["closed_signals"] += result.closed_signals
+                summary["ledger_cycles"] += int((result.detail or "").count("ledger_cycle"))
+                summary["buckets_run"] += 1
 
         if not self.settings.screener_scheduler_enabled:
             return summary
@@ -87,36 +94,17 @@ class SignalWorkflowService:
             blockers = self.automation.scan_blockers()
             if blockers:
                 self.run_logs.log("workflow_scheduler_paused", {"blockers": blockers})
+                for bucket_name in self.SCAN_BUCKETS:
+                    self._record_bucket_state(bucket_name, status="paused", error=",".join(blockers))
                 return summary
 
-        if self._named_scan_due("workflow:last_premarket_scan_at", self.settings.premarket_scan_enabled, self.settings.premarket_scan_time_local):
-            result = self.run_premarket_scan(notify=True, force_refresh=True)
+        for bucket_name in self.SCAN_BUCKETS:
+            if not self._bucket_due(bucket_name):
+                continue
+            result = self.run_bucket(bucket_name, notify=True, force_refresh=bucket_name in {"premarket_scan", "market_open_scan", "end_of_day_scan"})
             summary["alerts_sent"] += result.alerts_sent
-
-        if self._named_scan_due("workflow:last_market_open_scan_at", self.settings.market_open_scan_enabled, self.settings.market_open_scan_time_local):
-            result = self.run_market_open_scan(notify=True, force_refresh=True)
-            summary["alerts_sent"] += result.alerts_sent
-
-        if self._intelligent_scan_due():
-            result = self.run_intelligent_scan(notify=True, force_refresh=False)
-            summary["alerts_sent"] += result.alerts_sent
-
-        if self._intraday_scan_due():
-            result = self.run_intraday_scan(notify=True, force_refresh=False)
-            summary["alerts_sent"] += result.alerts_sent
-
-        if self._is_due("workflow:last_open_signal_check_at", self.settings.open_signal_check_interval_minutes):
-            result = self.check_open_signals(notify=True)
-            summary["alerts_sent"] += result.alerts_sent
-            summary["closed_signals"] += result.closed_signals
-
-        if self._named_scan_due("workflow:last_end_of_day_scan_at", self.settings.end_of_day_scan_enabled, self.settings.end_of_day_scan_time_local):
-            result = self.run_end_of_day_scan(notify=True, force_refresh=True)
-            summary["alerts_sent"] += result.alerts_sent
-
-        if self._daily_summary_due():
-            result = self.send_daily_summary(notify=True)
-            summary["alerts_sent"] += result.alerts_sent
+            if result.status == "ok":
+                summary["buckets_run"] += 1
         return summary
 
     def run_premarket_scan(self, *, notify: bool = True, force_refresh: bool = False) -> WorkflowTaskResponse:
@@ -126,7 +114,7 @@ class SignalWorkflowService:
                 task="premarket_scan",
                 state_key="workflow:last_premarket_scan_at",
                 origin="premarket_scan",
-                timeframes=self._normalized_timeframes(self.settings.screener_default_timeframes),
+                timeframes=["15m", "1h", "1d"],
                 notify=notify,
                 force_refresh=force_refresh,
             ),
@@ -139,7 +127,7 @@ class SignalWorkflowService:
                 task="market_open_scan",
                 state_key="workflow:last_market_open_scan_at",
                 origin="market_open_scan",
-                timeframes=self._normalized_timeframes(self.settings.screener_intraday_timeframes),
+                timeframes=["1m", "5m", "10m", "15m"],
                 notify=notify,
                 force_refresh=force_refresh,
             ),
@@ -161,6 +149,7 @@ class SignalWorkflowService:
                 force_refresh=force_refresh,
                 symbols=symbols,
             ),
+            bucket_name="swing_hourly",
         )
 
     def run_intelligent_scan(self, *, notify: bool = True, force_refresh: bool = False) -> WorkflowTaskResponse:
@@ -189,6 +178,7 @@ class SignalWorkflowService:
                 force_refresh=force_refresh,
                 symbols=symbols,
             ),
+            bucket_name="intraday_rotation",
         )
 
     def run_end_of_day_scan(self, *, notify: bool = True, force_refresh: bool = False) -> WorkflowTaskResponse:
@@ -198,7 +188,7 @@ class SignalWorkflowService:
                 task="end_of_day_scan",
                 state_key="workflow:last_end_of_day_scan_at",
                 origin="end_of_day_scan",
-                timeframes=self._normalized_timeframes(self.settings.screener_default_timeframes),
+                timeframes=["15m", "1h", "1d", "1w"],
                 notify=notify,
                 force_refresh=force_refresh,
             ),
@@ -220,7 +210,63 @@ class SignalWorkflowService:
         return self._execute_guarded(
             "ledger_cycle",
             self._run_ledger_cycle_impl,
+            bucket_name="maintenance",
         )
+
+    def run_maintenance(self, *, notify: bool = True) -> WorkflowTaskResponse:
+        def runner() -> WorkflowTaskResponse:
+            alerts_sent = 0
+            closed_signals = 0
+            completed: list[str] = []
+            errors: list[str] = []
+
+            if self._ledger_cycle_due():
+                result = self.run_ledger_cycle()
+                completed.append("ledger_cycle")
+                errors.extend(result.errors)
+            if self._is_due("workflow:last_open_signal_check_at", self.settings.open_signal_check_interval_minutes):
+                result = self.check_open_signals(notify=notify)
+                completed.append("open_signal_check")
+                alerts_sent += result.alerts_sent
+                closed_signals += result.closed_signals
+                errors.extend(result.errors)
+            if self._daily_summary_due():
+                result = self.send_daily_summary(notify=notify)
+                completed.append("daily_summary")
+                alerts_sent += result.alerts_sent
+                errors.extend(result.errors)
+
+            detail = "maintenance completed: " + ", ".join(completed) if completed else "maintenance skipped: nothing due"
+            return WorkflowTaskResponse(
+                task="maintenance",
+                status="ok",
+                detail=detail,
+                skipped=not completed,
+                alerts_sent=alerts_sent,
+                closed_signals=closed_signals,
+                open_signals=len(self.tracked_signals.list(status="open", limit=500)),
+                errors=errors,
+            )
+
+        return self._execute_guarded("maintenance", runner, bucket_name="maintenance")
+
+    def run_bucket(self, bucket_name: str, *, notify: bool = True, force_refresh: bool = True) -> WorkflowTaskResponse:
+        normalized = bucket_name.strip().lower().replace("-", "_")
+        runners = {
+            "premarket_scan": lambda: self.run_premarket_scan(notify=notify, force_refresh=force_refresh),
+            "market_open_scan": lambda: self.run_market_open_scan(notify=notify, force_refresh=force_refresh),
+            "intraday_rotation": lambda: self.run_intraday_scan(notify=notify, force_refresh=force_refresh),
+            "swing_hourly": lambda: self.run_swing_scan(notify=notify, force_refresh=force_refresh),
+            "end_of_day_scan": lambda: self.run_end_of_day_scan(notify=notify, force_refresh=force_refresh),
+            "maintenance": lambda: self.run_maintenance(notify=notify),
+        }
+        runner = runners.get(normalized)
+        if runner is None:
+            raise KeyError(f"Unknown workflow bucket: {bucket_name}")
+        return runner()
+
+    def schedule_statuses(self) -> list[WorkflowBucketStatus]:
+        return [self._bucket_status(name) for name in self.SCHEDULER_BUCKETS]
 
     def status(self) -> WorkflowStatusResponse:
         return WorkflowStatusResponse(
@@ -384,6 +430,40 @@ class SignalWorkflowService:
     def _ledger_cycle_due(self) -> bool:
         return ledger_cycle_due(self)
 
+    def _bucket_due(self, bucket_name: str) -> bool:
+        if bucket_name == "maintenance":
+            return self._maintenance_due()
+        if not self._bucket_enabled(bucket_name):
+            return False
+        if bucket_name == "premarket_scan":
+            return self._named_scan_due("workflow:last_premarket_scan_at", True, self.settings.premarket_scan_time_local)
+        if bucket_name == "market_open_scan":
+            return self._named_scan_due("workflow:last_market_open_scan_at", True, self.settings.market_open_scan_time_local)
+        if bucket_name == "intraday_rotation":
+            return self._intraday_scan_due()
+        if bucket_name == "swing_hourly":
+            return self._swing_scan_due()
+        if bucket_name == "end_of_day_scan":
+            return self._named_scan_due("workflow:last_end_of_day_scan_at", True, self.settings.end_of_day_scan_time_local)
+        return False
+
+    def _maintenance_due(self) -> bool:
+        return (
+            self._ledger_cycle_due()
+            or self._is_due("workflow:last_open_signal_check_at", self.settings.open_signal_check_interval_minutes)
+            or self._daily_summary_due()
+        )
+
+    def _swing_scan_due(self) -> bool:
+        now_local = self._local_now()
+        if not is_market_day(now_local):
+            return False
+        start = self._combine_local_time(now_local, self.settings.market_open_scan_time_local)
+        end = self._combine_local_time(now_local, self.settings.end_of_day_scan_time_local)
+        if now_local < start or now_local > end:
+            return False
+        return self._is_due("workflow:last_swing_scan_at", int(getattr(self.settings, "swing_scan_interval_minutes", 60)))
+
     def _check_open_signals_impl(self, *, notify: bool, force_refresh: bool) -> WorkflowTaskResponse:
         return check_open_signals_impl(self, notify=notify, force_refresh=force_refresh)
 
@@ -413,28 +493,161 @@ class SignalWorkflowService:
     def _run_ledger_cycle_impl(self) -> WorkflowTaskResponse:
         return run_ledger_cycle_impl(self)
 
-    def _execute_guarded(self, task: str, runner) -> WorkflowTaskResponse:
+    def _execute_guarded(self, task: str, runner, *, bucket_name: str | None = None) -> WorkflowTaskResponse:
+        bucket = bucket_name or task
         if not self._acquire_lock(task):
-            return WorkflowTaskResponse(
+            result = WorkflowTaskResponse(
                 task=task,
                 status="skipped",
                 detail=f"{task.replace('_', ' ').title()} skipped because a prior run is still active.",
                 skipped=True,
             )
+            self._record_bucket_state(bucket, status=result.status, error=result.detail)
+            return result
         started_at = utc_now().isoformat()
+        self._record_bucket_run(bucket, started_at=started_at)
         self.run_logs.log(f"workflow_{task}_started", {"started_at": started_at})
         try:
-            return runner()
+            result = runner()
+            self._record_bucket_state(
+                bucket,
+                status=result.status,
+                success_at=utc_now().isoformat() if result.status == "ok" else None,
+                error=",".join(result.errors) if result.errors else "",
+            )
+            return result
         except Exception as exc:
             self.run_logs.log(f"workflow_{task}_error", {"error": str(exc)})
-            return WorkflowTaskResponse(
+            result = WorkflowTaskResponse(
                 task=task,
                 status="error",
                 detail=f"{task.replace('_', ' ').title()} failed: {exc}",
                 errors=[str(exc)],
             )
+            self._record_bucket_state(bucket, status=result.status, error=str(exc))
+            return result
         finally:
             self.runtime_state.set(self._lock_key(task), "")
+
+    def _bucket_status(self, bucket_name: str) -> WorkflowBucketStatus:
+        prefix = self._bucket_state_prefix(bucket_name)
+        return WorkflowBucketStatus(
+            name=bucket_name,
+            enabled=self._bucket_enabled(bucket_name),
+            paused=self._bucket_paused(bucket_name),
+            last_run_at=self.runtime_state.get(f"{prefix}:last_run_at"),
+            last_success_at=self.runtime_state.get(f"{prefix}:last_success_at"),
+            next_due_at=self._bucket_next_due_at(bucket_name),
+            last_status=self.runtime_state.get(f"{prefix}:last_status"),
+            last_error=self.runtime_state.get(f"{prefix}:last_error") or None,
+        )
+
+    def _bucket_enabled(self, bucket_name: str) -> bool:
+        if bucket_name == "maintenance":
+            return True
+        if not bool(getattr(self.settings, "screener_scheduler_enabled", False)):
+            return False
+        if bucket_name == "premarket_scan":
+            return bool(getattr(self.settings, "premarket_scan_enabled", False))
+        if bucket_name == "market_open_scan":
+            return bool(getattr(self.settings, "market_open_scan_enabled", False))
+        if bucket_name == "intraday_rotation":
+            return bool(getattr(self.settings, "intraday_repeated_scan_enabled", False))
+        if bucket_name == "swing_hourly":
+            return int(getattr(self.settings, "swing_scan_interval_minutes", 0) or 0) > 0
+        if bucket_name == "end_of_day_scan":
+            return bool(getattr(self.settings, "end_of_day_scan_enabled", False))
+        return False
+
+    def _bucket_paused(self, bucket_name: str) -> bool:
+        if bucket_name == "maintenance" or self.automation is None:
+            return False
+        return bool(self.automation.scan_blockers())
+
+    def _record_bucket_run(self, bucket_name: str, *, started_at: str) -> None:
+        prefix = self._bucket_state_prefix(bucket_name)
+        self.runtime_state.set(f"{prefix}:last_run_at", started_at)
+        self.runtime_state.set(f"{prefix}:last_status", "running")
+        self.runtime_state.set(f"{prefix}:last_error", "")
+
+    def _record_bucket_state(self, bucket_name: str, *, status: str, error: str = "", success_at: str | None = None) -> None:
+        prefix = self._bucket_state_prefix(bucket_name)
+        self.runtime_state.set(f"{prefix}:last_status", status)
+        self.runtime_state.set(f"{prefix}:last_error", error)
+        if success_at:
+            self.runtime_state.set(f"{prefix}:last_success_at", success_at)
+
+    @staticmethod
+    def _bucket_state_prefix(bucket_name: str) -> str:
+        return f"workflow:bucket:{bucket_name}"
+
+    def _bucket_next_due_at(self, bucket_name: str) -> str | None:
+        if not self._bucket_enabled(bucket_name):
+            return None
+        if self._bucket_due(bucket_name):
+            return utc_now().isoformat()
+        if bucket_name == "maintenance":
+            return None
+
+        now_local = self._local_now()
+        if bucket_name == "premarket_scan":
+            return self._next_named_due_at(self.settings.premarket_scan_time_local, now_local)
+        if bucket_name == "market_open_scan":
+            return self._next_named_due_at(self.settings.market_open_scan_time_local, now_local)
+        if bucket_name == "end_of_day_scan":
+            return self._next_named_due_at(self.settings.end_of_day_scan_time_local, now_local)
+        if bucket_name == "intraday_rotation":
+            return self._next_interval_due_at(
+                "workflow:last_intraday_scan_at",
+                int(self.settings.intraday_scan_interval_minutes),
+                self.settings.intraday_scan_start_local,
+                self.settings.intraday_scan_end_local,
+                now_local,
+            )
+        if bucket_name == "swing_hourly":
+            return self._next_interval_due_at(
+                "workflow:last_swing_scan_at",
+                int(getattr(self.settings, "swing_scan_interval_minutes", 60)),
+                self.settings.market_open_scan_time_local,
+                self.settings.end_of_day_scan_time_local,
+                now_local,
+            )
+        return None
+
+    def _next_named_due_at(self, raw_time: str, now_local: datetime) -> str:
+        candidate_day = now_local
+        candidate = self._combine_local_time(candidate_day, raw_time)
+        if now_local >= candidate or not is_market_day(candidate_day):
+            candidate_day = next_market_day(now_local + timedelta(days=1))
+            candidate = self._combine_local_time(candidate_day, raw_time)
+        return candidate.isoformat()
+
+    def _next_interval_due_at(
+        self,
+        state_key: str,
+        interval_minutes: int,
+        start_time: str,
+        end_time: str,
+        now_local: datetime,
+    ) -> str:
+        start = self._combine_local_time(now_local, start_time)
+        end = self._combine_local_time(now_local, end_time)
+        if not is_market_day(now_local) or now_local > end:
+            next_day = next_market_day(now_local + timedelta(days=1))
+            return self._combine_local_time(next_day, start_time).isoformat()
+        if now_local < start:
+            return start.isoformat()
+        last = self.runtime_state.get(state_key)
+        if not last:
+            return now_local.isoformat()
+        try:
+            next_due = datetime.fromisoformat(last).astimezone(self._schedule_zone()) + timedelta(minutes=max(interval_minutes, 1))
+        except ValueError:
+            return now_local.isoformat()
+        if next_due > end:
+            next_day = next_market_day(now_local + timedelta(days=1))
+            return self._combine_local_time(next_day, start_time).isoformat()
+        return max(next_due, now_local).isoformat()
 
     def _acquire_lock(self, task: str) -> bool:
         lock_key = self._lock_key(task)

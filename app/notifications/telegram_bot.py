@@ -56,6 +56,7 @@ class TelegramBotService:
         "/performance - paper trading and signal-quality dashboard\n"
         "/health - bot operations health\n"
         "/auto_status - automation, proposal, and execution safety status\n"
+        "/schedule_status - scheduler bucket status\n"
         "/pause_auto [reason] - pause scheduled scans and auto proposals\n"
         "/resume_auto [reason] - resume scheduled scans and clear runtime kill switch\n"
         "/kill_switch [reason] - immediately pause automation and block execution\n"
@@ -390,6 +391,10 @@ class TelegramBotService:
             self.notifier.send_text(self._automation_status_message(), chat_id=chat_id)
             return
 
+        if command == "/schedule_status":
+            self.notifier.send_text(self._schedule_status_message(), chat_id=chat_id)
+            return
+
         if command == "/pause_auto":
             self.notifier.send_text(self._automation_change_message("pause", args), chat_id=chat_id)
             return
@@ -687,19 +692,57 @@ class TelegramBotService:
         if self.automation is None:
             return "Automation service is not configured."
         status = self.automation.status()
-        return "\n".join(
-            [
-                "Automation status",
-                f"Paused: {'yes' if status.paused else 'no'}",
-                f"Kill switch: {'on' if status.kill_switch_enabled else 'off'}",
-                f"Auto propose: {'on' if status.auto_propose_enabled else 'off'}",
-                f"Auto execute after approval: {'on' if status.auto_execute_after_approval else 'off'}",
-                f"Execution mode: {status.execution_mode}",
-                f"Real trading enabled: {'yes' if status.enable_real_trading else 'no'}",
-                f"Require approval: {'yes' if status.require_approval else 'no'}",
-                f"Reason: {status.reason or 'n/a'}",
-            ]
-        )
+        lines = [
+            "Automation status",
+            f"Paused: {'yes' if status.paused else 'no'}",
+            f"Kill switch: {'on' if status.kill_switch_enabled else 'off'}",
+            f"Auto propose: {'on' if status.auto_propose_enabled else 'off'}",
+            f"Auto execute after approval: {'on' if status.auto_execute_after_approval else 'off'}",
+            f"Execution mode: {status.execution_mode}",
+            f"Real trading enabled: {'yes' if status.enable_real_trading else 'no'}",
+            f"Require approval: {'yes' if status.require_approval else 'no'}",
+            f"Reason: {status.reason or 'n/a'}",
+        ]
+        if self.workflow_service is not None and hasattr(self.workflow_service, "schedule_statuses"):
+            buckets = list(self.workflow_service.schedule_statuses())
+            next_due = self._next_due_bucket(buckets)
+            failed = self._latest_failed_bucket(buckets)
+            workflow_health = self.workflow_service.health_summary() if hasattr(self.workflow_service, "health_summary") else {}
+            lines.append(f"Next due: {next_due.name} at {next_due.next_due_at}" if next_due else "Next due: n/a")
+            lines.append(f"Last successful scan: {workflow_health.get('last_successful_screener_run_at') or 'n/a'}")
+            lines.append(f"Latest failed bucket: {failed.name} ({failed.last_error or failed.last_status})" if failed else "Latest failed bucket: none")
+        return "\n".join(lines)
+
+    def _schedule_status_message(self) -> str:
+        if self.workflow_service is None or not hasattr(self.workflow_service, "schedule_statuses"):
+            return "Workflow scheduler is not configured."
+        buckets = list(self.workflow_service.schedule_statuses())
+        lines = ["Schedule status"]
+        for bucket in buckets:
+            lines.append(
+                " | ".join(
+                    [
+                        bucket.name,
+                        "enabled" if bucket.enabled else "disabled",
+                        "paused" if bucket.paused else "active",
+                        f"last={bucket.last_status or 'n/a'}",
+                        f"next={bucket.next_due_at or 'n/a'}",
+                    ]
+                )
+            )
+            if bucket.last_error:
+                lines.append(f"  error: {bucket.last_error}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _next_due_bucket(buckets: list[Any]) -> Any | None:
+        due = [item for item in buckets if getattr(item, "enabled", False) and getattr(item, "next_due_at", None)]
+        return sorted(due, key=lambda item: str(item.next_due_at))[0] if due else None
+
+    @staticmethod
+    def _latest_failed_bucket(buckets: list[Any]) -> Any | None:
+        failed = [item for item in buckets if str(getattr(item, "last_status", "")).lower() == "error"]
+        return sorted(failed, key=lambda item: str(getattr(item, "last_run_at", "") or ""), reverse=True)[0] if failed else None
 
     def _automation_change_message(self, action: str, args: list[str]) -> str:
         if self.automation is None:

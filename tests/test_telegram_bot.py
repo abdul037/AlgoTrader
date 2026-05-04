@@ -427,6 +427,36 @@ class FakeAutomation:
         return self.status()
 
 
+class FakeWorkflowSchedule:
+    def schedule_statuses(self):
+        return [
+            SimpleNamespace(
+                name="intraday_rotation",
+                enabled=True,
+                paused=False,
+                last_run_at="2026-05-04T10:00:00-04:00",
+                last_success_at="2026-05-04T10:00:00-04:00",
+                next_due_at="2026-05-04T10:15:00-04:00",
+                last_status="ok",
+                last_error=None,
+            ),
+            SimpleNamespace(
+                name="swing_hourly",
+                enabled=True,
+                paused=False,
+                last_run_at="2026-05-04T09:35:00-04:00",
+                last_success_at=None,
+                next_due_at="2026-05-04T10:35:00-04:00",
+                last_status="error",
+                last_error="provider unavailable",
+            ),
+        ]
+
+    @staticmethod
+    def health_summary():
+        return {"last_successful_screener_run_at": "2026-05-04T10:00:00-04:00"}
+
+
 def test_send_due_alerts_respects_runtime_state() -> None:
     notifier = FakeNotifier()
     state = FakeStateRepo()
@@ -730,23 +760,32 @@ def test_telegram_automation_commands() -> None:
             "update_id": 4,
             "message": {"chat": {"id": 7329410595}, "text": "/kill_switch emergency"},
         },
+        {
+            "update_id": 5,
+            "message": {"chat": {"id": 7329410595}, "text": "/schedule_status"},
+        },
     ]
     bot = TelegramBotService(
         settings=FakeSettings(),
         notifier=notifier,
         live_signals=FakeLiveSignals(),
         automation_service=automation,
+        workflow_service=FakeWorkflowSchedule(),
         runtime_state_repository=FakeStateRepo(),
         run_log_repository=FakeRunLogRepo(),
     )
 
     processed = bot.poll_once(timeout_seconds=0)
 
-    assert processed == 4
+    assert processed == 5
     assert notifier.sent[0][0].startswith("Automation status")
+    assert "Next due: intraday_rotation at 2026-05-04T10:15:00-04:00" in notifier.sent[0][0]
+    assert "Latest failed bucket: swing_hourly" in notifier.sent[0][0]
     assert notifier.sent[1][0].startswith("Automation paused")
     assert notifier.sent[2][0].startswith("Automation resumed")
     assert notifier.sent[3][0].startswith("Kill switch enabled")
+    assert notifier.sent[4][0].startswith("Schedule status")
+    assert "intraday_rotation | enabled | active" in notifier.sent[4][0]
 
 
 def test_telegram_propose_top_scans_and_creates_best_proposal() -> None:

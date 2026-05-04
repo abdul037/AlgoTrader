@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -76,6 +76,8 @@ def named_scan_due(service: Any, state_key: str, enabled: bool, scheduled_time: 
     if not enabled:
         return False
     now_local = service._local_now()
+    if not is_market_day(now_local):
+        return False
     due_at = service._combine_local_time(now_local, scheduled_time)
     if now_local < due_at:
         return False
@@ -93,6 +95,8 @@ def intraday_scan_due(service: Any) -> bool:
     if not service.settings.intraday_repeated_scan_enabled:
         return False
     now_local = service._local_now()
+    if not is_market_day(now_local):
+        return False
     start = service._combine_local_time(now_local, service.settings.intraday_scan_start_local)
     end = service._combine_local_time(now_local, service.settings.intraday_scan_end_local)
     if now_local < start or now_local > end:
@@ -104,6 +108,8 @@ def intelligent_scan_due(service: Any) -> bool:
     if not service.settings.intelligent_scan_enabled:
         return False
     now_local = service._local_now()
+    if not is_market_day(now_local):
+        return False
     start = service._combine_local_time(now_local, service.settings.intelligent_scan_start_local)
     end = service._combine_local_time(now_local, service.settings.intelligent_scan_end_local)
     if now_local < start or now_local > end:
@@ -133,3 +139,18 @@ def parse_time(raw_time: str) -> tuple[int, int]:
         return max(0, min(int(hour_raw), 23)), max(0, min(int(minute_raw), 59))
     except Exception:
         return 0, 0
+
+
+def is_market_day(value: datetime) -> bool:
+    """Return whether the local date is a regular US equity weekday."""
+
+    return value.weekday() < 5
+
+
+def next_market_day(value: datetime) -> datetime:
+    """Return the next local datetime that falls on a regular market weekday."""
+
+    candidate = value
+    while not is_market_day(candidate):
+        candidate = candidate + timedelta(days=1)
+    return candidate

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from app.data.engine import MarketDataEngine
 from app.live_signal_schema import MarketQuote
@@ -234,3 +235,14 @@ def test_market_data_engine_auto_uses_etoro_live_quote_for_intraday(tmp_path) ->
     assert etoro.rate_calls == [["NVDA"]]
     assert quote.source == "etoro"
     assert quote.quote_derived_from_history is False
+
+
+def test_market_data_engine_rejects_unsupported_timeframe(tmp_path) -> None:
+    engine = MarketDataEngine(
+        make_settings(tmp_path, market_data_cache_dir=str(tmp_path / "cache")),
+        etoro_client=FakeEtoroClient(),
+        history_service=FiveMinuteHistoryService(),
+    )
+
+    with pytest.raises(ValueError, match="Unsupported timeframe"):
+        engine.get_history("NVDA", timeframe="2m", bars=20, force_refresh=True)

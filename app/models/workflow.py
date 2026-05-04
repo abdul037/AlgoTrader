@@ -54,6 +54,19 @@ class WorkflowTaskResponse(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class WorkflowBucketStatus(BaseModel):
+    """Operator-facing status for a named scheduler bucket."""
+
+    name: str
+    enabled: bool
+    paused: bool = False
+    last_run_at: str | None = None
+    last_success_at: str | None = None
+    next_due_at: str | None = None
+    last_status: str | None = None
+    last_error: str | None = None
+
+
 class WorkflowStatusResponse(BaseModel):
     """Current workflow scheduler state."""
 

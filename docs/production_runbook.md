@@ -20,6 +20,7 @@ curl -fsS http://127.0.0.1:8011/telegram/webhook/status
 ## Daily Operations
 
 - Telegram status: `/auto_status`
+- Scheduler buckets: `/schedule_status`
 - Deep scan: `/scan top100 tf=1m,5m,10m,15m,1h,1d,1w`
 - Paper dashboard: `/performance`
 - Pause scheduled scans and auto proposals: `/pause_auto reason`
