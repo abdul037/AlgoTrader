@@ -8,6 +8,7 @@ from app.runtime_settings import AppSettings
 from app.models.approval import ApprovalStatus, TradeProposalCreate
 from app.models.execution import BrokerOrderResponse, ExecutionRecord, ExecutionStatus
 from app.models.signal import Signal, SignalAction
+from app.risk.context import build_risk_context
 from app.risk.guardrails import RiskManager
 from app.risk.position_sizing import calculate_position_size
 from app.storage.repositories import ExecutionRepository, RunLogRepository
@@ -76,7 +77,7 @@ class TraderService:
             )
         )
 
-    def execute_proposal(self, proposal_id: str) -> ExecutionRecord:
+    def execute_proposal(self, proposal_id: str, *, client_order_id: str | None = None) -> ExecutionRecord:
         """Execute an approved proposal after re-checking risk rules."""
 
         proposal = self.proposals.get_proposal(proposal_id)
@@ -90,14 +91,15 @@ class TraderService:
             self.executions.create(blocked)
             raise PermissionError("Proposal must be approved before execution")
 
-        risk = self.risk_manager.validate_order(proposal.order, self.proposals._risk_context())
+        risk_context = build_risk_context(self.settings, self.broker, self.executions)
+        risk = self.risk_manager.validate_order(proposal.order, risk_context)
         if not risk.passed:
             blocked = ExecutionRecord(
                 proposal_id=proposal_id,
                 status=ExecutionStatus.BLOCKED,
                 mode=self.settings.etoro_account_mode,
                 error_message="; ".join(risk.reasons),
-                request_payload=proposal.order.model_dump(),
+                request_payload={**proposal.order.model_dump(), "client_order_id": client_order_id},
             )
             self.executions.create(blocked)
             raise ValueError("; ".join(risk.reasons))
@@ -106,14 +108,17 @@ class TraderService:
             proposal_id=proposal_id,
             status=ExecutionStatus.VALIDATED,
             mode=self.settings.etoro_account_mode,
-            request_payload=proposal.order.model_dump(),
+            request_payload={**proposal.order.model_dump(), "client_order_id": client_order_id},
         )
         self.executions.create(execution)
 
         if proposal.order.side.value == "sell":
             broker_response = self.broker.close_position(proposal.order.symbol)
         else:
-            broker_response = self.broker.open_market_order_by_amount(proposal.order)
+            broker_response = self.broker.open_market_order_by_amount(
+                proposal.order,
+                client_order_id=client_order_id,
+            )
         execution.status = self._map_broker_status(broker_response)
         execution.broker_order_id = broker_response.order_id
         execution.response_payload = broker_response.model_dump()

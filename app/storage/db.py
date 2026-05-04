@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS execution_queue (
     strategy_name TEXT,
     timeframe TEXT,
     mode TEXT NOT NULL,
+    client_order_id TEXT,
     status TEXT NOT NULL,
     approval_required INTEGER NOT NULL DEFAULT 1,
     ready_for_execution INTEGER NOT NULL DEFAULT 0,
@@ -310,8 +311,27 @@ class Database:
 
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            self._apply_schema_upgrades(connection)
 
     def exists(self) -> bool:
         """Return whether the backing SQLite file already exists."""
 
         return Path(self.path).exists()
+
+    def _apply_schema_upgrades(self, connection: sqlite3.Connection) -> None:
+        """Apply idempotent schema upgrades for existing SQLite files."""
+
+        if not self._column_exists(connection, "execution_queue", "client_order_id"):
+            connection.execute("ALTER TABLE execution_queue ADD COLUMN client_order_id TEXT")
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_unique_open_per_symbol
+            ON execution_queue(symbol)
+            WHERE status IN ('queued','processing')
+            """
+        )
+
+    @staticmethod
+    def _column_exists(connection: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+        rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return any(str(row["name"]) == column_name for row in rows)

@@ -24,14 +24,14 @@ class MockBroker:
     def get_balance(self) -> AccountSummary:
         return self.get_portfolio().account
 
-    def open_market_order_by_amount(self, order):
-        self.orders.append(order)
+    def open_market_order_by_amount(self, order, *, client_order_id=None):
+        self.orders.append({"order": order, "client_order_id": client_order_id})
         return BrokerOrderResponse(
             order_id=f"mock-order-{len(self.orders)}",
             status="submitted",
             mode="demo",
             message="mock broker accepted order",
-            raw_response={"symbol": order.symbol},
+            raw_response={"symbol": order.symbol, "client_order_id": client_order_id},
         )
 
     def close_position(self, symbol: str) -> BrokerOrderResponse:

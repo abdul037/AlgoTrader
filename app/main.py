@@ -237,6 +237,7 @@ def create_app(
         market_data_engine=app.state.market_data_engine,
         run_logs=run_log_repository,
         automation_service=app.state.automation_service,
+        risk_manager=risk_manager,
     )
     app.state.tracked_signal_repository = tracked_signal_repository
     app.state.alert_history_repository = alert_history_repository

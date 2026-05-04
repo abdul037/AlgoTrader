@@ -8,6 +8,7 @@ from app.broker.etoro_client import BrokerClient
 from app.config import AppSettings
 from app.models.approval import ApprovalDecisionRequest, ApprovalStatus, TradeProposal, TradeProposalCreate
 from app.models.trade import TradeOrder
+from app.risk.context import build_risk_context
 from app.risk.guardrails import RiskContext, RiskManager
 from app.storage.repositories import ExecutionRepository, ProposalRepository, RunLogRepository, SignalRepository
 from app.utils.time import add_minutes, utc_now
@@ -98,11 +99,11 @@ class ProposalService:
         return proposal
 
     def reject_proposal(self, proposal_id: str, decision: ApprovalDecisionRequest) -> TradeProposal:
-        """Reject a pending proposal."""
+        """Reject a pending or approved proposal before execution."""
 
         proposal = self.get_proposal(proposal_id)
-        if proposal.status != ApprovalStatus.PENDING:
-            raise ValueError("Only pending proposals can be rejected")
+        if proposal.status not in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED}:
+            raise ValueError("Only pending or approved proposals can be rejected")
         proposal.status = ApprovalStatus.REJECTED
         proposal.approved_by = decision.reviewer
         proposal.decision_notes = decision.notes
@@ -136,45 +137,10 @@ class ProposalService:
         return order
 
     def _risk_context(self) -> RiskContext:
-        start_of_day = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
-        trades_today = self.executions.count_since(start_of_day)
-        if self.settings.execution_mode == "paper":
-            daily_pnl, consecutive_losses = self.executions.daily_loss_stats()
-            weekly_pnl = self.executions.period_realized_pnl(days=7)
-            return RiskContext(
-                account_balance=max(float(self.settings.paper_account_balance_usd), 1.0),
-                daily_realized_pnl_usd=daily_pnl,
-                weekly_realized_pnl_usd=weekly_pnl,
-                open_positions=0,
-                positions_by_symbol={},
-                consecutive_losses_today=consecutive_losses,
-                trades_today=trades_today,
-                mode="paper",
-            )
-
-        portfolio = self.broker.get_portfolio()
-        daily_pnl, consecutive_losses = self.executions.daily_loss_stats()
-        weekly_pnl = self.executions.period_realized_pnl(days=7)
-        account_balance = max(portfolio.account.equity, portfolio.account.cash_balance, 1.0)
-        positions_by_symbol: dict[str, int] = {}
-        for position in portfolio.positions:
-            symbol = str(position.symbol or "").upper()
-            if not symbol:
-                continue
-            positions_by_symbol[symbol] = positions_by_symbol.get(symbol, 0) + 1
-        return RiskContext(
-            account_balance=account_balance,
-            daily_realized_pnl_usd=daily_pnl,
-            weekly_realized_pnl_usd=weekly_pnl,
-            open_positions=len(portfolio.positions),
-            positions_by_symbol=positions_by_symbol,
-            consecutive_losses_today=consecutive_losses,
-            trades_today=trades_today,
-            mode=self.settings.etoro_account_mode,
-        )
+        return build_risk_context(self.settings, self.broker, self.executions)
 
     def _expire_if_needed(self, proposal: TradeProposal) -> TradeProposal:
-        if proposal.status != ApprovalStatus.PENDING:
+        if proposal.status not in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED}:
             return proposal
 
         if datetime.fromisoformat(proposal.expires_at) <= utc_now():

@@ -31,6 +31,7 @@ class ExecutionQueueRecord(BaseModel):
     strategy_name: str | None = None
     timeframe: str | None = None
     mode: str = "paper"
+    client_order_id: str | None = None
     status: str = ExecutionQueueStatus.QUEUED
     approval_required: bool = True
     ready_for_execution: bool = False

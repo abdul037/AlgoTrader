@@ -41,7 +41,12 @@ class BrokerClient(ABC):
         """Return balance and PnL summary."""
 
     @abstractmethod
-    def open_market_order_by_amount(self, order: TradeOrder) -> BrokerOrderResponse:
+    def open_market_order_by_amount(
+        self,
+        order: TradeOrder,
+        *,
+        client_order_id: str | None = None,
+    ) -> BrokerOrderResponse:
         """Open a market order by notional amount."""
 
     @abstractmethod
@@ -116,7 +121,12 @@ class EToroClient(BrokerClient):
             return {"clientPortfolio": {"positions": [], "credit": 10000.0}}
         return self._request("GET", self._trading_info_path("portfolio"))
 
-    def open_market_order_by_amount(self, order: TradeOrder) -> BrokerOrderResponse:
+    def open_market_order_by_amount(
+        self,
+        order: TradeOrder,
+        *,
+        client_order_id: str | None = None,
+    ) -> BrokerOrderResponse:
         instrument = self.resolver.resolve(order.symbol)
         self._ensure_order_mode_allowed()
 
@@ -127,13 +137,15 @@ class EToroClient(BrokerClient):
                 "Leverage": order.leverage,
                 "IsBuy": order.side.value == "buy",
             }
+            if client_order_id:
+                payload["ClientOrderID"] = client_order_id
             logger.info("Submitting simulated eToro order payload: %s", payload)
             return BrokerOrderResponse(
                 order_id=generate_id("sim_order"),
                 status="simulated_submitted",
                 mode=self.settings.etoro_account_mode,
                 message="Simulated broker response.",
-                raw_response={"payload": payload},
+                raw_response={"payload": payload, "client_order_id": client_order_id},
             )
 
         broker_instrument = self._search_instrument(instrument.symbol)
@@ -150,6 +162,9 @@ class EToroClient(BrokerClient):
             payload["StopLossRate"] = order.stop_loss
         if order.take_profit is not None:
             payload["TakeProfitRate"] = order.take_profit
+        if client_order_id:
+            # TODO: Confirm the official eToro idempotency field name before adding it to this payload.
+            logger.info("Prepared local client_order_id for eToro order: %s", client_order_id)
 
         response = self._request(
             "POST",
@@ -162,7 +177,7 @@ class EToroClient(BrokerClient):
             status=self._normalize_order_status(order_for_open.get("statusID")),
             mode=self.settings.etoro_account_mode,
             message="Order accepted by eToro",
-            raw_response=response,
+            raw_response={"etoro": response, "client_order_id": client_order_id},
         )
 
     def close_position(self, symbol: str) -> BrokerOrderResponse:

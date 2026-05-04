@@ -242,6 +242,14 @@ class ExecutionRepository:
             )
         return execution
 
+    def get(self, execution_id: str) -> ExecutionRecord | None:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM executions WHERE id = ?",
+                (execution_id,),
+            ).fetchone()
+        return None if row is None else self._row_to_model(row)
+
     def update(self, execution: ExecutionRecord) -> ExecutionRecord:
         with self.db.connect() as connection:
             connection.execute(
@@ -315,6 +323,22 @@ class ExecutionRepository:
             ).fetchone()
         return int(row["count"] if row is not None else 0)
 
+    @staticmethod
+    def _row_to_model(row: Any) -> ExecutionRecord:
+        return ExecutionRecord(
+            id=row["id"],
+            proposal_id=row["proposal_id"],
+            status=row["status"],
+            mode=row["mode"],
+            broker_order_id=row["broker_order_id"],
+            request_payload=json.loads(row["request_json"] or "{}"),
+            response_payload=json.loads(row["response_json"] or "{}"),
+            error_message=row["error_message"],
+            realized_pnl_usd=float(row["realized_pnl_usd"] or 0.0),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
 
 class ExecutionQueueRepository:
     """Persist approval-gated execution queue items."""
@@ -328,10 +352,10 @@ class ExecutionQueueRepository:
                 """
                 INSERT INTO execution_queue (
                     id, proposal_id, signal_id, symbol, strategy_name, timeframe, mode, status,
-                    approval_required, ready_for_execution, requested_entry_price, latest_quote_price,
+                    client_order_id, approval_required, ready_for_execution, requested_entry_price, latest_quote_price,
                     latest_quote_timestamp, validation_reason, payload_json, created_at, updated_at, executed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
@@ -342,6 +366,7 @@ class ExecutionQueueRepository:
                     record.timeframe,
                     record.mode,
                     record.status,
+                    record.client_order_id,
                     1 if record.approval_required else 0,
                     1 if record.ready_for_execution else 0,
                     record.requested_entry_price,
@@ -419,6 +444,7 @@ class ExecutionQueueRepository:
             strategy_name=row["strategy_name"],
             timeframe=row["timeframe"],
             mode=row["mode"],
+            client_order_id=row["client_order_id"],
             status=row["status"],
             approval_required=bool(row["approval_required"]),
             ready_for_execution=bool(row["ready_for_execution"]),

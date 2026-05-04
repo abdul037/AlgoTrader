@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
+import sqlite3
+from collections.abc import Callable
 from typing import Any
 
+from app.models.approval import ApprovalStatus
 from app.models.execution import ExecutionRecord, ExecutionStatus
 from app.models.execution_queue import ExecutionQueueRecord, ExecutionQueueStatus
+from app.risk.context import build_risk_context
+from app.risk.guardrails import RiskManager
 from app.utils.time import utc_now
 
 
@@ -24,6 +30,8 @@ class ExecutionCoordinator:
         market_data_engine: Any,
         run_logs: Any,
         automation_service: Any | None = None,
+        risk_manager: RiskManager | None = None,
+        risk_context_factory: Callable[[Any, Any, Any], Any] | None = None,
     ):
         self.settings = settings
         self.proposals = proposal_service
@@ -34,11 +42,14 @@ class ExecutionCoordinator:
         self.market_data = market_data_engine
         self.logs = run_logs
         self.automation = automation_service
+        self.risk_manager = risk_manager or RiskManager(settings)
+        self.risk_context_factory = risk_context_factory or build_risk_context
 
     def enqueue_approved_proposal(self, proposal_id: str) -> ExecutionQueueRecord:
         proposal = self.proposals.get_proposal(proposal_id)
         if proposal.status.value != "approved":
             raise PermissionError("Proposal must be approved before it can be queued")
+        # Best-effort fast path; the partial unique index is the source of truth.
         existing = self.queue.latest_open_for_symbol(proposal.order.symbol)
         if existing is not None:
             raise ValueError(f"Duplicate execution queue item already exists for {proposal.order.symbol}")
@@ -52,7 +63,11 @@ class ExecutionCoordinator:
             requested_entry_price=proposal.order.proposed_price,
             payload={"order": proposal.order.model_dump(), "signal": proposal.signal.model_dump() if proposal.signal else None},
         )
-        self.queue.create(record)
+        record.client_order_id = self._client_order_id(proposal.id, record.id)
+        try:
+            self.queue.create(record)
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(f"Duplicate execution queue item already exists for {proposal.order.symbol}") from exc
         self.logs.log("execution_queue_enqueued", {"queue_id": record.id, "proposal_id": proposal.id, "symbol": record.symbol})
         return record
 
@@ -60,7 +75,27 @@ class ExecutionCoordinator:
         record = self.queue.get(queue_id)
         if record is None:
             raise LookupError(f"Execution queue item {queue_id} was not found")
+        if record.payload.get("execution_id"):
+            existing_execution = self.executions.get(str(record.payload["execution_id"]))
+            if existing_execution is not None:
+                return record
+
         proposal = self.proposals.get_proposal(record.proposal_id)
+        if proposal.status != ApprovalStatus.APPROVED:
+            record.status = ExecutionQueueStatus.BLOCKED
+            record.validation_reason = "proposal_status_" + proposal.status.value
+            record.updated_at = utc_now().isoformat()
+            self.queue.update(record)
+            self.logs.log(
+                "execution_queue_proposal_not_approved",
+                {
+                    "queue_id": record.id,
+                    "proposal_id": proposal.id,
+                    "status": proposal.status.value,
+                },
+            )
+            return record
+
         record.status = ExecutionQueueStatus.PROCESSING
         record.updated_at = utc_now().isoformat()
         self.queue.update(record)
@@ -92,6 +127,25 @@ class ExecutionCoordinator:
             )
             return record
 
+        risk_context = self.risk_context_factory(self.settings, self.proposals.broker, self.executions)
+        risk = self.risk_manager.validate_order(proposal.order, risk_context)
+        if not risk.passed:
+            record.status = ExecutionQueueStatus.BLOCKED
+            record.ready_for_execution = False
+            record.validation_reason = "risk_failed:" + ",".join(risk.reasons)
+            record.updated_at = utc_now().isoformat()
+            self.queue.update(record)
+            self.logs.log(
+                "execution_queue_risk_blocked",
+                {
+                    "queue_id": record.id,
+                    "proposal_id": proposal.id,
+                    "symbol": proposal.order.symbol,
+                    "reasons": risk.reasons,
+                },
+            )
+            return record
+
         if self.settings.execution_mode == "paper":
             paper_position = self.paper.open_from_approved_proposal(proposal, live_quote=quote)
             execution = ExecutionRecord(
@@ -104,7 +158,11 @@ class ExecutionCoordinator:
             self.executions.create(execution)
             self.proposals.mark_executed(proposal.id, execution.id)
         elif self.settings.execution_mode == "live":
-            execution = self.trader.execute_proposal(proposal.id)
+            if record.payload.get("execution_id"):
+                existing_execution = self.executions.get(str(record.payload["execution_id"]))
+                if existing_execution is not None:
+                    return record
+            execution = self.trader.execute_proposal(proposal.id, client_order_id=record.client_order_id)
         else:
             raise ValueError(f"Unsupported execution mode: {self.settings.execution_mode}")
 
@@ -125,12 +183,17 @@ class ExecutionCoordinator:
             results.append(self.process_queue_item(record.id))
         return results
 
+    @staticmethod
+    def _client_order_id(proposal_id: str, queue_id: str) -> str:
+        return hashlib.sha256(f"{proposal_id}:{queue_id}:v1".encode()).hexdigest()[:32]
+
     def _automation_blockers(self) -> list[str]:
         if self.automation is not None:
-            return list(self.automation.execution_blockers())
+            blockers = list(self.automation.execution_blockers())
+            if bool(getattr(self.settings, "kill_switch_enabled", False)):
+                blockers = [item for item in blockers if item != "automation_kill_switch_enabled"]
+            return blockers
         reasons: list[str] = []
-        if bool(getattr(self.settings, "kill_switch_enabled", False)):
-            reasons.append("automation_kill_switch_enabled")
         if getattr(self.settings, "execution_mode", "paper") == "live":
             if not bool(getattr(self.settings, "require_approval", True)):
                 reasons.append("approval_required_must_remain_enabled")
