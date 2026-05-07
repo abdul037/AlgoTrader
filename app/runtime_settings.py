@@ -196,6 +196,11 @@ class AppSettings(BaseSettings):
     paper_trading_enabled: bool = True
     paper_account_balance_usd: float = 100000.0
     paper_slippage_bps: float = 3.0
+    backtest_annual_financing_rate_by_asset_class: dict[str, float] = Field(
+        default_factory=lambda: {"equity": 0.07, "gold": 0.02, "fx": 0.02}
+    )
+    backtest_default_half_spread_bps: float = 5.0
+    backtest_slippage_impact_k: float = 1.0
     paper_max_hold_minutes_scalp: int = 90
     paper_max_hold_minutes_intraday: int = 480
     paper_max_hold_days_swing: int = 20
