@@ -10,7 +10,14 @@ compatibility with older imports.
 from app.backtesting.batch import BatchBacktestService
 from app.backtesting.cost_model import CostModel, is_extended_hours, zero_cost_model
 from app.backtesting.engine import BacktestEngine, BacktestResult, EngineConfig
-from app.backtesting.metrics import bars_per_year_for, leakage_tripwire_triggered
+from app.backtesting.metrics import (
+    bars_per_year_for,
+    calmar,
+    deflated_sharpe,
+    expectancy_R,
+    leakage_tripwire_triggered,
+    sortino,
+)
 from app.backtesting.walk_forward import (
     WalkForwardSplitter,
     WalkForwardWindow,
@@ -27,7 +34,11 @@ __all__ = [
     "WalkForwardWindow",
     "aggregate_out_of_sample",
     "bars_per_year_for",
+    "calmar",
+    "deflated_sharpe",
+    "expectancy_R",
     "is_extended_hours",
     "leakage_tripwire_triggered",
+    "sortino",
     "zero_cost_model",
 ]

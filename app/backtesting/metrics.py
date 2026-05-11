@@ -186,3 +186,80 @@ def leakage_tripwire_triggered(metrics: dict[str, float]) -> tuple[bool, str | N
     if wr > 70.0:
         return True, f"win_rate={wr:.2f}% exceeds tripwire (n={n})"
     return False, None
+
+
+def sortino(returns: list[float], *, bars_per_year: int = DAILY_BARS_PER_YEAR) -> float:
+    """Sortino ratio: mean return divided by downside deviation, annualized."""
+    if len(returns) < 3:
+        return 0.0
+    series = pd.Series(returns, dtype="float64")
+    downside = series[series < 0]
+    if downside.empty or downside.std() == 0:
+        return 0.0
+    return float((series.mean() / downside.std()) * sqrt(max(bars_per_year, 1)))
+
+
+def calmar(
+    returns: list[float],
+    equity_curve: list[float],
+    *,
+    bars_per_year: int = DAILY_BARS_PER_YEAR,
+) -> float:
+    """Calmar ratio: annualized return divided by max drawdown."""
+    if not returns or not equity_curve:
+        return 0.0
+    ann_return = float(pd.Series(returns).mean() * bars_per_year)
+    max_dd_pct = compute_max_drawdown(equity_curve)
+    if max_dd_pct == 0:
+        return 0.0
+    return ann_return / (max_dd_pct / 100.0)
+
+
+def expectancy_R(trades: list[dict[str, float]], risk_per_trade_amount: float) -> float:
+    """Expected R per trade. Mean pnl_usd divided by risk_per_trade_amount."""
+    if not trades or risk_per_trade_amount <= 0:
+        return 0.0
+    pnls = [trade.get("pnl_usd", 0.0) for trade in trades]
+    return float(sum(pnls) / (len(pnls) * risk_per_trade_amount))
+
+
+def deflated_sharpe(
+    observed_sharpe: float,
+    *,
+    n_trials: int,
+    n_observations: int,
+    skewness: float = 0.0,
+    kurtosis: float = 3.0,
+) -> float:
+    """Probabilistic Sharpe ratio deflated for selection bias.
+
+    Reference: Bailey & Lopez de Prado 2014, 'The Deflated Sharpe Ratio'.
+    Returns confidence in [0, 1] that the true Sharpe is positive after
+    adjusting for the fact that n_trials strategies were tested.
+    """
+    from scipy.stats import norm
+
+    if n_observations < 2 or n_trials < 1:
+        return 0.0
+
+    # Expected max Sharpe under null hypothesis for N trials
+    if n_trials == 1:
+        expected_max_sr = 0.0
+    else:
+        euler_mascheroni = 0.5772156649015329
+        z_minus = norm.ppf(1.0 - 1.0 / n_trials)
+        z_minus_em = norm.ppf(1.0 - 1.0 / (n_trials * math.e))
+        expected_max_sr = z_minus * (1.0 - euler_mascheroni) + z_minus_em * euler_mascheroni
+
+    # SR distribution variance factor (BLP eq. 9)
+    sr_variance_factor = (
+        1.0
+        - skewness * observed_sharpe
+        + ((kurtosis - 1.0) / 4.0) * observed_sharpe ** 2
+    )
+    if sr_variance_factor <= 0:
+        return 0.0
+
+    numerator = (observed_sharpe - expected_max_sr) * math.sqrt(n_observations - 1)
+    denominator = math.sqrt(sr_variance_factor)
+    return float(norm.cdf(numerator / denominator))
