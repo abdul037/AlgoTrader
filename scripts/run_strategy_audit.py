@@ -64,6 +64,7 @@ def main() -> None:
     )
     universe = env_list("AUDIT_SYMBOLS") or resolve_universe(settings, limit=100)
     strategy_names = env_list("AUDIT_STRATEGIES") or sorted(STRATEGY_REGISTRY)
+    include_trade_detail = env_bool("AUDIT_INCLUDE_TRADE_DETAIL")
     unknown = sorted(set(strategy_names) - set(STRATEGY_REGISTRY))
     if unknown:
         raise ValueError(f"Unknown AUDIT_STRATEGIES entries: {', '.join(unknown)}")
@@ -85,6 +86,7 @@ def main() -> None:
     data_by_symbol, data_errors = load_universe_data(universe)
     results: list[dict[str, Any]] = []
     strategy_errors: list[dict[str, str]] = []
+    trade_details: list[dict[str, Any]] = []
 
     for strategy_name in strategy_names:
         try:
@@ -96,7 +98,9 @@ def main() -> None:
                 engine_config=engine_config,
                 risk_amount=risk_amount,
                 n_trials=n_trials,
+                include_trade_detail=include_trade_detail,
             )
+            trade_details.extend(result.pop("_trade_details", []))
             results.append(result)
             print(
                 f"{strategy_name}: deflated_sharpe={result['deflated_sharpe']:.4f} "
@@ -123,8 +127,15 @@ def main() -> None:
         cost_model=cost_model,
         n_trials=n_trials,
     )
-    MARKDOWN_PATH.write_text(render_markdown(payload), encoding="utf-8")
-    JSON_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    if include_trade_detail:
+        write_trade_detail_files(
+            trade_details=trade_details,
+            splitter=splitter,
+            cost_model=cost_model,
+        )
+    else:
+        MARKDOWN_PATH.write_text(render_markdown(payload), encoding="utf-8")
+        JSON_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     print(render_stdout_ranking(ranked), flush=True)
 
     counts = verdict_counts(ranked)
@@ -141,6 +152,11 @@ def main() -> None:
 def env_list(name: str) -> list[str]:
     raw = os.getenv(name, "")
     return [item.strip().upper() if name == "AUDIT_SYMBOLS" else item.strip().lower() for item in raw.split(",") if item.strip()]
+
+
+def env_bool(name: str) -> bool:
+    raw = str(os.getenv(name, "") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def load_universe_data(universe: list[str]) -> tuple[dict[str, pd.DataFrame], list[dict[str, str]]]:
@@ -223,6 +239,7 @@ def audit_strategy(
     engine_config: EngineConfig,
     risk_amount: float,
     n_trials: int,
+    include_trade_detail: bool = False,
 ) -> dict[str, Any]:
     per_fold_trades: list[list[dict[str, Any]]] = []
     per_fold_metrics: list[dict[str, Any]] = []
@@ -232,6 +249,7 @@ def audit_strategy(
     symbols_evaluated = 0
     fold_count = 0
     errors: list[dict[str, str]] = []
+    trade_details: list[dict[str, Any]] = []
 
     kwargs = strategy_kwargs(strategy_name, settings)
     worker_args = [
@@ -241,6 +259,7 @@ def audit_strategy(
             "kwargs": kwargs,
             "initial_cash": engine_config.initial_cash,
             "risk_per_trade_pct": engine_config.risk_per_trade_pct,
+            "include_trade_detail": include_trade_detail,
         }
         for symbol in data_by_symbol
     ]
@@ -271,6 +290,7 @@ def audit_strategy(
             fold_returns.append(fold_return)
             equity_curve.append(equity_curve[-1] * (1.0 + fold_return))
             fold_count += 1
+        trade_details.extend(symbol_result.get("trade_details", []))
         symbols_evaluated += 1
 
     aggregated = aggregate_out_of_sample(per_fold_trades, per_fold_metrics)
@@ -285,7 +305,7 @@ def audit_strategy(
         skewness=0.0,
         kurtosis=3.0,
     )
-    return {
+    result = {
         "strategy": strategy_name,
         "intraday_limitation": "vwap" in strategy_name.lower(),
         "deflated_sharpe": round(float(dsr), 6),
@@ -301,6 +321,9 @@ def audit_strategy(
         "verdict": verdict_for(float(dsr)),
         "errors": errors,
     }
+    if include_trade_detail:
+        result["_trade_details"] = trade_details
+    return result
 
 
 def audit_symbol_for_strategy(args: dict[str, Any]) -> dict[str, Any]:
@@ -363,13 +386,129 @@ def audit_symbol_for_strategy(args: dict[str, Any]) -> dict[str, Any]:
             "per_fold_trades": [],
             "errors": [{"symbol": symbol, "error": str(exc)}],
         }
+    trade_details = (
+        build_trade_details(
+            strategy_name=args["strategy_name"],
+            symbol=symbol,
+            trades=result.trades,
+            history=history,
+        )
+        if bool(args.get("include_trade_detail"))
+        else []
+    )
     return {
         "symbol": symbol,
         "evaluated": True,
         "total_test_bars": total_test_bars,
         "per_fold_trades": group_trades_by_window(result.trades, intervals),
+        "trade_details": trade_details,
         "errors": errors,
     }
+
+
+def build_trade_details(
+    *,
+    strategy_name: str,
+    symbol: str,
+    trades: list[dict[str, Any]],
+    history: pd.DataFrame,
+) -> list[dict[str, Any]]:
+    bars = history.copy()
+    bars["timestamp"] = pd.to_datetime(bars["timestamp"], utc=True)
+    bars = bars.sort_values("timestamp").reset_index(drop=True)
+    timestamps = list(bars["timestamp"])
+    details: list[dict[str, Any]] = []
+    for trade in trades:
+        entry_ts = pd.Timestamp(trade["entry_time"]).tz_convert("UTC")
+        entry_index = bars["timestamp"].searchsorted(entry_ts)
+        if entry_index >= len(bars) or pd.Timestamp(bars.iloc[entry_index]["timestamp"]) != entry_ts:
+            entry_index = next(
+                (
+                    idx
+                    for idx, ts in enumerate(timestamps)
+                    if pd.Timestamp(ts) == entry_ts
+                ),
+                -1,
+            )
+        entry_bar = bars.iloc[entry_index] if entry_index >= 0 else None
+        signal_bar = bars.iloc[entry_index - 1] if entry_index > 0 else None
+        details.append(
+            {
+                "symbol": symbol,
+                "strategy": strategy_name,
+                "entry_time": trade.get("entry_time"),
+                "entry_price": trade.get("entry_price"),
+                "exit_time": trade.get("exit_time"),
+                "exit_price": trade.get("exit_price"),
+                "side": "long",
+                "quantity": trade.get("quantity"),
+                "entry_notional": trade.get("notional_usd"),
+                "spread_cost_usd": trade.get("spread_usd"),
+                "financing_cost_usd": trade.get("financing_usd"),
+                "fx_cost_usd": trade.get("fx_usd"),
+                "pnl_usd": trade.get("pnl_usd"),
+                "signal_bar_timestamp": (
+                    pd.Timestamp(signal_bar["timestamp"]).isoformat()
+                    if signal_bar is not None
+                    else None
+                ),
+                "signal_bar_close": (
+                    float(signal_bar["close"])
+                    if signal_bar is not None
+                    else None
+                ),
+                "entry_bar_open": (
+                    float(entry_bar["open"])
+                    if entry_bar is not None
+                    else None
+                ),
+            }
+        )
+    return details
+
+
+def write_trade_detail_files(
+    *,
+    trade_details: list[dict[str, Any]],
+    splitter: WalkForwardSplitter,
+    cost_model: CostModel,
+) -> None:
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for trade in trade_details:
+        key = (str(trade["strategy"]), str(trade["symbol"]))
+        grouped.setdefault(key, []).append(trade)
+    for (strategy_name, symbol), trades in sorted(grouped.items()):
+        path = trade_detail_path(strategy_name=strategy_name, symbol=symbol)
+        payload = {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "window": WINDOW_LABEL,
+            "timeframe": TIMEFRAME,
+            "strategy": strategy_name,
+            "symbol": symbol,
+            "walk_forward": {
+                "train_days": splitter.train_days,
+                "test_days": splitter.test_days,
+                "step_days": splitter.step_days,
+                "embargo_days": splitter.embargo_days,
+                "holdout_days": splitter.holdout_days,
+            },
+            "cost_model": {
+                "spread_bps": cost_model.spread_bps,
+                "half_spread_fraction": cost_model.half_spread_fraction(),
+                "overnight_fee_daily_pct": cost_model.overnight_fee_daily_pct,
+                "weekend_multiplier": cost_model.weekend_multiplier,
+                "fx_spread_bps": cost_model.fx_spread_bps,
+            },
+            "trades": trades,
+        }
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        print(f"trade_detail {strategy_name} {symbol}: {len(trades)} trades -> {path}", flush=True)
+
+
+def trade_detail_path(*, strategy_name: str, symbol: str) -> Path:
+    safe_strategy = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in strategy_name)
+    safe_symbol = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in symbol)
+    return OUTPUT_DIR / f"strategy_audit_2026_05_{safe_strategy}_{safe_symbol}_TRADES.json"
 
 
 def maybe_precompute_indicators(
