@@ -50,14 +50,17 @@ def test_verified_no_trade_message_includes_diagnostic_context() -> None:
 
     message = TelegramNotifier.format_signal_message(snapshot)
 
-    assert "Why not now:" in message
-    assert "Nearest setup: rsi_vwap_ema_confluence | 15m | rejected | near-score 53.40" in message
-    assert "Strategy checks: 25 evaluated" in message
-    assert "Blockers: confirmation_too_weak, false_positive_risk_too_high" in message
-    assert "Indicators:" in message
-    assert "Accuracy 0.43" in message
+    assert "NVDA: WAIT / NO TRADE" in message
+    assert "Now: 200.00 | 1d | score 42.0/100" in message
+    assert "Closest setup: rsi_vwap_ema_confluence 15m | score 53.40 | rejected" in message
+    assert "Why wait: confirmation is too weak; false-positive risk too high" in message
+    assert "Watch for: Wait for stronger confirmation." in message
+    assert "Key data:" in message
+    assert "Quality 0.51" in message
     assert "Confirm 0.38" in message
     assert "FP-risk 0.71" in message
+    assert "Data: etoro quote verified; etoro candles fresh" in message
+    assert "Safety: no order created. Manual approval required." in message
     assert "Gate: blocked" not in message
 
 
@@ -118,21 +121,20 @@ def test_screener_summary_includes_rejection_diagnostics() -> None:
     message = TelegramNotifier.format_screener_summary(response)
     detailed = TelegramNotifier.format_screener_summary(response, include_other_watches=True)
 
-    assert "TRADE SIGNAL: WAIT" in message
+    assert "Market scan: WAIT" in message
     assert "Action: do not open a trade now." in message
-    assert "Best setup to watch:" in message
+    assert "Best watch:" in message
     assert "1. NVDA 1h LONG | score 53.4" in message
-    assert "Enter only if price goes above 211.00" in message
-    assert "Current: 210.40 | gap: 0.18 ATR" in message
-    assert "Stop: 207.20 | target: 220.50 | RR 2.50R" in message
+    assert "Trigger: above 211.00 | now 210.40 | gap 0.18 ATR" in message
+    assert "Plan: stop 207.20 | target 220.50 | RR 2.50R" in message
     assert "Volume: LOW (RVOL 0.98, need 1.03-1.08)" in message
-    assert "Target move: 4.50%" in message
+    assert "Potential move: 4.50%" in message
     assert "Why wait: setup quality below threshold; confirmation is too weak" in message
     assert "Scanned: 8 symbol(s) | Checks: 24 | Timeframes: 15m, 1h, 1d" in message
-    assert "Safety: no order created. Manual approval is required for any future order." in message
+    assert "Safety: no order created. Manual approval required." in message
     assert "Other watches:" not in message
     assert "Other watches:" in detailed
-    assert "- AAPL 15m LONG: above 181.50 | current 180.00" in detailed
+    assert "- AAPL 15m LONG: above 181.50 | now 180.00" in detailed
 
 
 def test_screener_candidate_reads_like_trade_signal() -> None:
@@ -168,10 +170,10 @@ def test_screener_candidate_reads_like_trade_signal() -> None:
 
     message = TelegramNotifier.format_screener_summary(response)
 
-    assert "TRADE SIGNAL: READY FOR REVIEW" in message
-    assert "Action: review the setup. Manual approval is still required." in message
-    assert "1. NVDA 15m LONG" in message
-    assert "Action: review for manual approval. Bot has not placed an order." in message
-    assert "Entry: 198.50 - 199.00 | current 198.42" in message
+    assert "Market scan: REVIEW" in message
+    assert "Action: review manually before any broker action." in message
+    assert "1. NVDA 15m LONG | score 88.2" in message
+    assert "Entry: 198.50 - 199.00 | now 198.42" in message
     assert "Stop: 196.25 | target 204.13 | RR 2.50R" in message
-    assert "Score: 88.2/100 | status: execution ready" in message
+    assert "Why: breakout confirmed, volume confirmed" in message
+    assert "Safety: no order placed. Manual approval required." in message

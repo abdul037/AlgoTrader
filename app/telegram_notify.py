@@ -216,77 +216,80 @@ class TelegramNotifier:
 
     @staticmethod
     def format_signal_message(snapshot: "LiveSignalSnapshot", previous_state: str | None = None) -> str:
-        source, verified = TelegramNotifier._source_label(snapshot)
         metadata = getattr(snapshot, "metadata", {}) or {}
         trade_plan = dict(metadata.get("trade_plan") or {})
         verdict = str(metadata.get("verdict") or trade_plan.get("verdict") or snapshot.direction_label or snapshot.state.value).upper()
-        timing_label = str(metadata.get("timing_label") or trade_plan.get("timing_label") or "n/a").replace("_", " ")
         market_context = str(metadata.get("market_context_summary") or "n/a")
-        provider_status = TelegramNotifier._format_provider_status(snapshot)
         entry_zone = TelegramNotifier._format_entry_zone(trade_plan, snapshot)
         rr = snapshot.risk_reward_ratio if snapshot.risk_reward_ratio is not None else metadata.get("risk_reward_ratio")
-        lines = [
-            f"{snapshot.symbol} | {verdict}",
-            (
-                f"Setup: {snapshot.strategy_name} | {snapshot.timeframe} | "
-                f"Score {snapshot.score:.1f}/100 | {snapshot.confidence_label or 'n/a'}"
-            ),
-            f"Market: {market_context}",
-            f"Timing: {timing_label} | Source: {source} | Verified: {verified}",
-            provider_status,
-        ]
+        current = TelegramNotifier._fmt_number(snapshot.current_price)
+        score = f"{snapshot.score:.1f}"
         outcome_line = TelegramNotifier._format_ledger_outcome_line(metadata)
-        if outcome_line:
-            lines.append(outcome_line)
-        if verdict == "NO_TRADE":
+        no_trade = verdict in {"NO_TRADE", "NONE", "WAIT", "REJECT", "NO SETUP"} or str(snapshot.state.value).lower() in {
+            "none",
+            "no_trade",
+        }
+        if no_trade:
+            lines = [
+                f"{snapshot.symbol}: WAIT / NO TRADE",
+                f"Now: {current} | {snapshot.timeframe} | score {score}/100",
+            ]
+            if market_context and market_context != "n/a":
+                lines.append(f"Market: {market_context}")
             if bool(metadata.get("data_gate_blocked")):
-                lines.append("Gate: blocked by live market-data verification")
                 lines.append(
-                    f"Reason: {metadata.get('data_source_verification_reason') or 'market_data_unverified'}"
+                    f"Data issue: {metadata.get('data_source_verification_reason') or 'market data not verified'}"
                 )
-            near_miss = TelegramNotifier._format_near_miss_setup(snapshot)
+            near_miss = TelegramNotifier._format_near_miss_brief(snapshot)
             if near_miss:
                 lines.append(near_miss)
-            strategy_checks = TelegramNotifier._format_strategy_checks(snapshot)
-            if strategy_checks:
-                lines.append(strategy_checks)
-            blockers = TelegramNotifier._format_blocker_summary(snapshot)
+            blockers = TelegramNotifier._format_friendly_blockers(snapshot)
             if blockers:
-                lines.append(blockers)
-            lines.extend(
-                [
-                    f"Why not now: {snapshot.rationale}",
-                    f"Wait for: {trade_plan.get('confirmation_trigger') or 'a cleaner aligned setup'}",
-                    f"Indicators: {TelegramNotifier._format_indicator_summary(snapshot)}",
-                    f"Backtest: {TelegramNotifier._format_backtest_snapshot(snapshot)}",
-                    "Execution: no trade. Manual approval remains required for any future broker action.",
-                ]
-            )
+                lines.append(f"Why wait: {blockers}")
+            elif snapshot.rationale:
+                lines.append(f"Why wait: {snapshot.rationale}")
+            lines.append(f"Watch for: {trade_plan.get('confirmation_trigger') or 'a cleaner aligned setup'}")
+            indicators = TelegramNotifier._format_compact_indicator_summary(snapshot)
+            if indicators != "n/a":
+                lines.append(f"Key data: {indicators}")
+            backtest = TelegramNotifier._format_backtest_snapshot(snapshot)
+            if backtest != "n/a":
+                lines.append(f"Backtest: {backtest}")
+            lines.append(TelegramNotifier._format_signal_data_status(snapshot))
+            if outcome_line:
+                lines.append(outcome_line)
+            lines.append("Safety: no order created. Manual approval required.")
             return "\n".join(lines)
 
-        lines.extend(
-            [
-                f"Entry zone: {entry_zone}",
-                f"Trigger: {trade_plan.get('confirmation_trigger') or 'n/a'}",
-                (
-                    f"Stop: {TelegramNotifier._fmt_number(snapshot.stop_loss)} | "
-                    f"Targets: {TelegramNotifier._format_targets(snapshot)} | "
-                    f"RR: {TelegramNotifier._fmt_number(rr)}"
-                ),
-                f"Indicators: {TelegramNotifier._format_indicator_summary(snapshot)}",
-                (
-                    f"Plan: {trade_plan.get('preferred_entry_method', 'n/a').replace('_', ' ')} | "
-                    f"Hold: {trade_plan.get('hold_style', 'n/a')} | "
-                    f"Quality: {trade_plan.get('position_quality_label', 'n/a')}"
-                ),
-                f"Backtest: {TelegramNotifier._format_backtest_snapshot(snapshot)}",
-                f"Rationale: {snapshot.rationale}",
-                f"Invalidation: {trade_plan.get('invalidation_condition') or 'n/a'}",
-            ]
-        )
+        direction = TelegramNotifier._candidate_side(snapshot)
+        lines = [
+            f"{snapshot.symbol}: REVIEW {direction}",
+            f"Now: {current} | {snapshot.timeframe} | score {score}/100",
+            f"Entry: {entry_zone}",
+            (
+                f"Stop: {TelegramNotifier._fmt_number(snapshot.stop_loss)} | "
+                f"target: {TelegramNotifier._format_targets(snapshot)} | "
+                f"RR {TelegramNotifier._fmt_number(rr)}R"
+            ),
+            f"Trigger: {trade_plan.get('confirmation_trigger') or 'n/a'}",
+        ]
         if snapshot.pass_reasons:
-            lines.append(f"Why this passed: {', '.join(snapshot.pass_reasons[:5])}")
-        lines.append("Execution: manual approval required before any broker action.")
+            lines.append(f"Why: {', '.join(snapshot.pass_reasons[:3])}")
+        elif snapshot.rationale:
+            lines.append(f"Why: {snapshot.rationale}")
+        indicators = TelegramNotifier._format_compact_indicator_summary(snapshot)
+        if indicators != "n/a":
+            lines.append(f"Key data: {indicators}")
+        backtest = TelegramNotifier._format_backtest_snapshot(snapshot)
+        if backtest != "n/a":
+            lines.append(f"Backtest: {backtest}")
+        invalidation = trade_plan.get("invalidation_condition")
+        if invalidation:
+            lines.append(f"Invalid if: {invalidation}")
+        lines.append(TelegramNotifier._format_signal_data_status(snapshot))
+        if outcome_line:
+            lines.append(outcome_line)
+        lines.append("Safety: no order placed. Manual approval required.")
         return "\n".join(lines)
 
     @staticmethod
@@ -338,9 +341,8 @@ class TelegramNotifier:
         metadata = getattr(snapshot, "metadata", {}) or {}
         trade_plan = dict(metadata.get("trade_plan") or {})
         direction = TelegramNotifier._candidate_side(snapshot)
-        header = f"{rank or snapshot.rank or '-'}. {snapshot.symbol} {snapshot.timeframe} {direction}"
+        header = f"{rank or snapshot.rank or '-'}. {snapshot.symbol} {snapshot.timeframe} {direction} | score {snapshot.score:.1f}"
         outcome_line = TelegramNotifier._format_ledger_outcome_line(metadata)
-        classification = str(metadata.get("signal_classification") or "unclassified").replace("_", " ")
         entry = TelegramNotifier._format_entry_zone(trade_plan, snapshot)
         current = TelegramNotifier._fmt_number(snapshot.current_price)
         stop = TelegramNotifier._fmt_number(snapshot.stop_loss)
@@ -349,16 +351,13 @@ class TelegramNotifier:
         reasons = TelegramNotifier._format_reason_summary(snapshot)
         lines = [
             header,
-            f"Action: review for manual approval. Bot has not placed an order.",
-            f"Entry: {entry} | current {current}",
-            f"Stop: {stop} | target {targets} | RR {rr}R",
-            f"Score: {snapshot.score:.1f}/100 | status: {classification}",
-            TelegramNotifier._format_snapshot_data_source(snapshot),
+            f"   Entry: {entry} | now {current}",
+            f"   Stop: {stop} | target {targets} | RR {rr}R",
         ]
         if outcome_line:
             lines.append(outcome_line)
         if reasons != "n/a":
-            lines.append(f"Why: {reasons}")
+            lines.append(f"   Why: {reasons}")
         return "\n".join(lines)
 
     @staticmethod
@@ -381,8 +380,7 @@ class TelegramNotifier:
             closest = list(getattr(response, "closest_rejections", []) or [])
             signal_label = "WAIT" if closest else "NO SETUP"
             lines = [
-                "US market screener",
-                f"TRADE SIGNAL: {signal_label}",
+                f"Market scan: {signal_label}",
                 "Action: do not open a trade now.",
             ]
             diagnostics = TelegramNotifier._format_scan_diagnostics(
@@ -390,45 +388,28 @@ class TelegramNotifier:
                 include_other_watches=include_other_watches,
             )
             if diagnostics:
-                lines.append("")
                 lines.extend(diagnostics)
             else:
-                lines.append("Reason: no nearby setup passed enough checks.")
+                lines.append("Why: no nearby setup passed enough checks.")
             if response.errors:
-                lines.append("")
                 first_error = str(response.errors[0]).replace("\n", " ")
                 if len(first_error) > 180:
                     first_error = f"{first_error[:180]}..."
                 lines.append(f"First issue: {first_error}")
                 lines.append(f"Errors: {len(response.errors)}")
-            lines.append("")
             lines.append(
                 f"Scanned: {response.evaluated_symbols} symbol(s) | "
                 f"Checks: {response.evaluated_strategy_runs} | "
                 f"Timeframes: {', '.join(response.timeframes)}"
             )
-            lines.append(
-                "Safety: no order created. Manual approval is required for any future order."
-            )
+            lines.append("Safety: no order created. Manual approval required.")
             return "\n".join(lines)
 
         lines = [
-            "US market screener",
-            "TRADE SIGNAL: READY FOR REVIEW",
-            "Action: review the setup. Manual approval is still required.",
-            (
-                f"Run: {(task_label or 'manual_scan').replace('_', ' ')} | "
-                f"Universe: {response.universe_name}"
-            ),
-            f"Timeframes: {', '.join(response.timeframes)}",
-            (
-                f"Scanned: {response.evaluated_symbols} symbols | "
-                f"Strategy runs: {response.evaluated_strategy_runs} | "
-                f"Passed: {len(response.candidates)} | Suppressed: {response.suppressed}"
-            ),
+            "Market scan: REVIEW",
+            "Action: review manually before any broker action.",
         ]
         for index, item in enumerate(response.candidates, start=1):
-            lines.append("")
             lines.append(TelegramNotifier.format_screener_candidate(item, rank=item.rank or index))
         diagnostics = TelegramNotifier._format_scan_diagnostics(
             response,
@@ -439,6 +420,12 @@ class TelegramNotifier:
             lines.extend(diagnostics)
         if response.errors:
             lines.append(f"Errors: {len(response.errors)}")
+        lines.append(
+            f"Scanned: {response.evaluated_symbols} symbols | "
+            f"Checks: {response.evaluated_strategy_runs} | "
+            f"Timeframes: {', '.join(response.timeframes)}"
+        )
+        lines.append("Safety: no order placed. Manual approval required.")
         return "\n".join(lines)
 
     @staticmethod
@@ -453,7 +440,7 @@ class TelegramNotifier:
             return []
         lines = []
         if closest:
-            lines.append("Best setup to watch:")
+            lines.append("Best watch:")
             lines.extend(TelegramNotifier._format_watch_item(1, closest[0], detailed=True))
             if include_other_watches and len(closest) > 1:
                 lines.append("Other watches:")
@@ -500,7 +487,7 @@ class TelegramNotifier:
             measurements.get("watchlist_trigger"),
             measurements.get("indicative_entry"),
         )
-        return f"- {symbol} {timeframe} {side}: {trigger} | current {current}"
+        return f"- {symbol} {timeframe} {side}: {trigger} | now {current}"
 
     @staticmethod
     def _format_watchlist_plan(measurements: dict[str, Any]) -> list[str]:
@@ -526,21 +513,22 @@ class TelegramNotifier:
             strict_rvol=strict_rvol,
             volume_mode=volume_mode,
         )
-        trigger_text = TelegramNotifier._entry_instruction(trigger, entry)
-        line1 = f"   {trigger_text}"
-        line2 = (
-            f"   Current: {TelegramNotifier._fmt_scan_num(current)} | "
-            f"gap: {TelegramNotifier._fmt_scan_num(gap_atr)} ATR"
-        )
-        line3 = (
-            f"   Stop: {TelegramNotifier._fmt_scan_num(stop)} | "
-            f"target: {TelegramNotifier._fmt_scan_num(target)} | "
-            f"RR {TelegramNotifier._fmt_scan_num(rr)}R"
-        )
-        line4 = f"   Volume: {volume_need}"
-        line5 = f"   {TelegramNotifier._format_measurement_data_source(measurements)}"
-        line6 = f"   Target move: {TelegramNotifier._fmt_scan_num(move_pct)}%"
-        return [line1, line2, line3, line4, line5, line6]
+        trigger_text = TelegramNotifier._compact_trigger_instruction(trigger, entry)
+        lines = [
+            (
+                f"   Trigger: {trigger_text} | now {TelegramNotifier._fmt_scan_num(current)} | "
+                f"gap {TelegramNotifier._fmt_scan_num(gap_atr)} ATR"
+            ),
+            (
+                f"   Plan: stop {TelegramNotifier._fmt_scan_num(stop)} | "
+                f"target {TelegramNotifier._fmt_scan_num(target)} | "
+                f"RR {TelegramNotifier._fmt_scan_num(rr)}R"
+            ),
+            f"   Volume: {volume_need}",
+        ]
+        if move_pct not in (None, ""):
+            lines.append(f"   Potential move: {TelegramNotifier._fmt_scan_num(move_pct)}%")
+        return lines
 
     @staticmethod
     def _trigger_instruction(trigger: Any, entry: Any) -> str:
@@ -823,6 +811,58 @@ class TelegramNotifier:
         if execution_ready is not None:
             parts.append(f"Exec {'ready' if execution_ready else 'blocked'}")
         return " | ".join(parts) if parts else "n/a"
+
+    @staticmethod
+    def _format_compact_indicator_summary(snapshot: "LiveSignalSnapshot") -> str:
+        metadata = getattr(snapshot, "metadata", {}) or {}
+        values = {
+            "RSI": metadata.get("rsi_14"),
+            "RVOL": metadata.get("relative_volume"),
+            "Quality": metadata.get("indicator_confluence_score"),
+            "Confirm": metadata.get("confirmation_score"),
+            "FP-risk": metadata.get("false_positive_risk_score"),
+        }
+        parts = []
+        for label, value in values.items():
+            if value is None:
+                continue
+            parts.append(f"{label} {TelegramNotifier._fmt_number(value)}")
+        return " | ".join(parts) if parts else "n/a"
+
+    @staticmethod
+    def _format_near_miss_brief(snapshot: "LiveSignalSnapshot") -> str | None:
+        metadata = getattr(snapshot, "metadata", {}) or {}
+        setup = metadata.get("near_miss_setup")
+        if not isinstance(setup, dict) or not setup:
+            return None
+        strategy = setup.get("strategy_name") or "setup"
+        timeframe = setup.get("timeframe") or "n/a"
+        score = setup.get("score")
+        score_text = TelegramNotifier._fmt_number(score) if score is not None else "n/a"
+        status = str(setup.get("status") or "rejected").replace("_", " ")
+        return f"Closest setup: {strategy} {timeframe} | score {score_text} | {status}"
+
+    @staticmethod
+    def _format_friendly_blockers(snapshot: "LiveSignalSnapshot") -> str | None:
+        metadata = getattr(snapshot, "metadata", {}) or {}
+        setup = metadata.get("near_miss_setup")
+        if isinstance(setup, dict) and setup.get("rejection_reasons"):
+            reasons = list(setup.get("rejection_reasons") or [])
+        else:
+            reasons = list(metadata.get("top_rejection_reasons") or snapshot.reject_reasons or [])
+        if not reasons:
+            return None
+        return "; ".join(TelegramNotifier._friendly_reason(str(reason)) for reason in reasons[:3])
+
+    @staticmethod
+    def _format_signal_data_status(snapshot: "LiveSignalSnapshot") -> str:
+        metadata = getattr(snapshot, "metadata", {}) or {}
+        quote_provider = metadata.get("data_source_quote") or metadata.get("data_source") or "unknown"
+        history_provider = metadata.get("data_source_history") or metadata.get("data_source") or "unknown"
+        quote_verified = bool(metadata.get("quote_live_verified", metadata.get("data_source_verified", False)))
+        freshness = str(metadata.get("freshness_status") or ("fresh" if bool(metadata.get("bars_fresh", False)) else "not fresh"))
+        quote_text = "verified" if quote_verified else "unverified"
+        return f"Data: {quote_provider} quote {quote_text}; {history_provider} candles {freshness}"
 
     @staticmethod
     def _format_near_miss_setup(snapshot: "LiveSignalSnapshot") -> str | None:
