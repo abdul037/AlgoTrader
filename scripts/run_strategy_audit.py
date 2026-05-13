@@ -14,7 +14,7 @@ import sys
 import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -44,14 +44,11 @@ from app.strategies import STRATEGY_REGISTRY, STRATEGY_SPECS, get_strategy
 from app.universe import resolve_universe
 
 
-START = "2020-01-01"
-END_EXCLUSIVE = "2025-01-01"
-WINDOW_LABEL = "2020-01-01 to 2024-12-31"
-TIMEFRAME = "1d"
-CACHE_DIR = ROOT / ".cache" / "audit"
+DEFAULT_START_DATE = "2020-01-01"
+DEFAULT_END_DATE = "2024-12-31"
+DEFAULT_TIMEFRAME = "1d"
+BASE_OUTPUT_STEM = "strategy_audit_2026_05"
 OUTPUT_DIR = ROOT / "outputs"
-MARKDOWN_PATH = OUTPUT_DIR / "strategy_audit_2026_05.md"
-JSON_PATH = OUTPUT_DIR / "strategy_audit_2026_05.json"
 
 
 def main() -> None:
@@ -62,28 +59,35 @@ def main() -> None:
             "market_universe_limit": 100,
         }
     )
+    audit_config = build_audit_config()
     universe = env_list("AUDIT_SYMBOLS") or resolve_universe(settings, limit=100)
     strategy_names = env_list("AUDIT_STRATEGIES") or sorted(STRATEGY_REGISTRY)
     include_trade_detail = env_bool("AUDIT_INCLUDE_TRADE_DETAIL")
     unknown = sorted(set(strategy_names) - set(STRATEGY_REGISTRY))
     if unknown:
         raise ValueError(f"Unknown AUDIT_STRATEGIES entries: {', '.join(unknown)}")
-    n_trials = len(strategy_names)
-    splitter = WalkForwardSplitter()
+    n_trials = env_int("AUDIT_N_TRIALS", 12)
+    splitter = WalkForwardSplitter(
+        train_days=env_int("AUDIT_TRAIN_DAYS", 180),
+        test_days=env_int("AUDIT_TEST_DAYS", 14),
+        step_days=env_int("AUDIT_STEP_DAYS", 14),
+        embargo_days=env_int("AUDIT_EMBARGO_DAYS", 1),
+        holdout_days=env_int("AUDIT_HOLDOUT_DAYS", 28),
+    )
     cost_model = CostModel()
     engine_config = EngineConfig(
         initial_cash=float(settings.paper_account_balance_usd),
         risk_per_trade_pct=float(settings.max_risk_per_trade_pct),
-        bars_per_year=DAILY_BARS_PER_YEAR,
+        bars_per_year=audit_config["bars_per_year"],
         cost_model=cost_model,
         allow_extended_hours=False,
     )
     risk_amount = engine_config.initial_cash * (engine_config.risk_per_trade_pct or 0.0) / 100.0
 
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    audit_config["cache_dir"].mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    data_by_symbol, data_errors = load_universe_data(universe)
+    data_by_symbol, data_errors = load_universe_data(universe, audit_config=audit_config)
     results: list[dict[str, Any]] = []
     strategy_errors: list[dict[str, str]] = []
     trade_details: list[dict[str, Any]] = []
@@ -99,6 +103,7 @@ def main() -> None:
                 risk_amount=risk_amount,
                 n_trials=n_trials,
                 include_trade_detail=include_trade_detail,
+                audit_config=audit_config,
             )
             trade_details.extend(result.pop("_trade_details", []))
             results.append(result)
@@ -126,16 +131,18 @@ def main() -> None:
         splitter=splitter,
         cost_model=cost_model,
         n_trials=n_trials,
+        audit_config=audit_config,
     )
     if include_trade_detail:
         write_trade_detail_files(
             trade_details=trade_details,
             splitter=splitter,
             cost_model=cost_model,
+            audit_config=audit_config,
         )
     else:
-        MARKDOWN_PATH.write_text(render_markdown(payload), encoding="utf-8")
-        JSON_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        audit_config["markdown_path"].write_text(render_markdown(payload), encoding="utf-8")
+        audit_config["json_path"].write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     print(render_stdout_ranking(ranked), flush=True)
 
     counts = verdict_counts(ranked)
@@ -154,17 +161,60 @@ def env_list(name: str) -> list[str]:
     return [item.strip().upper() if name == "AUDIT_SYMBOLS" else item.strip().lower() for item in raw.split(",") if item.strip()]
 
 
+def env_int(name: str, default: int) -> int:
+    raw = str(os.getenv(name, "") or "").strip()
+    if not raw:
+        return default
+    return int(raw)
+
+
 def env_bool(name: str) -> bool:
     raw = str(os.getenv(name, "") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
 
-def load_universe_data(universe: list[str]) -> tuple[dict[str, pd.DataFrame], list[dict[str, str]]]:
+def build_audit_config() -> dict[str, Any]:
+    timeframe = str(os.getenv("AUDIT_TIMEFRAME", DEFAULT_TIMEFRAME) or DEFAULT_TIMEFRAME).strip().lower()
+    if timeframe not in {"1d", "1h"}:
+        raise ValueError("AUDIT_TIMEFRAME must be '1d' or '1h'")
+    today = datetime.now(UTC).date()
+    if timeframe == "1h":
+        default_start = (today - timedelta(days=729)).isoformat()
+        default_end = today.isoformat()
+    else:
+        default_start = DEFAULT_START_DATE
+        default_end = DEFAULT_END_DATE
+
+    start_date = str(os.getenv("AUDIT_START_DATE", default_start) or default_start).strip()
+    end_date = str(os.getenv("AUDIT_END_DATE", default_end) or default_end).strip()
+    end_exclusive = (pd.Timestamp(end_date) + pd.Timedelta(days=1)).date().isoformat()
+    output_tag = str(os.getenv("AUDIT_OUTPUT_TAG", "") or "").strip()
+    output_stem = BASE_OUTPUT_STEM + (f"_{output_tag}" if output_tag else "")
+    cache_dir = ROOT / ".cache" / ("audit_1h" if timeframe == "1h" else "audit")
+    return {
+        "start_date": start_date,
+        "end_date": end_date,
+        "end_exclusive": end_exclusive,
+        "window_label": f"{start_date} to {end_date}",
+        "timeframe": timeframe,
+        "bars_per_year": env_int("AUDIT_BARS_PER_YEAR", DAILY_BARS_PER_YEAR),
+        "cache_dir": cache_dir,
+        "markdown_path": OUTPUT_DIR / f"{output_stem}.md",
+        "json_path": OUTPUT_DIR / f"{output_stem}.json",
+        "output_tag": output_tag,
+    }
+
+
+def load_universe_data(
+    universe: list[str],
+    *,
+    audit_config: dict[str, Any],
+) -> tuple[dict[str, pd.DataFrame], list[dict[str, str]]]:
     data: dict[str, pd.DataFrame] = {}
     errors: list[dict[str, str]] = []
     for symbol in universe:
         try:
-            frame = load_symbol_data(symbol)
+            frame = load_symbol_data(symbol, audit_config=audit_config)
             if frame.empty:
                 errors.append({"symbol": symbol, "error": "empty data frame"})
                 continue
@@ -176,8 +226,8 @@ def load_universe_data(universe: list[str]) -> tuple[dict[str, pd.DataFrame], li
     return data, errors
 
 
-def load_symbol_data(symbol: str) -> pd.DataFrame:
-    cache_path = CACHE_DIR / f"{symbol.replace('.', '_')}.parquet"
+def load_symbol_data(symbol: str, *, audit_config: dict[str, Any]) -> pd.DataFrame:
+    cache_path = audit_config["cache_dir"] / f"{symbol.replace('.', '_')}.parquet"
     if cache_path.exists():
         return pd.read_parquet(cache_path)
 
@@ -187,9 +237,9 @@ def load_symbol_data(symbol: str) -> pd.DataFrame:
         try:
             raw = yf.download(
                 yf_symbol,
-                start=START,
-                end=END_EXCLUSIVE,
-                interval="1d",
+                start=audit_config["start_date"],
+                end=audit_config["end_exclusive"],
+                interval=audit_config["timeframe"],
                 auto_adjust=False,
                 progress=False,
                 threads=False,
@@ -239,6 +289,7 @@ def audit_strategy(
     engine_config: EngineConfig,
     risk_amount: float,
     n_trials: int,
+    audit_config: dict[str, Any],
     include_trade_detail: bool = False,
 ) -> dict[str, Any]:
     per_fold_trades: list[list[dict[str, Any]]] = []
@@ -251,7 +302,7 @@ def audit_strategy(
     errors: list[dict[str, str]] = []
     trade_details: list[dict[str, Any]] = []
 
-    kwargs = strategy_kwargs(strategy_name, settings)
+    kwargs = strategy_kwargs(strategy_name, settings, timeframe=audit_config["timeframe"])
     worker_args = [
         {
             "symbol": symbol,
@@ -259,6 +310,9 @@ def audit_strategy(
             "kwargs": kwargs,
             "initial_cash": engine_config.initial_cash,
             "risk_per_trade_pct": engine_config.risk_per_trade_pct,
+            "bars_per_year": audit_config["bars_per_year"],
+            "timeframe": audit_config["timeframe"],
+            "cache_dir": str(audit_config["cache_dir"]),
             "include_trade_detail": include_trade_detail,
         }
         for symbol in data_by_symbol
@@ -296,7 +350,7 @@ def audit_strategy(
     aggregated = aggregate_out_of_sample(per_fold_trades, per_fold_metrics)
     trades = aggregated["merged_trades"]
     trade_summary = summarize_trades(trades)
-    sharpe = compute_sharpe_like(equity_curve, bars_per_year=DAILY_BARS_PER_YEAR)
+    sharpe = compute_sharpe_like(equity_curve, bars_per_year=audit_config["bars_per_year"])
     max_dd = compute_max_drawdown(equity_curve)
     dsr = deflated_sharpe(
         sharpe,
@@ -328,13 +382,14 @@ def audit_strategy(
 
 def audit_symbol_for_strategy(args: dict[str, Any]) -> dict[str, Any]:
     symbol = args["symbol"]
-    cache_path = CACHE_DIR / f"{symbol.replace('.', '_')}.parquet"
+    cache_path = Path(str(args["cache_dir"])) / f"{symbol.replace('.', '_')}.parquet"
     history = pd.read_parquet(cache_path)
     install_cached_indicator_patch()
     history = maybe_precompute_indicators(
         strategy_name=args["strategy_name"],
         kwargs=args["kwargs"],
         history=history,
+        timeframe=str(args["timeframe"]),
     )
     splitter = WalkForwardSplitter()
     errors: list[dict[str, str]] = []
@@ -362,7 +417,7 @@ def audit_symbol_for_strategy(args: dict[str, Any]) -> dict[str, Any]:
         config=EngineConfig(
             initial_cash=float(args["initial_cash"]),
             risk_per_trade_pct=args["risk_per_trade_pct"],
-            bars_per_year=DAILY_BARS_PER_YEAR,
+            bars_per_year=int(args["bars_per_year"]),
             cost_model=CostModel(),
             allow_extended_hours=False,
         )
@@ -376,7 +431,7 @@ def audit_symbol_for_strategy(args: dict[str, Any]) -> dict[str, Any]:
             symbol=symbol,
             strategy=strategy,
             data=history,
-            file_path=f"yfinance:{TIMEFRAME}:{symbol}:walk_forward_signal_gate",
+            file_path=f"yfinance:{args['timeframe']}:{symbol}:walk_forward_signal_gate",
         )
     except Exception as exc:
         return {
@@ -472,6 +527,7 @@ def write_trade_detail_files(
     trade_details: list[dict[str, Any]],
     splitter: WalkForwardSplitter,
     cost_model: CostModel,
+    audit_config: dict[str, Any],
 ) -> None:
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for trade in trade_details:
@@ -481,8 +537,8 @@ def write_trade_detail_files(
         path = trade_detail_path(strategy_name=strategy_name, symbol=symbol)
         payload = {
             "generated_at": datetime.now(UTC).isoformat(),
-            "window": WINDOW_LABEL,
-            "timeframe": TIMEFRAME,
+            "window": audit_config["window_label"],
+            "timeframe": audit_config["timeframe"],
             "strategy": strategy_name,
             "symbol": symbol,
             "walk_forward": {
@@ -516,6 +572,7 @@ def maybe_precompute_indicators(
     strategy_name: str,
     kwargs: dict[str, object],
     history: pd.DataFrame,
+    timeframe: str,
 ) -> pd.DataFrame:
     indicator_heavy = {
         "ema_trend_stack",
@@ -527,8 +584,8 @@ def maybe_precompute_indicators(
     }
     if strategy_name not in indicator_heavy:
         return history
-    timeframe = str(kwargs.get("timeframe") or TIMEFRAME)
-    return enrich_technical_indicators(history, timeframe=timeframe)
+    indicator_timeframe = str(kwargs.get("timeframe") or timeframe)
+    return enrich_technical_indicators(history, timeframe=indicator_timeframe)
 
 
 def install_cached_indicator_patch() -> None:
@@ -593,12 +650,15 @@ def in_any_interval(ts: pd.Timestamp, intervals: list[tuple[pd.Timestamp, pd.Tim
     return any(start <= ts <= end for start, end in intervals)
 
 
-def strategy_kwargs(strategy_name: str, settings: Any) -> dict[str, object]:
-    one_day = [spec for spec in STRATEGY_SPECS if spec.name == strategy_name and spec.timeframe == TIMEFRAME]
-    candidates = one_day or [spec for spec in STRATEGY_SPECS if spec.name == strategy_name]
+def strategy_kwargs(strategy_name: str, settings: Any, *, timeframe: str) -> dict[str, object]:
+    matching_timeframe = [spec for spec in STRATEGY_SPECS if spec.name == strategy_name and spec.timeframe == timeframe]
+    candidates = matching_timeframe or [spec for spec in STRATEGY_SPECS if spec.name == strategy_name]
     if not candidates:
         return {}
-    return strategy_kwargs_for(settings, candidates[0])
+    kwargs = strategy_kwargs_for(settings, candidates[0])
+    if "timeframe" in kwargs:
+        kwargs["timeframe"] = timeframe
+    return kwargs
 
 
 def serializable_float(value: Any) -> float | str:
@@ -638,17 +698,19 @@ def build_payload(
     splitter: WalkForwardSplitter,
     cost_model: CostModel,
     n_trials: int,
+    audit_config: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "audit_date": datetime.now(UTC).isoformat(),
-        "window": WINDOW_LABEL,
+        "window": audit_config["window_label"],
         "universe": "top100_us",
         "symbols_requested": len(universe),
         "symbols": universe,
         "strategies_requested_by_prompt": n_trials,
         "strategies_evaluated": len(ranked),
         "n_trials": n_trials,
-        "timeframe": TIMEFRAME,
+        "timeframe": audit_config["timeframe"],
+        "bars_per_year": audit_config["bars_per_year"],
         "walk_forward": {
             "train_days": splitter.train_days,
             "test_days": splitter.test_days,
