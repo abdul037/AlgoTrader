@@ -35,6 +35,12 @@ class AppSettings(BaseSettings):
     etoro_request_min_interval_seconds: float = 1.25
     etoro_rate_limit_cooldown_seconds: int = 300
     enable_real_trading: bool = False
+    alpaca_api_key: str = ""
+    alpaca_secret_key: str = ""
+    alpaca_base_url: str = "https://paper-api.alpaca.markets"
+    alpaca_data_url: str = "https://data.alpaca.markets"
+    alpaca_data_feed: str = "iex"
+    alpaca_enabled: bool = False
 
     require_approval: bool = True
     telegram_enabled: bool = False
