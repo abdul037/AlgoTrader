@@ -106,6 +106,8 @@ def test_live_queue_execution_blocks_without_live_gates(tmp_path) -> None:
             paper_trading_enabled=True,
             primary_market_data_provider="auto",
             fallback_market_data_provider="none",
+            broker_for_equities="etoro",
+            paper_broker="self_simulated",
         ),
         broker=MockBroker(),
         market_data_client=FakeEtoroMarketData(),

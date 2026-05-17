@@ -96,6 +96,7 @@ def test_broker_retry_with_same_client_order_id_is_idempotent(tmp_path) -> None:
             enable_real_trading=True,
             paper_trading_enabled=False,
             max_trades_per_day=10,
+            broker_for_equities="etoro",
         ),
         broker=broker,
         market_data_client=FakeEtoroMarketData(),

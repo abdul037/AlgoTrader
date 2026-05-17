@@ -16,10 +16,11 @@ class AutomationService:
     REASON_KEY = "automation:reason"
     UPDATED_AT_KEY = "automation:updated_at"
 
-    def __init__(self, *, settings: Any, runtime_state: Any, run_logs: Any):
+    def __init__(self, *, settings: Any, runtime_state: Any, run_logs: Any, broker_router: Any | None = None):
         self.settings = settings
         self.state = runtime_state
         self.logs = run_logs
+        self.broker_router = broker_router
 
     def status(self) -> AutomationStatus:
         return AutomationStatus(
@@ -52,7 +53,9 @@ class AutomationService:
         return self._set_state(paused=False, kill_switch=False, reason=reason or "resumed manually")
 
     def enable_kill_switch(self, *, reason: str = "") -> AutomationStatus:
-        return self._set_state(paused=True, kill_switch=True, reason=reason or "kill switch enabled")
+        status = self._set_state(paused=True, kill_switch=True, reason=reason or "kill switch enabled")
+        self._emergency_stop()
+        return status
 
     def scan_blockers(self) -> list[str]:
         blockers: list[str] = []
@@ -85,6 +88,50 @@ class AutomationService:
             {"paused": paused, "kill_switch": kill_switch, "reason": reason, "updated_at": now},
         )
         return self.status()
+
+    def _emergency_stop(self) -> None:
+        if self.broker_router is None:
+            return
+        close_allowed = (
+            str(getattr(self.settings, "execution_mode", "paper")) != "live"
+            or bool(getattr(self.settings, "kill_switch_auto_close_positions", False))
+        )
+        results: list[dict[str, Any]] = []
+        total_cancelled = 0
+        total_closed = 0
+        for client in self.broker_router.all_clients():
+            item: dict[str, Any] = {
+                "client": client.__class__.__name__,
+                "orders_cancelled": 0,
+                "positions_closed": 0,
+                "errors": [],
+            }
+            if hasattr(client, "cancel_all_orders"):
+                try:
+                    cancelled = int(client.cancel_all_orders() or 0)
+                    item["orders_cancelled"] = cancelled
+                    total_cancelled += cancelled
+                except Exception as exc:
+                    item["errors"].append(f"cancel_all_orders:{exc}")
+            if close_allowed and hasattr(client, "close_all_positions"):
+                try:
+                    closed = int(client.close_all_positions() or 0)
+                    item["positions_closed"] = closed
+                    total_closed += closed
+                except Exception as exc:
+                    item["errors"].append(f"close_all_positions:{exc}")
+            elif not close_allowed:
+                item["close_all_positions_skipped"] = "live_mode_requires_kill_switch_auto_close_positions"
+            results.append(item)
+        self.logs.log(
+            "kill_switch_emergency_stop",
+            {
+                "orders_cancelled": total_cancelled,
+                "positions_closed": total_closed,
+                "close_positions_allowed": close_allowed,
+                "clients": results,
+            },
+        )
 
     @staticmethod
     def _to_bool(value: Any) -> bool:

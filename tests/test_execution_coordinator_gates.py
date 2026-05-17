@@ -50,7 +50,12 @@ def proposal_payload(symbol: str = "NVDA") -> TradeProposalCreate:
 def approved_queue(tmp_path, **settings_overrides):
     market_data = FakeEtoroMarketData()
     app = create_app(
-        make_settings(tmp_path, **settings_overrides),
+        make_settings(
+            tmp_path,
+            broker_for_equities="etoro",
+            paper_broker="self_simulated",
+            **settings_overrides,
+        ),
         broker=MockBroker(),
         market_data_client=market_data,
         enable_background_jobs=False,

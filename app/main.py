@@ -110,6 +110,8 @@ def create_app(
     settings: AppSettings | None = None,
     *,
     broker: Any | None = None,
+    alpaca_client: Any | None = None,
+    broker_router: Any | None = None,
     market_data_client: Any | None = None,
     telegram_notifier: Any | None = None,
     enable_background_jobs: bool = True,
@@ -135,18 +137,43 @@ def create_app(
         from app.broker.etoro_client import EToroClient
 
         broker = EToroClient(app_settings)
+    if alpaca_client is None and app_settings.alpaca_enabled:
+        from app.broker.alpaca_client import AlpacaClient
+
+        alpaca_client = AlpacaClient(
+            api_key=app_settings.alpaca_api_key,
+            secret_key=app_settings.alpaca_secret_key,
+            base_url=app_settings.alpaca_base_url,
+            data_url=app_settings.alpaca_data_url,
+            paper=True,
+            data_feed=app_settings.alpaca_data_feed,
+        )
+    if broker_router is None:
+        from app.broker.router import BrokerRouter
+
+        broker_router = BrokerRouter(
+            alpaca_client=alpaca_client,
+            etoro_client=broker,
+            broker_for_equities=app_settings.broker_for_equities,
+            broker_for_non_equities=app_settings.broker_for_non_equities,
+        )
     if market_data_client is None:
         from app.broker.etoro_market_data import EtoroMarketDataClient
 
         market_data_client = EtoroMarketDataClient(app_settings)
     app.state.broker = broker
+    app.state.alpaca_client = alpaca_client
+    app.state.broker_router = broker_router
     app.state.market_data_client = market_data_client
     app.state.telegram_notifier = telegram_notifier or TelegramNotifier(app_settings)
     from app.data.engine import MarketDataEngine
+    from app.data.providers.alpaca_data import AlpacaDataProvider
 
+    alpaca_provider = AlpacaDataProvider(alpaca_client) if alpaca_client is not None else None
     app.state.market_data_engine = MarketDataEngine(
         app_settings,
         etoro_client=app.state.market_data_client,
+        alpaca_provider=alpaca_provider,
     )
     signal_repository = SignalRepository(database)
     signal_state_repository = SignalStateRepository(database)
@@ -168,6 +195,7 @@ def create_app(
         settings=app_settings,
         runtime_state=runtime_state_repository,
         run_logs=run_log_repository,
+        broker_router=app.state.broker_router,
     )
     app.state.live_signal_service = LiveSignalService(
         settings=app_settings,
@@ -237,6 +265,7 @@ def create_app(
         market_data_engine=app.state.market_data_engine,
         run_logs=run_log_repository,
         automation_service=app.state.automation_service,
+        broker_router=app.state.broker_router,
         risk_manager=risk_manager,
     )
     app.state.tracked_signal_repository = tracked_signal_repository

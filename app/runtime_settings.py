@@ -199,6 +199,11 @@ class AppSettings(BaseSettings):
     execution_max_entry_drift_bps: float = 35.0
     execution_queue_enabled: bool = True
     execution_mode: Literal["paper", "live"] = "paper"
+    broker_for_equities: Literal["alpaca", "etoro", "none"] = "alpaca"
+    broker_for_non_equities: Literal["alpaca", "etoro", "none"] = "etoro"
+    paper_broker: Literal["alpaca", "self_simulated"] = "alpaca"
+    paper_simulated_fallback_enabled: bool = False
+    kill_switch_auto_close_positions: bool = False
     paper_trading_enabled: bool = True
     paper_account_balance_usd: float = 100000.0
     paper_slippage_bps: float = 3.0

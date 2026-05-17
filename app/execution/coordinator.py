@@ -7,6 +7,7 @@ import sqlite3
 from collections.abc import Callable
 from typing import Any
 
+from app.broker.router import BrokerRouter, NoBrokerForAssetClass
 from app.models.approval import ApprovalStatus
 from app.models.execution import ExecutionRecord, ExecutionStatus
 from app.models.execution_queue import ExecutionQueueRecord, ExecutionQueueStatus
@@ -30,6 +31,7 @@ class ExecutionCoordinator:
         market_data_engine: Any,
         run_logs: Any,
         automation_service: Any | None = None,
+        broker_router: BrokerRouter | None = None,
         risk_manager: RiskManager | None = None,
         risk_context_factory: Callable[[Any, Any, Any], Any] | None = None,
     ):
@@ -42,6 +44,7 @@ class ExecutionCoordinator:
         self.market_data = market_data_engine
         self.logs = run_logs
         self.automation = automation_service
+        self.broker_router = broker_router
         self.risk_manager = risk_manager or RiskManager(settings)
         self.risk_context_factory = risk_context_factory or build_risk_context
 
@@ -99,13 +102,34 @@ class ExecutionCoordinator:
         record.status = ExecutionQueueStatus.PROCESSING
         record.updated_at = utc_now().isoformat()
         self.queue.update(record)
+
+        try:
+            broker, broker_name = self._select_broker(proposal)
+        except NoBrokerForAssetClass as exc:
+            record.status = ExecutionQueueStatus.BLOCKED
+            record.ready_for_execution = False
+            record.validation_reason = str(exc)
+            record.updated_at = utc_now().isoformat()
+            self.queue.update(record)
+            self.logs.log(
+                "execution_queue_no_broker",
+                {
+                    "queue_id": record.id,
+                    "proposal_id": proposal.id,
+                    "symbol": proposal.order.symbol,
+                    "reason": str(exc),
+                },
+            )
+            return record
+
         automation_blockers = self._automation_blockers()
 
         timeframe = record.timeframe or (proposal.signal.metadata.get("timeframe") if proposal.signal is not None else "1d") or "1d"
-        quote = self.market_data.get_quote(proposal.order.symbol, timeframe=timeframe, force_refresh=True)
+        quote_provider = broker_name if broker_name in {"alpaca", "etoro"} else None
+        quote = self.market_data.get_quote(proposal.order.symbol, timeframe=timeframe, provider=quote_provider, force_refresh=True)
         quote_price = float(quote.last_execution or quote.ask or quote.bid or proposal.order.proposed_price)
         quote_drift_bps = abs((quote_price - float(proposal.order.proposed_price)) / max(float(proposal.order.proposed_price), 0.01)) * 10_000.0
-        validation_reasons = [*automation_blockers, *self._quote_validation_reasons(quote)]
+        validation_reasons = [*automation_blockers, *self._quote_validation_reasons(quote, expected_broker=broker_name)]
         start_of_day = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
         if self.executions.count_since(start_of_day) >= int(getattr(self.settings, "max_trades_per_day", 999999)):
             validation_reasons.append("max_trades_per_day_reached")
@@ -127,7 +151,7 @@ class ExecutionCoordinator:
             )
             return record
 
-        risk_context = self.risk_context_factory(self.settings, self.proposals.broker, self.executions)
+        risk_context = self.risk_context_factory(self.settings, broker, self.executions)
         risk = self.risk_manager.validate_order(proposal.order, risk_context)
         if not risk.passed:
             record.status = ExecutionQueueStatus.BLOCKED
@@ -146,23 +170,78 @@ class ExecutionCoordinator:
             )
             return record
 
-        if self.settings.execution_mode == "paper":
+        if self.settings.execution_mode == "paper" and self.settings.paper_broker == "self_simulated":
             paper_position = self.paper.open_from_approved_proposal(proposal, live_quote=quote)
             execution = ExecutionRecord(
                 proposal_id=proposal.id,
                 status=ExecutionStatus.SUBMITTED,
                 mode="paper",
-                request_payload=proposal.order.model_dump(),
-                response_payload={"paper_position_id": paper_position.id, "fill_price": paper_position.entry_price},
+                request_payload={**proposal.order.model_dump(), "client_order_id": record.client_order_id},
+                response_payload={
+                    "broker": "self_simulated",
+                    "paper_position_id": paper_position.id,
+                    "fill_price": paper_position.entry_price,
+                },
             )
             self.executions.create(execution)
             self.proposals.mark_executed(proposal.id, execution.id)
-        elif self.settings.execution_mode == "live":
+        elif self.settings.execution_mode in {"paper", "live"}:
             if record.payload.get("execution_id"):
                 existing_execution = self.executions.get(str(record.payload["execution_id"]))
                 if existing_execution is not None:
                     return record
-            execution = self.trader.execute_proposal(proposal.id, client_order_id=record.client_order_id)
+            try:
+                execution = self._execute_with_broker(
+                    proposal=proposal,
+                    broker=broker,
+                    broker_name=broker_name,
+                    quote_price=quote_price,
+                    client_order_id=record.client_order_id,
+                )
+            except Exception as exc:
+                if self.settings.execution_mode == "paper" and bool(getattr(self.settings, "paper_simulated_fallback_enabled", False)):
+                    paper_position = self.paper.open_from_approved_proposal(proposal, live_quote=quote)
+                    execution = ExecutionRecord(
+                        proposal_id=proposal.id,
+                        status=ExecutionStatus.SUBMITTED,
+                        mode="paper",
+                        request_payload={**proposal.order.model_dump(), "client_order_id": record.client_order_id},
+                        response_payload={
+                            "broker": "self_simulated_fallback",
+                            "paper_position_id": paper_position.id,
+                            "fill_price": paper_position.entry_price,
+                            "broker_error": str(exc),
+                        },
+                    )
+                    self.executions.create(execution)
+                    self.proposals.mark_executed(proposal.id, execution.id)
+                else:
+                    execution = ExecutionRecord(
+                        proposal_id=proposal.id,
+                        status=ExecutionStatus.FAILED,
+                        mode=self.settings.execution_mode,
+                        request_payload={**proposal.order.model_dump(), "client_order_id": record.client_order_id},
+                        response_payload={"broker": broker_name},
+                        error_message=str(exc),
+                    )
+                    self.executions.create(execution)
+                    record.status = ExecutionQueueStatus.BLOCKED
+                    record.ready_for_execution = False
+                    record.validation_reason = "broker_submission_failed"
+                    record.updated_at = utc_now().isoformat()
+                    record.payload["execution_id"] = execution.id
+                    self.queue.update(record)
+                    self.logs.log(
+                        "execution_queue_broker_failed",
+                        {
+                            "queue_id": record.id,
+                            "proposal_id": proposal.id,
+                            "symbol": proposal.order.symbol,
+                            "broker": broker_name,
+                            "error": str(exc),
+                        },
+                    )
+                    return record
         else:
             raise ValueError(f"Unsupported execution mode: {self.settings.execution_mode}")
 
@@ -203,10 +282,15 @@ class ExecutionCoordinator:
                 reasons.append("paper_trading_enabled_in_live_mode")
         return reasons
 
-    def _quote_validation_reasons(self, quote: Any) -> list[str]:
+    def _quote_validation_reasons(self, quote: Any, *, expected_broker: str = "etoro") -> list[str]:
         reasons: list[str] = []
-        if not str(getattr(quote, "source", "")).lower().startswith("etoro"):
-            reasons.append("quote_provider_not_etoro")
+        quote_source = str(getattr(quote, "source", "")).lower()
+        if expected_broker == "alpaca":
+            if not quote_source.startswith("alpaca"):
+                reasons.append("quote_provider_not_alpaca")
+        elif expected_broker == "etoro":
+            if not quote_source.startswith("etoro"):
+                reasons.append("quote_provider_not_etoro")
         if bool(getattr(quote, "quote_derived_from_history", False)):
             reasons.append("quote_not_direct")
         age = getattr(quote, "data_age_seconds", None)
@@ -215,3 +299,101 @@ class ExecutionCoordinator:
         if getattr(quote, "last_execution", None) is None and getattr(quote, "ask", None) is None:
             reasons.append("quote_missing")
         return reasons
+
+    def _select_broker(self, proposal: Any) -> tuple[Any, str]:
+        if self.broker_router is None:
+            return self.trader.broker, "etoro"
+        broker = self.broker_router.select_broker_for(proposal)
+        broker_name = self.broker_router.selected_broker_name_for(proposal)
+        return broker, broker_name
+
+    def _execute_with_broker(
+        self,
+        *,
+        proposal: Any,
+        broker: Any,
+        broker_name: str,
+        quote_price: float,
+        client_order_id: str | None,
+    ) -> ExecutionRecord:
+        if broker_name == "etoro" and broker is self.trader.broker:
+            return self.trader.execute_proposal(proposal.id, client_order_id=client_order_id)
+
+        request_payload = {
+            **proposal.order.model_dump(),
+            "client_order_id": client_order_id,
+            "broker": broker_name,
+        }
+        if hasattr(broker, "submit_order"):
+            qty = float(proposal.order.amount_usd) / max(float(quote_price), 0.01)
+            broker_execution = broker.submit_order(
+                symbol=proposal.order.symbol,
+                side=proposal.order.side.value,
+                qty=qty,
+                order_type="market",
+                time_in_force="day",
+                client_order_id=client_order_id,
+            )
+            execution = ExecutionRecord(
+                proposal_id=proposal.id,
+                status=self._map_broker_execution_status(getattr(broker_execution, "status", "")),
+                mode=str(getattr(broker_execution, "mode", self.settings.execution_mode)),
+                broker_order_id=getattr(broker_execution, "broker_order_id", None),
+                request_payload=request_payload,
+                response_payload={
+                    "broker": broker_name,
+                    "broker_execution": broker_execution.model_dump()
+                    if hasattr(broker_execution, "model_dump")
+                    else dict(getattr(broker_execution, "response_payload", {}) or {}),
+                },
+            )
+            self.executions.create(execution)
+            self.proposals.mark_executed(proposal.id, execution.id)
+            self.logs.log(
+                "order_submitted",
+                {
+                    "proposal_id": proposal.id,
+                    "execution_id": execution.id,
+                    "broker_order_id": execution.broker_order_id,
+                    "broker": broker_name,
+                    "status": execution.status,
+                },
+            )
+            return execution
+
+        if hasattr(broker, "open_market_order_by_amount"):
+            response = broker.open_market_order_by_amount(proposal.order, client_order_id=client_order_id)
+            execution = ExecutionRecord(
+                proposal_id=proposal.id,
+                status=ExecutionStatus.SUBMITTED
+                if str(response.status) not in {ExecutionStatus.FAILED, ExecutionStatus.BLOCKED}
+                else response.status,
+                mode=str(getattr(response, "mode", self.settings.execution_mode)),
+                broker_order_id=response.order_id,
+                request_payload=request_payload,
+                response_payload={"broker": broker_name, "broker_response": response.model_dump()},
+            )
+            self.executions.create(execution)
+            self.proposals.mark_executed(proposal.id, execution.id)
+            self.logs.log(
+                "order_submitted",
+                {
+                    "proposal_id": proposal.id,
+                    "execution_id": execution.id,
+                    "broker_order_id": execution.broker_order_id,
+                    "broker": broker_name,
+                    "status": execution.status,
+                },
+            )
+            return execution
+
+        raise TypeError(f"Selected broker {broker_name!r} does not expose a supported order submission method")
+
+    @staticmethod
+    def _map_broker_execution_status(status: str) -> str:
+        normalized = str(status or "").lower()
+        if normalized in {ExecutionStatus.FAILED, "rejected", "canceled", "cancelled"}:
+            return ExecutionStatus.FAILED
+        if normalized == ExecutionStatus.BLOCKED:
+            return ExecutionStatus.BLOCKED
+        return ExecutionStatus.SUBMITTED

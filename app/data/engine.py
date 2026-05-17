@@ -164,7 +164,7 @@ class MarketDataEngine:
                             "used_fallback": False,
                             "from_cache": False,
                             "quote_derived_from_history": False,
-                            "data_age_seconds": 0.0,
+                            "data_age_seconds": float(getattr(quote, "data_age_seconds", 0.0) or 0.0),
                         }
                     )
                 except Exception as exc:
