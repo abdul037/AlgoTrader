@@ -52,7 +52,7 @@ TELEGRAM_WEBHOOK_URL=https://your-domain.example/telegram/webhook
 
 Use this order:
 
-1. Manual paper milestone: Telegram creates a proposal, you approve it, queue it, and process it into Alpaca paper.
+1. Manual paper milestone: Telegram creates a proposal, you approve it, queue it, and process it into Alpaca paper. Use [`docs/alpaca_paper_start.md`](alpaca_paper_start.md) for the exact first-trade checklist.
 2. 48-hour observation: keep `AUTO_PROPOSE_ENABLED=false` and `AUTO_EXECUTE_AFTER_APPROVAL=false`; verify health, logs, Alpaca orders, and kill switch behavior.
 3. Auto-proposal mode: set `AUTO_PROPOSE_ENABLED=true` and `SCREENER_SCHEDULER_ENABLED=true`; keep `AUTO_EXECUTE_AFTER_APPROVAL=false` so Telegram approval is still required.
 4. Phase D1: migrate to Postgres, structured logs, and Grafana dashboards before unattended trading.
