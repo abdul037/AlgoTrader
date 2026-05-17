@@ -1,24 +1,23 @@
-# eToro Approval Trading Bot
+# CX AlgoBot
 
-Production-minded Python trading system scaffold for backtesting, multi-stock screening, live signal generation, Telegram alerting, mandatory approval gates by default, and a safe-first eToro broker integration.
+Production-minded Python trading system scaffold for backtesting, multi-stock screening, live signal generation, Telegram alerting, mandatory approval gates by default, and safe-first Alpaca paper execution for US equities.
 
 ## Current Architecture
 
 The codebase now has four primary layers:
 
-- market data and caching: broker-aligned eToro market data plus Yahoo fallback through a shared market-data engine
+- market data and caching: broker-aligned market data from Alpaca/eToro plus Yahoo fallback through a shared market-data engine
 - strategy and signal generation: reusable strategy modules for swing, intraday, breakout, trend-following, mean-reversion, RSI, VWAP, EMA, and confluence scans across `1m`, `5m`, `10m`, `15m`, `1h`, `1d`, and `1w`
 - backtesting and validation: single-run and batch backtests stored in SQLite, reused to gate live alerts, and compared with paper-trading outcomes
-- delivery and approval: Telegram alerts, webhook command handling, proposal approval flow, execution queue handling, paper trading, and a future-facing execution interface
+- delivery and approval: Telegram alerts, webhook command handling, proposal approval flow, execution queue handling, Alpaca paper trading, and broker-routed execution
 
 The active production Telegram path is webhook mode through FastAPI. Polling remains as a fallback/debug path.
 
 ## Safe Defaults
 
-- `ETORO_ACCOUNT_MODE=demo` by default.
+- `EXECUTION_MODE=paper` and `PAPER_BROKER=alpaca` for the Alpaca paper rollout.
 - `ENABLE_REAL_TRADING=false` by default.
 - `REQUIRE_APPROVAL=true` by default.
-- `EXECUTION_MODE=paper` by default.
 - `AUTO_PROPOSE_ENABLED=false` and `AUTO_EXECUTE_AFTER_APPROVAL=false` by default.
 - Unsupported and explicitly blocked instruments are rejected before proposal creation.
 - Risk validation runs before proposal creation and again before execution.
@@ -493,7 +492,7 @@ Approval command notes:
 - `/propose_top` scans the active market universe, selects the top execution-ready candidate, and creates a pending proposal for that candidate.
 - `/propose` refuses `NO_TRADE` setups; it will not force a trade just because an amount is provided.
 - `/approve` only approves. Use `/enqueue` and `/process_queue` for the explicit execution step.
-- `/process_queue` follows `EXECUTION_MODE`; default `paper` mode simulates the trade.
+- `/process_queue` follows `EXECUTION_MODE`; with `PAPER_BROKER=alpaca`, paper equity orders are submitted to Alpaca paper.
 - If `EXECUTION_MODE=live`, `/process_queue` requires `CONFIRM_LIVE` as an extra argument and real trading must still be enabled in config.
 - `/scan 3 NVDA AAPL MSFT` scans only those requested symbols and returns up to 3 ranked results.
 - `/performance` summarizes paper P&L, open positions, provider health, and calibration suggestions from recent scan decisions.
@@ -837,8 +836,8 @@ The execution path is now staged:
 1. a signal or proposal is approved
 2. `/execution/queue/{proposal_id}/enqueue` places it in the execution queue
 3. the coordinator re-checks quote freshness, provider provenance, and entry drift
-4. in `EXECUTION_MODE=paper`, the position is simulated and tracked in SQLite
-5. in `EXECUTION_MODE=live`, the same queue path can call the broker trader once the eToro execution contract is verified
+4. in `EXECUTION_MODE=paper`, equity orders route to Alpaca paper when `PAPER_BROKER=alpaca`
+5. in `EXECUTION_MODE=live`, the same queue path remains gated by real-trading flags, broker quote freshness, drift checks, and risk validation
 
 Paper routes:
 
@@ -922,6 +921,7 @@ Production deployment notes, backup/restore commands, webhook reset, and emergen
 
 Use this rollout order:
 
-1. paper mode: keep `EXECUTION_MODE=paper`, `ENABLE_REAL_TRADING=false`, and strict eToro quote verification on
-2. approved semi-auto: keep approval mandatory and use the execution queue with fresh-quote revalidation before any placement
-3. live-ready: only after broker payloads, fills, and slippage handling are verified against the target eToro account
+1. manual Alpaca paper: keep `EXECUTION_MODE=paper`, `PAPER_BROKER=alpaca`, `ENABLE_REAL_TRADING=false`, and `REQUIRE_APPROVAL=true`
+2. approved semi-auto: enable auto-proposals only after the first paper trade and kill-switch drill pass; keep approval mandatory
+3. monitored paper-auto: enable `AUTO_EXECUTE_AFTER_APPROVAL=true` only after Phase D self-monitoring is in place
+4. live-ready: only after the paper-auto validation gate is green, restart with micro-size and manual approval
