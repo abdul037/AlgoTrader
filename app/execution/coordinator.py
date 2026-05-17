@@ -134,7 +134,19 @@ class ExecutionCoordinator:
         if self.executions.count_since(start_of_day) >= int(getattr(self.settings, "max_trades_per_day", 999999)):
             validation_reasons.append("max_trades_per_day_reached")
         if quote_drift_bps > float(self.settings.execution_max_entry_drift_bps):
-            validation_reasons.append("entry_drift_too_large")
+            if self._can_bypass_entry_drift_for_smoke(proposal):
+                self.logs.log(
+                    "execution_queue_entry_drift_bypassed",
+                    {
+                        "queue_id": record.id,
+                        "proposal_id": proposal.id,
+                        "symbol": proposal.order.symbol,
+                        "strategy_name": proposal.order.strategy_name,
+                        "quote_drift_bps": quote_drift_bps,
+                    },
+                )
+            else:
+                validation_reasons.append("entry_drift_too_large")
 
         record.latest_quote_price = quote_price
         record.latest_quote_timestamp = quote.timestamp
@@ -299,6 +311,15 @@ class ExecutionCoordinator:
         if getattr(quote, "last_execution", None) is None and getattr(quote, "ask", None) is None:
             reasons.append("quote_missing")
         return reasons
+
+    def _can_bypass_entry_drift_for_smoke(self, proposal: Any) -> bool:
+        """Allow the explicit manual smoke command to reach broker routing in paper mode."""
+
+        return (
+            str(getattr(self.settings, "execution_mode", "paper")).lower() == "paper"
+            and not bool(getattr(self.settings, "enable_real_trading", False))
+            and str(getattr(proposal.order, "strategy_name", "") or "").lower() == "manual_smoke"
+        )
 
     def _select_broker(self, proposal: Any) -> tuple[Any, str]:
         if self.broker_router is None:

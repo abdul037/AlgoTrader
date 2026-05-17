@@ -97,7 +97,7 @@ class FakeEtoroMarketData:
         }
 
 
-def proposal_payload(symbol: str = "NVDA") -> TradeProposalCreate:
+def proposal_payload(symbol: str = "NVDA", *, strategy_name: str = "ma_crossover") -> TradeProposalCreate:
     return TradeProposalCreate(
         symbol=symbol,
         amount_usd=1000,
@@ -105,12 +105,18 @@ def proposal_payload(symbol: str = "NVDA") -> TradeProposalCreate:
         proposed_price=120.0,
         stop_loss=114.0,
         take_profit=132.0,
-        strategy_name="ma_crossover",
+        strategy_name=strategy_name,
         rationale="test setup",
     )
 
 
-def queued_app(tmp_path, *, alpaca: FakeAlpacaClient | None = None, **settings_overrides):
+def queued_app(
+    tmp_path,
+    *,
+    alpaca: FakeAlpacaClient | None = None,
+    strategy_name: str = "ma_crossover",
+    **settings_overrides,
+):
     alpaca = alpaca or FakeAlpacaClient()
     settings_values = {
         "alpaca_enabled": True,
@@ -126,7 +132,7 @@ def queued_app(tmp_path, *, alpaca: FakeAlpacaClient | None = None, **settings_o
         market_data_client=FakeEtoroMarketData(price=alpaca.price),
         enable_background_jobs=False,
     )
-    proposal = app.state.proposal_service.create_proposal(proposal_payload())
+    proposal = app.state.proposal_service.create_proposal(proposal_payload(strategy_name=strategy_name))
     approved = app.state.proposal_service.approve_proposal(
         proposal.id,
         ApprovalDecisionRequest(reviewer="qa", notes="approved"),
@@ -232,6 +238,21 @@ def test_all_sprint1_gates_still_fire_with_alpaca_routing(tmp_path) -> None:
     second = app.state.execution_coordinator.process_queue_item(queued.id)
     assert first.payload["execution_id"] == second.payload["execution_id"]
     assert len(alpaca.submitted_orders) == 1
+
+
+def test_manual_smoke_bypasses_entry_drift_only_in_paper(tmp_path) -> None:
+    app, alpaca, _, queued = queued_app(
+        tmp_path / "manual_smoke",
+        alpaca=FakeAlpacaClient(price=130.0),
+        strategy_name="manual_smoke",
+    )
+
+    result = app.state.execution_coordinator.process_queue_item(queued.id)
+
+    assert result.status == ExecutionQueueStatus.EXECUTED
+    assert result.validation_reason == "ready"
+    assert len(alpaca.submitted_orders) == 1
+    assert "execution_queue_entry_drift_bypassed" in log_events(app)
 
 
 def test_kill_switch_calls_alpaca_cancel_all_and_close_all_in_paper(tmp_path) -> None:
