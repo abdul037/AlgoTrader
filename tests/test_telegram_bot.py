@@ -142,6 +142,22 @@ class FakeSettings:
     auto_execute_after_approval = False
 
 
+class FakeMarketData:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def get_quote(self, symbol: str, *, timeframe: str = "1d", provider=None, force_refresh: bool = False):
+        self.calls.append(
+            {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "provider": provider,
+                "force_refresh": force_refresh,
+            }
+        )
+        return SimpleNamespace(symbol=symbol, bid=100.0, ask=100.5, last_execution=100.25)
+
+
 def test_poll_once_handles_signal_and_scan_commands() -> None:
     notifier = FakeNotifier()
     notifier.updates = [
@@ -212,6 +228,7 @@ def test_stale_scan_status_recovers_lock() -> None:
 class FakeMarketScreener:
     def __init__(self):
         self.calls = []
+        self.market_data = FakeMarketData()
 
     def analyze_symbol(self, symbol: str, *, force_refresh: bool = False):
         return LiveSignalSnapshot(
@@ -275,6 +292,35 @@ class FakeMarketScreener:
                     metadata={"alert_eligible": True},
                 )
             ],
+        )
+
+
+class NoTradeMarketScreener(FakeMarketScreener):
+    def analyze_symbol(self, symbol: str, *, force_refresh: bool = False):
+        return LiveSignalSnapshot(
+            symbol=symbol.upper(),
+            strategy_name="market_intelligence",
+            state=SignalState.NONE,
+            timeframe="1d",
+            current_price=100.0,
+            direction_label="no_trade",
+            confidence_label="reject",
+            rationale="No clear edge.",
+            score=54.0,
+            score_breakdown={"nearest_rejected_setup": 71.25},
+            execution_ready=False,
+            reject_reasons=["no_clear_edge", "relative_volume_too_low"],
+            metadata={
+                "primary_blocker": "no_clear_edge",
+                "execution_blockers": ["no_clear_edge", "relative_volume_too_low"],
+                "trade_plan": {"confirmation_trigger": "Wait for pullback confirmation."},
+                "near_miss_setup": {
+                    "strategy_name": "ema_trend_stack",
+                    "timeframe": "1h",
+                    "score": 71.25,
+                    "status": "rejected",
+                },
+            },
         )
 
 
@@ -695,6 +741,107 @@ def test_telegram_proposal_approval_and_queue_commands() -> None:
     assert notifier.sent[2][0].startswith("Proposal queued")
     assert notifier.sent[3][0].startswith("Queue processed")
     assert "Status: executed" in notifier.sent[3][0]
+
+
+def test_telegram_paper_smoke_creates_manual_smoke_proposal() -> None:
+    notifier = FakeNotifier()
+    proposal_service = FakeProposalService()
+    screener = FakeMarketScreener()
+    notifier.updates = [
+        {
+            "update_id": 1,
+            "message": {"chat": {"id": 7329410595}, "text": "/paper_smoke NVDA 25"},
+        },
+    ]
+    bot = TelegramBotService(
+        settings=FakeSettings(),
+        notifier=notifier,
+        live_signals=FakeLiveSignals(),
+        market_screener=screener,
+        proposal_service=proposal_service,
+        runtime_state_repository=FakeStateRepo(),
+        run_log_repository=FakeRunLogRepo(),
+    )
+
+    processed = bot.poll_once(timeout_seconds=0)
+
+    assert processed == 1
+    assert notifier.sent[0][0].startswith("Manual paper smoke proposal created")
+    assert "Trade readiness: SMOKE TEST ONLY" in notifier.sent[0][0]
+    assert "This is not strategy-approved." in notifier.sent[0][0]
+    assert "Order: NVDA BUY $25.00" in notifier.sent[0][0]
+    assert "Strategy: manual_smoke" in notifier.sent[0][0]
+    assert "Approve: /approve prop_test" in notifier.sent[0][0]
+    assert "After approval: /enqueue prop_test" in notifier.sent[0][0]
+    assert proposal_service.proposal is not None
+    order = proposal_service.proposal.order
+    assert order.symbol == "NVDA"
+    assert order.strategy_name == "manual_smoke"
+    assert float(order.amount_usd) == 25.0
+    assert float(order.proposed_price) == 100.5
+    assert float(order.stop_loss) == 97.48
+    assert float(order.take_profit) == 106.53
+    assert screener.market_data.calls == [
+        {"symbol": "NVDA", "timeframe": "1d", "provider": "alpaca", "force_refresh": True}
+    ]
+
+
+def test_telegram_paper_smoke_blocks_large_amount() -> None:
+    notifier = FakeNotifier()
+    proposal_service = FakeProposalService()
+    notifier.updates = [
+        {
+            "update_id": 1,
+            "message": {"chat": {"id": 7329410595}, "text": "/paper_smoke NVDA 1000"},
+        },
+    ]
+    bot = TelegramBotService(
+        settings=FakeSettings(),
+        notifier=notifier,
+        live_signals=FakeLiveSignals(),
+        market_screener=FakeMarketScreener(),
+        proposal_service=proposal_service,
+        runtime_state_repository=FakeStateRepo(),
+        run_log_repository=FakeRunLogRepo(),
+    )
+
+    processed = bot.poll_once(timeout_seconds=0)
+
+    assert processed == 1
+    assert "Paper smoke amount is capped at $100.00" in notifier.sent[0][0]
+    assert proposal_service.proposal is None
+
+
+def test_telegram_no_trade_message_explains_readiness_not_capped_score() -> None:
+    notifier = FakeNotifier()
+    notifier.updates = [
+        {
+            "update_id": 1,
+            "message": {"chat": {"id": 7329410595}, "text": "/propose NVDA 20"},
+        },
+    ]
+    bot = TelegramBotService(
+        settings=FakeSettings(),
+        notifier=notifier,
+        live_signals=FakeLiveSignals(),
+        market_screener=NoTradeMarketScreener(),
+        proposal_service=FakeProposalService(),
+        runtime_state_repository=FakeStateRepo(),
+        run_log_repository=FakeRunLogRepo(),
+    )
+
+    processed = bot.poll_once(timeout_seconds=0)
+    message = notifier.sent[0][0]
+
+    assert processed == 1
+    assert "No proposal created for NVDA." in message
+    assert "Trade readiness: NOT READY" in message
+    assert "Verdict: NO_TRADE" in message
+    assert "Nearest setup: ema_trend_stack | 1h" in message
+    assert "Nearest setup score: 71.2/100" in message
+    assert "Primary blocker: no_clear_edge" in message
+    assert "Wait for: Wait for pullback confirmation." in message
+    assert "Score: 54" not in message
 
 
 def test_telegram_approval_can_auto_execute_after_approval() -> None:

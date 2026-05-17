@@ -12,7 +12,8 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from app.execution.interfaces import SignalApprovalAdapter
-from app.models.approval import ApprovalDecisionRequest, ApprovalStatus
+from app.models.approval import ApprovalDecisionRequest, ApprovalStatus, TradeProposalCreate
+from app.models.trade import AssetClass, OrderSide
 from app.runtime_settings import AppSettings
 from app.telegram_notify import TelegramNotifier
 from app.signals.service import LiveSignalService
@@ -44,6 +45,7 @@ class TelegramBotService:
         "/validated_scan [limit] - ranked screener filtered by validated backtests\n"
         "/propose SYMBOL [amount] - create a pending trade proposal from an actionable signal\n"
         "/propose_top [amount] [universe_limit] - scan the universe and propose the top actionable setup\n"
+        "/paper_smoke SYMBOL [amount] - create a tiny manual Alpaca paper routing test proposal\n"
         "/proposals [status] - list proposals, default pending\n"
         "/approve PROPOSAL_ID [notes] - approve a pending proposal\n"
         "/reject PROPOSAL_ID [notes] - reject a pending proposal\n"
@@ -336,6 +338,10 @@ class TelegramBotService:
             self.notifier.send_text(self._propose_top_message(args), chat_id=chat_id)
             return
 
+        if command in {"/paper_smoke", "/smoke_trade"}:
+            self.notifier.send_text(self._paper_smoke_message(args), chat_id=chat_id)
+            return
+
         if command == "/proposals":
             self.notifier.send_text(self._proposals_message(args), chat_id=chat_id)
             return
@@ -445,13 +451,7 @@ class TelegramBotService:
                 list((getattr(snapshot, "metadata", {}) or {}).get("execution_blockers") or [])
                 or list(getattr(snapshot, "reject_reasons", []) or [])
             )
-            return (
-                f"No proposal created for {symbol}.\n"
-                f"Verdict: {str(getattr(snapshot, 'direction_label', 'no_trade')).upper()} | "
-                f"Score: {float(getattr(snapshot, 'score', 0.0) or 0.0):.1f}/100\n"
-                f"Reason: {blockers or getattr(snapshot, 'rationale', 'not execution-ready')}\n"
-                "The bot will not force a trade without a live setup, stop, target, and risk/reward plan."
-            )
+            return self._format_no_trade_rejection(symbol, snapshot, blockers=blockers)
         if str(getattr(snapshot, "signal_role", "") or "").lower() == "entry_short":
             return "No proposal created. Short-entry execution is not wired safely yet."
         if not getattr(snapshot, "stop_loss", None):
@@ -523,9 +523,8 @@ class TelegramBotService:
             )
             return (
                 "No proposal created.\n"
-                f"Best non-actionable setup: {best.symbol} | "
-                f"{best.direction_label or best.state.value} | Score {float(best.score or 0.0):.1f}/100\n"
-                f"Reason: {blockers or 'not execution-ready'}\n"
+                f"Best non-actionable setup: {best.symbol}\n"
+                f"{self._format_no_trade_rejection(best.symbol, best, blockers=blockers)}\n"
                 f"Scanned: {response.evaluated_symbols} symbols | "
                 f"Strategy checks: {response.evaluated_strategy_runs}"
             )
@@ -552,6 +551,78 @@ class TelegramBotService:
                 f"Reject: /reject {proposal.id}\n"
                 f"Scanned: {response.evaluated_symbols} symbols | "
                 f"Strategy checks: {response.evaluated_strategy_runs}"
+            ),
+        )
+
+    def _paper_smoke_message(self, args: list[str]) -> str:
+        if self.proposal_service is None or self.market_screener is None:
+            return "Proposal services are not configured."
+        if str(getattr(self.settings, "execution_mode", "paper")).lower() != "paper":
+            return "Paper smoke test is only available when EXECUTION_MODE=paper."
+        if bool(getattr(self.settings, "enable_real_trading", False)):
+            return "Paper smoke test is blocked while ENABLE_REAL_TRADING=true."
+        if not bool(getattr(self.settings, "require_approval", True)):
+            return "Paper smoke test requires REQUIRE_APPROVAL=true."
+        if bool(getattr(self.settings, "auto_execute_after_approval", False)):
+            return "Paper smoke test requires AUTO_EXECUTE_AFTER_APPROVAL=false."
+
+        if not args:
+            return "Usage: /paper_smoke SYMBOL [amount]\nExample: /paper_smoke NVDA 25"
+        symbol = self._parse_symbol_arg(args[:1])
+        if symbol is None:
+            return "Usage: /paper_smoke SYMBOL [amount]\nExample: /paper_smoke NVDA 25"
+        allowed = {str(item).upper() for item in getattr(self.settings, "allowed_instruments", []) or []}
+        if allowed and symbol not in allowed:
+            return f"{symbol} is not in ALLOWED_INSTRUMENTS. Use one of: {', '.join(sorted(allowed))}"
+
+        amount = self._parse_amount(args[1:], default=25.0)
+        if amount is None:
+            return "Amount must be a positive number. Example: /paper_smoke NVDA 25"
+        max_smoke_amount = 100.0
+        if amount > max_smoke_amount:
+            return f"Paper smoke amount is capped at ${max_smoke_amount:.2f}. Try: /paper_smoke {symbol} 25"
+
+        market_data = getattr(self.market_screener, "market_data", None)
+        if market_data is None or not hasattr(market_data, "get_quote"):
+            return "Paper smoke test requires market data quote access."
+        quote = self._run_with_timeout(
+            market_data.get_quote,
+            symbol,
+            timeframe="1d",
+            provider="alpaca",
+            force_refresh=True,
+        )
+        price = self._quote_price_for_buy(quote)
+        if price is None or price <= 0:
+            return f"Paper smoke test could not load a usable Alpaca quote for {symbol}."
+
+        request = TradeProposalCreate(
+            symbol=symbol,
+            side=OrderSide.BUY,
+            amount_usd=amount,
+            leverage=1,
+            proposed_price=round(price, 2),
+            stop_loss=round(price * 0.97, 2),
+            take_profit=round(price * 1.06, 2),
+            strategy_name="manual_smoke",
+            rationale="Manual Alpaca paper routing smoke test from Telegram; not strategy-approved.",
+            notes="MANUAL_SMOKE: execution plumbing test only; not a strategy-approved trade.",
+            asset_class=AssetClass.EQUITY,
+        )
+        proposal = self._run_with_timeout(self.proposal_service.create_proposal, request)
+        return self._format_proposal(
+            proposal,
+            header=(
+                "Manual paper smoke proposal created\n"
+                "Trade readiness: SMOKE TEST ONLY\n"
+                "This is not strategy-approved."
+            ),
+            footer=(
+                f"Approve: /approve {proposal.id}\n"
+                f"Reject: /reject {proposal.id}\n"
+                f"After approval: /enqueue {proposal.id}\n"
+                "Then: /queue and /process_queue QUEUE_ID\n"
+                "After the smoke test, cancel/close the paper order or use the kill switch drill."
             ),
         )
 
@@ -1118,6 +1189,64 @@ class TelegramBotService:
             "I will send the best trade signal here when it finishes.\n"
             "Use /scan_status to check progress or /cancel_scan to stop it."
         )
+
+    @staticmethod
+    def _format_no_trade_rejection(symbol: str, snapshot: Any, *, blockers: str = "") -> str:
+        metadata = getattr(snapshot, "metadata", {}) or {}
+        score_breakdown = getattr(snapshot, "score_breakdown", {}) or {}
+        near_miss = metadata.get("near_miss_setup")
+        near_score = score_breakdown.get("nearest_rejected_setup")
+        near_strategy = None
+        near_timeframe = None
+        if isinstance(near_miss, dict):
+            near_strategy = near_miss.get("strategy_name")
+            near_timeframe = near_miss.get("timeframe")
+            near_score = near_score if near_score not in (None, "") else near_miss.get("score")
+        primary_blocker = (
+            metadata.get("primary_blocker")
+            or (blockers.split(",", 1)[0].strip() if blockers else "")
+            or "no_clear_edge"
+        )
+        trade_plan = metadata.get("trade_plan") if isinstance(metadata.get("trade_plan"), dict) else {}
+        wait_for = (
+            trade_plan.get("confirmation_trigger")
+            or metadata.get("confirmation_trigger")
+            or "a cleaner setup with a valid stop, target, and risk/reward plan"
+        )
+        lines = [
+            f"No proposal created for {symbol}.",
+            "Trade readiness: NOT READY",
+            "Verdict: NO_TRADE",
+        ]
+        if near_strategy or near_timeframe:
+            lines.append(f"Nearest setup: {near_strategy or 'n/a'} | {near_timeframe or 'n/a'}")
+        if near_score not in (None, ""):
+            try:
+                lines.append(f"Nearest setup score: {float(near_score):.1f}/100")
+            except (TypeError, ValueError):
+                lines.append(f"Nearest setup score: {near_score}")
+        else:
+            lines.append("Nearest setup score: n/a")
+        lines.append(f"Primary blocker: {primary_blocker}")
+        if blockers:
+            lines.append(f"Other blockers: {blockers}")
+        lines.append(f"Wait for: {wait_for}")
+        lines.append("The bot will not force a trade without a live setup, stop, target, and risk/reward plan.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _quote_price_for_buy(quote: Any) -> float | None:
+        for field in ("ask", "last_execution", "bid"):
+            value = getattr(quote, field, None)
+            if value in (None, ""):
+                continue
+            try:
+                price = float(value)
+            except (TypeError, ValueError):
+                continue
+            if price > 0:
+                return price
+        return None
 
     @staticmethod
     def _format_proposal(proposal: Any, *, header: str, footer: str | None = None) -> str:
