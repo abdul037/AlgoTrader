@@ -46,6 +46,7 @@ class TelegramBotService:
         "/propose SYMBOL [amount] - create a pending trade proposal from an actionable signal\n"
         "/propose_top [amount] [universe_limit] - scan the universe and propose the top actionable setup\n"
         "/paper_smoke SYMBOL [amount] - create a tiny manual Alpaca paper routing test proposal\n"
+        "/paper_smoke_run SYMBOL [amount] CONFIRM - create, approve, queue, and process one tiny paper smoke test\n"
         "/proposals [status] - list proposals, default pending\n"
         "/approve PROPOSAL_ID [notes] - approve a pending proposal\n"
         "/reject PROPOSAL_ID [notes] - reject a pending proposal\n"
@@ -342,6 +343,10 @@ class TelegramBotService:
             self.notifier.send_text(self._paper_smoke_message(args), chat_id=chat_id)
             return
 
+        if command in {"/paper_smoke_run", "/smoke_trade_run"}:
+            self.notifier.send_text(self._paper_smoke_run_message(chat_id, args), chat_id=chat_id)
+            return
+
         if command == "/proposals":
             self.notifier.send_text(self._proposals_message(args), chat_id=chat_id)
             return
@@ -555,61 +560,12 @@ class TelegramBotService:
         )
 
     def _paper_smoke_message(self, args: list[str]) -> str:
-        if self.proposal_service is None or self.market_screener is None:
-            return "Proposal services are not configured."
-        if str(getattr(self.settings, "execution_mode", "paper")).lower() != "paper":
-            return "Paper smoke test is only available when EXECUTION_MODE=paper."
-        if bool(getattr(self.settings, "enable_real_trading", False)):
-            return "Paper smoke test is blocked while ENABLE_REAL_TRADING=true."
-        if not bool(getattr(self.settings, "require_approval", True)):
-            return "Paper smoke test requires REQUIRE_APPROVAL=true."
-        if bool(getattr(self.settings, "auto_execute_after_approval", False)):
-            return "Paper smoke test requires AUTO_EXECUTE_AFTER_APPROVAL=false."
-
-        if not args:
-            return "Usage: /paper_smoke SYMBOL [amount]\nExample: /paper_smoke NVDA 25"
-        symbol = self._parse_symbol_arg(args[:1])
-        if symbol is None:
-            return "Usage: /paper_smoke SYMBOL [amount]\nExample: /paper_smoke NVDA 25"
-        allowed = {str(item).upper() for item in getattr(self.settings, "allowed_instruments", []) or []}
-        if allowed and symbol not in allowed:
-            return f"{symbol} is not in ALLOWED_INSTRUMENTS. Use one of: {', '.join(sorted(allowed))}"
-
-        amount = self._parse_amount(args[1:], default=25.0)
-        if amount is None:
-            return "Amount must be a positive number. Example: /paper_smoke NVDA 25"
-        max_smoke_amount = 100.0
-        if amount > max_smoke_amount:
-            return f"Paper smoke amount is capped at ${max_smoke_amount:.2f}. Try: /paper_smoke {symbol} 25"
-
-        market_data = getattr(self.market_screener, "market_data", None)
-        if market_data is None or not hasattr(market_data, "get_quote"):
-            return "Paper smoke test requires market data quote access."
-        quote = self._run_with_timeout(
-            market_data.get_quote,
-            symbol,
-            timeframe="1d",
-            provider="alpaca",
-            force_refresh=True,
+        proposal, error = self._create_paper_smoke_proposal(
+            args,
+            usage="Usage: /paper_smoke SYMBOL [amount]\nExample: /paper_smoke NVDA 25",
         )
-        price = self._quote_price_for_buy(quote)
-        if price is None or price <= 0:
-            return f"Paper smoke test could not load a usable Alpaca quote for {symbol}."
-
-        request = TradeProposalCreate(
-            symbol=symbol,
-            side=OrderSide.BUY,
-            amount_usd=amount,
-            leverage=1,
-            proposed_price=round(price, 2),
-            stop_loss=round(price * 0.97, 2),
-            take_profit=round(price * 1.06, 2),
-            strategy_name="manual_smoke",
-            rationale="Manual Alpaca paper routing smoke test from Telegram; not strategy-approved.",
-            notes="MANUAL_SMOKE: execution plumbing test only; not a strategy-approved trade.",
-            asset_class=AssetClass.EQUITY,
-        )
-        proposal = self._run_with_timeout(self.proposal_service.create_proposal, request)
+        if error:
+            return error
         return self._format_proposal(
             proposal,
             header=(
@@ -625,6 +581,105 @@ class TelegramBotService:
                 "After the smoke test, cancel/close the paper order or use the kill switch drill."
             ),
         )
+
+    def _paper_smoke_run_message(self, chat_id: str, args: list[str]) -> str:
+        usage = (
+            "Usage: /paper_smoke_run SYMBOL [amount] CONFIRM\n"
+            "Example: /paper_smoke_run NVDA 25 CONFIRM"
+        )
+        if self.execution_coordinator is None:
+            return "Execution coordinator is not configured."
+        if not args or str(args[-1]).upper() != "CONFIRM":
+            return usage
+
+        proposal, error = self._create_paper_smoke_proposal(args[:-1], usage=usage)
+        if error:
+            return error
+        approved = self._run_with_timeout(
+            self.proposal_service.approve_proposal,
+            proposal.id,
+            ApprovalDecisionRequest(
+                reviewer=f"telegram:{chat_id}",
+                notes="Confirmed manual Alpaca paper smoke run from Telegram.",
+            ),
+        )
+        queued = self._run_with_timeout(self.execution_coordinator.enqueue_approved_proposal, approved.id)
+        processed = self._run_with_timeout(self.execution_coordinator.process_queue_item, queued.id)
+        lines = [
+            "Manual paper smoke run processed",
+            "Trade readiness: SMOKE TEST ONLY",
+            "This is not strategy-approved.",
+            f"Proposal: {approved.id}",
+            f"Queue ID: {processed.id}",
+            f"Symbol: {processed.symbol}",
+            f"Status: {processed.status}",
+            f"Ready: {'yes' if processed.ready_for_execution else 'no'}",
+            f"Quote: {self._fmt_price(processed.latest_quote_price)}",
+            f"Reason: {processed.validation_reason or 'ready'}",
+        ]
+        if str(processed.status).lower() == "blocked":
+            lines.append("No Alpaca order should have been submitted.")
+        else:
+            lines.append("Check Alpaca Paper dashboard, then retry the same queue ID to verify no duplicate order.")
+        return "\n".join(lines)
+
+    def _create_paper_smoke_proposal(self, args: list[str], *, usage: str) -> tuple[Any | None, str | None]:
+        if self.proposal_service is None or self.market_screener is None:
+            return None, "Proposal services are not configured."
+        if str(getattr(self.settings, "execution_mode", "paper")).lower() != "paper":
+            return None, "Paper smoke test is only available when EXECUTION_MODE=paper."
+        if bool(getattr(self.settings, "enable_real_trading", False)):
+            return None, "Paper smoke test is blocked while ENABLE_REAL_TRADING=true."
+        if not bool(getattr(self.settings, "require_approval", True)):
+            return None, "Paper smoke test requires REQUIRE_APPROVAL=true."
+        if bool(getattr(self.settings, "auto_execute_after_approval", False)):
+            return None, "Paper smoke test requires AUTO_EXECUTE_AFTER_APPROVAL=false."
+
+        if not args:
+            return None, usage
+        symbol = self._parse_symbol_arg(args[:1])
+        if symbol is None:
+            return None, usage
+        allowed = {str(item).upper() for item in getattr(self.settings, "allowed_instruments", []) or []}
+        if allowed and symbol not in allowed:
+            return None, f"{symbol} is not in ALLOWED_INSTRUMENTS. Use one of: {', '.join(sorted(allowed))}"
+
+        amount = self._parse_amount(args[1:], default=25.0)
+        if amount is None:
+            return None, "Amount must be a positive number. Example: /paper_smoke NVDA 25"
+        max_smoke_amount = 100.0
+        if amount > max_smoke_amount:
+            return None, f"Paper smoke amount is capped at ${max_smoke_amount:.2f}. Try: /paper_smoke {symbol} 25"
+
+        market_data = getattr(self.market_screener, "market_data", None)
+        if market_data is None or not hasattr(market_data, "get_quote"):
+            return None, "Paper smoke test requires market data quote access."
+        quote = self._run_with_timeout(
+            market_data.get_quote,
+            symbol,
+            timeframe="1d",
+            provider="alpaca",
+            force_refresh=True,
+        )
+        price = self._quote_price_for_buy(quote)
+        if price is None or price <= 0:
+            return None, f"Paper smoke test could not load a usable Alpaca quote for {symbol}."
+
+        request = TradeProposalCreate(
+            symbol=symbol,
+            side=OrderSide.BUY,
+            amount_usd=amount,
+            leverage=1,
+            proposed_price=round(price, 2),
+            stop_loss=round(price * 0.97, 2),
+            take_profit=round(price * 1.06, 2),
+            strategy_name="manual_smoke",
+            rationale="Manual Alpaca paper routing smoke test from Telegram; not strategy-approved.",
+            notes="MANUAL_SMOKE: execution plumbing test only; not a strategy-approved trade.",
+            asset_class=AssetClass.EQUITY,
+        )
+        proposal = self._run_with_timeout(self.proposal_service.create_proposal, request)
+        return proposal, None
 
     def _proposals_message(self, args: list[str]) -> str:
         if self.proposal_service is None:

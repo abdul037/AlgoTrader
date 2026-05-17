@@ -812,6 +812,76 @@ def test_telegram_paper_smoke_blocks_large_amount() -> None:
     assert proposal_service.proposal is None
 
 
+def test_telegram_paper_smoke_run_requires_confirm() -> None:
+    notifier = FakeNotifier()
+    proposal_service = FakeProposalService()
+    execution = FakeExecutionCoordinator()
+    notifier.updates = [
+        {
+            "update_id": 1,
+            "message": {"chat": {"id": 7329410595}, "text": "/paper_smoke_run NVDA 25"},
+        },
+    ]
+    bot = TelegramBotService(
+        settings=FakeSettings(),
+        notifier=notifier,
+        live_signals=FakeLiveSignals(),
+        market_screener=FakeMarketScreener(),
+        proposal_service=proposal_service,
+        execution_coordinator=execution,
+        execution_queue_repository=execution,
+        runtime_state_repository=FakeStateRepo(),
+        run_log_repository=FakeRunLogRepo(),
+    )
+
+    processed = bot.poll_once(timeout_seconds=0)
+
+    assert processed == 1
+    assert notifier.sent[0][0].startswith("Usage: /paper_smoke_run SYMBOL [amount] CONFIRM")
+    assert proposal_service.proposal is None
+    assert execution.enqueued == []
+    assert execution.processed == []
+
+
+def test_telegram_paper_smoke_run_creates_approves_queues_and_processes() -> None:
+    notifier = FakeNotifier()
+    proposal_service = FakeProposalService()
+    execution = FakeExecutionCoordinator()
+    notifier.updates = [
+        {
+            "update_id": 1,
+            "message": {"chat": {"id": 7329410595}, "text": "/paper_smoke_run NVDA 25 CONFIRM"},
+        },
+    ]
+    bot = TelegramBotService(
+        settings=FakeSettings(),
+        notifier=notifier,
+        live_signals=FakeLiveSignals(),
+        market_screener=FakeMarketScreener(),
+        proposal_service=proposal_service,
+        execution_coordinator=execution,
+        execution_queue_repository=execution,
+        runtime_state_repository=FakeStateRepo(),
+        run_log_repository=FakeRunLogRepo(),
+    )
+
+    processed = bot.poll_once(timeout_seconds=0)
+    message = notifier.sent[0][0]
+
+    assert processed == 1
+    assert proposal_service.proposal is not None
+    assert proposal_service.proposal.status == ApprovalStatus.APPROVED
+    assert proposal_service.proposal.approved_by == "telegram:7329410595"
+    assert execution.enqueued == ["prop_test"]
+    assert execution.processed == ["queue_test"]
+    assert message.startswith("Manual paper smoke run processed")
+    assert "Trade readiness: SMOKE TEST ONLY" in message
+    assert "Proposal: prop_test" in message
+    assert "Queue ID: queue_test" in message
+    assert "Status: executed" in message
+    assert "Check Alpaca Paper dashboard" in message
+
+
 def test_telegram_no_trade_message_explains_readiness_not_capped_score() -> None:
     notifier = FakeNotifier()
     notifier.updates = [
