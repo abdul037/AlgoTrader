@@ -130,6 +130,13 @@ Operate manually through Telegram:
 
 Do not enable automatic proposal creation until the first paper trade, idempotency check, and kill-switch drill all pass.
 
+Use the read-only status helper to capture the current evidence state:
+
+```bash
+python3 scripts/phase_c_validation_status.py
+python3 scripts/phase_c_validation_status.py --output reports/phase_c_validation_status.md
+```
+
 ## Next Roadmap
 
 After the 48-hour observation window, continue with [`alpaca_paper_to_live_roadmap.md`](alpaca_paper_to_live_roadmap.md): Phase D1 observability/Postgres, Phase D2 self-monitoring, Phase D3 paper auto-execution, Phase E VPS validation, then the live micro-size decision gate.
