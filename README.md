@@ -13,6 +13,12 @@ The codebase now has four primary layers:
 
 The active production Telegram path is webhook mode through FastAPI. Polling remains as a fallback/debug path.
 
+## Alpaca Paper Rollout Docs
+
+- [Alpaca paper start checklist](docs/alpaca_paper_start.md): first paper order, idempotency check, kill-switch drill, and 48-hour observation.
+- [Alpaca paper-to-live roadmap](docs/alpaca_paper_to_live_roadmap.md): Phase C validation, Phase D1 observability/Postgres, Phase D2 self-monitoring, Phase D3 paper auto-execution, Phase E VPS validation, and the live micro-size decision gate.
+- [24/7 production runbook](docs/production_runbook.md): VPS/Docker Compose runtime, webhook reset, backups, and restore.
+
 ## Safe Defaults
 
 - `EXECUTION_MODE=paper` and `PAPER_BROKER=alpaca` for the Alpaca paper rollout.

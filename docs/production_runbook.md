@@ -50,15 +50,15 @@ TELEGRAM_WEBHOOK_URL=https://your-domain.example/telegram/webhook
 
 ## Alpaca Paper Rollout
 
-Use this order:
+The manual Alpaca paper smoke path has been proven through Telegram and Alpaca Paper. Continue in this order:
 
-1. Manual paper milestone: Telegram creates a proposal, you approve it, queue it, and process it into Alpaca paper. Use [`docs/alpaca_paper_start.md`](alpaca_paper_start.md) for the exact first-trade checklist.
-2. 48-hour observation: keep `AUTO_PROPOSE_ENABLED=false` and `AUTO_EXECUTE_AFTER_APPROVAL=false`; verify health, logs, Alpaca orders, and kill switch behavior.
-3. Auto-proposal mode: set `AUTO_PROPOSE_ENABLED=true` and `SCREENER_SCHEDULER_ENABLED=true`; keep `AUTO_EXECUTE_AFTER_APPROVAL=false` so Telegram approval is still required.
-4. Phase D1: migrate to Postgres, structured logs, and Grafana dashboards before unattended trading.
-5. Phase D2: add self-monitoring, auto-deactivation, drawdown circuit breaker, and blacklist controls.
-6. Phase D3: enable paper auto-execution only after the monitoring layer is green.
-7. Phase E: run 4 weeks of VPS-hosted paper-auto validation before any live micro-size decision gate.
+1. Phase C validation: complete the 48-hour paper observation checklist in [`alpaca_paper_start.md`](alpaca_paper_start.md).
+2. Phase D1: migrate to Postgres, structured logs, and Grafana dashboards before unattended trading.
+3. Phase D2: add self-monitoring, auto-deactivation, drawdown circuit breaker, and blacklist controls.
+4. Phase D3: enable paper auto-execution only after the monitoring layer is green.
+5. Phase E: run 4 weeks of VPS-hosted paper-auto validation before any live micro-size decision gate.
+
+The decision-complete roadmap is maintained in [`alpaca_paper_to_live_roadmap.md`](alpaca_paper_to_live_roadmap.md).
 
 ## Daily Operations
 
@@ -112,7 +112,7 @@ curl -fsS http://127.0.0.1:8011/telegram/webhook/status
 
 ## Live Trading Gate
 
-Live trading is out of scope until the paper-auto validation period completes. Live queue processing must remain blocked unless all are true:
+Live trading is out of scope until the paper-auto validation period completes and all 8 criteria in [`alpaca_paper_to_live_roadmap.md`](alpaca_paper_to_live_roadmap.md) pass. Live queue processing must remain blocked unless all are true:
 
 - `EXECUTION_MODE=live`
 - `ENABLE_REAL_TRADING=true`
