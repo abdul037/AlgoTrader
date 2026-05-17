@@ -74,7 +74,7 @@ def main() -> None:
         embargo_days=env_int("AUDIT_EMBARGO_DAYS", 1),
         holdout_days=env_int("AUDIT_HOLDOUT_DAYS", 28),
     )
-    cost_model = CostModel()
+    cost_model = select_cost_model(audit_config["cost_model_name"])
     engine_config = EngineConfig(
         initial_cash=float(settings.paper_account_balance_usd),
         risk_per_trade_pct=float(settings.max_risk_per_trade_pct),
@@ -87,7 +87,12 @@ def main() -> None:
     audit_config["cache_dir"].mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    data_by_symbol, data_errors = load_universe_data(universe, audit_config=audit_config)
+    alpaca_provider = build_alpaca_data_provider(settings) if audit_config["data_provider"] == "alpaca" else None
+    data_by_symbol, data_errors = load_universe_data(
+        universe,
+        audit_config=audit_config,
+        alpaca_provider=alpaca_provider,
+    )
     results: list[dict[str, Any]] = []
     strategy_errors: list[dict[str, str]] = []
     trade_details: list[dict[str, Any]] = []
@@ -173,10 +178,43 @@ def env_bool(name: str) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def select_cost_model(name: str) -> CostModel:
+    normalized = name.strip().lower()
+    if normalized == "alpaca":
+        return CostModel.alpaca_equities()
+    if normalized == "etoro":
+        return CostModel()
+    raise ValueError(f"Unsupported audit cost model: {name}")
+
+
+def build_alpaca_data_provider(settings: Any):
+    from app.broker.alpaca_client import AlpacaClient
+    from app.data.providers.alpaca_data import AlpacaDataProvider
+
+    if not settings.alpaca_api_key or not settings.alpaca_secret_key:
+        raise RuntimeError("AUDIT_DATA_PROVIDER=alpaca requires ALPACA_API_KEY and ALPACA_SECRET_KEY")
+
+    client = AlpacaClient(
+        api_key=settings.alpaca_api_key,
+        secret_key=settings.alpaca_secret_key,
+        base_url=settings.alpaca_base_url,
+        data_url=settings.alpaca_data_url,
+        paper=True,
+        data_feed=settings.alpaca_data_feed,
+    )
+    return AlpacaDataProvider(client, cache_dir=ROOT / ".cache" / "alpaca")
+
+
 def build_audit_config() -> dict[str, Any]:
     timeframe = str(os.getenv("AUDIT_TIMEFRAME", DEFAULT_TIMEFRAME) or DEFAULT_TIMEFRAME).strip().lower()
     if timeframe not in {"1d", "1h"}:
         raise ValueError("AUDIT_TIMEFRAME must be '1d' or '1h'")
+    cost_model_name = str(os.getenv("AUDIT_COST_MODEL", "etoro") or "etoro").strip().lower()
+    if cost_model_name not in {"etoro", "alpaca"}:
+        raise ValueError("AUDIT_COST_MODEL must be 'etoro' or 'alpaca'")
+    data_provider = str(os.getenv("AUDIT_DATA_PROVIDER", "yfinance") or "yfinance").strip().lower()
+    if data_provider not in {"yfinance", "alpaca"}:
+        raise ValueError("AUDIT_DATA_PROVIDER must be 'yfinance' or 'alpaca'")
     today = datetime.now(UTC).date()
     if timeframe == "1h":
         default_start = (today - timedelta(days=729)).isoformat()
@@ -190,13 +228,18 @@ def build_audit_config() -> dict[str, Any]:
     end_exclusive = (pd.Timestamp(end_date) + pd.Timedelta(days=1)).date().isoformat()
     output_tag = str(os.getenv("AUDIT_OUTPUT_TAG", "") or "").strip()
     output_stem = BASE_OUTPUT_STEM + (f"_{output_tag}" if output_tag else "")
-    cache_dir = ROOT / ".cache" / ("audit_1h" if timeframe == "1h" else "audit")
+    cache_name = "audit_1h" if timeframe == "1h" else "audit"
+    if data_provider == "alpaca":
+        cache_name = f"{cache_name}_alpaca"
+    cache_dir = ROOT / ".cache" / cache_name
     return {
         "start_date": start_date,
         "end_date": end_date,
         "end_exclusive": end_exclusive,
         "window_label": f"{start_date} to {end_date}",
         "timeframe": timeframe,
+        "cost_model_name": cost_model_name,
+        "data_provider": data_provider,
         "bars_per_year": env_int("AUDIT_BARS_PER_YEAR", DAILY_BARS_PER_YEAR),
         "cache_dir": cache_dir,
         "markdown_path": OUTPUT_DIR / f"{output_stem}.md",
@@ -209,15 +252,22 @@ def load_universe_data(
     universe: list[str],
     *,
     audit_config: dict[str, Any],
+    alpaca_provider: Any | None = None,
 ) -> tuple[dict[str, pd.DataFrame], list[dict[str, str]]]:
     data: dict[str, pd.DataFrame] = {}
     errors: list[dict[str, str]] = []
     for symbol in universe:
         try:
-            frame = load_symbol_data(symbol, audit_config=audit_config)
+            frame, fallback_error = load_symbol_data(
+                symbol,
+                audit_config=audit_config,
+                alpaca_provider=alpaca_provider,
+            )
             if frame.empty:
                 errors.append({"symbol": symbol, "error": "empty data frame"})
                 continue
+            if fallback_error:
+                errors.append({"symbol": symbol, "error": fallback_error})
             data[symbol] = frame
             print(f"data {symbol}: {len(frame)} rows", flush=True)
         except Exception as exc:
@@ -226,11 +276,42 @@ def load_universe_data(
     return data, errors
 
 
-def load_symbol_data(symbol: str, *, audit_config: dict[str, Any]) -> pd.DataFrame:
+def load_symbol_data(
+    symbol: str,
+    *,
+    audit_config: dict[str, Any],
+    alpaca_provider: Any | None = None,
+) -> tuple[pd.DataFrame, str | None]:
     cache_path = audit_config["cache_dir"] / f"{symbol.replace('.', '_')}.parquet"
     if cache_path.exists():
-        return pd.read_parquet(cache_path)
+        return pd.read_parquet(cache_path), None
 
+    if audit_config["data_provider"] == "alpaca":
+        if alpaca_provider is None:
+            raise RuntimeError("AUDIT_DATA_PROVIDER=alpaca requires an AlpacaDataProvider")
+        try:
+            frame = alpaca_provider.get_bars(
+                symbol,
+                timeframe=audit_config["timeframe"],
+                start=pd.Timestamp(audit_config["start_date"], tz=UTC).to_pydatetime(),
+                end=pd.Timestamp(audit_config["end_exclusive"], tz=UTC).to_pydatetime(),
+            )
+            if frame.empty:
+                raise ValueError("alpaca returned no rows")
+            frame.to_parquet(cache_path, index=False)
+            return frame, None
+        except Exception as exc:
+            fallback_error = f"alpaca failed; used yfinance fallback: {exc}"
+            frame = load_yfinance_symbol_data(symbol, audit_config=audit_config)
+            frame.to_parquet(cache_path, index=False)
+            return frame, fallback_error
+
+    frame = load_yfinance_symbol_data(symbol, audit_config=audit_config)
+    frame.to_parquet(cache_path, index=False)
+    return frame, None
+
+
+def load_yfinance_symbol_data(symbol: str, *, audit_config: dict[str, Any]) -> pd.DataFrame:
     yf_symbol = symbol.replace(".", "-")
     last_exc: Exception | None = None
     for attempt in range(2):
@@ -247,7 +328,6 @@ def load_symbol_data(symbol: str, *, audit_config: dict[str, Any]) -> pd.DataFra
             frame = normalize_yfinance_frame(raw)
             if frame.empty:
                 raise ValueError("yfinance returned no rows")
-            frame.to_parquet(cache_path, index=False)
             return frame
         except Exception as exc:
             last_exc = exc
@@ -313,6 +393,13 @@ def audit_strategy(
             "bars_per_year": audit_config["bars_per_year"],
             "timeframe": audit_config["timeframe"],
             "cache_dir": str(audit_config["cache_dir"]),
+            "cost_model_name": audit_config["cost_model_name"],
+            "data_provider": audit_config["data_provider"],
+            "train_days": splitter.train_days,
+            "test_days": splitter.test_days,
+            "step_days": splitter.step_days,
+            "embargo_days": splitter.embargo_days,
+            "holdout_days": splitter.holdout_days,
             "include_trade_detail": include_trade_detail,
         }
         for symbol in data_by_symbol
@@ -391,7 +478,13 @@ def audit_symbol_for_strategy(args: dict[str, Any]) -> dict[str, Any]:
         history=history,
         timeframe=str(args["timeframe"]),
     )
-    splitter = WalkForwardSplitter()
+    splitter = WalkForwardSplitter(
+        train_days=int(args.get("train_days", 180)),
+        test_days=int(args.get("test_days", 14)),
+        step_days=int(args.get("step_days", 14)),
+        embargo_days=int(args.get("embargo_days", 1)),
+        holdout_days=int(args.get("holdout_days", 28)),
+    )
     errors: list[dict[str, str]] = []
     try:
         windows = list(splitter.split(history))
@@ -418,7 +511,7 @@ def audit_symbol_for_strategy(args: dict[str, Any]) -> dict[str, Any]:
             initial_cash=float(args["initial_cash"]),
             risk_per_trade_pct=args["risk_per_trade_pct"],
             bars_per_year=int(args["bars_per_year"]),
-            cost_model=CostModel(),
+            cost_model=select_cost_model(str(args.get("cost_model_name", "etoro"))),
             allow_extended_hours=False,
         )
     )
@@ -431,7 +524,7 @@ def audit_symbol_for_strategy(args: dict[str, Any]) -> dict[str, Any]:
             symbol=symbol,
             strategy=strategy,
             data=history,
-            file_path=f"yfinance:{args['timeframe']}:{symbol}:walk_forward_signal_gate",
+            file_path=f"{args.get('data_provider', 'yfinance')}:{args['timeframe']}:{symbol}:walk_forward_signal_gate",
         )
     except Exception as exc:
         return {
@@ -710,6 +803,8 @@ def build_payload(
         "strategies_evaluated": len(ranked),
         "n_trials": n_trials,
         "timeframe": audit_config["timeframe"],
+        "data_provider": audit_config["data_provider"],
+        "cost_model_name": audit_config["cost_model_name"],
         "bars_per_year": audit_config["bars_per_year"],
         "walk_forward": {
             "train_days": splitter.train_days,
@@ -742,6 +837,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
         f"- Window: {payload['window']}",
         f"- Universe: {payload['universe']} ({payload['symbols_requested']} requested)",
         f"- Timeframe: {payload['timeframe']}",
+        f"- Data provider: {payload['data_provider']}",
         f"- n_trials: {payload['n_trials']}",
         (
             "- Walk-forward: "
@@ -754,6 +850,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
         ),
         (
             "- Cost model defaults: "
+            f"name={payload['cost_model_name']}, "
             f"spread_bps={payload['cost_model']['spread_bps']}, "
             f"extended_hours_spread_bps={payload['cost_model']['extended_hours_spread_bps']}, "
             f"overnight_fee_daily_pct={payload['cost_model']['overnight_fee_daily_pct']}, "

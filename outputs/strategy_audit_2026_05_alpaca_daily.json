@@ -1,0 +1,618 @@
+{
+  "audit_date": "2026-05-17T14:14:51.165668+00:00",
+  "bars_per_year": 252,
+  "cost_model": {
+    "extended_hours_spread_bps": 10.0,
+    "fx_spread_bps": 0.0,
+    "include_weekend_financing": false,
+    "min_position_usd": 1.0,
+    "overnight_fee_daily_pct": 0.0,
+    "spread_bps": 2.0,
+    "weekend_multiplier": 1.0
+  },
+  "cost_model_name": "alpaca",
+  "data_errors": [],
+  "data_provider": "alpaca",
+  "n_trials": 12,
+  "results": [
+    {
+      "deflated_sharpe": 0.0,
+      "errors": [
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-1239.974, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "NVDA"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-5127.2480000000005, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "AMZN"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-194.12065974839902, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "GOOGL"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-4942.336, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "GOOG"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-3343.520000000001, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "AVGO"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-1128.7200000000003, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "TSLA"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-207.88400000000001, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "WMT"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-673.81, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "PANW"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-1638.893, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "LRCX"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-753.4060000000002, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "ANET"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-25.74826974933673, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "SHOP"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-76.02000000000001, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "APH"
+        }
+      ],
+      "expectancy_R": 0.101865,
+      "folds": 8793,
+      "intraday_limitation": false,
+      "max_dd_pct": 2.6076,
+      "profit_factor": 2.722394,
+      "sharpe": 0.711206,
+      "strategy": "ema_trend_stack",
+      "symbols_evaluated": 88,
+      "total_test_bars": 96483,
+      "trades": 601,
+      "verdict": "no edge at this confidence",
+      "win_rate": 36.1065
+    },
+    {
+      "deflated_sharpe": 0.0,
+      "errors": [],
+      "expectancy_R": 0.044327,
+      "folds": 9993,
+      "intraday_limitation": false,
+      "max_dd_pct": 3.9158,
+      "profit_factor": 1.798799,
+      "sharpe": 0.452897,
+      "strategy": "gold_momentum",
+      "symbols_evaluated": 100,
+      "total_test_bars": 96483,
+      "trades": 671,
+      "verdict": "no edge at this confidence",
+      "win_rate": 45.6036
+    },
+    {
+      "deflated_sharpe": 0.0,
+      "errors": [
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-1084.3149999999998, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "NVDA"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-4649.79, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "AMZN"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-4457.87, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "GOOGL"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-4483.04, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "GOOG"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-5.180000000000007, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "META"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-3023.9750000000004, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "AVGO"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-999.1899999999999, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "TSLA"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-183.57, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "WMT"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-59.005000000000024, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "NFLX"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-1111.03, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "ISRG"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-0.07500000000000107, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "PLTR"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-1.9999999999999964, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "INTC"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-0.31500000000001904, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "SCHW"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-592.6999999999999, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "PANW"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-1482.53, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "LRCX"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-672.8650000000001, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "ANET"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-10.97999999999999, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "CRWD"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-689.87, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "SHOP"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-8.275000000000006, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "SNOW"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-61.50999999999988, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "MELI"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-6.3700000000000045, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "PYPL"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-76.79, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "APH"
+        }
+      ],
+      "expectancy_R": 0.075452,
+      "folds": 7800,
+      "intraday_limitation": true,
+      "max_dd_pct": 4.5909,
+      "profit_factor": 2.121246,
+      "sharpe": 0.56124,
+      "strategy": "intraday_vwap_trend",
+      "symbols_evaluated": 78,
+      "total_test_bars": 96483,
+      "trades": 490,
+      "verdict": "no edge at this confidence",
+      "win_rate": 42.8571
+    },
+    {
+      "deflated_sharpe": 0.0,
+      "errors": [],
+      "expectancy_R": 0.078895,
+      "folds": 9993,
+      "intraday_limitation": false,
+      "max_dd_pct": 4.9384,
+      "profit_factor": 2.487105,
+      "sharpe": 0.672826,
+      "strategy": "ma_crossover",
+      "symbols_evaluated": 100,
+      "total_test_bars": 96483,
+      "trades": 620,
+      "verdict": "no edge at this confidence",
+      "win_rate": 46.6129
+    },
+    {
+      "deflated_sharpe": 0.0,
+      "errors": [],
+      "expectancy_R": 0.066932,
+      "folds": 9993,
+      "intraday_limitation": false,
+      "max_dd_pct": 13.7218,
+      "profit_factor": 1.181915,
+      "sharpe": 0.127133,
+      "strategy": "mean_reversion",
+      "symbols_evaluated": 100,
+      "total_test_bars": 96483,
+      "trades": 175,
+      "verdict": "no edge at this confidence",
+      "win_rate": 38.2857
+    },
+    {
+      "deflated_sharpe": 0.0,
+      "errors": [
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-7.0321500000000015, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "NVDA"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-148.2568, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "AMZN"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-100.80774999999964, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "GOOGL"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-92.86640000000004, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "GOOG"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-41.59659999999999, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "SHOP"
+        }
+      ],
+      "expectancy_R": 0.059809,
+      "folds": 9493,
+      "intraday_limitation": false,
+      "max_dd_pct": 7.4945,
+      "profit_factor": 1.729618,
+      "sharpe": 0.542791,
+      "strategy": "momentum_breakout",
+      "symbols_evaluated": 95,
+      "total_test_bars": 96483,
+      "trades": 1262,
+      "verdict": "no edge at this confidence",
+      "win_rate": 31.3788
+    },
+    {
+      "deflated_sharpe": 0.0,
+      "errors": [],
+      "expectancy_R": 0.046483,
+      "folds": 9993,
+      "intraday_limitation": false,
+      "max_dd_pct": 3.6195,
+      "profit_factor": 1.955729,
+      "sharpe": 0.435348,
+      "strategy": "pullback_trend",
+      "symbols_evaluated": 100,
+      "total_test_bars": 96483,
+      "trades": 545,
+      "verdict": "no edge at this confidence",
+      "win_rate": 37.0642
+    },
+    {
+      "deflated_sharpe": 0.0,
+      "errors": [],
+      "expectancy_R": -0.014996,
+      "folds": 9993,
+      "intraday_limitation": false,
+      "max_dd_pct": 13.9391,
+      "profit_factor": 0.955019,
+      "sharpe": -0.032122,
+      "strategy": "rsi_reversal",
+      "symbols_evaluated": 100,
+      "total_test_bars": 96483,
+      "trades": 225,
+      "verdict": "no edge at this confidence",
+      "win_rate": 41.3333
+    },
+    {
+      "deflated_sharpe": 0.0,
+      "errors": [],
+      "expectancy_R": -0.047115,
+      "folds": 9993,
+      "intraday_limitation": false,
+      "max_dd_pct": 23.099,
+      "profit_factor": 0.907032,
+      "sharpe": -0.063655,
+      "strategy": "rsi_trend_continuation",
+      "symbols_evaluated": 100,
+      "total_test_bars": 96483,
+      "trades": 131,
+      "verdict": "no edge at this confidence",
+      "win_rate": 35.8779
+    },
+    {
+      "deflated_sharpe": 0.0,
+      "errors": [
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-107.58001129638589, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "NVDA"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-455.0819458897258, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "GOOGL"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-11.13708602844406, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "CRM"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-5.79381234674204, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "UBER"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-448.9652296070948, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "ISRG"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-16.289971349541254, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "PLTR"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-132.68152196136427, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "ANET"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-410.55162445739944, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "SHOP"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-52.59678897748037, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "SNOW"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-215.8446895898985, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "PYPL"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-24.752602168069956, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "NKE"
+        }
+      ],
+      "expectancy_R": 0.137199,
+      "folds": 8900,
+      "intraday_limitation": true,
+      "max_dd_pct": 6.7148,
+      "profit_factor": 1.292966,
+      "sharpe": 0.142641,
+      "strategy": "rsi_vwap_ema_confluence",
+      "symbols_evaluated": 89,
+      "total_test_bars": 96483,
+      "trades": 84,
+      "verdict": "no edge at this confidence",
+      "win_rate": 45.2381
+    },
+    {
+      "deflated_sharpe": 0.0,
+      "errors": [
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-60.507918490479, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "NVDA"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-4649.79, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "AMZN"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-167.84332704399907, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "GOOGL"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-170.497339743102, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "GOOG"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-122.50303644337811, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "AVGO"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-183.57, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "WMT"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-592.6999999999999, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "PANW"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-1460.51, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "LRCX"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-20.676608863033387, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "SHOP"
+        }
+      ],
+      "expectancy_R": 0.095641,
+      "folds": 9093,
+      "intraday_limitation": false,
+      "max_dd_pct": 4.5324,
+      "profit_factor": 2.317246,
+      "sharpe": 0.739493,
+      "strategy": "trend_following",
+      "symbols_evaluated": 91,
+      "total_test_bars": 96483,
+      "trades": 819,
+      "verdict": "no edge at this confidence",
+      "win_rate": 31.3797
+    },
+    {
+      "deflated_sharpe": 0.0,
+      "errors": [
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-1088.5085, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "NVDA"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-4453.494, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "GOOGL"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-4530.566985955452, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "GOOG"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-3177.5000000000005, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "AVGO"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-994.487, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "TSLA"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-188.34550000000004, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "WMT"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-1116.914, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "ISRG"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-631.4399999999999, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "PANW"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-1492.1360000000002, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "LRCX"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-709.7335000000002, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "ANET"
+        },
+        {
+          "error": "1 validation error for Signal\ntake_profit\n  Input should be greater than 0 [type=greater_than, input_value=-83.70700000000001, input_type=float]\n    For further information visit https://errors.pydantic.dev/2.12/v/greater_than",
+          "symbol": "APH"
+        }
+      ],
+      "expectancy_R": 0.050008,
+      "folds": 8893,
+      "intraday_limitation": true,
+      "max_dd_pct": 9.6258,
+      "profit_factor": 1.244691,
+      "sharpe": 0.16987,
+      "strategy": "vwap_reclaim",
+      "symbols_evaluated": 89,
+      "total_test_bars": 96483,
+      "trades": 259,
+      "verdict": "no edge at this confidence",
+      "win_rate": 38.61
+    }
+  ],
+  "strategies_evaluated": 12,
+  "strategies_requested_by_prompt": 12,
+  "strategy_errors": [],
+  "symbols": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "AMZN",
+    "GOOGL",
+    "GOOG",
+    "META",
+    "BRK.B",
+    "AVGO",
+    "TSLA",
+    "LLY",
+    "JPM",
+    "WMT",
+    "V",
+    "MA",
+    "XOM",
+    "UNH",
+    "ORCL",
+    "NFLX",
+    "COST",
+    "JNJ",
+    "PG",
+    "HD",
+    "BAC",
+    "ABBV",
+    "KO",
+    "MRK",
+    "CVX",
+    "AMD",
+    "PEP",
+    "ADBE",
+    "CRM",
+    "TMO",
+    "CSCO",
+    "LIN",
+    "MCD",
+    "ACN",
+    "ABT",
+    "WFC",
+    "IBM",
+    "GE",
+    "PM",
+    "DIS",
+    "QCOM",
+    "DHR",
+    "NOW",
+    "INTU",
+    "CAT",
+    "TXN",
+    "GS",
+    "RTX",
+    "AMGN",
+    "UBER",
+    "SPGI",
+    "ISRG",
+    "PFE",
+    "BLK",
+    "T",
+    "AMAT",
+    "BX",
+    "PLTR",
+    "INTC",
+    "MU",
+    "BKNG",
+    "CMCSA",
+    "MS",
+    "AXP",
+    "SCHW",
+    "LOW",
+    "SYK",
+    "UNP",
+    "TJX",
+    "MDT",
+    "GILD",
+    "PANW",
+    "DE",
+    "ADI",
+    "LRCX",
+    "MMC",
+    "C",
+    "VRTX",
+    "ANET",
+    "KLAC",
+    "COP",
+    "CRWD",
+    "MDLZ",
+    "SBUX",
+    "BA",
+    "SHOP",
+    "ADP",
+    "SNOW",
+    "MELI",
+    "REGN",
+    "PYPL",
+    "ETN",
+    "HON",
+    "APH",
+    "CB",
+    "SO",
+    "NKE"
+  ],
+  "symbols_requested": 100,
+  "timeframe": "1d",
+  "universe": "top100_us",
+  "verdict_counts": {
+    "needs more data": 0,
+    "no edge at this confidence": 12,
+    "production candidate": 0
+  },
+  "walk_forward": {
+    "embargo_days": 1,
+    "holdout_days": 28,
+    "step_days": 14,
+    "test_days": 14,
+    "train_days": 180
+  },
+  "window": "2020-01-01 to 2024-12-31"
+}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import sleep, time
 from typing import Any
@@ -32,10 +33,18 @@ TIMEFRAME_CONFIG: dict[str, dict[str, Any]] = {
 class MarketDataEngine:
     """Fetch normalized OHLCV data across providers with file-based caching."""
 
-    def __init__(self, settings: AppSettings, *, etoro_client: Any | None = None, history_service: MarketDataService | None = None):
+    def __init__(
+        self,
+        settings: AppSettings,
+        *,
+        etoro_client: Any | None = None,
+        history_service: MarketDataService | None = None,
+        alpaca_provider: Any | None = None,
+    ):
         self.settings = settings
         self.etoro_client = etoro_client
         self.history_service = history_service or MarketDataService()
+        self.alpaca_provider = alpaca_provider
         self.cache_dir = Path(settings.market_data_cache_dir).expanduser().resolve()
 
     def get_history(
@@ -144,6 +153,25 @@ class MarketDataEngine:
                     if attempt < self._retry_attempts() - 1:
                         sleep(self._retry_backoff_seconds(attempt))
 
+        if quote_provider == "alpaca":
+            for attempt in range(self._retry_attempts()):
+                try:
+                    quote = self._get_alpaca_provider().get_quote(normalized_symbol)
+                    return quote.model_copy(
+                        update={
+                            "source": "alpaca",
+                            "is_primary": True,
+                            "used_fallback": False,
+                            "from_cache": False,
+                            "quote_derived_from_history": False,
+                            "data_age_seconds": 0.0,
+                        }
+                    )
+                except Exception as exc:
+                    logger.warning("Alpaca quote fallback for %s failed: %s", normalized_symbol, exc)
+                    if attempt < self._retry_attempts() - 1:
+                        sleep(self._retry_backoff_seconds(attempt))
+
         frame = self.get_history(
             normalized_symbol,
             timeframe=normalized_timeframe,
@@ -198,6 +226,10 @@ class MarketDataEngine:
             if config.get("resample_rule"):
                 return self._resample_ohlcv(frame, str(config["resample_rule"]))
             return frame
+
+        if provider == "alpaca":
+            start, end = self._history_window(timeframe, bars)
+            return self._get_alpaca_provider().get_bars(symbol, timeframe=timeframe, start=start, end=end)
 
         raise ValueError(f"Unsupported provider: {provider}")
 
@@ -308,6 +340,8 @@ class MarketDataEngine:
 
     def _resolve_quote_provider(self, provider: str | None) -> str:
         requested = (provider or self.settings.primary_market_data_provider or "auto").strip().lower()
+        if requested == "alpaca":
+            return "alpaca"
         if requested in {"auto", "etoro"} and self.etoro_client is not None:
             return "etoro"
         fallback = (self.settings.fallback_market_data_provider or "yfinance").strip().lower()
@@ -318,7 +352,42 @@ class MarketDataEngine:
         fallback = (self.settings.fallback_market_data_provider or "").strip().lower()
         if fallback and fallback != "none" and fallback not in providers:
             providers.append(fallback)
+        if primary_provider == "alpaca" and "yfinance" not in providers:
+            providers.append("yfinance")
         return providers
+
+    def _get_alpaca_provider(self):
+        if self.alpaca_provider is not None:
+            return self.alpaca_provider
+        if not self.settings.alpaca_api_key or not self.settings.alpaca_secret_key:
+            raise RuntimeError("Alpaca market data requested but Alpaca credentials are not configured")
+        from app.broker.alpaca_client import AlpacaClient
+        from app.data.providers.alpaca_data import AlpacaDataProvider
+
+        client = AlpacaClient(
+            api_key=self.settings.alpaca_api_key,
+            secret_key=self.settings.alpaca_secret_key,
+            base_url=self.settings.alpaca_base_url,
+            data_url=self.settings.alpaca_data_url,
+            paper=True,
+            data_feed=self.settings.alpaca_data_feed,
+        )
+        self.alpaca_provider = AlpacaDataProvider(client)
+        return self.alpaca_provider
+
+    @staticmethod
+    def _history_window(timeframe: str, bars: int) -> tuple[datetime, datetime]:
+        end = datetime.now(timezone.utc)
+        if timeframe == "1d":
+            lookback_days = max(10, int(bars * 3))
+        elif timeframe == "1h":
+            lookback_days = max(10, int(bars // 4) + 5)
+        elif timeframe.endswith("m"):
+            minutes = int(timeframe[:-1])
+            lookback_days = max(5, int((bars * minutes) / (60 * 6.5)) + 5)
+        else:
+            lookback_days = max(10, int(bars * 7))
+        return end - timedelta(days=lookback_days), end
 
     def _retry_attempts(self) -> int:
         return max(1, int(getattr(self.settings, "market_data_retry_attempts", 1) or 1))

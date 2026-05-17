@@ -58,6 +58,27 @@ class CostModel:
     without the Friday triple-charge. Leave True for equity CFDs.
     """
 
+    @classmethod
+    def alpaca_equities(cls) -> "CostModel":
+        """Realistic cost defaults for US equities executed via Alpaca paper/live.
+
+        Reference values:
+          spread: ~1-3 bps round-trip on top100 names during RTH (much wider in extended hours)
+          financing: 0 for cash equity positions (only applies if margin-borrowed; default cash)
+          FX: 0 for USD-denominated account holding USD equities
+          min position: Alpaca supports fractional shares from $1; floor at $1
+        """
+
+        return cls(
+            spread_bps=2.0,
+            extended_hours_spread_bps=10.0,
+            overnight_fee_daily_pct=0.0,
+            weekend_multiplier=1.0,
+            fx_spread_bps=0.0,
+            min_position_usd=1.0,
+            include_weekend_financing=False,
+        )
+
     def half_spread_fraction(self, *, extended_hours: bool = False) -> float:
         """Fractional drag applied to one side of a round-trip."""
 
