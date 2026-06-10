@@ -129,4 +129,3 @@ MAX_DAILY_LOSS_USD=25
 ```
 
 Live micro-size can increase only after another reviewed validation period.
-
