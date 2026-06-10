@@ -198,8 +198,16 @@ def derive_checks(
         ),
         Check(
             "Kill switch drill after strategy order",
-            "PASS" if kill_switch_drill else "PENDING",
-            "phase c emergency stop logged" if kill_switch_drill else "no phase c kill_switch_emergency_stop log found",
+            "PASS" if kill_switch_drill and strategy_execution else ("REVIEW" if kill_switch_drill else "PENDING"),
+            (
+                "phase c emergency stop logged after strategy execution"
+                if kill_switch_drill and strategy_execution
+                else (
+                    "phase c emergency stop logged; repeat after a strategy execution"
+                    if kill_switch_drill
+                    else "no phase c kill_switch_emergency_stop log found"
+                )
+            ),
         ),
         Check(
             "48-hour observation",

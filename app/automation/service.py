@@ -53,8 +53,9 @@ class AutomationService:
         return self._set_state(paused=False, kill_switch=False, reason=reason or "resumed manually")
 
     def enable_kill_switch(self, *, reason: str = "") -> AutomationStatus:
-        status = self._set_state(paused=True, kill_switch=True, reason=reason or "kill switch enabled")
-        self._emergency_stop()
+        effective_reason = reason or "kill switch enabled"
+        status = self._set_state(paused=True, kill_switch=True, reason=effective_reason)
+        self._emergency_stop(reason=effective_reason)
         return status
 
     def scan_blockers(self) -> list[str]:
@@ -89,7 +90,7 @@ class AutomationService:
         )
         return self.status()
 
-    def _emergency_stop(self) -> None:
+    def _emergency_stop(self, *, reason: str) -> None:
         if self.broker_router is None:
             return
         close_allowed = (
@@ -126,6 +127,7 @@ class AutomationService:
         self.logs.log(
             "kill_switch_emergency_stop",
             {
+                "reason": reason,
                 "orders_cancelled": total_cancelled,
                 "positions_closed": total_closed,
                 "close_positions_allowed": close_allowed,

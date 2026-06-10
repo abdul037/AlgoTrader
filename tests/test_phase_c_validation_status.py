@@ -58,6 +58,22 @@ def test_derive_checks_marks_smoke_pass_but_strategy_pending() -> None:
     assert by_name["Market-hours paper fill"].status == "PENDING"
 
 
+def test_derive_checks_requires_strategy_execution_before_kill_switch_pass() -> None:
+    checks = derive_checks(
+        queue_rows=[],
+        execution_rows=[],
+        log_rows=[
+            {
+                "event_type": "kill_switch_emergency_stop",
+                "payload_json": '{"reason": "phase c drill"}',
+            }
+        ],
+    )
+    by_name = {check.name: check for check in checks}
+
+    assert by_name["Kill switch drill after strategy order"].status == "REVIEW"
+
+
 def test_derive_checks_marks_strategy_order_and_fill_pass() -> None:
     checks = derive_checks(
         queue_rows=[],

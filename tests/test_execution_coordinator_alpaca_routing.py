@@ -258,12 +258,18 @@ def test_manual_smoke_bypasses_entry_drift_only_in_paper(tmp_path) -> None:
 def test_kill_switch_calls_alpaca_cancel_all_and_close_all_in_paper(tmp_path) -> None:
     app, alpaca, _, _ = queued_app(tmp_path)
 
-    status = app.state.automation_service.enable_kill_switch(reason="test")
+    status = app.state.automation_service.enable_kill_switch(reason="phase c test")
 
     assert status.kill_switch_enabled is True
     assert alpaca.cancel_all_calls == 1
     assert alpaca.close_all_calls == 1
     assert "kill_switch_emergency_stop" in log_events(app)
+    with app.state.db.connect() as connection:
+        row = connection.execute(
+            "SELECT payload_json FROM run_logs WHERE event_type = 'kill_switch_emergency_stop' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert row is not None
+    assert '"reason": "phase c test"' in row["payload_json"]
 
 
 def test_kill_switch_does_not_auto_close_in_live_without_confirmation_flag(tmp_path) -> None:
