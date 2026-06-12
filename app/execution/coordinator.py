@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import sqlite3
 from collections.abc import Callable
+from datetime import timedelta
 from typing import Any
+
+from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 
 from app.broker.router import BrokerRouter, NoBrokerForAssetClass
 from app.models.approval import ApprovalStatus
@@ -69,7 +73,7 @@ class ExecutionCoordinator:
         record.client_order_id = self._client_order_id(proposal.id, record.id)
         try:
             self.queue.create(record)
-        except sqlite3.IntegrityError as exc:
+        except (sqlite3.IntegrityError, SQLAlchemyIntegrityError) as exc:
             raise ValueError(f"Duplicate execution queue item already exists for {proposal.order.symbol}") from exc
         self.logs.log("execution_queue_enqueued", {"queue_id": record.id, "proposal_id": proposal.id, "symbol": record.symbol})
         return record
@@ -82,6 +86,31 @@ class ExecutionCoordinator:
             existing_execution = self.executions.get(str(record.payload["execution_id"]))
             if existing_execution is not None:
                 return record
+        existing_execution = self.executions.get_latest_by_proposal_id(record.proposal_id)
+        if existing_execution is not None and existing_execution.status not in {
+            ExecutionStatus.FAILED,
+            ExecutionStatus.BLOCKED,
+        }:
+            record.status = ExecutionQueueStatus.EXECUTED
+            record.executed_at = record.executed_at or existing_execution.updated_at
+            record.updated_at = utc_now().isoformat()
+            record.payload["execution_id"] = existing_execution.id
+            self.queue.update(record)
+            return record
+        if record.status in {
+            ExecutionQueueStatus.EXECUTED,
+            ExecutionQueueStatus.CANCELLED,
+            ExecutionQueueStatus.FAILED,
+        }:
+            return record
+
+        stale_before = (
+            utc_now()
+            - timedelta(minutes=max(int(getattr(self.settings, "workflow_lock_timeout_minutes", 45)), 1))
+        ).isoformat()
+        if not self.queue.claim_for_processing(record.id, stale_before=stale_before):
+            return self.queue.get(record.id) or record
+        record = self.queue.get(record.id) or record
 
         proposal = self.proposals.get_proposal(record.proposal_id)
         if proposal.status != ApprovalStatus.APPROVED:
@@ -98,10 +127,6 @@ class ExecutionCoordinator:
                 },
             )
             return record
-
-        record.status = ExecutionQueueStatus.PROCESSING
-        record.updated_at = utc_now().isoformat()
-        self.queue.update(record)
 
         try:
             broker, broker_name = self._select_broker(proposal)
@@ -129,7 +154,15 @@ class ExecutionCoordinator:
         quote = self.market_data.get_quote(proposal.order.symbol, timeframe=timeframe, provider=quote_provider, force_refresh=True)
         quote_price = float(quote.last_execution or quote.ask or quote.bid or proposal.order.proposed_price)
         quote_drift_bps = abs((quote_price - float(proposal.order.proposed_price)) / max(float(proposal.order.proposed_price), 0.01)) * 10_000.0
-        validation_reasons = [*automation_blockers, *self._quote_validation_reasons(quote, expected_broker=broker_name)]
+        validation_reasons = [
+            *automation_blockers,
+            *self._account_validation_reasons(
+                broker,
+                broker_name=broker_name,
+                symbol=proposal.order.symbol,
+            ),
+            *self._quote_validation_reasons(quote, expected_broker=broker_name),
+        ]
         start_of_day = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
         if self.executions.count_since(start_of_day) >= int(getattr(self.settings, "max_trades_per_day", 999999)):
             validation_reasons.append("max_trades_per_day_reached")
@@ -181,6 +214,25 @@ class ExecutionCoordinator:
                 },
             )
             return record
+
+        if broker_name == "alpaca" and bool(getattr(self.settings, "alpaca_require_bracket_orders", True)):
+            bracket_reasons = self._alpaca_bracket_reasons(proposal, quote_price)
+            if bracket_reasons:
+                record.status = ExecutionQueueStatus.BLOCKED
+                record.ready_for_execution = False
+                record.validation_reason = "bracket_failed:" + ",".join(bracket_reasons)
+                record.updated_at = utc_now().isoformat()
+                self.queue.update(record)
+                self.logs.log(
+                    "execution_queue_bracket_blocked",
+                    {
+                        "queue_id": record.id,
+                        "proposal_id": proposal.id,
+                        "symbol": proposal.order.symbol,
+                        "reasons": bracket_reasons,
+                    },
+                )
+                return record
 
         if self.settings.execution_mode == "paper" and self.settings.paper_broker == "self_simulated":
             paper_position = self.paper.open_from_approved_proposal(proposal, live_quote=quote)
@@ -300,9 +352,8 @@ class ExecutionCoordinator:
         if expected_broker == "alpaca":
             if not quote_source.startswith("alpaca"):
                 reasons.append("quote_provider_not_alpaca")
-        elif expected_broker == "etoro":
-            if not quote_source.startswith("etoro"):
-                reasons.append("quote_provider_not_etoro")
+        elif expected_broker == "etoro" and not quote_source.startswith("etoro"):
+            reasons.append("quote_provider_not_etoro")
         if bool(getattr(quote, "quote_derived_from_history", False)):
             reasons.append("quote_not_direct")
         age = getattr(quote, "data_age_seconds", None)
@@ -310,6 +361,38 @@ class ExecutionCoordinator:
             reasons.append("quote_too_old")
         if getattr(quote, "last_execution", None) is None and getattr(quote, "ask", None) is None:
             reasons.append("quote_missing")
+        return reasons
+
+    def _account_validation_reasons(
+        self,
+        broker: Any,
+        *,
+        broker_name: str,
+        symbol: str,
+    ) -> list[str]:
+        if broker_name != "alpaca":
+            return []
+        expected = str(getattr(self.settings, "alpaca_expected_account_number", "") or "").strip()
+        reasons: list[str] = []
+        if expected and hasattr(broker, "get_account_identity"):
+            identity = broker.get_account_identity()
+            actual = str(identity.get("account_number") or "")
+            if actual != expected:
+                reasons.append("alpaca_account_mismatch")
+                if self.automation is not None:
+                    self.automation.set_account_verified(False)
+                    self.automation.trip_circuit_breaker(
+                        reason=f"account_mismatch:expected={expected}:actual={actual}",
+                        emergency_stop=False,
+                    )
+            if bool(identity.get("trading_blocked")):
+                reasons.append("alpaca_trading_blocked")
+        if hasattr(broker, "is_supported_equity"):
+            try:
+                if not broker.is_supported_equity(symbol):
+                    reasons.append("symbol_not_supported_by_alpaca")
+            except Exception:
+                reasons.append("alpaca_asset_check_failed")
         return reasons
 
     def _can_bypass_entry_drift_for_smoke(self, proposal: Any) -> bool:
@@ -346,20 +429,50 @@ class ExecutionCoordinator:
             "broker": broker_name,
         }
         if hasattr(broker, "submit_order"):
-            qty = float(proposal.order.amount_usd) / max(float(quote_price), 0.01)
-            broker_execution = broker.submit_order(
-                symbol=proposal.order.symbol,
-                side=proposal.order.side.value,
-                qty=qty,
-                order_type="market",
-                time_in_force="day",
-                client_order_id=client_order_id,
+            capped_amount = min(
+                float(proposal.order.amount_usd),
+                float(getattr(self.settings, "max_trade_amount_usd", 1000.0)),
             )
+            if broker_name == "alpaca":
+                qty = math.floor(capped_amount / max(float(quote_price), 0.01))
+                if qty < 1:
+                    raise ValueError("one_share_exceeds_max_trade_amount")
+            else:
+                qty = capped_amount / max(float(quote_price), 0.01)
+            if (
+                broker_name == "alpaca"
+                and bool(getattr(self.settings, "alpaca_require_bracket_orders", True))
+                and hasattr(broker, "submit_bracket_order")
+            ):
+                broker_execution = broker.submit_bracket_order(
+                    symbol=proposal.order.symbol,
+                    side=proposal.order.side.value,
+                    qty=int(qty),
+                    take_profit_price=float(proposal.order.take_profit),
+                    stop_loss_price=float(proposal.order.stop_loss),
+                    time_in_force="day",
+                    client_order_id=client_order_id,
+                )
+            else:
+                broker_execution = broker.submit_order(
+                    symbol=proposal.order.symbol,
+                    side=proposal.order.side.value,
+                    qty=qty,
+                    order_type="market",
+                    time_in_force="day",
+                    client_order_id=client_order_id,
+                )
+            broker_order_id = getattr(broker_execution, "broker_order_id", None)
+            if broker_order_id:
+                existing_execution = self.executions.get_by_broker_order_id(str(broker_order_id))
+                if existing_execution is not None:
+                    self.proposals.mark_executed(proposal.id, existing_execution.id)
+                    return existing_execution
             execution = ExecutionRecord(
                 proposal_id=proposal.id,
                 status=self._map_broker_execution_status(getattr(broker_execution, "status", "")),
                 mode=str(getattr(broker_execution, "mode", self.settings.execution_mode)),
-                broker_order_id=getattr(broker_execution, "broker_order_id", None),
+                broker_order_id=broker_order_id,
                 request_payload=request_payload,
                 response_payload={
                     "broker": broker_name,
@@ -409,6 +522,22 @@ class ExecutionCoordinator:
             return execution
 
         raise TypeError(f"Selected broker {broker_name!r} does not expose a supported order submission method")
+
+    @staticmethod
+    def _alpaca_bracket_reasons(proposal: Any, quote_price: float) -> list[str]:
+        order = proposal.order
+        reasons: list[str] = []
+        if str(getattr(order.side, "value", order.side)).lower() != "buy":
+            reasons.append("long_entries_only")
+        if order.stop_loss is None:
+            reasons.append("stop_loss_missing")
+        if order.take_profit is None:
+            reasons.append("take_profit_missing")
+        if order.stop_loss is not None and float(order.stop_loss) >= float(quote_price):
+            reasons.append("stop_loss_not_below_entry")
+        if order.take_profit is not None and float(order.take_profit) <= float(quote_price):
+            reasons.append("take_profit_not_above_entry")
+        return reasons
 
     @staticmethod
     def _map_broker_execution_status(status: str) -> str:

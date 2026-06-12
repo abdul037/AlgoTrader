@@ -8,33 +8,35 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from app.runtime_settings import AppSettings, get_settings
-from app.logging_config import configure_logging
-from app.notifications.routes import router as telegram_router
-from app.notifications.scheduler import TelegramAlertScheduler
-from app.telegram_notify import TelegramNotifier
-from app.notifications.telegram_bot import TelegramBotService
+from app.approvals.service import ProposalService
+from app.automation.reconciliation import AlpacaReconciliationService
 from app.automation.routes import router as automation_router
 from app.automation.service import AutomationService
-from app.execution.routes import router as execution_router
+from app.automation.unattended import PaperAutoTradingService
 from app.execution.coordinator import ExecutionCoordinator
+from app.execution.routes import router as execution_router
 from app.execution.trader import TraderService
-from app.paper.routes import router as paper_router
-from app.paper.service import PaperTradingService
 from app.ledger.repository import LedgerRepository
 from app.ledger.service import LedgerService
-from app.approvals.service import ProposalService
+from app.logging_config import configure_logging
+from app.metrics import router as metrics_router
+from app.notifications.routes import router as telegram_router
+from app.notifications.scheduler import TelegramAlertScheduler
+from app.notifications.telegram_bot import TelegramBotService
+from app.paper.routes import router as paper_router
+from app.paper.service import PaperTradingService
 from app.risk.guardrails import RiskManager
-from app.signals.service import LiveSignalService
-from app.signals.routes import router as signal_router
+from app.runtime_settings import AppSettings, get_settings
 from app.screener.routes import router as screener_router
 from app.screener.service import BatchBacktestService, MarketScreenerService
-from app.workflow.routes import router as workflow_router
-from app.workflow.service import SignalWorkflowService
+from app.signals.routes import router as signal_router
+from app.signals.service import LiveSignalService
 from app.storage.db import Database
 from app.storage.repositories import (
     AlertHistoryRepository,
     BacktestRepository,
+    BrokerOrderSnapshotRepository,
+    BrokerPositionSnapshotRepository,
     ExecutionQueueRepository,
     ExecutionRepository,
     PaperPositionRepository,
@@ -42,11 +44,15 @@ from app.storage.repositories import (
     ProposalRepository,
     RunLogRepository,
     RuntimeStateRepository,
+    SafetyStateRepository,
     ScanDecisionRepository,
     SignalRepository,
     SignalStateRepository,
     TrackedSignalRepository,
 )
+from app.telegram_notify import TelegramNotifier
+from app.workflow.routes import router as workflow_router
+from app.workflow.service import SignalWorkflowService
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +229,9 @@ def create_app(
         run_log_repository=run_log_repository,
     )
     execution_repository = ExecutionRepository(database)
+    broker_order_repository = BrokerOrderSnapshotRepository(database)
+    broker_position_repository = BrokerPositionSnapshotRepository(database)
+    safety_state_repository = SafetyStateRepository(database)
     proposal_repository = ProposalRepository(database)
     execution_queue_repository = ExecutionQueueRepository(database)
     paper_position_repository = PaperPositionRepository(database)
@@ -237,7 +246,13 @@ def create_app(
         signal_repository=signal_repository,
         execution_repository=execution_repository,
         run_log_repository=run_log_repository,
-        broker=app.state.broker,
+        broker=(
+            alpaca_client
+            if app_settings.execution_mode == "paper"
+            and app_settings.paper_broker == "alpaca"
+            and alpaca_client is not None
+            else app.state.broker
+        ),
         risk_manager=risk_manager,
     )
     app.state.trader_service = TraderService(
@@ -268,6 +283,32 @@ def create_app(
         broker_router=app.state.broker_router,
         risk_manager=risk_manager,
     )
+    app.state.safety_state_repository = safety_state_repository
+    app.state.broker_order_repository = broker_order_repository
+    app.state.broker_position_repository = broker_position_repository
+    app.state.reconciliation_service = AlpacaReconciliationService(
+        settings=app_settings,
+        alpaca_client=alpaca_client,
+        executions=execution_repository,
+        broker_orders=broker_order_repository,
+        broker_positions=broker_position_repository,
+        safety_state=safety_state_repository,
+        runtime_state=runtime_state_repository,
+        run_logs=run_log_repository,
+        automation=app.state.automation_service,
+    )
+    app.state.auto_trading_service = PaperAutoTradingService(
+        settings=app_settings,
+        proposal_service=app.state.proposal_service,
+        execution_coordinator=app.state.execution_coordinator,
+        automation=app.state.automation_service,
+        reconciliation=app.state.reconciliation_service,
+        safety_state=safety_state_repository,
+        executions=execution_repository,
+        run_logs=run_log_repository,
+        notifier=app.state.telegram_notifier,
+        alpaca_client=alpaca_client,
+    )
     app.state.tracked_signal_repository = tracked_signal_repository
     app.state.alert_history_repository = alert_history_repository
     app.state.scan_decision_repository = scan_decision_repository
@@ -283,6 +324,8 @@ def create_app(
         ledger_service=app.state.ledger_service,
         proposal_service=app.state.proposal_service,
         automation_service=app.state.automation_service,
+        reconciliation_service=app.state.reconciliation_service,
+        auto_trading_service=app.state.auto_trading_service,
     )
     app.state.telegram_command_service = TelegramBotService(
         settings=app_settings,
@@ -313,15 +356,17 @@ def create_app(
     app.include_router(automation_router)
     app.include_router(execution_router)
     app.include_router(paper_router)
+    app.include_router(metrics_router)
 
     @app.on_event("startup")
     def startup_tasks() -> None:
         if not enable_background_jobs:
             return
-        if not app_settings.telegram_enabled:
-            return
+        if app_settings.alpaca_enabled and app_settings.alpaca_reconciliation_enabled:
+            app.state.reconciliation_service.reconcile()
         if (
-            app_settings.telegram_mode == "webhook"
+            app_settings.telegram_enabled
+            and app_settings.telegram_mode == "webhook"
             and app_settings.telegram_webhook_auto_register
             and app_settings.telegram_webhook_url
         ):
@@ -340,6 +385,8 @@ def create_app(
             app_settings.telegram_hourly_alerts_enabled
             or app_settings.screener_scheduler_enabled
             or app_settings.ledger_cycle_enabled
+            or (app_settings.alpaca_enabled and app_settings.alpaca_reconciliation_enabled)
+            or app_settings.auto_execution_worker_enabled
         ):
             return
         scheduler = TelegramAlertScheduler(app.state.telegram_command_service)

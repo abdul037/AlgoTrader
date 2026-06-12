@@ -1,0 +1,74 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Safety State",
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+      "targets": [
+        {"expr": "algobot_kill_switch_enabled", "legendFormat": "Kill switch"},
+        {"expr": "algobot_automation_paused", "legendFormat": "Paused"},
+        {"expr": "algobot_alpaca_account_verified", "legendFormat": "Account verified"}
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Reconciliation",
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
+      "targets": [
+        {"expr": "algobot_reconciliation_healthy", "legendFormat": "Healthy"},
+        {"expr": "algobot_reconciliation_age_seconds", "legendFormat": "Age seconds"},
+        {"expr": "algobot_reconciliation_failures_total", "legendFormat": "Failures"}
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Account",
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
+      "targets": [
+        {"expr": "algobot_account_equity_usd", "legendFormat": "Equity"},
+        {"expr": "algobot_account_drawdown_usd", "legendFormat": "Drawdown"},
+        {"expr": "algobot_realized_pnl_usd", "legendFormat": "Realized P&L"}
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Trading",
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
+      "targets": [
+        {"expr": "algobot_proposals_total", "legendFormat": "Proposals"},
+        {"expr": "algobot_queue_open", "legendFormat": "Queue open"},
+        {"expr": "algobot_positions_open", "legendFormat": "Positions"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Orders And Fills",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
+      "targets": [
+        {"expr": "algobot_orders_total", "legendFormat": "Orders"},
+        {"expr": "algobot_fills_total", "legendFormat": "Fills"},
+        {"expr": "algobot_executions_total", "legendFormat": "Executions"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Scheduler And Data Freshness",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
+      "targets": [
+        {"expr": "algobot_scheduler_bucket_age_seconds", "legendFormat": "{{bucket}}"},
+        {"expr": "algobot_data_freshness_age_seconds", "legendFormat": "Market data"}
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["algobot", "alpaca", "paper"],
+  "templating": {"list": []},
+  "time": {"from": "now-24h", "to": "now"},
+  "timezone": "browser",
+  "title": "CX AlgoBot Paper Trading",
+  "uid": "cx-algobot-paper",
+  "version": 1
+}

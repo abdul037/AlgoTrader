@@ -64,6 +64,8 @@ class SignalWorkflowService:
         ledger_service: Any | None = None,
         proposal_service: Any | None = None,
         automation_service: Any | None = None,
+        reconciliation_service: Any | None = None,
+        auto_trading_service: Any | None = None,
     ):
         self.settings = settings
         self.market_screener = market_screener
@@ -76,18 +78,12 @@ class SignalWorkflowService:
         self.ledger_service = ledger_service
         self.proposal_service = proposal_service
         self.automation = automation_service
+        self.reconciliation = reconciliation_service
+        self.auto_trading = auto_trading_service
         self._approval_adapter = SignalApprovalAdapter()
 
     def run_scheduled_tasks(self) -> dict[str, int]:
         summary = {"alerts_sent": 0, "closed_signals": 0, "ledger_cycles": 0, "buckets_run": 0}
-        if self.automation is not None:
-            blockers = self.automation.scan_blockers()
-            if blockers:
-                self.run_logs.log("workflow_scheduler_paused", {"blockers": blockers})
-                for bucket_name in self.SCAN_BUCKETS:
-                    self._record_bucket_state(bucket_name, status="paused", error=",".join(blockers))
-                return summary
-
         if self._bucket_due("maintenance"):
             result = self.run_maintenance(notify=True)
             if result.status == "ok":
@@ -95,6 +91,13 @@ class SignalWorkflowService:
                 summary["closed_signals"] += result.closed_signals
                 summary["ledger_cycles"] += int((result.detail or "").count("ledger_cycle"))
                 summary["buckets_run"] += 1
+        if self.automation is not None:
+            blockers = self.automation.scan_blockers()
+            if blockers:
+                self.run_logs.log("workflow_scheduler_paused", {"blockers": blockers})
+                for bucket_name in self.SCAN_BUCKETS:
+                    self._record_bucket_state(bucket_name, status="paused", error=",".join(blockers))
+                return summary
 
         if not self.settings.screener_scheduler_enabled:
             return summary
@@ -225,6 +228,21 @@ class SignalWorkflowService:
                 result = self.run_ledger_cycle()
                 completed.append("ledger_cycle")
                 errors.extend(result.errors)
+            if self.reconciliation is not None and self._is_due(
+                "reconciliation:last_run_at",
+                max(int(getattr(self.settings, "alpaca_reconciliation_interval_seconds", 60)) // 60, 1),
+            ):
+                reconciliation = self.reconciliation.reconcile()
+                completed.append("alpaca_reconciliation")
+                if reconciliation.get("status") == "error":
+                    errors.extend(list(reconciliation.get("issues") or []))
+            if self.auto_trading is not None:
+                health = self.auto_trading.refresh_strategy_health()
+                if health:
+                    completed.append("strategy_health")
+                processed = self.auto_trading.process_ready_queue()
+                if processed:
+                    completed.append("auto_execution_queue")
             if self._is_due("workflow:last_open_signal_check_at", self.settings.open_signal_check_interval_minutes):
                 result = self.check_open_signals(notify=notify)
                 completed.append("open_signal_check")
@@ -321,7 +339,10 @@ class SignalWorkflowService:
         return run_scan_task(self, **kwargs)
 
     def _auto_propose_candidates(self, response: Any, *, origin: str, notify: bool) -> int:
-        if not bool(getattr(self.settings, "auto_propose_enabled", False)):
+        if not (
+            bool(getattr(self.settings, "auto_propose_enabled", False))
+            or bool(getattr(self.settings, "paper_auto_approve_proposals", False))
+        ):
             return 0
         if self.proposal_service is None:
             return 0
@@ -337,6 +358,14 @@ class SignalWorkflowService:
             symbol = str(getattr(candidate, "symbol", "") or "").upper()
             if not symbol or symbol in existing_symbols:
                 continue
+            if self.auto_trading is not None:
+                proposal_blockers = self.auto_trading.candidate_proposal_blockers(candidate)
+                if proposal_blockers:
+                    self.run_logs.log(
+                        "auto_proposal_safety_blocked",
+                        {"origin": origin, "symbol": symbol, "blockers": proposal_blockers},
+                    )
+                    continue
             if not bool(getattr(candidate, "execution_ready", False)):
                 continue
             if not bool((getattr(candidate, "metadata", {}) or {}).get("alert_eligible", False)):
@@ -364,6 +393,8 @@ class SignalWorkflowService:
                 "auto_proposal_created",
                 {"origin": origin, "proposal_id": proposal.id, "symbol": symbol},
             )
+            if self.auto_trading is not None:
+                self.auto_trading.approve_enqueue_execute(proposal, candidate)
             if notify:
                 self.notifier.send_text(
                     "\n".join(
@@ -451,6 +482,13 @@ class SignalWorkflowService:
     def _maintenance_due(self) -> bool:
         return (
             self._ledger_cycle_due()
+            or (
+                self.reconciliation is not None
+                and self._is_due(
+                    "reconciliation:last_run_at",
+                    max(int(getattr(self.settings, "alpaca_reconciliation_interval_seconds", 60)) // 60, 1),
+                )
+            )
             or self._is_due("workflow:last_open_signal_check_at", self.settings.open_signal_check_interval_minutes)
             or self._daily_summary_due()
         )

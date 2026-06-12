@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: CX AlgoBot
+    orgId: 1
+    folder: AlgoBot
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards/json

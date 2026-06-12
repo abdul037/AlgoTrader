@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Any
 
 from app.runtime_settings import AppSettings
-
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS approvals (
@@ -47,6 +48,75 @@ CREATE TABLE IF NOT EXISTS executions (
 
 CREATE INDEX IF NOT EXISTS idx_executions_proposal_id ON executions(proposal_id);
 CREATE INDEX IF NOT EXISTS idx_executions_created_at ON executions(created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_executions_broker_order_id
+ON executions(broker_order_id)
+WHERE broker_order_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS broker_order_snapshots (
+    broker_order_id TEXT PRIMARY KEY,
+    execution_id TEXT,
+    client_order_id TEXT,
+    symbol TEXT NOT NULL,
+    side TEXT,
+    order_class TEXT,
+    status TEXT NOT NULL,
+    filled_qty REAL DEFAULT 0,
+    filled_avg_price REAL,
+    parent_order_id TEXT,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_broker_order_snapshots_execution
+ON broker_order_snapshots(execution_id);
+CREATE INDEX IF NOT EXISTS idx_broker_order_snapshots_symbol
+ON broker_order_snapshots(symbol);
+
+CREATE TABLE IF NOT EXISTS broker_position_snapshots (
+    symbol TEXT PRIMARY KEY,
+    account_number TEXT,
+    quantity REAL NOT NULL DEFAULT 0,
+    average_price REAL NOT NULL DEFAULT 0,
+    market_value REAL NOT NULL DEFAULT 0,
+    unrealized_pnl REAL NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_broker_position_snapshots_active
+ON broker_position_snapshots(active);
+
+CREATE TABLE IF NOT EXISTS reconciliation_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    status TEXT NOT NULL,
+    account_number TEXT,
+    orders_seen INTEGER NOT NULL DEFAULT 0,
+    positions_seen INTEGER NOT NULL DEFAULT 0,
+    issues_json TEXT NOT NULL,
+    account_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS instrument_blacklist (
+    symbol TEXT PRIMARY KEY,
+    reason TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS strategy_health (
+    strategy_name TEXT PRIMARY KEY,
+    active INTEGER NOT NULL DEFAULT 1,
+    closed_trades INTEGER NOT NULL DEFAULT 0,
+    expectancy_usd REAL DEFAULT 0,
+    profit_factor REAL DEFAULT 0,
+    reason TEXT,
+    updated_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS execution_queue (
     id TEXT PRIMARY KEY,
@@ -287,36 +357,54 @@ CREATE INDEX IF NOT EXISTS idx_signal_outcomes_alert_id ON signal_outcomes(alert
 
 
 class Database:
-    """SQLite database wrapper."""
+    """Database wrapper supporting SQLite and PostgreSQL through one repository API."""
 
     def __init__(self, settings: AppSettings):
         self.settings = settings
-        self.path = settings.database_path
+        self.url = settings.database_url
+        self.is_sqlite = self.url.startswith("sqlite:///")
+        self.path = settings.database_path if self.is_sqlite else None
+        self._engine = None
+        if not self.is_sqlite:
+            from sqlalchemy import create_engine
+
+            self._engine = create_engine(self.url, pool_pre_ping=True, future=True)
 
     @contextmanager
-    def connect(self) -> Iterator[sqlite3.Connection]:
+    def connect(self) -> Iterator[Any]:
         """Yield a configured SQLite connection."""
 
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.path)
-        connection.row_factory = sqlite3.Row
-        try:
-            yield connection
-            connection.commit()
-        finally:
-            connection.close()
+        if self.is_sqlite:
+            assert self.path is not None
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(self.path)
+            connection.row_factory = sqlite3.Row
+            try:
+                yield connection
+                connection.commit()
+            finally:
+                connection.close()
+            return
+
+        assert self._engine is not None
+        with self._engine.begin() as connection:
+            yield _SqlAlchemyConnection(connection)
 
     def initialize(self) -> None:
         """Create all required tables."""
 
         with self.connect() as connection:
-            connection.executescript(SCHEMA)
-            self._apply_schema_upgrades(connection)
+            schema = SCHEMA
+            if not self.is_sqlite:
+                schema = schema.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
+            connection.executescript(schema)
+            if self.is_sqlite:
+                self._apply_schema_upgrades(connection)
 
     def exists(self) -> bool:
         """Return whether the backing SQLite file already exists."""
 
-        return Path(self.path).exists()
+        return True if not self.is_sqlite else Path(self.path).exists()
 
     def _apply_schema_upgrades(self, connection: sqlite3.Connection) -> None:
         """Apply idempotent schema upgrades for existing SQLite files."""
@@ -335,3 +423,96 @@ class Database:
     def _column_exists(connection: sqlite3.Connection, table_name: str, column_name: str) -> bool:
         rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
         return any(str(row["name"]) == column_name for row in rows)
+
+
+class _DatabaseRow(Mapping[str, Any]):
+    def __init__(self, values: Mapping[str, Any]):
+        self._values = dict(values)
+        self._keys = list(self._values)
+
+    def __getitem__(self, key: str | int) -> Any:
+        if isinstance(key, int):
+            return self._values[self._keys[key]]
+        return self._values[key]
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+
+class _SqlAlchemyResult:
+    def __init__(self, result: Any, *, returned_id: Any | None = None):
+        self._result = result
+        self.lastrowid = returned_id
+        self.rowcount = int(getattr(result, "rowcount", 0) or 0)
+
+    def fetchone(self) -> _DatabaseRow | None:
+        row = self._result.mappings().fetchone()
+        return None if row is None else _DatabaseRow(row)
+
+    def fetchall(self) -> list[_DatabaseRow]:
+        return [_DatabaseRow(row) for row in self._result.mappings().fetchall()]
+
+
+class _SqlAlchemyConnection:
+    _AUTO_ID_TABLES = {
+        "portfolio_snapshots",
+        "signal_outcomes",
+        "scan_decisions",
+        "tracked_signals",
+        "alert_history",
+        "reconciliation_runs",
+        "run_logs",
+    }
+
+    def __init__(self, connection: Any):
+        self._connection = connection
+
+    def executescript(self, script: str) -> None:
+        from sqlalchemy import text
+
+        for statement in (part.strip() for part in script.split(";")):
+            if statement:
+                self._connection.execute(text(statement))
+
+    def execute(self, query: str, params: Sequence[Any] | Mapping[str, Any] = ()) -> _SqlAlchemyResult:
+        from sqlalchemy import text
+
+        sql, values = self._bind_query(query, params)
+        returning_id = False
+        table = self._insert_table(sql)
+        if table in self._AUTO_ID_TABLES and " returning " not in sql.lower():
+            sql = sql.rstrip() + " RETURNING id"
+            returning_id = True
+        result = self._connection.execute(text(sql), values)
+        returned_id = None
+        if returning_id:
+            row = result.fetchone()
+            returned_id = row[0] if row is not None else None
+        return _SqlAlchemyResult(result, returned_id=returned_id)
+
+    @staticmethod
+    def _insert_table(query: str) -> str | None:
+        match = re.search(r"^\s*INSERT\s+INTO\s+([a-zA-Z0-9_]+)", query, flags=re.IGNORECASE)
+        return match.group(1).lower() if match else None
+
+    @staticmethod
+    def _bind_query(
+        query: str,
+        params: Sequence[Any] | Mapping[str, Any],
+    ) -> tuple[str, Mapping[str, Any]]:
+        if isinstance(params, Mapping):
+            return query, params
+        values = list(params)
+        index = 0
+
+        def replace(_match: re.Match[str]) -> str:
+            nonlocal index
+            name = f"p{index}"
+            index += 1
+            return f":{name}"
+
+        sql = re.sub(r"\?", replace, query)
+        return sql, {f"p{position}": value for position, value in enumerate(values)}

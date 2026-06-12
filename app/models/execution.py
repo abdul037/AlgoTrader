@@ -57,6 +57,8 @@ class ExecutionStatus(str):
     CREATED = "created"
     VALIDATED = "validated"
     SUBMITTED = "submitted"
+    FILLED = "filled"
+    CANCELED = "canceled"
     FAILED = "failed"
     BLOCKED = "blocked"
 

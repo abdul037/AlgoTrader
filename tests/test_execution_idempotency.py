@@ -119,3 +119,47 @@ def test_broker_retry_with_same_client_order_id_is_idempotent(tmp_path) -> None:
     assert broker.orders[0]["client_order_id"] == queued.client_order_id
     assert len(broker.orders) == 1
     assert executions.count_since(utc_now().replace(hour=0, minute=0, second=0, microsecond=0)) == 1
+
+
+def test_queue_item_claim_is_atomic(tmp_path) -> None:
+    app = create_app(
+        make_settings(tmp_path),
+        broker=MockBroker(),
+        market_data_client=FakeEtoroMarketData(),
+        enable_background_jobs=False,
+    )
+    proposal = create_approved_proposal(app)
+    queued = app.state.execution_coordinator.enqueue_approved_proposal(proposal.id)
+    repository = app.state.execution_queue_repository
+
+    assert repository.claim_for_processing(queued.id, stale_before="1970-01-01T00:00:00+00:00") is True
+    assert repository.claim_for_processing(queued.id, stale_before="1970-01-01T00:00:00+00:00") is False
+
+
+def test_restart_recovers_execution_before_resubmitting(tmp_path) -> None:
+    broker = MockBroker()
+    app = create_app(
+        make_settings(
+            tmp_path,
+            execution_mode="live",
+            enable_real_trading=True,
+            paper_trading_enabled=False,
+            max_trades_per_day=10,
+            broker_for_equities="etoro",
+        ),
+        broker=broker,
+        market_data_client=FakeEtoroMarketData(),
+        enable_background_jobs=False,
+    )
+    proposal = create_approved_proposal(app)
+    queued = app.state.execution_coordinator.enqueue_approved_proposal(proposal.id)
+    first = app.state.execution_coordinator.process_queue_item(queued.id)
+    first.payload = {}
+    first.status = ExecutionQueueStatus.PROCESSING
+    app.state.execution_queue_repository.update(first)
+
+    recovered = app.state.execution_coordinator.process_queue_item(queued.id)
+
+    assert recovered.status == ExecutionQueueStatus.EXECUTED
+    assert recovered.payload["execution_id"]
+    assert len(broker.orders) == 1

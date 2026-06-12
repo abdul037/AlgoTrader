@@ -45,7 +45,7 @@ def test_alpaca_paper_end_to_end_with_idempotent_retry(tmp_path) -> None:
     assert submitted["symbol"] == "NVDA"
     assert submitted["side"] == "buy"
     assert submitted["client_order_id"] == queued.client_order_id
-    assert submitted["qty"] == 1000 / 120.0
+    assert submitted["qty"] == 8
 
     execution = ExecutionRepository(app.state.db).get(str(first.payload["execution_id"]))
     assert execution is not None

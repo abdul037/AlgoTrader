@@ -9,12 +9,12 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.models.approval import ApprovalStatus, TradeProposal
-from app.models.execution_queue import ExecutionQueueRecord
 from app.models.execution import ExecutionRecord
+from app.models.execution_queue import ExecutionQueueRecord
 from app.models.live_signal import LiveSignalSnapshot
 from app.models.paper import PaperPerformanceSummary, PaperPositionRecord, PaperTradeRecord
-from app.models.signal import Signal
 from app.models.screener import ScanDecisionRecord
+from app.models.signal import Signal
 from app.models.workflow import AlertHistoryRecord, TrackedSignalRecord
 from app.storage.db import Database
 from app.utils.time import utc_now
@@ -250,6 +250,35 @@ class ExecutionRepository:
             ).fetchone()
         return None if row is None else self._row_to_model(row)
 
+    def get_by_broker_order_id(self, broker_order_id: str) -> ExecutionRecord | None:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM executions WHERE broker_order_id = ?",
+                (broker_order_id,),
+            ).fetchone()
+        return None if row is None else self._row_to_model(row)
+
+    def get_latest_by_proposal_id(self, proposal_id: str) -> ExecutionRecord | None:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM executions
+                WHERE proposal_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (proposal_id,),
+            ).fetchone()
+        return None if row is None else self._row_to_model(row)
+
+    def list(self, *, limit: int = 500) -> list[ExecutionRecord]:
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM executions ORDER BY created_at DESC LIMIT ?",
+                (max(1, limit),),
+            ).fetchall()
+        return [self._row_to_model(row) for row in rows]
+
     def update(self, execution: ExecutionRecord) -> ExecutionRecord:
         with self.db.connect() as connection:
             connection.execute(
@@ -273,23 +302,17 @@ class ExecutionRepository:
         return execution
 
     def daily_loss_stats(self, day: datetime | None = None) -> tuple[float, int]:
-        target = (day or utc_now()).astimezone(UTC).date().isoformat()
-        with self.db.connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT realized_pnl_usd
-                FROM executions
-                WHERE substr(created_at, 1, 10) = ?
-                ORDER BY created_at ASC
-                """,
-                (target,),
-            ).fetchall()
+        target = (day or utc_now()).astimezone(UTC).date()
+        events = [
+            (closed_at, pnl)
+            for closed_at, pnl in self._realized_events()
+            if closed_at.astimezone(UTC).date() == target
+        ]
 
         total_pnl = 0.0
         consecutive_losses = 0
         current_loss_streak = 0
-        for row in rows:
-            pnl = float(row["realized_pnl_usd"] or 0.0)
+        for _closed_at, pnl in events:
             total_pnl += pnl
             if pnl < 0:
                 current_loss_streak += 1
@@ -299,17 +322,44 @@ class ExecutionRepository:
         return total_pnl, consecutive_losses
 
     def period_realized_pnl(self, *, days: int) -> float:
-        since = (utc_now() - timedelta(days=max(days, 1))).isoformat()
+        since = utc_now() - timedelta(days=max(days, 1))
+        return sum(pnl for closed_at, pnl in self._realized_events() if closed_at >= since)
+
+    def consecutive_losses(self) -> int:
+        streak = 0
+        for _closed_at, pnl in self._realized_events():
+            if pnl < 0:
+                streak += 1
+            elif pnl > 0:
+                streak = 0
+        return streak
+
+    def _realized_events(self) -> list[tuple[datetime, float]]:
         with self.db.connect() as connection:
-            row = connection.execute(
+            rows = connection.execute(
                 """
-                SELECT COALESCE(SUM(realized_pnl_usd), 0.0) AS total_pnl
+                SELECT realized_pnl_usd, response_json, updated_at
                 FROM executions
-                WHERE created_at >= ?
+                WHERE realized_pnl_usd != 0
                 """,
-                (since,),
-            ).fetchone()
-        return float(row["total_pnl"] if row is not None else 0.0)
+            ).fetchall()
+        events: list[tuple[datetime, float]] = []
+        for row in rows:
+            payload = json.loads(row["response_json"] or "{}")
+            broker_execution = dict(payload.get("broker_execution") or {})
+            filled_at = next(
+                (
+                    leg.get("filled_at")
+                    for leg in list(broker_execution.get("legs") or [])
+                    if str(leg.get("status") or "").lower() == "filled" and leg.get("filled_at")
+                ),
+                row["updated_at"],
+            )
+            parsed = datetime.fromisoformat(str(filled_at).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            events.append((parsed.astimezone(UTC), float(row["realized_pnl_usd"] or 0.0)))
+        return sorted(events, key=lambda item: item[0])
 
     def count_since(self, since: datetime) -> int:
         with self.db.connect() as connection:
@@ -408,6 +458,25 @@ class ExecutionQueueRepository:
         with self.db.connect() as connection:
             row = connection.execute("SELECT * FROM execution_queue WHERE id = ?", (queue_id,)).fetchone()
         return None if row is None else self._row_to_model(row)
+
+    def claim_for_processing(self, queue_id: str, *, stale_before: str) -> bool:
+        """Atomically claim a queued item or recover an abandoned processing item."""
+
+        with self.db.connect() as connection:
+            result = connection.execute(
+                """
+                UPDATE execution_queue
+                SET status = 'processing', updated_at = ?
+                WHERE id = ?
+                  AND (
+                    status = 'queued'
+                    OR status = 'blocked'
+                    OR (status = 'processing' AND updated_at < ?)
+                  )
+                """,
+                (utc_now().isoformat(), queue_id, stale_before),
+            )
+        return result.rowcount == 1
 
     def list(self, *, status: str | None = None, limit: int = 100) -> list[ExecutionQueueRecord]:
         query = "SELECT * FROM execution_queue"
@@ -718,6 +787,279 @@ class RuntimeStateRepository:
                 """,
                 (state_key, state_value, utc_now().isoformat()),
             )
+
+
+class BrokerOrderSnapshotRepository:
+    """Persist broker order and bracket-leg snapshots."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def upsert(
+        self,
+        *,
+        broker_order_id: str,
+        execution_id: str | None,
+        client_order_id: str | None,
+        symbol: str,
+        side: str,
+        order_class: str,
+        status: str,
+        filled_qty: float,
+        filled_avg_price: float | None,
+        parent_order_id: str | None,
+        payload: dict[str, Any],
+    ) -> None:
+        now = utc_now().isoformat()
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO broker_order_snapshots (
+                    broker_order_id, execution_id, client_order_id, symbol, side,
+                    order_class, status, filled_qty, filled_avg_price, parent_order_id,
+                    payload_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(broker_order_id)
+                DO UPDATE SET
+                    execution_id = excluded.execution_id,
+                    client_order_id = excluded.client_order_id,
+                    symbol = excluded.symbol,
+                    side = excluded.side,
+                    order_class = excluded.order_class,
+                    status = excluded.status,
+                    filled_qty = excluded.filled_qty,
+                    filled_avg_price = excluded.filled_avg_price,
+                    parent_order_id = excluded.parent_order_id,
+                    payload_json = excluded.payload_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    broker_order_id,
+                    execution_id,
+                    client_order_id,
+                    symbol.upper(),
+                    side,
+                    order_class,
+                    status,
+                    filled_qty,
+                    filled_avg_price,
+                    parent_order_id,
+                    json.dumps(payload),
+                    now,
+                    now,
+                ),
+            )
+
+    def list(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM broker_order_snapshots ORDER BY updated_at DESC LIMIT ?",
+                (max(1, limit),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+
+class BrokerPositionSnapshotRepository:
+    """Persist the latest reconciled Alpaca position state."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def replace_active(self, *, account_number: str, positions: list[Any]) -> None:
+        now = utc_now().isoformat()
+        active_symbols: list[str] = []
+        with self.db.connect() as connection:
+            for position in positions:
+                payload = position.model_dump() if hasattr(position, "model_dump") else dict(position)
+                symbol = str(payload.get("symbol") or "").upper()
+                if not symbol:
+                    continue
+                active_symbols.append(symbol)
+                connection.execute(
+                    """
+                    INSERT INTO broker_position_snapshots (
+                        symbol, account_number, quantity, average_price, market_value,
+                        unrealized_pnl, active, payload_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                    ON CONFLICT(symbol)
+                    DO UPDATE SET
+                        account_number = excluded.account_number,
+                        quantity = excluded.quantity,
+                        average_price = excluded.average_price,
+                        market_value = excluded.market_value,
+                        unrealized_pnl = excluded.unrealized_pnl,
+                        active = 1,
+                        payload_json = excluded.payload_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        symbol,
+                        account_number,
+                        float(payload.get("quantity") or 0.0),
+                        float(payload.get("average_price") or 0.0),
+                        float(payload.get("market_value") or 0.0),
+                        float(payload.get("unrealized_pnl") or 0.0),
+                        json.dumps(payload),
+                        now,
+                        now,
+                    ),
+                )
+            if active_symbols:
+                placeholders = ",".join("?" for _ in active_symbols)
+                connection.execute(
+                    f"""
+                    UPDATE broker_position_snapshots
+                    SET active = 0, updated_at = ?
+                    WHERE active = 1 AND symbol NOT IN ({placeholders})
+                    """,
+                    (now, *active_symbols),
+                )
+            else:
+                connection.execute(
+                    "UPDATE broker_position_snapshots SET active = 0, updated_at = ? WHERE active = 1",
+                    (now,),
+                )
+
+    def list_active(self) -> list[dict[str, Any]]:
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM broker_position_snapshots WHERE active = 1 ORDER BY symbol"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+
+class SafetyStateRepository:
+    """Persist reconciliation, blacklist, and strategy-health safety state."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def record_reconciliation(
+        self,
+        *,
+        status: str,
+        account_number: str,
+        orders_seen: int,
+        positions_seen: int,
+        issues: list[str],
+        account: dict[str, Any],
+    ) -> None:
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO reconciliation_runs (
+                    status, account_number, orders_seen, positions_seen,
+                    issues_json, account_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    status,
+                    account_number,
+                    orders_seen,
+                    positions_seen,
+                    json.dumps(issues),
+                    json.dumps(account),
+                    utc_now().isoformat(),
+                ),
+            )
+
+    def latest_reconciliation(self) -> dict[str, Any] | None:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM reconciliation_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def blacklist(self, symbol: str, *, reason: str) -> None:
+        now = utc_now().isoformat()
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO instrument_blacklist (symbol, reason, active, created_at, updated_at)
+                VALUES (?, ?, 1, ?, ?)
+                ON CONFLICT(symbol)
+                DO UPDATE SET reason = excluded.reason, active = 1, updated_at = excluded.updated_at
+                """,
+                (symbol.upper(), reason, now, now),
+            )
+
+    def unblacklist(self, symbol: str) -> None:
+        with self.db.connect() as connection:
+            connection.execute(
+                "UPDATE instrument_blacklist SET active = 0, updated_at = ? WHERE symbol = ?",
+                (utc_now().isoformat(), symbol.upper()),
+            )
+
+    def is_blacklisted(self, symbol: str) -> bool:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM instrument_blacklist WHERE symbol = ? AND active = 1",
+                (symbol.upper(),),
+            ).fetchone()
+        return row is not None
+
+    def list_blacklist(self) -> list[dict[str, Any]]:
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM instrument_blacklist WHERE active = 1 ORDER BY symbol"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def upsert_strategy_health(
+        self,
+        *,
+        strategy_name: str,
+        active: bool,
+        closed_trades: int,
+        expectancy_usd: float,
+        profit_factor: float,
+        reason: str,
+    ) -> None:
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO strategy_health (
+                    strategy_name, active, closed_trades, expectancy_usd,
+                    profit_factor, reason, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(strategy_name)
+                DO UPDATE SET
+                    active = excluded.active,
+                    closed_trades = excluded.closed_trades,
+                    expectancy_usd = excluded.expectancy_usd,
+                    profit_factor = excluded.profit_factor,
+                    reason = excluded.reason,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    strategy_name,
+                    1 if active else 0,
+                    closed_trades,
+                    expectancy_usd,
+                    profit_factor,
+                    reason,
+                    utc_now().isoformat(),
+                ),
+            )
+
+    def strategy_active(self, strategy_name: str) -> bool:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT active FROM strategy_health WHERE strategy_name = ?",
+                (strategy_name,),
+            ).fetchone()
+        return row is None or bool(row["active"])
+
+    def list_strategy_health(self) -> list[dict[str, Any]]:
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM strategy_health ORDER BY strategy_name"
+            ).fetchall()
+        return [dict(row) for row in rows]
 
 
 class TrackedSignalRepository:

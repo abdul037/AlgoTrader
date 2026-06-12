@@ -15,6 +15,8 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY app ./app
 COPY scripts ./scripts
+COPY migrations ./migrations
+COPY alembic.ini ./
 COPY README.md ./
 
 EXPOSE 8011

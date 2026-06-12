@@ -3,7 +3,7 @@ from __future__ import annotations
 from app.live_signal_schema import MarketQuote
 from app.main import create_app
 from app.models.approval import ApprovalDecisionRequest, TradeProposalCreate
-from app.models.execution import ExecutionRecord, ExecutionStatus, PortfolioSummary, AccountSummary
+from app.models.execution import AccountSummary, ExecutionRecord, ExecutionStatus, PortfolioSummary
 from app.models.execution_queue import ExecutionQueueStatus
 from app.storage.repositories import ExecutionRepository
 from app.utils.time import utc_now
@@ -38,6 +38,9 @@ class FakeAlpacaClient:
             positions=[],
         )
 
+    def is_supported_equity(self, symbol: str) -> bool:
+        return bool(symbol)
+
     def submit_order(
         self,
         *,
@@ -66,6 +69,38 @@ class FakeAlpacaClient:
             mode="alpaca_paper",
             broker_order_id=f"alpaca-order-{len(self.submitted_orders)}",
             response_payload={"client_order_id": client_order_id},
+        )
+
+    def submit_bracket_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        qty: int,
+        take_profit_price: float,
+        stop_loss_price: float,
+        time_in_force: str = "day",
+        client_order_id: str | None = None,
+    ) -> ExecutionRecord:
+        self.submitted_orders.append(
+            {
+                "symbol": symbol,
+                "side": side,
+                "qty": qty,
+                "order_type": "market",
+                "order_class": "bracket",
+                "take_profit_price": take_profit_price,
+                "stop_loss_price": stop_loss_price,
+                "time_in_force": time_in_force,
+                "client_order_id": client_order_id,
+            }
+        )
+        return ExecutionRecord(
+            proposal_id=f"alpaca:{client_order_id}",
+            status=ExecutionStatus.SUBMITTED,
+            mode="alpaca_paper",
+            broker_order_id=f"alpaca-order-{len(self.submitted_orders)}",
+            response_payload={"client_order_id": client_order_id, "order_class": "bracket"},
         )
 
     def cancel_all_orders(self) -> int:
@@ -164,7 +199,10 @@ def test_paper_mode_alpaca_routes_through_alpaca_submit_order(tmp_path) -> None:
     assert order["order_type"] == "market"
     assert order["time_in_force"] == "day"
     assert order["client_order_id"] == queued.client_order_id
-    assert order["qty"] == 1000 / 120.0
+    assert order["qty"] == 8
+    assert order["order_class"] == "bracket"
+    assert order["stop_loss_price"] == 114.0
+    assert order["take_profit_price"] == 132.0
     execution = execution_for(app, result)
     assert execution is not None
     assert execution.proposal_id == proposal.id

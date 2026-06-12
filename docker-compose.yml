@@ -6,8 +6,9 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: sqlite:////data/etoro_bot.db
+      DATABASE_URL: postgresql+psycopg://algobot:${POSTGRES_PASSWORD:-algobot-paper-only}@postgres:5432/algobot
       MARKET_DATA_CACHE_DIR: /data/market_data_cache
+    command: ["sh", "-c", "alembic upgrade head && python -m uvicorn app.main:app --host 0.0.0.0 --port 8011"]
     ports:
       - "8011:8011"
     volumes:
@@ -19,22 +20,81 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: algobot
+      POSTGRES_USER: algobot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-algobot-paper-only}
+    volumes:
+      - cx_algobot_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U algobot -d algobot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   cx-algobot-backup:
-    image: alpine:3.20
+    image: postgres:16-alpine
     container_name: cx-algobot-backup
     restart: unless-stopped
     volumes:
-      - cx_algobot_data:/data:ro
       - ./backups:/backups
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-algobot-paper-only}
     command: >
       sh -c "while true; do
       ts=$$(date -u +%Y%m%dT%H%M%SZ);
-      cp /data/etoro_bot.db /backups/etoro_bot_$${ts}.db 2>/dev/null || true;
-      find /backups -name 'etoro_bot_*.db' -mtime +14 -delete;
+      pg_dump -h postgres -U algobot -d algobot -Fc -f /backups/algobot_$${ts}.dump;
+      find /backups -name 'algobot_*.dump' -mtime +14 -delete;
       sleep 86400;
       done"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  offsite-backup:
+    image: rclone/rclone:latest
+    profiles: ["offsite-backup"]
+    restart: unless-stopped
+    volumes:
+      - ./backups:/backups:ro
+      - ${RCLONE_CONFIG_PATH:-./rclone.conf}:/config/rclone/rclone.conf:ro
+    environment:
+      OFFSITE_BACKUP_REMOTE: ${OFFSITE_BACKUP_REMOTE:-remote:cx-algobot-backups}
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      while true; do
+      rclone sync /backups "$${OFFSITE_BACKUP_REMOTE}";
+      sleep 86400;
+      done
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - cx_algobot_prometheus:/prometheus
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - cx_algobot_grafana:/var/lib/grafana
+    depends_on:
+      - prometheus
 
 volumes:
   cx_algobot_data:
   cx_algobot_logs:
+  cx_algobot_postgres:
+  cx_algobot_prometheus:
+  cx_algobot_grafana:

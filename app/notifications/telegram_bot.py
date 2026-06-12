@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import inspect
 import logging
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from contextlib import suppress
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -15,8 +17,8 @@ from app.execution.interfaces import SignalApprovalAdapter
 from app.models.approval import ApprovalDecisionRequest, ApprovalStatus, TradeProposalCreate
 from app.models.trade import AssetClass, OrderSide
 from app.runtime_settings import AppSettings
-from app.telegram_notify import TelegramNotifier
 from app.signals.service import LiveSignalService
+from app.telegram_notify import TelegramNotifier
 from app.universe import DEFAULT_TOP_100_US, resolve_universe
 from app.utils.time import utc_now
 
@@ -60,6 +62,11 @@ class TelegramBotService:
         "/health - bot operations health\n"
         "/auto_status - automation, proposal, and execution safety status\n"
         "/schedule_status - scheduler bucket status\n"
+        "/reconciliation - Alpaca account and order reconciliation status\n"
+        "/strategy_status - active/deactivated strategy health\n"
+        "/blacklist [add SYMBOL reason|remove SYMBOL] - inspect or change the symbol blacklist\n"
+        "/circuit_status - circuit-breaker and account-verification status\n"
+        "/clear_circuit CONFIRM - reconcile and clear a resolved circuit-breaker reason\n"
         "/pause_auto [reason] - pause scheduled scans and auto proposals\n"
         "/resume_auto [reason] - resume scheduled scans and clear runtime kill switch\n"
         "/kill_switch [reason] - immediately pause automation and block execution\n"
@@ -80,8 +87,8 @@ class TelegramBotService:
         execution_queue_repository: Any | None = None,
         paper_trading_service: Any | None = None,
         automation_service: Any | None = None,
-        runtime_state_repository: "RuntimeStateRepository" | Any,
-        run_log_repository: "RunLogRepository" | Any,
+        runtime_state_repository: RuntimeStateRepository | Any,
+        run_log_repository: RunLogRepository | Any,
     ):
         self.settings = settings
         self.notifier = notifier
@@ -404,6 +411,29 @@ class TelegramBotService:
 
         if command == "/schedule_status":
             self.notifier.send_text(self._schedule_status_message(), chat_id=chat_id)
+            return
+
+        if command == "/reconciliation":
+            self.notifier.send_text(self._reconciliation_message(), chat_id=chat_id)
+            return
+
+        if command == "/strategy_status":
+            self.notifier.send_text(self._strategy_health_message(), chat_id=chat_id)
+            return
+
+        if command == "/blacklist":
+            self.notifier.send_text(
+                self._blacklist_change_message(args) if args else self._blacklist_message(),
+                chat_id=chat_id,
+            )
+            return
+
+        if command == "/circuit_status":
+            self.notifier.send_text(self._circuit_status_message(), chat_id=chat_id)
+            return
+
+        if command == "/clear_circuit":
+            self.notifier.send_text(self._clear_circuit_message(args), chat_id=chat_id)
             return
 
         if command == "/pause_auto":
@@ -824,6 +854,12 @@ class TelegramBotService:
             f"Kill switch: {'on' if status.kill_switch_enabled else 'off'}",
             f"Auto propose: {'on' if status.auto_propose_enabled else 'off'}",
             f"Auto execute after approval: {'on' if status.auto_execute_after_approval else 'off'}",
+            f"Paper auto approve: {'on' if getattr(status, 'paper_auto_approve_proposals', False) else 'off'}",
+            f"Auto execution worker: {'on' if getattr(status, 'auto_execution_worker_enabled', False) else 'off'}",
+            (
+                "Alpaca account verified: "
+                f"{getattr(status, 'account_verified', None) if getattr(status, 'account_verified', None) is not None else 'n/a'}"
+            ),
             f"Execution mode: {status.execution_mode}",
             f"Real trading enabled: {'yes' if status.enable_real_trading else 'no'}",
             f"Require approval: {'yes' if status.require_approval else 'no'}",
@@ -838,6 +874,102 @@ class TelegramBotService:
             lines.append(f"Last successful scan: {workflow_health.get('last_successful_screener_run_at') or 'n/a'}")
             lines.append(f"Latest failed bucket: {failed.name} ({failed.last_error or failed.last_status})" if failed else "Latest failed bucket: none")
         return "\n".join(lines)
+
+    def _reconciliation_message(self) -> str:
+        service = getattr(self.workflow_service, "reconciliation", None)
+        if service is None:
+            return "Alpaca reconciliation is not configured."
+        result = service.reconcile()
+        return "\n".join(
+            [
+                "Alpaca reconciliation",
+                f"Status: {result.get('status', 'unknown')}",
+                f"Orders: {int(result.get('orders_seen') or 0)}",
+                f"Positions: {int(result.get('positions_seen') or 0)}",
+                f"Issues: {', '.join(result.get('issues') or []) or 'none'}",
+            ]
+        )
+
+    def _strategy_health_message(self) -> str:
+        service = getattr(self.workflow_service, "auto_trading", None)
+        if service is None:
+            return "Strategy health is not configured."
+        service.refresh_strategy_health()
+        rows = service.safety.list_strategy_health()
+        if not rows:
+            return "Strategy health: no reconciled closed trades yet."
+        lines = ["Strategy health"]
+        for row in rows[:10]:
+            lines.append(
+                f"{row['strategy_name']} | {'active' if row['active'] else 'inactive'} | "
+                f"closed {row['closed_trades']} | exp {float(row['expectancy_usd'] or 0):.2f} | "
+                f"PF {float(row['profit_factor'] or 0):.2f}"
+            )
+        return "\n".join(lines)
+
+    def _blacklist_message(self) -> str:
+        service = getattr(self.workflow_service, "auto_trading", None)
+        if service is None:
+            return "Unattended-trading blacklist is not configured."
+        rows = service.safety.list_blacklist()
+        if not rows:
+            return "Unattended-trading blacklist: empty."
+        return "\n".join(
+            ["Unattended-trading blacklist", *[f"{row['symbol']}: {row['reason']}" for row in rows]]
+        )
+
+    def _blacklist_change_message(self, args: list[str]) -> str:
+        service = getattr(self.workflow_service, "auto_trading", None)
+        if service is None:
+            return "Unattended-trading blacklist is not configured."
+        if len(args) < 2 or args[0].lower() not in {"add", "remove"}:
+            return "Usage: /blacklist add SYMBOL reason | /blacklist remove SYMBOL"
+        symbol = self._parse_symbol_arg(args[1:2])
+        if symbol is None:
+            return "Usage: /blacklist add SYMBOL reason | /blacklist remove SYMBOL"
+        if args[0].lower() == "add":
+            reason = " ".join(args[2:]) or "Blacklisted from Telegram."
+            service.safety.blacklist(symbol, reason=reason)
+            return f"{symbol} added to unattended-trading blacklist: {reason}"
+        service.safety.unblacklist(symbol)
+        return f"{symbol} removed from unattended-trading blacklist."
+
+    def _circuit_status_message(self) -> str:
+        if self.automation is None:
+            return "Automation service is not configured."
+        status = self.automation.status()
+        return "\n".join(
+            [
+                "Circuit status",
+                f"Kill switch: {'on' if status.kill_switch_enabled else 'off'}",
+                f"Account verified: {status.account_verified if status.account_verified is not None else 'n/a'}",
+                f"Circuit reason: {status.circuit_breaker_reason or 'none'}",
+                f"Automation reason: {status.reason or 'none'}",
+            ]
+        )
+
+    def _clear_circuit_message(self, args: list[str]) -> str:
+        if args != ["CONFIRM"]:
+            return "Usage: /clear_circuit CONFIRM"
+        if self.automation is None:
+            return "Automation service is not configured."
+        service = getattr(self.workflow_service, "reconciliation", None)
+        if service is None:
+            return "Alpaca reconciliation is not configured."
+        result = service.reconcile()
+        if result.get("status") != "ok":
+            return "Circuit clear blocked. Reconciliation issues: " + (
+                ", ".join(result.get("issues") or []) or "unknown"
+            )
+        status = self.automation.clear_circuit_breaker()
+        return "\n".join(
+            [
+                "Circuit-breaker reason cleared after clean reconciliation.",
+                f"Kill switch: {'on' if status.kill_switch_enabled else 'off'}",
+                f"Paused: {'yes' if status.paused else 'no'}",
+                "Use /resume_auto only after the incident review is complete.",
+            ]
+        )
 
     def _schedule_status_message(self) -> str:
         if self.workflow_service is None or not hasattr(self.workflow_service, "schedule_statuses"):
@@ -1444,10 +1576,8 @@ class TelegramBotService:
             self._active_scan_cancel_event = None
             self._active_scan_started_at = None
             self._active_scan_label = None
-            try:
+            with suppress(RuntimeError):
                 self._scan_lock.release()
-            except RuntimeError:
-                pass
 
         return future, cancel_event, _release_scan
 
@@ -1495,10 +1625,8 @@ class TelegramBotService:
             return False
         if self._active_scan_cancel_event is not None:
             self._active_scan_cancel_event.set()
-        try:
+        with suppress(Exception):
             future.cancel()
-        except Exception:
-            pass
         self._scan_generation += 1
         self._scan_executor.shutdown(wait=False, cancel_futures=True)
         self._scan_executor = ThreadPoolExecutor(max_workers=1)
@@ -1515,10 +1643,8 @@ class TelegramBotService:
         self._active_scan_started_at = None
         self._active_scan_label = None
         if release_lock and self._scan_lock.locked():
-            try:
+            with suppress(RuntimeError):
                 self._scan_lock.release()
-            except RuntimeError:
-                pass
 
     def _scan_status_message(self) -> str:
         recovered = self._recover_stale_scan_if_needed()

@@ -15,6 +15,8 @@ class AutomationService:
     KILL_SWITCH_KEY = "automation:kill_switch"
     REASON_KEY = "automation:reason"
     UPDATED_AT_KEY = "automation:updated_at"
+    CIRCUIT_REASON_KEY = "automation:circuit_breaker_reason"
+    ACCOUNT_VERIFIED_KEY = "automation:account_verified"
 
     def __init__(self, *, settings: Any, runtime_state: Any, run_logs: Any, broker_router: Any | None = None):
         self.settings = settings
@@ -28,11 +30,19 @@ class AutomationService:
             kill_switch_enabled=self.kill_switch_enabled(),
             auto_propose_enabled=bool(getattr(self.settings, "auto_propose_enabled", False)),
             auto_execute_after_approval=bool(getattr(self.settings, "auto_execute_after_approval", False)),
+            paper_auto_approve_proposals=bool(
+                getattr(self.settings, "paper_auto_approve_proposals", False)
+            ),
+            auto_execution_worker_enabled=bool(
+                getattr(self.settings, "auto_execution_worker_enabled", False)
+            ),
             execution_mode=str(getattr(self.settings, "execution_mode", "paper")),
             require_approval=bool(getattr(self.settings, "require_approval", True)),
             enable_real_trading=bool(getattr(self.settings, "enable_real_trading", False)),
             reason=self.state.get(self.REASON_KEY) or "",
             updated_at=self.state.get(self.UPDATED_AT_KEY),
+            circuit_breaker_reason=self.state.get(self.CIRCUIT_REASON_KEY) or "",
+            account_verified=self._optional_bool(self.state.get(self.ACCOUNT_VERIFIED_KEY)),
         )
 
     def is_paused(self) -> bool:
@@ -52,10 +62,11 @@ class AutomationService:
     def resume(self, *, reason: str = "") -> AutomationStatus:
         return self._set_state(paused=False, kill_switch=False, reason=reason or "resumed manually")
 
-    def enable_kill_switch(self, *, reason: str = "") -> AutomationStatus:
+    def enable_kill_switch(self, *, reason: str = "", emergency_stop: bool = True) -> AutomationStatus:
         effective_reason = reason or "kill switch enabled"
         status = self._set_state(paused=True, kill_switch=True, reason=effective_reason)
-        self._emergency_stop(reason=effective_reason)
+        if emergency_stop:
+            self._emergency_stop(reason=effective_reason)
         return status
 
     def scan_blockers(self) -> list[str]:
@@ -68,6 +79,13 @@ class AutomationService:
 
     def execution_blockers(self) -> list[str]:
         blockers = self.scan_blockers()
+        circuit_reason = self.state.get(self.CIRCUIT_REASON_KEY)
+        if circuit_reason:
+            blockers.append("circuit_breaker:" + circuit_reason)
+        if getattr(self.settings, "alpaca_expected_account_number", "") and not self._to_bool(
+            self.state.get(self.ACCOUNT_VERIFIED_KEY)
+        ):
+            blockers.append("alpaca_account_not_verified")
         if getattr(self.settings, "execution_mode", "paper") == "live":
             if not bool(getattr(self.settings, "require_approval", True)):
                 blockers.append("approval_required_must_remain_enabled")
@@ -76,6 +94,20 @@ class AutomationService:
             if bool(getattr(self.settings, "paper_trading_enabled", True)):
                 blockers.append("paper_trading_enabled_in_live_mode")
         return blockers
+
+    def set_account_verified(self, verified: bool) -> None:
+        self.state.set(self.ACCOUNT_VERIFIED_KEY, "true" if verified else "false")
+
+    def trip_circuit_breaker(self, *, reason: str, emergency_stop: bool = True) -> AutomationStatus:
+        self.state.set(self.CIRCUIT_REASON_KEY, reason)
+        return self.enable_kill_switch(
+            reason=f"circuit breaker: {reason}",
+            emergency_stop=emergency_stop,
+        )
+
+    def clear_circuit_breaker(self) -> AutomationStatus:
+        self.state.set(self.CIRCUIT_REASON_KEY, "")
+        return self.status()
 
     def _set_state(self, *, paused: bool, kill_switch: bool | None, reason: str) -> AutomationStatus:
         now = utc_now().isoformat()
@@ -140,3 +172,9 @@ class AutomationService:
         if isinstance(value, bool):
             return value
         return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @classmethod
+    def _optional_bool(cls, value: Any) -> bool | None:
+        if value is None:
+            return None
+        return cls._to_bool(value)

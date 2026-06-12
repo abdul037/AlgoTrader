@@ -41,6 +41,10 @@ class AppSettings(BaseSettings):
     alpaca_data_url: str = "https://data.alpaca.markets"
     alpaca_data_feed: str = "iex"
     alpaca_enabled: bool = False
+    alpaca_expected_account_number: str = ""
+    alpaca_reconciliation_enabled: bool = True
+    alpaca_reconciliation_interval_seconds: int = 60
+    alpaca_require_bracket_orders: bool = True
 
     require_approval: bool = True
     telegram_enabled: bool = False
@@ -195,6 +199,15 @@ class AppSettings(BaseSettings):
     automation_paused_default: bool = False
     auto_propose_enabled: bool = False
     auto_execute_after_approval: bool = False
+    paper_auto_approve_proposals: bool = False
+    auto_execution_worker_enabled: bool = False
+    auto_execution_min_score: float = 65.0
+    auto_execution_regular_hours_only: bool = True
+    strategy_health_enabled: bool = True
+    strategy_health_min_closed_trades: int = 20
+    strategy_health_rolling_trades: int = 30
+    circuit_breaker_enabled: bool = True
+    reconciliation_failures_before_kill_switch: int = 3
     execution_recheck_quote_before_order: bool = True
     execution_max_entry_drift_bps: float = 35.0
     execution_queue_enabled: bool = True
@@ -232,6 +245,7 @@ class AppSettings(BaseSettings):
     max_gold_leverage: int = 10
 
     default_trade_amount_usd: float = 1000.0
+    max_trade_amount_usd: float = 1000.0
     proposal_expiry_minutes: int = 240
     live_signal_interval: str = "OneDay"
     live_signal_candles_count: int = 250
@@ -332,7 +346,7 @@ class AppSettings(BaseSettings):
     def database_path(self) -> Path:
         prefix = "sqlite:///"
         if not self.database_url.startswith(prefix):
-            raise ValueError("Only sqlite:/// URLs are supported in this version.")
+            raise ValueError("database_path is only available for sqlite:/// URLs")
         raw_path = self.database_url[len(prefix) :]
         return Path(raw_path).expanduser().resolve()
 

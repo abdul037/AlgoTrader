@@ -8,7 +8,7 @@ broker and execution models.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pandas as pd
@@ -22,12 +22,15 @@ from alpaca.data.requests import (
 )
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderSide, OrderType, QueryOrderStatus, TimeInForce
+from alpaca.trading.enums import OrderClass, OrderSide, OrderType, QueryOrderStatus, TimeInForce
 from alpaca.trading.requests import (
+    GetOrderByIdRequest,
     GetOrdersRequest,
     LimitOrderRequest,
     MarketOrderRequest,
+    StopLossRequest,
     StopOrderRequest,
+    TakeProfitRequest,
 )
 
 from app.broker.etoro_client import BrokerClient
@@ -116,6 +119,39 @@ class AlpacaClient(BrokerClient):
         """Call TradingClient.get_account through get_portfolio and return AccountSummary."""
 
         return self.get_portfolio().account
+
+    def get_account_identity(self) -> dict[str, Any]:
+        """Return the non-secret identity and trading status for the configured account."""
+
+        account = self.trading_client.get_account()
+        return {
+            "id": str(getattr(account, "id", "") or ""),
+            "account_number": str(getattr(account, "account_number", "") or ""),
+            "status": _enum_value(getattr(account, "status", "")),
+            "trading_blocked": bool(getattr(account, "trading_blocked", False)),
+            "equity": _to_float(getattr(account, "equity", 0.0)),
+            "last_equity": _to_float(getattr(account, "last_equity", 0.0)),
+            "cash": _to_float(getattr(account, "cash", 0.0)),
+        }
+
+    def is_regular_market_open(self) -> bool:
+        """Return Alpaca's authoritative US equity market-open state."""
+
+        return bool(getattr(self.trading_client.get_clock(), "is_open", False))
+
+    def is_supported_equity(self, symbol: str) -> bool:
+        """Return whether Alpaca currently exposes the symbol as a tradable US equity."""
+
+        asset = self.trading_client.get_asset(symbol.upper().strip())
+        asset_class = _enum_value(
+            getattr(asset, "asset_class", getattr(asset, "class", ""))
+        ).lower()
+        status = _enum_value(getattr(asset, "status", "")).lower()
+        return (
+            bool(getattr(asset, "tradable", False))
+            and asset_class in {"us_equity", "equity"}
+            and status in {"", "active"}
+        )
 
     def get_quote(
         self,
@@ -234,6 +270,53 @@ class AlpacaClient(BrokerClient):
                 request=request,
             )
 
+    def submit_bracket_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        qty: int,
+        take_profit_price: float,
+        stop_loss_price: float,
+        time_in_force: str = "day",
+        client_order_id: str | None = None,
+    ) -> ExecutionRecord:
+        """Submit a broker-native protected market entry."""
+
+        normalized_side = _to_order_side(side)
+        if normalized_side != OrderSide.BUY:
+            raise ValueError("Unattended Alpaca bracket execution currently supports long entries only")
+        if int(qty) < 1:
+            raise ValueError("Bracket order quantity must be at least one whole share")
+        if float(stop_loss_price) <= 0 or float(take_profit_price) <= 0:
+            raise ValueError("Bracket stop-loss and take-profit prices must be positive")
+        if float(stop_loss_price) >= float(take_profit_price):
+            raise ValueError("Bracket stop-loss must be below take-profit for a long entry")
+
+        request = MarketOrderRequest(
+            symbol=symbol.upper().strip(),
+            qty=int(qty),
+            side=normalized_side,
+            type=OrderType.MARKET,
+            time_in_force=_to_time_in_force(time_in_force),
+            order_class=OrderClass.BRACKET,
+            take_profit=TakeProfitRequest(limit_price=round(float(take_profit_price), 2)),
+            stop_loss=StopLossRequest(stop_price=round(float(stop_loss_price), 2)),
+            client_order_id=client_order_id,
+        )
+        try:
+            order = self.trading_client.submit_order(request)
+            return _execution_record(order, paper=self.paper, request=request)
+        except Exception as exc:
+            return self._handle_order_error(
+                exc,
+                symbol=symbol,
+                side=side,
+                qty=float(qty),
+                client_order_id=client_order_id,
+                request=request,
+            )
+
     def cancel_order(self, broker_order_id: str) -> bool:
         """Call TradingClient.cancel_order_by_id for one broker order."""
 
@@ -286,6 +369,22 @@ class AlpacaClient(BrokerClient):
         """Call TradingClient.get_orders with QueryOrderStatus.ALL and optional after."""
 
         request = GetOrdersRequest(status=QueryOrderStatus.ALL, after=since)
+        orders = self.trading_client.get_orders(filter=request)
+        return [_execution_record(order, paper=self.paper, request=request) for order in orders]
+
+    def get_order(self, broker_order_id: str) -> ExecutionRecord:
+        """Return one broker order, including nested bracket legs when available."""
+
+        order = self.trading_client.get_order_by_id(
+            broker_order_id,
+            filter=GetOrderByIdRequest(nested=True),
+        )
+        return _execution_record(order, paper=self.paper, request={})
+
+    def get_all_orders(self, since: datetime | None = None) -> list[ExecutionRecord]:
+        """Return all orders with nested bracket legs for reconciliation."""
+
+        request = GetOrdersRequest(status=QueryOrderStatus.ALL, after=since, nested=True, limit=500)
         orders = self.trading_client.get_orders(filter=request)
         return [_execution_record(order, paper=self.paper, request=request) for order in orders]
 
@@ -497,6 +596,26 @@ def _execution_record(
 ) -> ExecutionRecord:
     order_id = str(getattr(order, "id", "") or "")
     client_order_id = getattr(order, "client_order_id", getattr(request, "client_order_id", None))
+    legs = [
+        {
+            "broker_order_id": str(getattr(leg, "id", "") or ""),
+            "client_order_id": str(getattr(leg, "client_order_id", "") or ""),
+            "symbol": str(getattr(leg, "symbol", "") or "").upper(),
+            "side": _enum_value(getattr(leg, "side", "")),
+            "type": _enum_value(getattr(leg, "type", "")),
+            "status": _enum_value(getattr(leg, "status", "")),
+            "qty": _to_float(getattr(leg, "qty", 0.0)),
+            "filled_qty": _to_float(getattr(leg, "filled_qty", 0.0)),
+            "filled_avg_price": _optional_float(getattr(leg, "filled_avg_price", None)),
+            "limit_price": _optional_float(getattr(leg, "limit_price", None)),
+            "stop_price": _optional_float(getattr(leg, "stop_price", None)),
+            "created_at": _iso_timestamp(getattr(leg, "created_at", None)),
+            "updated_at": _iso_timestamp(getattr(leg, "updated_at", None)),
+            "filled_at": _iso_timestamp(getattr(leg, "filled_at", None)),
+            "canceled_at": _iso_timestamp(getattr(leg, "canceled_at", None)),
+        }
+        for leg in list(getattr(order, "legs", None) or [])
+    ]
     payload = {
         "broker_order_id": order_id,
         "client_order_id": client_order_id,
@@ -507,6 +626,12 @@ def _execution_record(
         "submitted_at": _iso_timestamp(getattr(order, "submitted_at", None)),
         "filled_qty": _to_float(getattr(order, "filled_qty", 0.0)),
         "filled_avg_price": _optional_float(getattr(order, "filled_avg_price", None)),
+        "order_class": _enum_value(getattr(order, "order_class", "")),
+        "legs": legs,
+        "created_at": _iso_timestamp(getattr(order, "created_at", None)),
+        "updated_at": _iso_timestamp(getattr(order, "updated_at", None)),
+        "filled_at": _iso_timestamp(getattr(order, "filled_at", None)),
+        "canceled_at": _iso_timestamp(getattr(order, "canceled_at", None)),
     }
     return ExecutionRecord(
         proposal_id=f"alpaca:{client_order_id or order_id}",
@@ -571,10 +696,7 @@ def _iso_timestamp(value: Any) -> str | None:
     if value in (None, ""):
         return None
     ts = pd.Timestamp(value)
-    if ts.tzinfo is None:
-        ts = ts.tz_localize(timezone.utc)
-    else:
-        ts = ts.tz_convert(timezone.utc)
+    ts = ts.tz_localize(UTC) if ts.tzinfo is None else ts.tz_convert(UTC)
     return ts.isoformat()
 
 

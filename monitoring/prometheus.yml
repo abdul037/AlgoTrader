@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 30s
+
+scrape_configs:
+  - job_name: cx-algobot
+    static_configs:
+      - targets: ["cx-algobot:8011"]

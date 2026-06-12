@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pandas as pd
-
 from alpaca.data.timeframe import TimeFrameUnit
-from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
 from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
 
 from app.broker.alpaca_client import AlpacaClient
@@ -40,6 +39,14 @@ class FakeTradingClient:
                 unrealized_pl="14.25",
             )
         ]
+
+    def get_asset(self, symbol):
+        return SimpleNamespace(
+            symbol=symbol,
+            asset_class="us_equity",
+            status="active",
+            tradable=True,
+        )
 
     def submit_order(self, request):
         self.submitted_requests.append(request)
@@ -86,7 +93,7 @@ class FakeDataClient:
             "AAPL": SimpleNamespace(
                 bid_price=199.8,
                 ask_price=200.1,
-                timestamp=datetime(2026, 5, 1, 14, 30, tzinfo=timezone.utc),
+                timestamp=datetime(2026, 5, 1, 14, 30, tzinfo=UTC),
             )
         }
 
@@ -95,7 +102,7 @@ class FakeDataClient:
         return {
             "AAPL": SimpleNamespace(
                 price=200.0,
-                timestamp=datetime(2026, 5, 1, 14, 31, tzinfo=timezone.utc),
+                timestamp=datetime(2026, 5, 1, 14, 31, tzinfo=UTC),
             )
         }
 
@@ -137,7 +144,7 @@ def _order(
         side=side,
         qty=qty,
         status=status,
-        submitted_at=datetime(2026, 5, 1, 14, 32, tzinfo=timezone.utc),
+        submitted_at=datetime(2026, 5, 1, 14, 32, tzinfo=UTC),
         filled_qty=0,
         filled_avg_price=None,
         client_order_id=client_order_id,
@@ -166,13 +173,19 @@ def test_get_portfolio_translates_alpaca_account_and_positions_to_project_portfo
     assert portfolio.mode == "alpaca_paper"
     assert portfolio.account.equity == 12500.50
     assert portfolio.account.cash_balance == 5000.25
-    assert getattr(portfolio.account, "buying_power") == 25000.75
-    assert getattr(portfolio.account, "day_trade_count") == 2
+    assert portfolio.account.buying_power == 25000.75
+    assert portfolio.account.day_trade_count == 2
     assert portfolio.positions[0].symbol == "AAPL"
     assert portfolio.positions[0].quantity == 3
     assert portfolio.positions[0].average_price == 150.25
     assert portfolio.positions[0].market_value == 465.0
     assert portfolio.positions[0].unrealized_pnl == 14.25
+
+
+def test_supported_equity_requires_active_tradable_us_equity(monkeypatch):
+    client, _, _ = _client(monkeypatch)
+
+    assert client.is_supported_equity("aapl") is True
 
 
 def test_get_quote_returns_market_quote_with_source_alpaca(monkeypatch):
@@ -194,8 +207,8 @@ def test_get_bars_translates_timeframe_strings_to_alpaca_timeframes(monkeypatch)
     bars = client.get_bars(
         "AAPL",
         timeframe="5m",
-        start=datetime(2026, 5, 1, tzinfo=timezone.utc),
-        end=datetime(2026, 5, 2, tzinfo=timezone.utc),
+        start=datetime(2026, 5, 1, tzinfo=UTC),
+        end=datetime(2026, 5, 2, tzinfo=UTC),
     )
 
     assert data.bars_request.timeframe.amount == 5
@@ -238,6 +251,26 @@ def test_submit_market_order_uses_MarketOrderRequest_with_correct_side(monkeypat
     assert request.time_in_force == TimeInForce.DAY
 
 
+def test_submit_bracket_order_attaches_broker_native_protection(monkeypatch):
+    client, trading, _ = _client(monkeypatch)
+
+    client.submit_bracket_order(
+        symbol="AAPL",
+        side="buy",
+        qty=3,
+        stop_loss_price=190.0,
+        take_profit_price=220.0,
+        client_order_id="cid-1",
+    )
+
+    request = trading.submitted_requests[0]
+    assert isinstance(request, MarketOrderRequest)
+    assert request.order_class == OrderClass.BRACKET
+    assert request.qty == 3
+    assert request.stop_loss.stop_price == 190.0
+    assert request.take_profit.limit_price == 220.0
+
+
 def test_submit_limit_order_uses_LimitOrderRequest_with_limit_price(monkeypatch):
     client, trading, _ = _client(monkeypatch)
 
@@ -277,7 +310,7 @@ def test_close_all_positions_returns_count_for_kill_switch(monkeypatch):
 
 def test_get_executions_filters_by_since_timestamp(monkeypatch):
     client, trading, _ = _client(monkeypatch)
-    since = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    since = datetime(2026, 5, 1, tzinfo=UTC)
 
     records = client.get_executions(since=since)
 

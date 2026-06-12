@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 import json
-from datetime import timedelta
+from collections import defaultdict
+from datetime import datetime, timedelta
 from typing import Any
 
 from app.storage.db import Database
@@ -334,14 +334,7 @@ class LedgerRepository:
                     SUM(CASE WHEN realized_pnl_usd <= 0 AND realized_pnl_usd IS NOT NULL THEN 1 ELSE 0 END) AS losses,
                     SUM(CASE WHEN realized_pnl_usd > 0 THEN realized_pnl_usd ELSE 0 END) AS gross_wins,
                     SUM(CASE WHEN realized_pnl_usd < 0 THEN realized_pnl_usd ELSE 0 END) AS gross_losses,
-                    AVG(realized_r_multiple) AS avg_r_multiple,
-                    AVG(
-                        CASE
-                            WHEN position_open_at IS NOT NULL AND closed_at IS NOT NULL
-                            THEN (julianday(closed_at) - julianday(position_open_at)) * 24.0
-                            ELSE NULL
-                        END
-                    ) AS avg_hold_hours
+                    AVG(realized_r_multiple) AS avg_r_multiple
                 FROM signal_outcomes
                 GROUP BY COALESCE(strategy_name, '-')
                 ORDER BY closed DESC, total DESC
@@ -373,16 +366,16 @@ class LedgerRepository:
         ]
         avg_hold_hours = None
         if hold_hours:
-            with self.db.connect() as connection:
-                avg_hold_hours = connection.execute(
-                    """
-                    SELECT AVG((julianday(closed_at) - julianday(position_open_at)) * 24.0)
-                    FROM signal_outcomes
-                    WHERE outcome_status IN ('target_hit', 'stop_hit', 'closed_manual')
-                      AND position_open_at IS NOT NULL
-                      AND closed_at IS NOT NULL
-                    """
-                ).fetchone()[0]
+            durations = []
+            for closed_at, opened_at in hold_hours:
+                try:
+                    durations.append(
+                        (datetime.fromisoformat(closed_at) - datetime.fromisoformat(opened_at)).total_seconds()
+                        / 3600.0
+                    )
+                except (TypeError, ValueError):
+                    continue
+            avg_hold_hours = sum(durations) / len(durations) if durations else None
 
         by_strategy = []
         for row in strategy_rows:
