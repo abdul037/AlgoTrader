@@ -10,7 +10,9 @@ from app.runtime_settings import get_settings
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+# Alembic stores options in ConfigParser, where percent signs trigger
+# interpolation. Database URLs commonly contain percent-encoded passwords.
+config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:

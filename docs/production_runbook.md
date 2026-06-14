@@ -33,6 +33,46 @@ MAX_RISK_PER_TRADE_PCT=1
 MAX_CONSECUTIVE_LOSSES_BEFORE_COOLDOWN=2
 ```
 
+## PostgreSQL Backend
+
+Supabase managed PostgreSQL is the recommended production database. The bot,
+scheduler, reconciliation worker, Prometheus, and Grafana still run on the VPS.
+Do not run the continuous trading runtime in Supabase Edge Functions.
+
+Create a dedicated Supabase project in a region close to the VPS. Use the
+Direct connection from an IPv6-capable VPS or a project with the IPv4 add-on.
+Use the Session Pooler as the fallback from an IPv4-only VPS. Store these
+values only in the VPS `.env` file:
+
+```env
+# SQLAlchemy application and Alembic URL. Direct connection example:
+DATABASE_URL=postgresql+psycopg://postgres:PASSWORD@db.PROJECT_REF.supabase.co:5432/postgres?sslmode=require
+
+# Standard direct libpq URL used by pg_dump. Do not include "+psycopg".
+POSTGRES_BACKUP_URL=postgresql://postgres:PASSWORD@db.PROJECT_REF.supabase.co:5432/postgres?sslmode=require
+
+# Match the target PostgreSQL server's major version.
+PG_DUMP_IMAGE=postgres:17-alpine
+```
+
+For an IPv4-only VPS without Supabase's IPv4 add-on, use the Session Pooler
+host and `postgres.PROJECT_REF` user in both URLs instead.
+
+The optional Compose-local PostgreSQL fallback is isolated behind the
+`local-db` profile:
+
+```bash
+docker compose --profile local-db up -d postgres
+```
+
+For that fallback, set:
+
+```env
+DATABASE_URL=postgresql+psycopg://algobot:strong-password@postgres:5432/algobot
+POSTGRES_BACKUP_URL=postgresql://algobot:strong-password@postgres:5432/algobot
+POSTGRES_PASSWORD=strong-password
+```
+
 ## PostgreSQL Migration
 
 Back up the current SQLite database, initialize PostgreSQL, then migrate only into an empty target:
@@ -40,11 +80,13 @@ Back up the current SQLite database, initialize PostgreSQL, then migrate only in
 ```bash
 mkdir -p backups
 cp etoro_bot.db "backups/etoro_bot_$(date -u +%Y%m%dT%H%M%SZ).db"
-docker compose up -d postgres
-DATABASE_URL='postgresql+psycopg://algobot:password@localhost:5432/algobot' alembic upgrade head
+set -a
+. ./.env
+set +a
+alembic upgrade head
 python3 scripts/migrate_sqlite_to_postgres.py \
   --source ./etoro_bot.db \
-  --target-url 'postgresql+psycopg://algobot:password@localhost:5432/algobot'
+  --target-url "$DATABASE_URL"
 ```
 
 The migration copies proposals, executions, queue records, logs, runtime state, and all other existing repository tables. Validate record counts before starting the application.
@@ -98,19 +140,23 @@ Do not clear the circuit breaker until the broker account is flat or all positio
 
 ## Backups And Restore
 
-The `cx-algobot-backup` service creates a compressed daily PostgreSQL dump in `./backups` and retains 14 days. Enable the daily off-host sync after configuring rclone:
+Supabase managed backups do not replace an independently controlled export.
+The `cx-algobot-backup` profile creates a compressed daily PostgreSQL dump in
+`./backups` and retains 14 days. Ensure `PG_DUMP_IMAGE` matches the database
+server's PostgreSQL major version, then enable the backup and off-host sync
+after configuring rclone:
 
 ```bash
-docker compose --profile offsite-backup up -d offsite-backup
+docker compose --profile backup --profile offsite-backup up -d cx-algobot-backup offsite-backup
 ```
 
-Restore into an empty database:
+Restore into an empty database using standard PostgreSQL URLs:
 
 ```bash
 docker compose stop cx-algobot
-docker compose exec -T postgres dropdb -U algobot algobot
-docker compose exec -T postgres createdb -U algobot algobot
-docker compose exec -T postgres pg_restore -U algobot -d algobot --clean --if-exists < backups/algobot_TIMESTAMP.dump
+docker run --rm -i "$PG_DUMP_IMAGE" \
+  pg_restore --dbname="$POSTGRES_BACKUP_URL" --clean --if-exists \
+  < backups/algobot_TIMESTAMP.dump
 docker compose start cx-algobot
 ```
 

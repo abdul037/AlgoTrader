@@ -6,9 +6,18 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+psycopg://algobot:${POSTGRES_PASSWORD:-algobot-paper-only}@postgres:5432/algobot
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env to the external or local PostgreSQL SQLAlchemy URL}
       MARKET_DATA_CACHE_DIR: /data/market_data_cache
-    command: ["sh", "-c", "alembic upgrade head && python -m uvicorn app.main:app --host 0.0.0.0 --port 8011"]
+    command:
+      - sh
+      - -c
+      - |
+        case "$${DATABASE_URL}" in
+          postgresql*) ;;
+          *) echo "Compose deployment requires a PostgreSQL DATABASE_URL"; exit 1 ;;
+        esac
+        alembic upgrade head
+        exec python -m uvicorn app.main:app --host 0.0.0.0 --port 8011
     ports:
       - "8011:8011"
     volumes:
@@ -20,12 +29,9 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
-    depends_on:
-      postgres:
-        condition: service_healthy
-
   postgres:
     image: postgres:16-alpine
+    profiles: ["local-db"]
     restart: unless-stopped
     environment:
       POSTGRES_DB: algobot
@@ -40,23 +46,26 @@ services:
       retries: 10
 
   cx-algobot-backup:
-    image: postgres:16-alpine
+    image: ${PG_DUMP_IMAGE:-postgres:17-alpine}
     container_name: cx-algobot-backup
+    profiles: ["backup"]
     restart: unless-stopped
     volumes:
       - ./backups:/backups
     environment:
-      PGPASSWORD: ${POSTGRES_PASSWORD:-algobot-paper-only}
+      POSTGRES_BACKUP_URL: ${POSTGRES_BACKUP_URL:-}
     command: >
       sh -c "while true; do
+      if [ -z \"$${POSTGRES_BACKUP_URL}\" ]; then
+      echo 'POSTGRES_BACKUP_URL is required for backups';
+      sleep 3600;
+      continue;
+      fi;
       ts=$$(date -u +%Y%m%dT%H%M%SZ);
-      pg_dump -h postgres -U algobot -d algobot -Fc -f /backups/algobot_$${ts}.dump;
+      pg_dump \"$${POSTGRES_BACKUP_URL}\" -Fc -f /backups/algobot_$${ts}.dump;
       find /backups -name 'algobot_*.dump' -mtime +14 -delete;
       sleep 86400;
       done"
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   offsite-backup:
     image: rclone/rclone:latest
