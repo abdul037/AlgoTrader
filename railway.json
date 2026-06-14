@@ -5,7 +5,8 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "preDeployCommand": "alembic upgrade head",
+    "preDeployCommand": "python scripts/validate_railway_env.py && alembic upgrade head",
+    "startCommand": "sh scripts/start_railway.sh",
     "numReplicas": 1,
     "healthcheckPath": "/health",
     "healthcheckTimeout": 300,

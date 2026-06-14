@@ -13,7 +13,10 @@ def test_railway_deployment_keeps_single_non_overlapping_service() -> None:
         "builder": "DOCKERFILE",
         "dockerfilePath": "Dockerfile",
     }
-    assert config["deploy"]["preDeployCommand"] == "alembic upgrade head"
+    assert config["deploy"]["preDeployCommand"] == (
+        "python scripts/validate_railway_env.py && alembic upgrade head"
+    )
+    assert config["deploy"]["startCommand"] == "sh scripts/start_railway.sh"
     assert config["deploy"]["numReplicas"] == 1
     assert config["deploy"]["healthcheckPath"] == "/health"
     assert config["deploy"]["sleepApplication"] is False

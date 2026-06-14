@@ -36,6 +36,8 @@ ALPACA_SECRET_KEY=
 Required shadow-mode variables:
 
 ```env
+DEPLOYMENT_STAGE=shadow
+
 ALPACA_BASE_URL=https://paper-api.alpaca.markets
 ALPACA_DATA_URL=https://data.alpaca.markets
 ALPACA_DATA_FEED=iex

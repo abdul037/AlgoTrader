@@ -1,0 +1,74 @@
+"""Validate safety-critical Railway deployment environment variables."""
+
+from __future__ import annotations
+
+import os
+
+
+def as_bool(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def validate() -> list[str]:
+    errors: list[str] = []
+    database_url = os.environ.get("DATABASE_URL", "")
+    stage = os.environ.get("DEPLOYMENT_STAGE", "").strip().lower()
+
+    if not database_url.startswith("postgresql+psycopg://"):
+        errors.append("DATABASE_URL must use postgresql+psycopg")
+    if "sslmode=require" not in database_url:
+        errors.append("DATABASE_URL must require TLS")
+    if stage not in {"shadow", "supervised", "unattended"}:
+        errors.append("DEPLOYMENT_STAGE must be shadow, supervised, or unattended")
+    if os.environ.get("EXECUTION_MODE", "").strip().lower() != "paper":
+        errors.append("EXECUTION_MODE must be paper")
+    if as_bool("ENABLE_REAL_TRADING"):
+        errors.append("ENABLE_REAL_TRADING must be false")
+    if not as_bool("ALPACA_ENABLED"):
+        errors.append("ALPACA_ENABLED must be true")
+    if not os.environ.get("ALPACA_API_KEY"):
+        errors.append("ALPACA_API_KEY is required")
+    if not os.environ.get("ALPACA_SECRET_KEY"):
+        errors.append("ALPACA_SECRET_KEY is required")
+    alpaca_base_url = os.environ.get("ALPACA_BASE_URL", "").rstrip("/")
+    if alpaca_base_url.removesuffix("/v2") != "https://paper-api.alpaca.markets":
+        errors.append("ALPACA_BASE_URL must use Alpaca Paper")
+    if os.environ.get("ALPACA_EXPECTED_ACCOUNT_NUMBER", "") != "PA3B287XBZYU":
+        errors.append("ALPACA_EXPECTED_ACCOUNT_NUMBER must be PA3B287XBZYU")
+    if not as_bool("ALPACA_RECONCILIATION_ENABLED"):
+        errors.append("ALPACA_RECONCILIATION_ENABLED must be true")
+    if not as_bool("ALPACA_REQUIRE_BRACKET_ORDERS"):
+        errors.append("ALPACA_REQUIRE_BRACKET_ORDERS must be true")
+    if as_bool("PAPER_SIMULATED_FALLBACK_ENABLED"):
+        errors.append("PAPER_SIMULATED_FALLBACK_ENABLED must be false")
+
+    if stage == "shadow":
+        required_true = {
+            "AUTOMATION_PAUSED_DEFAULT",
+            "KILL_SWITCH_ENABLED",
+            "SCREENER_SCHEDULER_ENABLED",
+        }
+        required_false = {
+            "PAPER_AUTO_APPROVE_PROPOSALS",
+            "AUTO_EXECUTION_WORKER_ENABLED",
+            "AUTO_PROPOSE_ENABLED",
+            "AUTO_EXECUTE_AFTER_APPROVAL",
+        }
+        errors.extend(f"{name} must be true in shadow mode" for name in required_true if not as_bool(name))
+        errors.extend(f"{name} must be false in shadow mode" for name in required_false if as_bool(name))
+
+    return errors
+
+
+def main() -> int:
+    errors = validate()
+    if errors:
+        for error in errors:
+            print(f"Railway environment error: {error}")
+        return 1
+    print("Railway environment validation passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
