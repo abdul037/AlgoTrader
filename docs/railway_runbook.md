@@ -3,9 +3,10 @@
 Railway runs the long-lived AlgoBot FastAPI process, in-process scheduler, and
 Alpaca reconciliation worker. Supabase remains the PostgreSQL backend.
 
-The first deployment must remain in shadow mode. It may reconcile the dedicated
-Alpaca Paper account and exercise scheduled maintenance, but it must not approve
-or execute orders.
+The first deployment must remain in bootstrap mode. It may reconcile the
+dedicated Alpaca Paper account and exercise scheduled maintenance, but it must
+not scan, approve, or execute orders. After verifying a clean reconciliation,
+transition to scan-only shadow mode.
 
 ## Create The Service
 
@@ -41,9 +42,14 @@ Required secret variables:
 DATABASE_URL=postgresql+psycopg://postgres.PROJECT_REF:URL_ENCODED_PASSWORD@POOLER_HOST:5432/postgres?sslmode=require
 ALPACA_API_KEY=
 ALPACA_SECRET_KEY=
+CONTROL_API_TOKEN=
 ```
 
-Required shadow-mode variables:
+Generate `CONTROL_API_TOKEN` with at least 32 random bytes. Send it as the
+`X-Control-Token` header for every mutating API request. The Telegram webhook
+continues to use its separate Telegram secret header.
+
+Required scan-only shadow-mode variables:
 
 ```env
 DEPLOYMENT_STAGE=shadow
@@ -65,8 +71,8 @@ ENABLE_REAL_TRADING=false
 REQUIRE_APPROVAL=true
 PAPER_SIMULATED_FALLBACK_ENABLED=false
 
-AUTOMATION_PAUSED_DEFAULT=true
-KILL_SWITCH_ENABLED=true
+AUTOMATION_PAUSED_DEFAULT=false
+KILL_SWITCH_ENABLED=false
 KILL_SWITCH_AUTO_CLOSE_POSITIONS=false
 PAPER_AUTO_APPROVE_PROPOSALS=false
 AUTO_EXECUTION_WORKER_ENABLED=false
@@ -116,7 +122,7 @@ curl -fsS https://YOUR-RAILWAY-DOMAIN/automation/reconciliation
 curl -fsS https://YOUR-RAILWAY-DOMAIN/metrics
 ```
 
-Expected safety state:
+Expected bootstrap safety state:
 
 - Account number is `PA3B287XBZYU`.
 - Reconciliation status is `ok`.
@@ -126,8 +132,14 @@ Expected safety state:
 - Auto-execution worker is disabled.
 - No actionable queue records, unknown positions, or unprotected positions.
 
+After a clean bootstrap verification, set `DEPLOYMENT_STAGE=shadow`,
+`AUTOMATION_PAUSED_DEFAULT=false`, and `KILL_SWITCH_ENABLED=false`. Redeploy,
+run reconciliation, then call `/automation/resume` using `X-Control-Token`.
+Shadow mode permits scheduled scans while the validator continues to force all
+proposal, approval, and execution automation flags off.
+
 ## Activation Gates
 
 Start the clean 48-hour observation only after the deployment has remained
-healthy and reconciliation is clean. Do not disable `KILL_SWITCH_ENABLED` or
+healthy, reconciliation is clean, and scan-only shadow mode is active. Do not
 enable either unattended flag until the supervised-session gates are complete.

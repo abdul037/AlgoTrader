@@ -6,6 +6,7 @@ from scripts.validate_railway_env import validate
 def valid_shadow_environment(monkeypatch) -> None:
     values = {
         "DATABASE_URL": "postgresql+psycopg://user:password@host/postgres?sslmode=require",
+        "CONTROL_API_TOKEN": "control-secret-at-least-32-characters",
         "DEPLOYMENT_STAGE": "shadow",
         "EXECUTION_MODE": "paper",
         "ENABLE_REAL_TRADING": "false",
@@ -17,8 +18,8 @@ def valid_shadow_environment(monkeypatch) -> None:
         "ALPACA_RECONCILIATION_ENABLED": "true",
         "ALPACA_REQUIRE_BRACKET_ORDERS": "true",
         "PAPER_SIMULATED_FALLBACK_ENABLED": "false",
-        "AUTOMATION_PAUSED_DEFAULT": "true",
-        "KILL_SWITCH_ENABLED": "true",
+        "AUTOMATION_PAUSED_DEFAULT": "false",
+        "KILL_SWITCH_ENABLED": "false",
         "SCREENER_SCHEDULER_ENABLED": "true",
         "PAPER_AUTO_APPROVE_PROPOSALS": "false",
         "AUTO_EXECUTION_WORKER_ENABLED": "false",
@@ -44,6 +45,26 @@ def test_shadow_environment_rejects_unsafe_execution(monkeypatch) -> None:
 
     assert "AUTO_EXECUTION_WORKER_ENABLED must be false in shadow mode" in errors
     assert "ENABLE_REAL_TRADING must be false" in errors
+
+
+def test_shadow_environment_rejects_pause_and_kill_switch_defaults(monkeypatch) -> None:
+    valid_shadow_environment(monkeypatch)
+    monkeypatch.setenv("AUTOMATION_PAUSED_DEFAULT", "true")
+    monkeypatch.setenv("KILL_SWITCH_ENABLED", "true")
+
+    errors = validate()
+
+    assert "AUTOMATION_PAUSED_DEFAULT must be false in shadow mode" in errors
+    assert "KILL_SWITCH_ENABLED must be false in shadow mode" in errors
+
+
+def test_bootstrap_environment_requires_pause_and_kill_switch(monkeypatch) -> None:
+    valid_shadow_environment(monkeypatch)
+    monkeypatch.setenv("DEPLOYMENT_STAGE", "bootstrap")
+    monkeypatch.setenv("AUTOMATION_PAUSED_DEFAULT", "true")
+    monkeypatch.setenv("KILL_SWITCH_ENABLED", "true")
+
+    assert validate() == []
 
 
 def test_environment_rejects_sqlite_and_wrong_account(monkeypatch) -> None:

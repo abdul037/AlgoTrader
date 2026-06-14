@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+from hmac import compare_digest
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.approvals.service import ProposalService
@@ -139,6 +141,21 @@ def create_app(
     )
     app.state.settings = app_settings
     app.state.db = database
+
+    @app.middleware("http")
+    async def require_control_token_for_mutations(request: Request, call_next):
+        token = app_settings.control_api_token
+        is_mutation = request.method not in {"GET", "HEAD", "OPTIONS"}
+        uses_separate_auth = request.url.path == "/telegram/webhook"
+        if token and is_mutation and not uses_separate_auth:
+            supplied = request.headers.get("X-Control-Token", "")
+            if not supplied or not compare_digest(supplied, token):
+                return JSONResponse(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    content={"detail": "invalid_control_token"},
+                )
+        return await call_next(request)
+
     if broker is None:
         from app.broker.etoro_client import EToroClient
 

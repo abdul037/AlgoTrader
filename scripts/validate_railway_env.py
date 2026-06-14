@@ -18,8 +18,10 @@ def validate() -> list[str]:
         errors.append("DATABASE_URL must use postgresql+psycopg")
     if "sslmode=require" not in database_url:
         errors.append("DATABASE_URL must require TLS")
-    if stage not in {"shadow", "supervised", "unattended"}:
-        errors.append("DEPLOYMENT_STAGE must be shadow, supervised, or unattended")
+    if stage not in {"bootstrap", "shadow", "supervised", "unattended"}:
+        errors.append("DEPLOYMENT_STAGE must be bootstrap, shadow, supervised, or unattended")
+    if len(os.environ.get("CONTROL_API_TOKEN", "")) < 32:
+        errors.append("CONTROL_API_TOKEN must contain at least 32 characters")
     if os.environ.get("EXECUTION_MODE", "").strip().lower() != "paper":
         errors.append("EXECUTION_MODE must be paper")
     if as_bool("ENABLE_REAL_TRADING"):
@@ -42,19 +44,23 @@ def validate() -> list[str]:
     if as_bool("PAPER_SIMULATED_FALLBACK_ENABLED"):
         errors.append("PAPER_SIMULATED_FALLBACK_ENABLED must be false")
 
-    if stage == "shadow":
-        required_true = {
-            "AUTOMATION_PAUSED_DEFAULT",
-            "KILL_SWITCH_ENABLED",
-            "SCREENER_SCHEDULER_ENABLED",
-        }
+    if stage in {"bootstrap", "shadow"}:
+        required_true = {"SCREENER_SCHEDULER_ENABLED"}
         required_false = {
             "PAPER_AUTO_APPROVE_PROPOSALS",
             "AUTO_EXECUTION_WORKER_ENABLED",
             "AUTO_PROPOSE_ENABLED",
             "AUTO_EXECUTE_AFTER_APPROVAL",
         }
-        errors.extend(f"{name} must be true in shadow mode" for name in required_true if not as_bool(name))
+        errors.extend(f"{name} must be true in {stage} mode" for name in required_true if not as_bool(name))
+        errors.extend(f"{name} must be false in {stage} mode" for name in required_false if as_bool(name))
+
+    if stage == "bootstrap":
+        required_true = {"AUTOMATION_PAUSED_DEFAULT", "KILL_SWITCH_ENABLED"}
+        errors.extend(f"{name} must be true in bootstrap mode" for name in required_true if not as_bool(name))
+
+    if stage == "shadow":
+        required_false = {"AUTOMATION_PAUSED_DEFAULT", "KILL_SWITCH_ENABLED"}
         errors.extend(f"{name} must be false in shadow mode" for name in required_false if as_bool(name))
 
     return errors

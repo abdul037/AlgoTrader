@@ -8,6 +8,7 @@ def test_export_builds_valid_shadow_environment(monkeypatch) -> None:
     values = build_values(
         {
             "DATABASE_URL": "postgresql+psycopg://user:password@host/postgres?sslmode=require",
+            "CONTROL_API_TOKEN": "control-secret-at-least-32-characters",
             "ALPACA_API_KEY": "key",
             "ALPACA_SECRET_KEY": "secret",
             "ALPACA_BASE_URL": "https://paper-api.alpaca.markets/v2",
@@ -18,7 +19,8 @@ def test_export_builds_valid_shadow_environment(monkeypatch) -> None:
 
     assert validate() == []
     assert values["DEPLOYMENT_STAGE"] == "shadow"
-    assert values["KILL_SWITCH_ENABLED"] == "true"
+    assert values["KILL_SWITCH_ENABLED"] == "false"
+    assert values["AUTOMATION_PAUSED_DEFAULT"] == "false"
     assert values["PAPER_AUTO_APPROVE_PROPOSALS"] == "false"
     assert values["AUTO_EXECUTION_WORKER_ENABLED"] == "false"
     assert "ETORO_API_KEY" not in values

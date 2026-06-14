@@ -24,6 +24,7 @@ class AppSettings(BaseSettings):
     app_name: str = "eToro Approval Trading Bot"
     environment: str = "development"
     database_url: str = "sqlite:///./etoro_bot.db"
+    control_api_token: str = ""
 
     etoro_api_key: str = ""
     etoro_user_key: str = Field(

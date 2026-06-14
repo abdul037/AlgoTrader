@@ -17,6 +17,7 @@ from scripts.validate_railway_env import validate  # noqa: E402
 
 COPIED_NAMES = (
     "DATABASE_URL",
+    "CONTROL_API_TOKEN",
     "ALPACA_API_KEY",
     "ALPACA_SECRET_KEY",
     "ALPACA_BASE_URL",
@@ -55,8 +56,8 @@ SHADOW_VALUES = {
     "ENABLE_REAL_TRADING": "false",
     "REQUIRE_APPROVAL": "true",
     "PAPER_SIMULATED_FALLBACK_ENABLED": "false",
-    "AUTOMATION_PAUSED_DEFAULT": "true",
-    "KILL_SWITCH_ENABLED": "true",
+    "AUTOMATION_PAUSED_DEFAULT": "false",
+    "KILL_SWITCH_ENABLED": "false",
     "KILL_SWITCH_AUTO_CLOSE_POSITIONS": "false",
     "PAPER_AUTO_APPROVE_PROPOSALS": "false",
     "AUTO_EXECUTION_WORKER_ENABLED": "false",
