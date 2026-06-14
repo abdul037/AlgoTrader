@@ -25,6 +25,16 @@ application sleeping, and prevents overlapping old/new deployments.
 Use Railway's raw variable editor. Supply the rotated Supabase and Alpaca
 credentials directly in Railway; never commit them.
 
+Generate a validated shadow-mode bundle from the local `.env`, copy it to the
+clipboard, and paste it into Railway's raw variable editor:
+
+```bash
+python3 scripts/export_railway_env.py
+pbcopy < .railway.env
+```
+
+The generated `.railway.env` is Git-ignored and has owner-only permissions.
+
 Required secret variables:
 
 ```env

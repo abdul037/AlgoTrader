@@ -1,5 +1,6 @@
 .env
 .env.local
+.railway.env
 *.db
 *.db-journal
 *.db-wal
