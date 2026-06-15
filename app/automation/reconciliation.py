@@ -5,6 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from app.models.execution import ExecutionStatus
+from app.models.institutional import (
+    BrokerAccountIdentity,
+    BrokerCapability,
+    BrokerReconciliationResult,
+)
 from app.utils.time import utc_now
 
 
@@ -28,6 +33,7 @@ class AlpacaReconciliationService:
         runtime_state: Any,
         run_logs: Any,
         automation: Any,
+        broker_governance: Any | None = None,
     ):
         self.settings = settings
         self.alpaca = alpaca_client
@@ -38,6 +44,7 @@ class AlpacaReconciliationService:
         self.state = runtime_state
         self.logs = run_logs
         self.automation = automation
+        self.broker_governance = broker_governance
 
     def reconcile(self) -> dict[str, Any]:
         if self.alpaca is None or not bool(getattr(self.settings, "alpaca_reconciliation_enabled", True)):
@@ -62,21 +69,79 @@ class AlpacaReconciliationService:
             issues=[],
             account=result["account"],
         )
+        self._record_governance_reconciliation(status="ok", issues=[], result=result)
         self.logs.log("alpaca_reconciliation_ok", result)
         return {"status": "ok", **result}
 
     def account_verified(self) -> bool:
-        expected = str(getattr(self.settings, "alpaca_expected_account_number", "") or "").strip()
+        expected = str(
+            getattr(
+                self.settings,
+                "alpaca_effective_expected_account_number",
+                getattr(self.settings, "alpaca_expected_account_number", ""),
+            )
+            or ""
+        ).strip()
         if not expected:
             return True
         return bool(self.automation.status().account_verified)
 
     def _reconcile(self) -> dict[str, Any]:
         account = self.alpaca.get_account_identity()
-        expected = str(getattr(self.settings, "alpaca_expected_account_number", "") or "").strip()
+        expected = str(
+            getattr(
+                self.settings,
+                "alpaca_effective_expected_account_number",
+                getattr(self.settings, "alpaca_expected_account_number", ""),
+            )
+            or ""
+        ).strip()
         actual = str(account.get("account_number") or "")
         account_verified = not expected or actual == expected
         self.automation.set_account_verified(account_verified)
+        if self.broker_governance is not None:
+            self.broker_governance.upsert_identity(
+                BrokerAccountIdentity(
+                    broker="alpaca",
+                    account_mode="paper" if getattr(self.alpaca, "paper", True) else "live",
+                    account_id=str(account.get("id") or ""),
+                    account_number=actual,
+                    expected_account_number=expected,
+                    verified=account_verified,
+                    status=str(account.get("status") or "unknown"),
+                    details={
+                        "trading_blocked": bool(account.get("trading_blocked")),
+                        "equity": float(account.get("equity") or 0.0),
+                    },
+                )
+            )
+            capabilities = (
+                self.alpaca.get_capabilities()
+                if hasattr(self.alpaca, "get_capabilities")
+                else {}
+            )
+            self.broker_governance.upsert_capability(
+                BrokerCapability(
+                    broker="alpaca",
+                    account_mode="paper" if getattr(self.alpaca, "paper", True) else "live",
+                    supports_equities=bool(capabilities.get("supports_equities", True)),
+                    supports_native_protection=bool(
+                        capabilities.get("supports_native_protection", True)
+                    ),
+                    supports_client_idempotency=bool(
+                        capabilities.get("supports_client_idempotency", True)
+                    ),
+                    supports_shorting=bool(capabilities.get("supports_shorting", False)),
+                    supports_borrow_checks=bool(
+                        capabilities.get("supports_borrow_checks", False)
+                    ),
+                    supports_financing_costs=bool(
+                        capabilities.get("supports_financing_costs", False)
+                    ),
+                    verified=account_verified,
+                    details=capabilities,
+                )
+            )
         issues: list[str] = []
         if not account_verified:
             issues.append(f"account_mismatch:expected={expected}:actual={actual}")
@@ -139,6 +204,20 @@ class AlpacaReconciliationService:
         execution.realized_pnl_usd = self._realized_pnl(payload)
         execution.updated_at = utc_now().isoformat()
         self.executions.update(execution)
+        if self.broker_governance is not None:
+            fill_price = float(payload.get("filled_avg_price") or 0.0) or None
+            proposed_price = float((execution.request_payload or {}).get("proposed_price") or 0.0)
+            slippage_bps = (
+                abs((fill_price - proposed_price) / proposed_price) * 10_000.0
+                if fill_price is not None and proposed_price > 0
+                else None
+            )
+            self.broker_governance.update_comparison_fill(
+                broker="alpaca",
+                broker_order_id=str(payload.get("broker_order_id") or execution.broker_order_id or ""),
+                fill_price=fill_price,
+                slippage_bps=slippage_bps,
+            )
 
     @staticmethod
     def _realized_pnl(payload: dict[str, Any]) -> float:
@@ -205,6 +284,7 @@ class AlpacaReconciliationService:
             issues=issues,
             account=account,
         )
+        self._record_governance_reconciliation(status="error", issues=issues, result=result or {})
         self.logs.log("alpaca_reconciliation_failed", {"issues": issues, "consecutive_failures": count})
         threshold = max(int(getattr(self.settings, "reconciliation_failures_before_kill_switch", 3)), 1)
         immediate = any(
@@ -218,3 +298,29 @@ class AlpacaReconciliationService:
                 emergency_stop=not account_mismatch,
             )
         return {"status": "error", "issues": issues, "consecutive_failures": count, **(result or {})}
+
+    def _record_governance_reconciliation(
+        self,
+        *,
+        status: str,
+        issues: list[str],
+        result: dict[str, Any],
+    ) -> None:
+        if self.broker_governance is None:
+            return
+        account = dict(result.get("account") or {})
+        self.broker_governance.record_reconciliation(
+            BrokerReconciliationResult(
+                broker="alpaca",
+                account_id=str(account.get("id") or account.get("account_number") or ""),
+                status=status,
+                orders_seen=int(result.get("orders_seen") or 0),
+                positions_seen=int(result.get("positions_seen") or 0),
+                unknown_positions=sum(item.startswith("unknown_position:") for item in issues),
+                unprotected_positions=sum(
+                    item.startswith("missing_bracket_protection:") for item in issues
+                ),
+                issues=issues,
+                details={"account_number": str(account.get("account_number") or "")},
+            )
+        )

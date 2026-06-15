@@ -37,11 +37,18 @@ def build_risk_context(settings: Any, broker: Any, executions_repo: Any) -> Risk
     portfolio = broker.get_portfolio()
     account_balance = max(portfolio.account.equity, portfolio.account.cash_balance, 1.0)
     positions_by_symbol: dict[str, int] = {}
+    exposure_by_symbol_pct: dict[str, float] = {}
+    gross_market_value = 0.0
     for position in portfolio.positions:
         symbol = str(position.symbol or "").upper()
         if not symbol:
             continue
         positions_by_symbol[symbol] = positions_by_symbol.get(symbol, 0) + 1
+        market_value = abs(float(position.market_value or 0.0))
+        gross_market_value += market_value
+        exposure_by_symbol_pct[symbol] = exposure_by_symbol_pct.get(symbol, 0.0) + (
+            market_value / account_balance * 100.0
+        )
 
     return RiskContext(
         account_balance=account_balance,
@@ -49,6 +56,8 @@ def build_risk_context(settings: Any, broker: Any, executions_repo: Any) -> Risk
         weekly_realized_pnl_usd=weekly_pnl,
         open_positions=len(portfolio.positions),
         positions_by_symbol=positions_by_symbol,
+        exposure_by_symbol_pct=exposure_by_symbol_pct,
+        gross_exposure_pct=gross_market_value / account_balance * 100.0,
         consecutive_losses_today=consecutive_losses,
         trades_today=trades_today,
         mode="paper" if settings.execution_mode == "paper" else settings.etoro_account_mode,

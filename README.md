@@ -923,6 +923,24 @@ Telegram smoke test:
 - `/daily_summary`
 
 Production deployment notes, backup/restore commands, webhook reset, and emergency stop steps are in [`docs/production_runbook.md`](docs/production_runbook.md).
+Implementation status and evidence still required are in
+[`docs/institutional_roadmap_status.md`](docs/institutional_roadmap_status.md).
+
+Institutional governance endpoints:
+
+- `GET /institutional/readiness`
+- `GET /institutional/strategies`
+- `GET /institutional/promotions`
+- `GET /institutional/brokers`
+- `GET /institutional/broker-comparisons`
+- `GET /institutional/portfolio-risk`
+- `GET /institutional/rollout-gates`
+
+The institutional gate layer blocks promotion when audits contain unexplained
+errors, insufficient out-of-sample trades, weak risk-adjusted performance,
+negative after-cost expectancy, excessive drawdown, or incomplete protective
+exit coverage. eToro Demo v2 support is present but disabled and not connected
+to active unattended routing.
 
 ## Phased Rollout
 

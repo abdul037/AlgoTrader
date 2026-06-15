@@ -53,7 +53,7 @@ class EMATrendStackStrategy(BaseStrategy):
             risk = max(entry - stop, atr * 0.85, 0.01)
             target = entry + (risk * 2.2)
             confluence = compute_confluence_score(last, is_short=False)
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.BUY,
@@ -89,7 +89,7 @@ class EMATrendStackStrategy(BaseStrategy):
             risk = max(stop - entry, atr * 0.85, 0.01)
             target = entry - (risk * 2.2)
             confluence = compute_confluence_score(last, is_short=True)
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.SELL,

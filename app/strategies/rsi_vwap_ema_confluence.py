@@ -111,7 +111,7 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
             quality_score = self._quality_score(confluence_long, rv=rv, adx=adx, quality=quality)
             breakout_confirmed = bool(long_diagnostics["measurements"].get("breakout_confirmed"))
             confidence = round(min(0.96, 0.70 + quality_score * 0.24 - (0.03 if not breakout_confirmed else 0.0)), 4)
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.BUY,
@@ -153,7 +153,7 @@ class RSIVWAPEMAConfluenceStrategy(BaseStrategy):
             quality_score = self._quality_score(confluence_short, rv=rv, adx=adx, quality=quality)
             breakdown_confirmed = bool(short_diagnostics["measurements"].get("breakout_confirmed"))
             confidence = round(min(0.96, 0.70 + quality_score * 0.24 - (0.03 if not breakdown_confirmed else 0.0)), 4)
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.SELL,

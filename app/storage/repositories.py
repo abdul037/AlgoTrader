@@ -11,6 +11,17 @@ from pydantic import BaseModel
 from app.models.approval import ApprovalStatus, TradeProposal
 from app.models.execution import ExecutionRecord
 from app.models.execution_queue import ExecutionQueueRecord
+from app.models.institutional import (
+    BrokerAccountIdentity,
+    BrokerCapability,
+    BrokerComparison,
+    BrokerReconciliationResult,
+    PortfolioRiskSnapshot,
+    PromotionDecision,
+    RolloutGateEvidence,
+    StrategyAudit,
+    StrategyVersion,
+)
 from app.models.live_signal import LiveSignalSnapshot
 from app.models.paper import PaperPerformanceSummary, PaperPositionRecord, PaperTradeRecord
 from app.models.screener import ScanDecisionRecord
@@ -787,6 +798,624 @@ class RuntimeStateRepository:
                 """,
                 (state_key, state_value, utc_now().isoformat()),
             )
+
+
+class StrategyGovernanceRepository:
+    """Persist strategy versions, qualification audits, and promotion decisions."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def create_version(self, version: StrategyVersion) -> StrategyVersion:
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO strategy_versions (
+                    id, strategy_name, code_version, parameters_json, dataset_version,
+                    timeframe, status, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    version.id,
+                    version.strategy_name,
+                    version.code_version,
+                    json.dumps(version.parameters),
+                    version.dataset_version,
+                    version.timeframe,
+                    version.status,
+                    version.created_at,
+                ),
+            )
+        return version
+
+    def get_version(self, version_id: str) -> StrategyVersion:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM strategy_versions WHERE id = ?",
+                (version_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Strategy version {version_id} not found")
+        return self._version(row)
+
+    def list_versions(self, *, limit: int = 200) -> list[StrategyVersion]:
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM strategy_versions ORDER BY created_at DESC LIMIT ?",
+                (max(1, limit),),
+            ).fetchall()
+        return [self._version(row) for row in rows]
+
+    def update_version_status(self, version_id: str, status: str) -> None:
+        with self.db.connect() as connection:
+            connection.execute(
+                "UPDATE strategy_versions SET status = ? WHERE id = ?",
+                (status, version_id),
+            )
+
+    def record_audit(self, audit: StrategyAudit) -> StrategyAudit:
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO strategy_audits (
+                    id, strategy_version_id, dataset_version, timeframe, out_of_sample_trades,
+                    deflated_sharpe, rolling_sharpe, profit_factor, expectancy_after_costs,
+                    max_drawdown_pct, strategy_drawdown_pct, unexplained_errors,
+                    protected_exit_coverage_pct, metrics_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    audit.id,
+                    audit.strategy_version_id,
+                    audit.dataset_version,
+                    audit.timeframe,
+                    audit.out_of_sample_trades,
+                    audit.deflated_sharpe,
+                    audit.rolling_sharpe,
+                    audit.profit_factor,
+                    audit.expectancy_after_costs,
+                    audit.max_drawdown_pct,
+                    audit.strategy_drawdown_pct,
+                    audit.unexplained_errors,
+                    audit.protected_exit_coverage_pct,
+                    json.dumps(audit.metrics),
+                    audit.created_at,
+                ),
+            )
+        return audit
+
+    def latest_audit(self, version_id: str) -> StrategyAudit | None:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM strategy_audits
+                WHERE strategy_version_id = ?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (version_id,),
+            ).fetchone()
+        return None if row is None else self._audit(row)
+
+    def list_audits(self, *, limit: int = 200) -> list[StrategyAudit]:
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM strategy_audits ORDER BY created_at DESC LIMIT ?",
+                (max(1, limit),),
+            ).fetchall()
+        return [self._audit(row) for row in rows]
+
+    def record_decision(self, decision: PromotionDecision) -> PromotionDecision:
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO promotion_decisions (
+                    id, strategy_version_id, strategy_audit_id, target_stage, approved,
+                    blockers_json, evidence_json, decided_by, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    decision.id,
+                    decision.strategy_version_id,
+                    decision.strategy_audit_id,
+                    decision.target_stage,
+                    1 if decision.approved else 0,
+                    json.dumps(decision.blockers),
+                    json.dumps(decision.evidence),
+                    decision.decided_by,
+                    decision.created_at,
+                ),
+            )
+        return decision
+
+    def list_decisions(self, *, limit: int = 200) -> list[PromotionDecision]:
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM promotion_decisions ORDER BY created_at DESC LIMIT ?",
+                (max(1, limit),),
+            ).fetchall()
+        return [self._decision(row) for row in rows]
+
+    def approved_production_versions(self) -> list[str]:
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT decision.strategy_version_id
+                FROM promotion_decisions AS decision
+                JOIN strategy_versions AS version
+                  ON version.id = decision.strategy_version_id
+                WHERE decision.approved = 1
+                  AND decision.target_stage = 'production_candidate'
+                  AND version.status = 'production_candidate'
+                """
+            ).fetchall()
+        return [str(row["strategy_version_id"]) for row in rows]
+
+    def strategy_production_approved(self, strategy_name: str) -> bool:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM promotion_decisions AS decision
+                JOIN strategy_versions AS version
+                  ON version.id = decision.strategy_version_id
+                WHERE decision.approved = 1
+                  AND decision.target_stage = 'production_candidate'
+                  AND version.strategy_name = ?
+                  AND version.status = 'production_candidate'
+                LIMIT 1
+                """,
+                (strategy_name,),
+            ).fetchone()
+        return row is not None
+
+    @staticmethod
+    def _version(row: Any) -> StrategyVersion:
+        payload = dict(row)
+        payload["parameters"] = json.loads(payload.pop("parameters_json") or "{}")
+        return StrategyVersion.model_validate(payload)
+
+    @staticmethod
+    def _audit(row: Any) -> StrategyAudit:
+        payload = dict(row)
+        payload["metrics"] = json.loads(payload.pop("metrics_json") or "{}")
+        return StrategyAudit.model_validate(payload)
+
+    @staticmethod
+    def _decision(row: Any) -> PromotionDecision:
+        payload = dict(row)
+        payload["approved"] = bool(payload["approved"])
+        payload["blockers"] = json.loads(payload.pop("blockers_json") or "[]")
+        payload["evidence"] = json.loads(payload.pop("evidence_json") or "{}")
+        return PromotionDecision.model_validate(payload)
+
+
+class BrokerGovernanceRepository:
+    """Persist normalized multi-broker capability, identity, and comparison evidence."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def upsert_capability(self, capability: BrokerCapability) -> BrokerCapability:
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO broker_capabilities (
+                    id, broker, account_mode, supports_equities, supports_native_protection,
+                    supports_client_idempotency, supports_shorting, supports_borrow_checks,
+                    supports_financing_costs, verified, details_json, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(broker, account_mode)
+                DO UPDATE SET
+                    id = excluded.id,
+                    supports_equities = excluded.supports_equities,
+                    supports_native_protection = excluded.supports_native_protection,
+                    supports_client_idempotency = excluded.supports_client_idempotency,
+                    supports_shorting = excluded.supports_shorting,
+                    supports_borrow_checks = excluded.supports_borrow_checks,
+                    supports_financing_costs = excluded.supports_financing_costs,
+                    verified = excluded.verified,
+                    details_json = excluded.details_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    capability.id,
+                    capability.broker,
+                    capability.account_mode,
+                    int(capability.supports_equities),
+                    int(capability.supports_native_protection),
+                    int(capability.supports_client_idempotency),
+                    int(capability.supports_shorting),
+                    int(capability.supports_borrow_checks),
+                    int(capability.supports_financing_costs),
+                    int(capability.verified),
+                    json.dumps(capability.details),
+                    capability.updated_at,
+                ),
+            )
+        return capability
+
+    def upsert_identity(self, identity: BrokerAccountIdentity) -> BrokerAccountIdentity:
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO broker_account_identities (
+                    id, broker, account_mode, account_id, account_number,
+                    expected_account_number, verified, status, details_json, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(broker, account_mode)
+                DO UPDATE SET
+                    id = excluded.id,
+                    account_id = excluded.account_id,
+                    account_number = excluded.account_number,
+                    expected_account_number = excluded.expected_account_number,
+                    verified = excluded.verified,
+                    status = excluded.status,
+                    details_json = excluded.details_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    identity.id,
+                    identity.broker,
+                    identity.account_mode,
+                    identity.account_id,
+                    identity.account_number,
+                    identity.expected_account_number,
+                    int(identity.verified),
+                    identity.status,
+                    json.dumps(identity.details),
+                    identity.updated_at,
+                ),
+            )
+        return identity
+
+    def record_reconciliation(
+        self, result: BrokerReconciliationResult
+    ) -> BrokerReconciliationResult:
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO broker_reconciliation_results (
+                    id, broker, account_id, status, orders_seen, positions_seen,
+                    unknown_positions, unprotected_positions, issues_json, details_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    result.id,
+                    result.broker,
+                    result.account_id,
+                    result.status,
+                    result.orders_seen,
+                    result.positions_seen,
+                    result.unknown_positions,
+                    result.unprotected_positions,
+                    json.dumps(result.issues),
+                    json.dumps(result.details),
+                    result.created_at,
+                ),
+            )
+        return result
+
+    def record_comparison(self, comparison: BrokerComparison) -> BrokerComparison:
+        payload = comparison.model_dump()
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO broker_comparisons (
+                    id, signal_id, symbol, strategy_name, primary_broker, comparison_broker,
+                    primary_order_id, comparison_order_id, status, primary_fill_price,
+                    comparison_fill_price, primary_cost_usd, comparison_cost_usd,
+                    primary_slippage_bps, comparison_slippage_bps, details_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    comparison.id,
+                    comparison.signal_id,
+                    comparison.symbol.upper(),
+                    comparison.strategy_name,
+                    comparison.primary_broker,
+                    comparison.comparison_broker,
+                    comparison.primary_order_id,
+                    comparison.comparison_order_id,
+                    comparison.status,
+                    comparison.primary_fill_price,
+                    comparison.comparison_fill_price,
+                    comparison.primary_cost_usd,
+                    comparison.comparison_cost_usd,
+                    comparison.primary_slippage_bps,
+                    comparison.comparison_slippage_bps,
+                    json.dumps(payload["details"]),
+                    comparison.created_at,
+                ),
+            )
+        return comparison
+
+    def update_comparison_fill(
+        self,
+        *,
+        broker: str,
+        broker_order_id: str,
+        fill_price: float | None,
+        cost_usd: float = 0.0,
+        slippage_bps: float | None = None,
+    ) -> None:
+        if broker == "alpaca":
+            match_column = "primary_order_id"
+            fill_column = "primary_fill_price"
+            cost_column = "primary_cost_usd"
+            slippage_column = "primary_slippage_bps"
+            completed_column = "comparison_fill_price"
+        elif broker == "etoro":
+            match_column = "comparison_order_id"
+            fill_column = "comparison_fill_price"
+            cost_column = "comparison_cost_usd"
+            slippage_column = "comparison_slippage_bps"
+            completed_column = "primary_fill_price"
+        else:
+            raise ValueError(f"Unsupported comparison broker {broker}")
+        with self.db.connect() as connection:
+            connection.execute(
+                f"""
+                UPDATE broker_comparisons
+                SET {fill_column} = ?,
+                    {cost_column} = ?,
+                    {slippage_column} = ?,
+                    status = CASE
+                        WHEN ? IS NOT NULL AND {completed_column} IS NOT NULL
+                        THEN 'completed'
+                        ELSE status
+                    END
+                WHERE {match_column} = ?
+                """,
+                (fill_price, cost_usd, slippage_bps, fill_price, broker_order_id),
+            )
+
+    def list_capabilities(self) -> list[dict[str, Any]]:
+        return self._list_json(
+            "SELECT * FROM broker_capabilities ORDER BY broker, account_mode",
+            bool_fields={
+                "supports_equities",
+                "supports_native_protection",
+                "supports_client_idempotency",
+                "supports_shorting",
+                "supports_borrow_checks",
+                "supports_financing_costs",
+                "verified",
+            },
+        )
+
+    def list_identities(self) -> list[dict[str, Any]]:
+        return self._list_json(
+            "SELECT * FROM broker_account_identities ORDER BY broker, account_mode",
+            bool_fields={"verified"},
+        )
+
+    def list_reconciliations(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        return self._list_json(
+            "SELECT * FROM broker_reconciliation_results ORDER BY created_at DESC LIMIT ?",
+            (max(1, limit),),
+        )
+
+    def list_comparisons(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        return self._list_json(
+            "SELECT * FROM broker_comparisons ORDER BY created_at DESC LIMIT ?",
+            (max(1, limit),),
+        )
+
+    def _list_json(
+        self,
+        query: str,
+        params: tuple[Any, ...] = (),
+        *,
+        bool_fields: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        with self.db.connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        parsed = [dict(row) for row in rows]
+        for item in parsed:
+            for key in list(item):
+                if key.endswith("_json"):
+                    item[key.removesuffix("_json")] = json.loads(item.pop(key) or "{}")
+            for key in bool_fields or set():
+                item[key] = bool(item[key])
+        return parsed
+
+
+class EToroDemoIdempotencyRepository:
+    """Durably reserve and complete eToro Demo mutation requests."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def reserve(
+        self,
+        *,
+        client_order_id: str,
+        request_id: str,
+        request_hash: str,
+        request_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        now = utc_now().isoformat()
+        with self.db.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO etoro_demo_order_requests (
+                    client_order_id, request_id, request_hash, request_json,
+                    broker_order_id, status, response_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, NULL, 'reserved', NULL, ?, ?)
+                ON CONFLICT(client_order_id) DO NOTHING
+                """,
+                (
+                    client_order_id,
+                    request_id,
+                    request_hash,
+                    json.dumps(request_payload, sort_keys=True),
+                    now,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM etoro_demo_order_requests WHERE client_order_id = ?",
+                (client_order_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("eToro Demo idempotency reservation was not persisted")
+        result = dict(row)
+        result["is_new"] = cursor.rowcount > 0
+        result["request_payload"] = json.loads(result.pop("request_json") or "{}")
+        result["response"] = json.loads(result.pop("response_json") or "null")
+        return result
+
+    def complete(
+        self,
+        *,
+        client_order_id: str,
+        broker_order_id: str,
+        status: str,
+        response: dict[str, Any],
+    ) -> None:
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                UPDATE etoro_demo_order_requests
+                SET broker_order_id = ?, status = ?, response_json = ?, updated_at = ?
+                WHERE client_order_id = ?
+                """,
+                (
+                    broker_order_id,
+                    status,
+                    json.dumps(response),
+                    utc_now().isoformat(),
+                    client_order_id,
+                ),
+            )
+
+    def list(self, *, limit: int = 1000) -> list[dict[str, Any]]:
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM etoro_demo_order_requests
+                ORDER BY created_at DESC LIMIT ?
+                """,
+                (max(1, limit),),
+            ).fetchall()
+        results = []
+        for row in rows:
+            item = dict(row)
+            item["request_payload"] = json.loads(item.pop("request_json") or "{}")
+            item["response"] = json.loads(item.pop("response_json") or "null")
+            results.append(item)
+        return results
+
+
+class PortfolioRiskRepository:
+    """Persist portfolio-level risk snapshots."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def create(self, snapshot: PortfolioRiskSnapshot) -> PortfolioRiskSnapshot:
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO portfolio_risk_snapshots (
+                    id, broker, equity_usd, peak_equity_usd, drawdown_pct,
+                    gross_exposure_pct, largest_symbol_exposure_pct,
+                    largest_sector_exposure_pct, largest_correlated_exposure_pct,
+                    open_positions, status, blockers_json, details_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot.id,
+                    snapshot.broker,
+                    snapshot.equity_usd,
+                    snapshot.peak_equity_usd,
+                    snapshot.drawdown_pct,
+                    snapshot.gross_exposure_pct,
+                    snapshot.largest_symbol_exposure_pct,
+                    snapshot.largest_sector_exposure_pct,
+                    snapshot.largest_correlated_exposure_pct,
+                    snapshot.open_positions,
+                    snapshot.status,
+                    json.dumps(snapshot.blockers),
+                    json.dumps(snapshot.details),
+                    snapshot.created_at,
+                ),
+            )
+        return snapshot
+
+    def latest(self) -> PortfolioRiskSnapshot | None:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM portfolio_risk_snapshots ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+        if row is None:
+            return None
+        payload = dict(row)
+        payload["blockers"] = json.loads(payload.pop("blockers_json") or "[]")
+        payload["details"] = json.loads(payload.pop("details_json") or "{}")
+        return PortfolioRiskSnapshot.model_validate(payload)
+
+
+class RolloutGateRepository:
+    """Persist signed rollout-gate evidence."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def upsert(self, gate: RolloutGateEvidence) -> RolloutGateEvidence:
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO rollout_gate_evidence (
+                    id, stage, gate_name, status, evidence_json, signed_by, observed_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(stage, gate_name)
+                DO UPDATE SET
+                    id = excluded.id,
+                    status = excluded.status,
+                    evidence_json = excluded.evidence_json,
+                    signed_by = excluded.signed_by,
+                    observed_at = excluded.observed_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    gate.id,
+                    gate.stage,
+                    gate.gate_name,
+                    gate.status,
+                    json.dumps(gate.evidence),
+                    gate.signed_by,
+                    gate.observed_at,
+                    gate.updated_at,
+                ),
+            )
+        return gate
+
+    def list(self, *, stage: str | None = None) -> list[RolloutGateEvidence]:
+        query = "SELECT * FROM rollout_gate_evidence"
+        params: tuple[Any, ...] = ()
+        if stage:
+            query += " WHERE stage = ?"
+            params = (stage,)
+        query += " ORDER BY stage, gate_name"
+        with self.db.connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        gates = []
+        for row in rows:
+            payload = dict(row)
+            payload["evidence"] = json.loads(payload.pop("evidence_json") or "{}")
+            gates.append(RolloutGateEvidence.model_validate(payload))
+        return gates
 
 
 class BrokerOrderSnapshotRepository:

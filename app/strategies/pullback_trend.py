@@ -47,7 +47,7 @@ class PullbackTrendStrategy(BaseStrategy):
             stop = float(last["trend_ma"] * 0.98)
             target = float(last["close"] * 1.12)
             risk = max(entry - stop, 0.01)
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.BUY,
@@ -70,7 +70,7 @@ class PullbackTrendStrategy(BaseStrategy):
 
         trend_broken = last["close"] < last["trend_ma"] or last["ema_short"] < last["ema_long"]
         if trend_broken:
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.SELL,

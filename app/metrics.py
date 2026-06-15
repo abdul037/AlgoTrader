@@ -39,6 +39,20 @@ def metrics(request: Request) -> Response:
             "algobot_reconciliation_failures_total": "SELECT COUNT(*) FROM reconciliation_runs WHERE status = 'error'",
             "algobot_blacklisted_symbols": "SELECT COUNT(*) FROM instrument_blacklist WHERE active = 1",
             "algobot_inactive_strategies": "SELECT COUNT(*) FROM strategy_health WHERE active = 0",
+            "algobot_strategy_versions_total": "SELECT COUNT(*) FROM strategy_versions",
+            "algobot_strategy_promotions_approved": (
+                "SELECT COUNT(*) FROM promotion_decisions "
+                "WHERE approved = 1 AND target_stage = 'production_candidate'"
+            ),
+            "algobot_rollout_gates_passed": (
+                "SELECT COUNT(*) FROM rollout_gate_evidence WHERE status = 'passed'"
+            ),
+            "algobot_broker_comparisons_completed": (
+                "SELECT COUNT(*) FROM broker_comparisons WHERE status = 'completed'"
+            ),
+            "algobot_broker_reconciliation_failures_total": (
+                "SELECT COUNT(*) FROM broker_reconciliation_results WHERE status = 'error'"
+            ),
         }.items():
             counts[name] = int(connection.execute(query).fetchone()[0])
         realized_row = connection.execute(
@@ -55,8 +69,24 @@ def metrics(request: Request) -> Response:
             WHERE state_key LIKE 'workflow:last_%_at'
             """
         ).fetchall()
+        risk_row = connection.execute(
+            """
+            SELECT drawdown_pct, gross_exposure_pct
+            FROM portfolio_risk_snapshots
+            ORDER BY created_at DESC LIMIT 1
+            """
+        ).fetchone()
+        etoro_reconciliation_row = connection.execute(
+            """
+            SELECT status
+            FROM broker_reconciliation_results
+            WHERE broker = 'etoro'
+            ORDER BY created_at DESC LIMIT 1
+            """
+        ).fetchone()
 
     latest_reconciliation = dict(reconciliation_row) if reconciliation_row is not None else {}
+    institutional_readiness = request.app.state.institutional_service.readiness()
     account = json.loads(latest_reconciliation.get("account_json") or "{}")
     equity = float(account.get("equity") or 0.0)
     last_equity = float(account.get("last_equity") or equity)
@@ -74,6 +104,14 @@ def metrics(request: Request) -> Response:
             "algobot_paper_auto_approve_enabled": int(automation.paper_auto_approve_proposals),
             "algobot_auto_execution_worker_enabled": int(automation.auto_execution_worker_enabled),
             "algobot_alpaca_account_verified": int(bool(automation.account_verified)),
+            "algobot_portfolio_drawdown_pct": float(risk_row["drawdown_pct"] if risk_row else 0.0),
+            "algobot_portfolio_gross_exposure_pct": float(
+                risk_row["gross_exposure_pct"] if risk_row else 0.0
+            ),
+            "algobot_etoro_demo_reconciliation_healthy": int(
+                bool(etoro_reconciliation_row and etoro_reconciliation_row["status"] == "ok")
+            ),
+            "algobot_institutional_rollout_ready": int(institutional_readiness["ready"]),
         }
     )
     lines = [f"{name} {value}" for name, value in sorted(counts.items())]

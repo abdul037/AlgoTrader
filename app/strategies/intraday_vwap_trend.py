@@ -47,7 +47,7 @@ class IntradayVWAPTrendStrategy(BaseStrategy):
             stop = float(min(last["vwap"], last["recent_low"]))
             risk = max(entry - stop, entry * 0.003, 0.01)
             target = entry + (risk * 2.0)
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.BUY,
@@ -69,7 +69,7 @@ class IntradayVWAPTrendStrategy(BaseStrategy):
             stop = float(max(last["vwap"], last["recent_high"]))
             risk = max(stop - entry, entry * 0.003, 0.01)
             target = entry - (risk * 2.0)
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.SELL,

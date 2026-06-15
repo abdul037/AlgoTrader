@@ -82,9 +82,12 @@ class AutomationService:
         circuit_reason = self.state.get(self.CIRCUIT_REASON_KEY)
         if circuit_reason:
             blockers.append("circuit_breaker:" + circuit_reason)
-        if getattr(self.settings, "alpaca_expected_account_number", "") and not self._to_bool(
-            self.state.get(self.ACCOUNT_VERIFIED_KEY)
-        ):
+        expected_account = getattr(
+            self.settings,
+            "alpaca_effective_expected_account_number",
+            getattr(self.settings, "alpaca_expected_account_number", ""),
+        )
+        if expected_account and not self._to_bool(self.state.get(self.ACCOUNT_VERIFIED_KEY)):
             blockers.append("alpaca_account_not_verified")
         if getattr(self.settings, "execution_mode", "paper") == "live":
             if not bool(getattr(self.settings, "require_approval", True)):

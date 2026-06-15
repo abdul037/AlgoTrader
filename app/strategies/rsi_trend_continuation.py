@@ -59,7 +59,7 @@ class RSITrendContinuationStrategy(BaseStrategy):
                 "risk_reward_ratio": round((target - entry) / risk, 2),
                 **indicator_summary(last),
             }
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.BUY,
@@ -98,7 +98,7 @@ class RSITrendContinuationStrategy(BaseStrategy):
                 "risk_reward_ratio": round((entry - target) / risk, 2),
                 **indicator_summary(last),
             }
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.SELL,

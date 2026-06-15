@@ -45,7 +45,7 @@ class MACrossoverStrategy(BaseStrategy):
             stop = float(last["close"] * 0.94)
             target = float(last["close"] * 1.10)
             risk = max(entry - stop, 0.01)
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.BUY,
@@ -67,7 +67,7 @@ class MACrossoverStrategy(BaseStrategy):
             )
 
         if fast_below and was_above:
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.SELL,

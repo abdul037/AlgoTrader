@@ -11,13 +11,17 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.approvals.service import ProposalService
+from app.automation.etoro_reconciliation import EToroDemoReconciliationService
 from app.automation.reconciliation import AlpacaReconciliationService
 from app.automation.routes import router as automation_router
 from app.automation.service import AutomationService
 from app.automation.unattended import PaperAutoTradingService
+from app.broker.comparison import ParallelBrokerComparisonService
 from app.execution.coordinator import ExecutionCoordinator
 from app.execution.routes import router as execution_router
 from app.execution.trader import TraderService
+from app.institutional.routes import router as institutional_router
+from app.institutional.service import InstitutionalGovernanceService
 from app.ledger.repository import LedgerRepository
 from app.ledger.service import LedgerService
 from app.logging_config import configure_logging
@@ -37,19 +41,24 @@ from app.storage.db import Database
 from app.storage.repositories import (
     AlertHistoryRepository,
     BacktestRepository,
+    BrokerGovernanceRepository,
     BrokerOrderSnapshotRepository,
     BrokerPositionSnapshotRepository,
+    EToroDemoIdempotencyRepository,
     ExecutionQueueRepository,
     ExecutionRepository,
     PaperPositionRepository,
     PaperTradeRepository,
+    PortfolioRiskRepository,
     ProposalRepository,
+    RolloutGateRepository,
     RunLogRepository,
     RuntimeStateRepository,
     SafetyStateRepository,
     ScanDecisionRepository,
     SignalRepository,
     SignalStateRepository,
+    StrategyGovernanceRepository,
     TrackedSignalRepository,
 )
 from app.telegram_notify import TelegramNotifier
@@ -110,6 +119,11 @@ class ConfigSummary(BaseModel):
     screener_top_k: int
     auto_propose_enabled: bool
     auto_execute_after_approval: bool
+    paper_auto_operation_mode: str
+    institutional_portfolio_controls_enabled: bool
+    etoro_demo_v2_enabled: bool
+    etoro_parallel_comparison_enabled: bool
+    rollout_stage: str
     automation_paused: bool
     automation_kill_switch_enabled: bool
 
@@ -163,12 +177,22 @@ def create_app(
     if alpaca_client is None and app_settings.alpaca_enabled:
         from app.broker.alpaca_client import AlpacaClient
 
+        alpaca_is_paper = app_settings.execution_mode != "live"
+        if not alpaca_is_paper:
+            if not app_settings.alpaca_live_api_key or not app_settings.alpaca_live_secret_key:
+                raise RuntimeError("Live Alpaca mode requires separate ALPACA_LIVE_API_KEY credentials")
+            if "paper" in app_settings.alpaca_live_base_url.lower():
+                raise RuntimeError("Live Alpaca mode refuses a paper API base URL")
         alpaca_client = AlpacaClient(
-            api_key=app_settings.alpaca_api_key,
-            secret_key=app_settings.alpaca_secret_key,
-            base_url=app_settings.alpaca_base_url,
+            api_key=app_settings.alpaca_api_key if alpaca_is_paper else app_settings.alpaca_live_api_key,
+            secret_key=(
+                app_settings.alpaca_secret_key
+                if alpaca_is_paper
+                else app_settings.alpaca_live_secret_key
+            ),
+            base_url=app_settings.alpaca_base_url if alpaca_is_paper else app_settings.alpaca_live_base_url,
             data_url=app_settings.alpaca_data_url,
-            paper=True,
+            paper=alpaca_is_paper,
             data_feed=app_settings.alpaca_data_feed,
         )
     if broker_router is None:
@@ -206,6 +230,32 @@ def create_app(
     tracked_signal_repository = TrackedSignalRepository(database)
     alert_history_repository = AlertHistoryRepository(database)
     scan_decision_repository = ScanDecisionRepository(database)
+    strategy_governance_repository = StrategyGovernanceRepository(database)
+    broker_governance_repository = BrokerGovernanceRepository(database)
+    portfolio_risk_repository = PortfolioRiskRepository(database)
+    rollout_gate_repository = RolloutGateRepository(database)
+    etoro_demo_idempotency_repository = EToroDemoIdempotencyRepository(database)
+    app.state.strategy_governance_repository = strategy_governance_repository
+    app.state.broker_governance_repository = broker_governance_repository
+    app.state.portfolio_risk_repository = portfolio_risk_repository
+    app.state.rollout_gate_repository = rollout_gate_repository
+    app.state.etoro_demo_idempotency_repository = etoro_demo_idempotency_repository
+    app.state.institutional_service = InstitutionalGovernanceService(
+        settings=app_settings,
+        strategies=strategy_governance_repository,
+        brokers=broker_governance_repository,
+        portfolio_risk=portfolio_risk_repository,
+        rollout_gates=rollout_gate_repository,
+    )
+    app.state.institutional_service.initialize_known_capabilities()
+    app.state.etoro_demo_v2_client = None
+    if app_settings.etoro_demo_v2_enabled:
+        from app.broker.etoro_demo_v2 import EToroDemoV2Client
+
+        app.state.etoro_demo_v2_client = EToroDemoV2Client(
+            app_settings,
+            idempotency_repository=etoro_demo_idempotency_repository,
+        )
     ledger_repository = LedgerRepository(database)
     app.state.ledger_repository = ledger_repository
     app.state.ledger_service = LedgerService(
@@ -220,6 +270,19 @@ def create_app(
         run_logs=run_log_repository,
         broker_router=app.state.broker_router,
     )
+    app.state.institutional_service.automation = app.state.automation_service
+    app.state.etoro_demo_reconciliation_service = None
+    if app.state.etoro_demo_v2_client is not None:
+        app.state.broker_router.add_emergency_client(app.state.etoro_demo_v2_client)
+        app.state.etoro_demo_reconciliation_service = EToroDemoReconciliationService(
+            settings=app_settings,
+            client=app.state.etoro_demo_v2_client,
+            idempotency=etoro_demo_idempotency_repository,
+            broker_governance=broker_governance_repository,
+            runtime_state=runtime_state_repository,
+            run_logs=run_log_repository,
+            automation=app.state.automation_service,
+        )
     app.state.live_signal_service = LiveSignalService(
         settings=app_settings,
         market_data_client=app.state.market_data_client,
@@ -280,6 +343,13 @@ def create_app(
         broker=app.state.broker,
         risk_manager=risk_manager,
     )
+    app.state.parallel_broker_comparison_service = ParallelBrokerComparisonService(
+        settings=app_settings,
+        etoro_demo_client=app.state.etoro_demo_v2_client,
+        broker_governance=broker_governance_repository,
+        automation=app.state.automation_service,
+        run_logs=run_log_repository,
+    )
     app.state.paper_trading_service = PaperTradingService(
         settings=app_settings,
         positions=paper_position_repository,
@@ -299,6 +369,7 @@ def create_app(
         automation_service=app.state.automation_service,
         broker_router=app.state.broker_router,
         risk_manager=risk_manager,
+        parallel_broker_service=app.state.parallel_broker_comparison_service,
     )
     app.state.safety_state_repository = safety_state_repository
     app.state.broker_order_repository = broker_order_repository
@@ -313,6 +384,7 @@ def create_app(
         runtime_state=runtime_state_repository,
         run_logs=run_log_repository,
         automation=app.state.automation_service,
+        broker_governance=broker_governance_repository,
     )
     app.state.auto_trading_service = PaperAutoTradingService(
         settings=app_settings,
@@ -325,6 +397,8 @@ def create_app(
         run_logs=run_log_repository,
         notifier=app.state.telegram_notifier,
         alpaca_client=alpaca_client,
+        strategy_governance=strategy_governance_repository,
+        institutional_governance=app.state.institutional_service,
     )
     app.state.tracked_signal_repository = tracked_signal_repository
     app.state.alert_history_repository = alert_history_repository
@@ -342,6 +416,7 @@ def create_app(
         proposal_service=app.state.proposal_service,
         automation_service=app.state.automation_service,
         reconciliation_service=app.state.reconciliation_service,
+        etoro_reconciliation_service=app.state.etoro_demo_reconciliation_service,
         auto_trading_service=app.state.auto_trading_service,
     )
     app.state.telegram_command_service = TelegramBotService(
@@ -373,6 +448,7 @@ def create_app(
     app.include_router(automation_router)
     app.include_router(execution_router)
     app.include_router(paper_router)
+    app.include_router(institutional_router)
     app.include_router(metrics_router)
 
     @app.on_event("startup")
@@ -381,6 +457,8 @@ def create_app(
             return
         if app_settings.alpaca_enabled and app_settings.alpaca_reconciliation_enabled:
             app.state.reconciliation_service.reconcile()
+        if app.state.etoro_demo_reconciliation_service is not None:
+            app.state.etoro_demo_reconciliation_service.reconcile()
         if (
             app_settings.telegram_enabled
             and app_settings.telegram_mode == "webhook"
@@ -403,6 +481,7 @@ def create_app(
             or app_settings.screener_scheduler_enabled
             or app_settings.ledger_cycle_enabled
             or (app_settings.alpaca_enabled and app_settings.alpaca_reconciliation_enabled)
+            or app_settings.etoro_demo_v2_enabled
             or app_settings.auto_execution_worker_enabled
         ):
             return
@@ -491,6 +570,13 @@ def create_app(
             screener_top_k=app_settings.screener_top_k,
             auto_propose_enabled=app_settings.auto_propose_enabled,
             auto_execute_after_approval=app_settings.auto_execute_after_approval,
+            paper_auto_operation_mode=app_settings.paper_auto_operation_mode,
+            institutional_portfolio_controls_enabled=(
+                app_settings.institutional_portfolio_controls_enabled
+            ),
+            etoro_demo_v2_enabled=app_settings.etoro_demo_v2_enabled,
+            etoro_parallel_comparison_enabled=app_settings.etoro_parallel_comparison_enabled,
+            rollout_stage=app_settings.rollout_stage,
             automation_paused=app.state.automation_service.is_paused(),
             automation_kill_switch_enabled=app.state.automation_service.kill_switch_enabled(),
         )

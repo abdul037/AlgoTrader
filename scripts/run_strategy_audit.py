@@ -39,6 +39,7 @@ from app.backtesting.strategy_selection import strategy_kwargs_for
 from app.backtesting.walk_forward import WalkForwardSplitter, aggregate_out_of_sample
 from app.indicators import enrich_technical_indicators
 from app.models.signal import Signal, SignalAction
+from app.research.data_integrity import validate_historical_frame
 from app.runtime_settings import get_settings
 from app.strategies import STRATEGY_REGISTRY, STRATEGY_SPECS, get_strategy
 from app.universe import resolve_universe
@@ -266,6 +267,15 @@ def load_universe_data(
             if frame.empty:
                 errors.append({"symbol": symbol, "error": "empty data frame"})
                 continue
+            integrity = validate_historical_frame(frame)
+            if not integrity.valid:
+                errors.append(
+                    {
+                        "symbol": symbol,
+                        "error": "data_integrity:" + ",".join(integrity.errors),
+                    }
+                )
+                continue
             if fallback_error:
                 errors.append({"symbol": symbol, "error": fallback_error})
             data[symbol] = frame
@@ -459,7 +469,9 @@ def audit_strategy(
         "symbols_evaluated": symbols_evaluated,
         "folds": fold_count,
         "total_test_bars": total_test_bars,
-        "verdict": verdict_for(float(dsr)),
+        "verdict": "invalid_audit" if errors else verdict_for(float(dsr)),
+        "audit_complete": not errors,
+        "unexplained_errors": len(errors),
         "errors": errors,
     }
     if include_trade_detail:

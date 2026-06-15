@@ -6,7 +6,7 @@ from typing import Any
 
 from app.models.approval import ApprovalDecisionRequest
 from app.models.execution import ExecutionStatus
-from app.universe import DEFAULT_TOP_100_US
+from app.universe import resolve_universe
 
 
 class PaperAutoTradingService:
@@ -25,6 +25,8 @@ class PaperAutoTradingService:
         run_logs: Any,
         notifier: Any,
         alpaca_client: Any | None,
+        strategy_governance: Any | None = None,
+        institutional_governance: Any | None = None,
     ):
         self.settings = settings
         self.proposals = proposal_service
@@ -36,6 +38,8 @@ class PaperAutoTradingService:
         self.logs = run_logs
         self.notifier = notifier
         self.alpaca = alpaca_client
+        self.strategy_governance = strategy_governance
+        self.institutional_governance = institutional_governance
 
     def candidate_blockers(self, candidate: Any) -> list[str]:
         blockers = list(self.automation.execution_blockers())
@@ -50,6 +54,15 @@ class PaperAutoTradingService:
             blockers.append("paper_auto_approve_disabled")
         if not bool(getattr(self.settings, "auto_execution_worker_enabled", False)):
             blockers.append("auto_execution_worker_disabled")
+        operation_mode = str(getattr(self.settings, "paper_auto_operation_mode", "shadow"))
+        if operation_mode == "shadow":
+            blockers.append("paper_auto_operation_mode_shadow")
+        if (
+            operation_mode == "unattended"
+            and self.institutional_governance is not None
+            and not self.institutional_governance.readiness()["ready"]
+        ):
+            blockers.append("institutional_rollout_not_ready")
         if not self.reconciliation.account_verified():
             blockers.append("alpaca_account_not_verified")
         if bool(getattr(self.settings, "auto_execution_regular_hours_only", True)) and (
@@ -66,8 +79,8 @@ class PaperAutoTradingService:
             getattr(self.settings, "auto_execution_min_score", 65.0)
         ):
             blockers.append("candidate_score_below_auto_threshold")
-        if symbol not in DEFAULT_TOP_100_US:
-            blockers.append("symbol_not_in_top100")
+        if symbol not in resolve_universe(self.settings):
+            blockers.append("symbol_not_in_execution_universe")
         if self.alpaca is None or not hasattr(self.alpaca, "is_supported_equity"):
             blockers.append("alpaca_asset_check_unavailable")
         else:
@@ -80,6 +93,12 @@ class PaperAutoTradingService:
             blockers.append("symbol_blacklisted")
         if strategy and not self.safety.strategy_active(strategy):
             blockers.append("strategy_inactive")
+        if (
+            strategy
+            and self.strategy_governance is not None
+            and not self.strategy_governance.strategy_production_approved(strategy)
+        ):
+            blockers.append("strategy_not_production_approved")
         if str(getattr(candidate, "signal_role", "") or "").lower() == "entry_short":
             blockers.append("short_entries_disabled")
         if getattr(candidate, "stop_loss", None) is None or getattr(candidate, "take_profit", None) is None:
@@ -96,6 +115,12 @@ class PaperAutoTradingService:
             blockers.append("symbol_blacklisted")
         if strategy and not self.safety.strategy_active(strategy):
             blockers.append("strategy_inactive")
+        if (
+            strategy
+            and self.strategy_governance is not None
+            and not self.strategy_governance.strategy_production_approved(strategy)
+        ):
+            blockers.append("strategy_not_production_approved")
         return blockers
 
     def approve_enqueue_execute(self, proposal: Any, candidate: Any) -> Any | None:

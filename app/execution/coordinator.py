@@ -38,6 +38,7 @@ class ExecutionCoordinator:
         broker_router: BrokerRouter | None = None,
         risk_manager: RiskManager | None = None,
         risk_context_factory: Callable[[Any, Any, Any], Any] | None = None,
+        parallel_broker_service: Any | None = None,
     ):
         self.settings = settings
         self.proposals = proposal_service
@@ -51,6 +52,7 @@ class ExecutionCoordinator:
         self.broker_router = broker_router
         self.risk_manager = risk_manager or RiskManager(settings)
         self.risk_context_factory = risk_context_factory or build_risk_context
+        self.parallel_broker = parallel_broker_service
 
     def enqueue_approved_proposal(self, proposal_id: str) -> ExecutionQueueRecord:
         proposal = self.proposals.get_proposal(proposal_id)
@@ -372,7 +374,14 @@ class ExecutionCoordinator:
     ) -> list[str]:
         if broker_name != "alpaca":
             return []
-        expected = str(getattr(self.settings, "alpaca_expected_account_number", "") or "").strip()
+        expected = str(
+            getattr(
+                self.settings,
+                "alpaca_effective_expected_account_number",
+                getattr(self.settings, "alpaca_expected_account_number", ""),
+            )
+            or ""
+        ).strip()
         reasons: list[str] = []
         if expected and hasattr(broker, "get_account_identity"):
             identity = broker.get_account_identity()
@@ -493,6 +502,7 @@ class ExecutionCoordinator:
                     "status": execution.status,
                 },
             )
+            self._mirror_parallel(proposal, execution, broker_name)
             return execution
 
         if hasattr(broker, "open_market_order_by_amount"):
@@ -519,9 +529,19 @@ class ExecutionCoordinator:
                     "status": execution.status,
                 },
             )
+            self._mirror_parallel(proposal, execution, broker_name)
             return execution
 
         raise TypeError(f"Selected broker {broker_name!r} does not expose a supported order submission method")
+
+    def _mirror_parallel(self, proposal: Any, execution: ExecutionRecord, broker_name: str) -> None:
+        if self.parallel_broker is None:
+            return
+        self.parallel_broker.mirror(
+            proposal=proposal,
+            primary_execution=execution,
+            primary_broker=broker_name,
+        )
 
     @staticmethod
     def _alpaca_bracket_reasons(proposal: Any, quote_price: float) -> list[str]:

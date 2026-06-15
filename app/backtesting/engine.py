@@ -39,6 +39,7 @@ from app.backtesting.metrics import (
     summarize_trades,
 )
 from app.storage.repositories import BacktestRepository
+from app.strategies.base import valid_trade_plan
 from app.utils.ids import generate_id
 from app.utils.time import utc_now
 
@@ -372,6 +373,13 @@ def _attempt_entry(
     cash: float,
     config: EngineConfig,
 ) -> _EntryAttempt | None:
+    if not valid_trade_plan(
+        action=getattr(signal, "action", None),
+        price=getattr(signal, "price", None),
+        stop_loss=getattr(signal, "stop_loss", None),
+        take_profit=getattr(signal, "take_profit", None),
+    ):
+        return None
     next_open = float(next_bar["open"])
     if next_open <= 0:
         return None

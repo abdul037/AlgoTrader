@@ -153,6 +153,34 @@ class AlpacaClient(BrokerClient):
             and status in {"", "active"}
         )
 
+    def get_asset_capabilities(self, symbol: str) -> dict[str, Any]:
+        """Return Alpaca's current asset-level trading and shortability flags."""
+
+        asset = self.trading_client.get_asset(symbol.upper().strip())
+        return {
+            "symbol": str(getattr(asset, "symbol", symbol)).upper(),
+            "tradable": bool(getattr(asset, "tradable", False)),
+            "marginable": bool(getattr(asset, "marginable", False)),
+            "shortable": bool(getattr(asset, "shortable", False)),
+            "easy_to_borrow": bool(getattr(asset, "easy_to_borrow", False)),
+            "fractionable": bool(getattr(asset, "fractionable", False)),
+            "borrow_cost_available": False,
+        }
+
+    def get_capabilities(self) -> dict[str, Any]:
+        """Return normalized Alpaca account-mode capabilities."""
+
+        return {
+            "supports_equities": True,
+            "supports_native_protection": True,
+            "supports_client_idempotency": True,
+            "supports_shorting": True,
+            "supports_borrow_checks": True,
+            "supports_financing_costs": False,
+            "verified": False,
+            "paper": self.paper,
+        }
+
     def get_quote(
         self,
         symbol: str,

@@ -23,6 +23,8 @@ def valid_shadow_environment(monkeypatch) -> None:
         "SCREENER_SCHEDULER_ENABLED": "true",
         "PAPER_AUTO_APPROVE_PROPOSALS": "false",
         "AUTO_EXECUTION_WORKER_ENABLED": "false",
+        "PAPER_AUTO_OPERATION_MODE": "shadow",
+        "INSTITUTIONAL_PORTFOLIO_CONTROLS_ENABLED": "false",
         "AUTO_PROPOSE_ENABLED": "false",
         "AUTO_EXECUTE_AFTER_APPROVAL": "false",
     }
@@ -76,3 +78,15 @@ def test_environment_rejects_sqlite_and_wrong_account(monkeypatch) -> None:
 
     assert "DATABASE_URL must use postgresql+psycopg" in errors
     assert "ALPACA_EXPECTED_ACCOUNT_NUMBER must be PA3B287XBZYU" in errors
+
+
+def test_unattended_environment_requires_matching_mode_and_controls(monkeypatch) -> None:
+    valid_shadow_environment(monkeypatch)
+    monkeypatch.setenv("DEPLOYMENT_STAGE", "unattended")
+    monkeypatch.setenv("PAPER_AUTO_APPROVE_PROPOSALS", "true")
+    monkeypatch.setenv("AUTO_EXECUTION_WORKER_ENABLED", "true")
+
+    errors = validate()
+
+    assert "PAPER_AUTO_OPERATION_MODE must be unattended in unattended mode" in errors
+    assert "INSTITUTIONAL_PORTFOLIO_CONTROLS_ENABLED must be true in unattended mode" in errors

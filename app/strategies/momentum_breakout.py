@@ -53,7 +53,7 @@ class MomentumBreakoutStrategy(BaseStrategy):
             stop = float(entry - max(atr * 1.4, entry * 0.012))
             risk = max(entry - stop, 0.01)
             target = entry + (risk * 2.5)
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.BUY,
@@ -76,7 +76,7 @@ class MomentumBreakoutStrategy(BaseStrategy):
             stop = float(entry + max(atr * 1.4, entry * 0.012))
             risk = max(stop - entry, 0.01)
             target = entry - (risk * 2.3)
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.SELL,

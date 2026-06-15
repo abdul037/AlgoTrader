@@ -42,7 +42,7 @@ class VWAPReclaimStrategy(BaseStrategy):
             risk = max(entry - stop, atr * 0.75, 0.01)
             target = entry + (risk * 2.1)
             confluence = compute_confluence_score(last, is_short=False)
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.BUY,
@@ -78,7 +78,7 @@ class VWAPReclaimStrategy(BaseStrategy):
             risk = max(stop - entry, atr * 0.75, 0.01)
             target = entry - (risk * 2.1)
             confluence = compute_confluence_score(last, is_short=True)
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.SELL,

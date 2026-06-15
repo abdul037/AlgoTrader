@@ -42,7 +42,7 @@ class TrendFollowingStrategy(BaseStrategy):
             stop = float(min(last["swing_low"], last["ema_slow"]))
             risk = max(entry - stop, entry * 0.01, 0.01)
             target = entry + (risk * 2.2)
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.BUY,
@@ -65,7 +65,7 @@ class TrendFollowingStrategy(BaseStrategy):
             stop = float(max(last["swing_high"], last["ema_slow"]))
             risk = max(stop - entry, entry * 0.01, 0.01)
             target = entry - (risk * 2.0)
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.SELL,

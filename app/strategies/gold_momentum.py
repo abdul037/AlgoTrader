@@ -37,7 +37,7 @@ class GoldMomentumStrategy(BaseStrategy):
         uptrend = last["close"] > last["trend_ma"] and last["mom_5"] > 0
         if breakout and uptrend:
             confidence = min(float(last["mom_5"]) * 5, 0.85)
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.BUY,
@@ -53,7 +53,7 @@ class GoldMomentumStrategy(BaseStrategy):
             )
 
         if last["close"] < last["trend_ma"] and prev["close"] >= prev["trend_ma"]:
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.SELL,

@@ -57,6 +57,19 @@ class BrokerClient(ABC):
     def list_supported_instruments(self) -> list[dict[str, Any]]:
         """Return supported instruments if available."""
 
+    def get_capabilities(self) -> dict[str, Any]:
+        """Return a conservative normalized broker capability summary."""
+
+        return {
+            "supports_equities": False,
+            "supports_native_protection": False,
+            "supports_client_idempotency": False,
+            "supports_shorting": False,
+            "supports_borrow_checks": False,
+            "supports_financing_costs": False,
+            "verified": False,
+        }
+
 
 class EToroClient(BrokerClient):
     """Safe-first eToro client with verified demo endpoints and a simulation fallback."""

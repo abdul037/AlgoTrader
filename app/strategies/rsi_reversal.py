@@ -41,7 +41,7 @@ class RSIReversalStrategy(BaseStrategy):
             risk = max(entry - stop, atr * 0.8, 0.01)
             target = entry + (risk * 1.9)
             confidence = 0.57 + (0.12 if divergence["bullish"] else 0.0) + min(rv / 6.0, 0.12)
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.BUY,
@@ -77,7 +77,7 @@ class RSIReversalStrategy(BaseStrategy):
             risk = max(stop - entry, atr * 0.8, 0.01)
             target = entry - (risk * 1.9)
             confidence = 0.57 + (0.12 if divergence["bearish"] else 0.0) + min(rv / 6.0, 0.12)
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.SELL,

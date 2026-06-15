@@ -42,7 +42,7 @@ class MeanReversionStrategy(BaseStrategy):
             target = float(last["mean"])
             if target <= entry:
                 target = entry + (risk * 1.8)
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.BUY,
@@ -67,7 +67,7 @@ class MeanReversionStrategy(BaseStrategy):
             target = float(last["mean"])
             if target >= entry:
                 target = entry - (risk * 1.8)
-            return Signal(
+            return self._build_signal(
                 symbol=symbol.upper(),
                 strategy_name=self.name,
                 action=SignalAction.SELL,

@@ -13,6 +13,7 @@ def validate() -> list[str]:
     errors: list[str] = []
     database_url = os.environ.get("DATABASE_URL", "")
     stage = os.environ.get("DEPLOYMENT_STAGE", "").strip().lower()
+    paper_auto_mode = os.environ.get("PAPER_AUTO_OPERATION_MODE", "").strip().lower()
 
     if not database_url.startswith("postgresql+psycopg://"):
         errors.append("DATABASE_URL must use postgresql+psycopg")
@@ -20,6 +21,8 @@ def validate() -> list[str]:
         errors.append("DATABASE_URL must require TLS")
     if stage not in {"bootstrap", "shadow", "supervised", "unattended"}:
         errors.append("DEPLOYMENT_STAGE must be bootstrap, shadow, supervised, or unattended")
+    if paper_auto_mode not in {"shadow", "supervised", "unattended"}:
+        errors.append("PAPER_AUTO_OPERATION_MODE must be shadow, supervised, or unattended")
     if len(os.environ.get("CONTROL_API_TOKEN", "")) < 32:
         errors.append("CONTROL_API_TOKEN must contain at least 32 characters")
     if os.environ.get("EXECUTION_MODE", "").strip().lower() != "paper":
@@ -54,6 +57,20 @@ def validate() -> list[str]:
         }
         errors.extend(f"{name} must be true in {stage} mode" for name in required_true if not as_bool(name))
         errors.extend(f"{name} must be false in {stage} mode" for name in required_false if as_bool(name))
+        if paper_auto_mode != "shadow":
+            errors.append(f"PAPER_AUTO_OPERATION_MODE must be shadow in {stage} mode")
+        if as_bool("INSTITUTIONAL_PORTFOLIO_CONTROLS_ENABLED"):
+            errors.append(f"INSTITUTIONAL_PORTFOLIO_CONTROLS_ENABLED must be false in {stage} mode")
+
+    if stage in {"supervised", "unattended"}:
+        required_true = {
+            "PAPER_AUTO_APPROVE_PROPOSALS",
+            "AUTO_EXECUTION_WORKER_ENABLED",
+            "INSTITUTIONAL_PORTFOLIO_CONTROLS_ENABLED",
+        }
+        errors.extend(f"{name} must be true in {stage} mode" for name in required_true if not as_bool(name))
+        if paper_auto_mode != stage:
+            errors.append(f"PAPER_AUTO_OPERATION_MODE must be {stage} in {stage} mode")
 
     if stage == "bootstrap":
         required_true = {"AUTOMATION_PAUSED_DEFAULT", "KILL_SWITCH_ENABLED"}

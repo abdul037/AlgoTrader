@@ -65,6 +65,7 @@ class SignalWorkflowService:
         proposal_service: Any | None = None,
         automation_service: Any | None = None,
         reconciliation_service: Any | None = None,
+        etoro_reconciliation_service: Any | None = None,
         auto_trading_service: Any | None = None,
     ):
         self.settings = settings
@@ -79,6 +80,7 @@ class SignalWorkflowService:
         self.proposal_service = proposal_service
         self.automation = automation_service
         self.reconciliation = reconciliation_service
+        self.etoro_reconciliation = etoro_reconciliation_service
         self.auto_trading = auto_trading_service
         self._approval_adapter = SignalApprovalAdapter()
 
@@ -234,6 +236,14 @@ class SignalWorkflowService:
             ):
                 reconciliation = self.reconciliation.reconcile()
                 completed.append("alpaca_reconciliation")
+                if reconciliation.get("status") == "error":
+                    errors.extend(list(reconciliation.get("issues") or []))
+            if self.etoro_reconciliation is not None and self._is_due(
+                "etoro_demo_reconciliation:last_run_at",
+                max(int(getattr(self.settings, "alpaca_reconciliation_interval_seconds", 60)) // 60, 1),
+            ):
+                reconciliation = self.etoro_reconciliation.reconcile()
+                completed.append("etoro_demo_reconciliation")
                 if reconciliation.get("status") == "error":
                     errors.extend(list(reconciliation.get("issues") or []))
             if self.auto_trading is not None:

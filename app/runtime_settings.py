@@ -33,6 +33,9 @@ class AppSettings(BaseSettings):
     )
     etoro_base_url: str = "https://public-api.etoro.com"
     etoro_account_mode: Literal["demo", "real"] = "demo"
+    etoro_demo_v2_enabled: bool = False
+    etoro_demo_expected_account_id: str = ""
+    etoro_parallel_comparison_enabled: bool = False
     etoro_request_min_interval_seconds: float = 1.25
     etoro_rate_limit_cooldown_seconds: int = 300
     enable_real_trading: bool = False
@@ -43,6 +46,10 @@ class AppSettings(BaseSettings):
     alpaca_data_feed: str = "iex"
     alpaca_enabled: bool = False
     alpaca_expected_account_number: str = ""
+    alpaca_live_api_key: str = ""
+    alpaca_live_secret_key: str = ""
+    alpaca_live_base_url: str = "https://api.alpaca.markets"
+    alpaca_live_expected_account_number: str = ""
     alpaca_reconciliation_enabled: bool = True
     alpaca_reconciliation_interval_seconds: int = 60
     alpaca_require_bracket_orders: bool = True
@@ -196,12 +203,34 @@ class AppSettings(BaseSettings):
     max_trades_per_day: int = 5
     per_symbol_position_limit: int = 1
     max_consecutive_losses_before_cooldown: int = 2
+    rollout_stage: str = "stage_1_validation"
+    production_min_oos_trades: int = 200
+    production_min_deflated_sharpe: float = 0.95
+    production_min_rolling_sharpe: float = 1.25
+    production_min_profit_factor: float = 1.30
+    production_max_portfolio_drawdown_pct: float = 10.0
+    production_max_strategy_drawdown_pct: float = 8.0
+    portfolio_soft_drawdown_pct: float = 5.0
+    portfolio_hard_drawdown_pct: float = 10.0
+    portfolio_max_gross_exposure_pct: float = 30.0
+    portfolio_max_symbol_exposure_pct: float = 15.0
+    portfolio_max_sector_exposure_pct: float = 25.0
+    portfolio_max_correlated_exposure_pct: float = 30.0
+    portfolio_future_max_risk_per_trade_pct: float = 0.5
+    portfolio_micro_live_max_risk_per_trade_pct: float = 0.1
+    institutional_portfolio_controls_enabled: bool = False
+    short_trading_enabled: bool = False
+    short_minimum_account_equity_usd: float = 25_000.0
+    short_max_borrow_cost_annual_pct: float = 5.0
+    short_require_easy_to_borrow: bool = True
+    short_require_margin_requirement: bool = True
     kill_switch_enabled: bool = False
     automation_paused_default: bool = False
     auto_propose_enabled: bool = False
     auto_execute_after_approval: bool = False
     paper_auto_approve_proposals: bool = False
     auto_execution_worker_enabled: bool = False
+    paper_auto_operation_mode: Literal["shadow", "supervised", "unattended"] = "shadow"
     auto_execution_min_score: float = 65.0
     auto_execution_regular_hours_only: bool = True
     strategy_health_enabled: bool = True
@@ -354,6 +383,12 @@ class AppSettings(BaseSettings):
     @property
     def real_mode_requested(self) -> bool:
         return self.etoro_account_mode == "real"
+
+    @property
+    def alpaca_effective_expected_account_number(self) -> str:
+        if self.execution_mode == "live":
+            return self.alpaca_live_expected_account_number
+        return self.alpaca_expected_account_number
 
     @property
     def broker_simulation_enabled(self) -> bool:

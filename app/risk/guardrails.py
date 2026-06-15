@@ -8,6 +8,7 @@ from app.broker.instrument_resolver import InstrumentResolver
 from app.config import AppSettings
 from app.models.trade import TradeOrder
 from app.risk.rules import RiskValidationResult, estimate_risk_amount, leverage_cap_for_asset
+from app.risk.shorting import ShortTradePolicy
 
 
 class RiskContext(BaseModel):
@@ -18,6 +19,11 @@ class RiskContext(BaseModel):
     weekly_realized_pnl_usd: float = 0.0
     open_positions: int = 0
     positions_by_symbol: dict[str, int] = Field(default_factory=dict)
+    exposure_by_symbol_pct: dict[str, float] = Field(default_factory=dict)
+    exposure_by_sector_pct: dict[str, float] = Field(default_factory=dict)
+    gross_exposure_pct: float = 0.0
+    correlated_exposure_pct: float = 0.0
+    portfolio_drawdown_pct: float = 0.0
     consecutive_losses_today: int = 0
     trades_today: int = 0
     mode: str = "demo"
@@ -29,6 +35,7 @@ class RiskManager:
     def __init__(self, settings: AppSettings):
         self.settings = settings
         self.resolver = InstrumentResolver(settings)
+        self.short_policy = ShortTradePolicy(settings)
 
     def validate_order(self, order: TradeOrder, context: RiskContext) -> RiskValidationResult:
         """Validate an order against configured guardrails."""
@@ -76,6 +83,44 @@ class RiskManager:
         if self.settings.kill_switch_enabled:
             reasons.append("Kill switch is enabled")
 
+        institutional_controls = bool(self.settings.institutional_portfolio_controls_enabled)
+        if institutional_controls:
+            if context.portfolio_drawdown_pct >= self.settings.portfolio_hard_drawdown_pct:
+                reasons.append("Portfolio hard drawdown limit reached")
+            elif context.portfolio_drawdown_pct >= self.settings.portfolio_soft_drawdown_pct:
+                reasons.append("Portfolio soft drawdown pause reached")
+
+            proposed_exposure_pct = (float(order.amount_usd) / context.account_balance) * 100.0
+            if (
+                context.gross_exposure_pct + proposed_exposure_pct
+                > self.settings.portfolio_max_gross_exposure_pct
+            ):
+                reasons.append("Projected gross exposure exceeds the portfolio limit")
+            current_symbol_exposure = float(
+                context.exposure_by_symbol_pct.get(order.symbol.upper(), 0.0)
+            )
+            if (
+                current_symbol_exposure + proposed_exposure_pct
+                > self.settings.portfolio_max_symbol_exposure_pct
+            ):
+                reasons.append("Projected symbol exposure exceeds the portfolio limit")
+            sector = str(order.metadata.get("sector") or "unknown")
+            current_sector_exposure = float(context.exposure_by_sector_pct.get(sector, 0.0))
+            if (
+                current_sector_exposure + proposed_exposure_pct
+                > self.settings.portfolio_max_sector_exposure_pct
+            ):
+                reasons.append("Projected sector exposure exceeds the portfolio limit")
+            if (
+                context.correlated_exposure_pct + proposed_exposure_pct
+                > self.settings.portfolio_max_correlated_exposure_pct
+            ):
+                reasons.append("Projected correlated exposure exceeds the portfolio limit")
+
+        reasons.extend(
+            self.short_policy.blockers(order, account_equity_usd=context.account_balance)
+        )
+
         if order.stop_loss is None:
             reasons.append("A stop loss is required before submitting any order")
         else:
@@ -86,9 +131,21 @@ class RiskManager:
                 leverage=order.leverage,
             )
             risk_pct = (risk_amount / context.account_balance) * 100
-            if risk_pct > self.settings.max_risk_per_trade_pct:
+            risk_cap = self.settings.max_risk_per_trade_pct
+            if institutional_controls:
+                if context.mode == "real" or self.settings.execution_mode == "live":
+                    risk_cap = min(
+                        risk_cap,
+                        self.settings.portfolio_micro_live_max_risk_per_trade_pct,
+                    )
+                else:
+                    risk_cap = min(
+                        risk_cap,
+                        self.settings.portfolio_future_max_risk_per_trade_pct,
+                    )
+            if risk_pct > risk_cap:
                 reasons.append(
-                    f"Estimated trade risk {risk_pct:.2f}% exceeds the {self.settings.max_risk_per_trade_pct:.2f}% cap"
+                    f"Estimated trade risk {risk_pct:.2f}% exceeds the {risk_cap:.2f}% cap"
                 )
 
         if context.mode == "real" and not self.settings.enable_real_trading:

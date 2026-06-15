@@ -353,6 +353,185 @@ CREATE INDEX IF NOT EXISTS idx_signal_outcomes_symbol ON signal_outcomes(symbol)
 CREATE INDEX IF NOT EXISTS idx_signal_outcomes_position ON signal_outcomes(matched_position_id);
 CREATE INDEX IF NOT EXISTS idx_signal_outcomes_alert_ts ON signal_outcomes(alert_created_at);
 CREATE INDEX IF NOT EXISTS idx_signal_outcomes_alert_id ON signal_outcomes(alert_id);
+
+CREATE TABLE IF NOT EXISTS strategy_versions (
+    id TEXT PRIMARY KEY,
+    strategy_name TEXT NOT NULL,
+    code_version TEXT NOT NULL,
+    parameters_json TEXT NOT NULL,
+    dataset_version TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_versions_name ON strategy_versions(strategy_name);
+CREATE INDEX IF NOT EXISTS idx_strategy_versions_status ON strategy_versions(status);
+
+CREATE TABLE IF NOT EXISTS strategy_audits (
+    id TEXT PRIMARY KEY,
+    strategy_version_id TEXT NOT NULL,
+    dataset_version TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    out_of_sample_trades INTEGER NOT NULL DEFAULT 0,
+    deflated_sharpe REAL NOT NULL DEFAULT 0,
+    rolling_sharpe REAL NOT NULL DEFAULT 0,
+    profit_factor REAL NOT NULL DEFAULT 0,
+    expectancy_after_costs REAL NOT NULL DEFAULT 0,
+    max_drawdown_pct REAL NOT NULL DEFAULT 0,
+    strategy_drawdown_pct REAL NOT NULL DEFAULT 0,
+    unexplained_errors INTEGER NOT NULL DEFAULT 0,
+    protected_exit_coverage_pct REAL NOT NULL DEFAULT 0,
+    metrics_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_audits_version
+ON strategy_audits(strategy_version_id, created_at);
+
+CREATE TABLE IF NOT EXISTS promotion_decisions (
+    id TEXT PRIMARY KEY,
+    strategy_version_id TEXT NOT NULL,
+    strategy_audit_id TEXT,
+    target_stage TEXT NOT NULL,
+    approved INTEGER NOT NULL DEFAULT 0,
+    blockers_json TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    decided_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_promotion_decisions_version
+ON promotion_decisions(strategy_version_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_promotion_decisions_approved
+ON promotion_decisions(approved, target_stage);
+
+CREATE TABLE IF NOT EXISTS broker_capabilities (
+    id TEXT PRIMARY KEY,
+    broker TEXT NOT NULL,
+    account_mode TEXT NOT NULL,
+    supports_equities INTEGER NOT NULL DEFAULT 0,
+    supports_native_protection INTEGER NOT NULL DEFAULT 0,
+    supports_client_idempotency INTEGER NOT NULL DEFAULT 0,
+    supports_shorting INTEGER NOT NULL DEFAULT 0,
+    supports_borrow_checks INTEGER NOT NULL DEFAULT 0,
+    supports_financing_costs INTEGER NOT NULL DEFAULT 0,
+    verified INTEGER NOT NULL DEFAULT 0,
+    details_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_broker_capabilities_unique
+ON broker_capabilities(broker, account_mode);
+
+CREATE TABLE IF NOT EXISTS broker_account_identities (
+    id TEXT PRIMARY KEY,
+    broker TEXT NOT NULL,
+    account_mode TEXT NOT NULL,
+    account_id TEXT,
+    account_number TEXT,
+    expected_account_number TEXT,
+    verified INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    details_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_broker_identities_unique
+ON broker_account_identities(broker, account_mode);
+
+CREATE TABLE IF NOT EXISTS broker_reconciliation_results (
+    id TEXT PRIMARY KEY,
+    broker TEXT NOT NULL,
+    account_id TEXT,
+    status TEXT NOT NULL,
+    orders_seen INTEGER NOT NULL DEFAULT 0,
+    positions_seen INTEGER NOT NULL DEFAULT 0,
+    unknown_positions INTEGER NOT NULL DEFAULT 0,
+    unprotected_positions INTEGER NOT NULL DEFAULT 0,
+    issues_json TEXT NOT NULL,
+    details_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_broker_reconciliation_lookup
+ON broker_reconciliation_results(broker, created_at);
+
+CREATE TABLE IF NOT EXISTS broker_comparisons (
+    id TEXT PRIMARY KEY,
+    signal_id TEXT,
+    symbol TEXT NOT NULL,
+    strategy_name TEXT NOT NULL,
+    primary_broker TEXT NOT NULL,
+    comparison_broker TEXT NOT NULL,
+    primary_order_id TEXT,
+    comparison_order_id TEXT,
+    status TEXT NOT NULL,
+    primary_fill_price REAL,
+    comparison_fill_price REAL,
+    primary_cost_usd REAL NOT NULL DEFAULT 0,
+    comparison_cost_usd REAL NOT NULL DEFAULT 0,
+    primary_slippage_bps REAL,
+    comparison_slippage_bps REAL,
+    details_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_broker_comparisons_lookup
+ON broker_comparisons(symbol, strategy_name, created_at);
+CREATE INDEX IF NOT EXISTS idx_broker_comparisons_primary_order
+ON broker_comparisons(primary_order_id);
+CREATE INDEX IF NOT EXISTS idx_broker_comparisons_comparison_order
+ON broker_comparisons(comparison_order_id);
+
+CREATE TABLE IF NOT EXISTS etoro_demo_order_requests (
+    client_order_id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    broker_order_id TEXT,
+    status TEXT NOT NULL,
+    response_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_etoro_demo_request_id
+ON etoro_demo_order_requests(request_id);
+
+CREATE TABLE IF NOT EXISTS portfolio_risk_snapshots (
+    id TEXT PRIMARY KEY,
+    broker TEXT NOT NULL,
+    equity_usd REAL NOT NULL,
+    peak_equity_usd REAL NOT NULL,
+    drawdown_pct REAL NOT NULL DEFAULT 0,
+    gross_exposure_pct REAL NOT NULL DEFAULT 0,
+    largest_symbol_exposure_pct REAL NOT NULL DEFAULT 0,
+    largest_sector_exposure_pct REAL NOT NULL DEFAULT 0,
+    largest_correlated_exposure_pct REAL NOT NULL DEFAULT 0,
+    open_positions INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    blockers_json TEXT NOT NULL,
+    details_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_portfolio_risk_created
+ON portfolio_risk_snapshots(created_at);
+
+CREATE TABLE IF NOT EXISTS rollout_gate_evidence (
+    id TEXT PRIMARY KEY,
+    stage TEXT NOT NULL,
+    gate_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    signed_by TEXT,
+    observed_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rollout_gate_unique
+ON rollout_gate_evidence(stage, gate_name);
 """
 
 

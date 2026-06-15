@@ -26,6 +26,7 @@ class BrokerRouter:
         self._etoro = etoro_client
         self._equities_choice = broker_for_equities
         self._non_equities_choice = broker_for_non_equities
+        self._emergency_clients: list = []
 
     def select_broker_for(self, proposal: TradeProposal):
         asset_class = self._asset_class_of(proposal)
@@ -49,16 +50,20 @@ class BrokerRouter:
     def all_clients(self) -> list:
         """Return configured clients for emergency-stop fanout."""
 
-        return [client for client in (self._alpaca, self._etoro) if client is not None]
+        clients = [client for client in (self._alpaca, self._etoro, *self._emergency_clients) if client is not None]
+        return list(dict.fromkeys(clients))
+
+    def add_emergency_client(self, client) -> None:
+        """Include an additive broker adapter in kill-switch fanout."""
+
+        if client is not None and client not in self._emergency_clients:
+            self._emergency_clients.append(client)
 
     def _asset_class_of(self, proposal: TradeProposal) -> str:
         asset_class = getattr(proposal.order, "asset_class", None)
         if asset_class is None:
             return "equity"
-        if hasattr(asset_class, "value"):
-            value = asset_class.value
-        else:
-            value = str(asset_class)
+        value = asset_class.value if hasattr(asset_class, "value") else str(asset_class)
         normalized = str(value or "").strip().lower()
         if normalized == "":
             return "equity"

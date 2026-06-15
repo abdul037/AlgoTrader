@@ -1,0 +1,80 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Reconciliation Healthy",
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "targets": [{"expr": "algobot_reconciliation_healthy", "refId": "A"}]
+    },
+    {
+      "type": "stat",
+      "title": "Kill Switch",
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+      "targets": [{"expr": "algobot_kill_switch_enabled", "refId": "A"}]
+    },
+    {
+      "type": "stat",
+      "title": "Approved Strategies",
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+      "targets": [{"expr": "algobot_strategy_promotions_approved", "refId": "A"}]
+    },
+    {
+      "type": "stat",
+      "title": "Rollout Gates Passed",
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+      "targets": [{"expr": "algobot_rollout_gates_passed", "refId": "A"}]
+    },
+    {
+      "type": "stat",
+      "title": "Broker Comparisons",
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
+      "targets": [{"expr": "algobot_broker_comparisons_completed", "refId": "A"}]
+    },
+    {
+      "type": "stat",
+      "title": "Open Positions",
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 0},
+      "targets": [{"expr": "algobot_positions_open", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Portfolio Drawdown %",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "targets": [{"expr": "algobot_portfolio_drawdown_pct", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Gross Exposure %",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "targets": [{"expr": "algobot_portfolio_gross_exposure_pct", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Equity And Realized P&L",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "targets": [
+        {"expr": "algobot_account_equity_usd", "legendFormat": "equity", "refId": "A"},
+        {"expr": "algobot_realized_pnl_usd", "legendFormat": "realized P&L", "refId": "B"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Freshness And Reconciliation Age",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "targets": [
+        {"expr": "algobot_data_freshness_age_seconds", "legendFormat": "data", "refId": "A"},
+        {"expr": "algobot_reconciliation_age_seconds", "legendFormat": "reconciliation", "refId": "B"}
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["algobot", "institutional", "paper"],
+  "templating": {"list": []},
+  "time": {"from": "now-24h", "to": "now"},
+  "title": "CX AlgoBot Institutional Readiness",
+  "uid": "cx-algobot-institutional",
+  "version": 1
+}

@@ -134,6 +134,10 @@ curl -fsS -X POST http://127.0.0.1:8011/automation/reconciliation/run
 curl -fsS http://127.0.0.1:8011/automation/blacklist
 curl -fsS http://127.0.0.1:8011/automation/strategy-health
 curl -fsS http://127.0.0.1:8011/execution/queue
+curl -fsS http://127.0.0.1:8011/institutional/readiness
+curl -fsS http://127.0.0.1:8011/institutional/strategies
+curl -fsS http://127.0.0.1:8011/institutional/brokers
+curl -fsS http://127.0.0.1:8011/institutional/portfolio-risk
 ```
 
 Do not clear the circuit breaker until the broker account is flat or all positions are confirmed bot-owned and protected, reconciliation is clean, and the initiating alert has been reviewed.
@@ -168,3 +172,27 @@ docker compose start cx-algobot
 4. Leave unattended paper-auto enabled only after zero duplicate orders, zero unprotected positions, clean reconciliation, and no unresolved critical alerts.
 
 Live trading remains out of scope.
+
+## Institutional Readiness Records
+
+Strategy promotion, broker identity/capability evidence, broker comparisons,
+portfolio risk, and rollout gates are stored in PostgreSQL and exposed under
+`/institutional`. Mutations require `X-Control-Token` when
+`CONTROL_API_TOKEN` is configured.
+
+Do not mark a rollout gate as `passed` without attaching evidence and a
+reviewer identity. `/institutional/readiness` remains blocked until the
+current stage's gates pass, a strategy passes every production threshold, and
+the latest portfolio risk snapshot is clean.
+
+The eToro Demo adapter is additive and disabled by default. It uses official
+v2 demo create/lookup/cost endpoints and official v1 demo portfolio/position
+close endpoints. Set `ETORO_DEMO_V2_ENABLED=true` only after installing Demo
+credentials, configuring an expected account ID, and completing a supervised
+order lifecycle. It is not routed into unattended execution by this rollout.
+
+`INSTITUTIONAL_PORTFOLIO_CONTROLS_ENABLED`, `ETORO_DEMO_V2_ENABLED`, and
+`ETORO_PARALLEL_COMPARISON_ENABLED` must remain `false` during the current
+observation period. Promote them only through signed rollout-gate evidence.
+Live Alpaca mode requires separate `ALPACA_LIVE_*` credentials, a non-paper
+base URL, and a separately verified live account number.
