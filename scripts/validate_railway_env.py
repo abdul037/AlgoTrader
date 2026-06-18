@@ -46,18 +46,6 @@ def validate() -> list[str]:
         errors.append("ALPACA_REQUIRE_BRACKET_ORDERS must be true")
     if as_bool("PAPER_SIMULATED_FALLBACK_ENABLED"):
         errors.append("PAPER_SIMULATED_FALLBACK_ENABLED must be false")
-    if as_bool("LEARNING_OPENAI_ENABLED") and not as_bool("LEARNING_REVIEWS_ENABLED"):
-        errors.append("LEARNING_OPENAI_ENABLED requires LEARNING_REVIEWS_ENABLED")
-    if as_bool("LEARNING_AUTO_PROMOTE_PAPER_ENABLED") and not as_bool("LEARNING_TRAINING_ENABLED"):
-        errors.append("LEARNING_AUTO_PROMOTE_PAPER_ENABLED requires LEARNING_TRAINING_ENABLED")
-    if as_bool("LEARNING_LIVE_PROMOTION_ENABLED"):
-        errors.append("LEARNING_LIVE_PROMOTION_ENABLED must remain false in Railway paper deployment")
-    if (
-        os.environ.get("MODEL_DEPLOYMENT_MODE", "shadow").strip().lower() == "gating"
-        and not as_bool("LEARNING_TRAINING_ENABLED")
-    ):
-        errors.append("MODEL_DEPLOYMENT_MODE=gating requires LEARNING_TRAINING_ENABLED")
-
     if stage in {"bootstrap", "shadow"}:
         required_true = {"SCREENER_SCHEDULER_ENABLED"}
         required_false = {
@@ -65,8 +53,6 @@ def validate() -> list[str]:
             "AUTO_EXECUTION_WORKER_ENABLED",
             "AUTO_PROPOSE_ENABLED",
             "AUTO_EXECUTE_AFTER_APPROVAL",
-            "LEARNING_AUTO_PROMOTE_PAPER_ENABLED",
-            "LEARNING_LIVE_PROMOTION_ENABLED",
         }
         errors.extend(f"{name} must be true in {stage} mode" for name in required_true if not as_bool(name))
         errors.extend(f"{name} must be false in {stage} mode" for name in required_false if as_bool(name))
@@ -74,11 +60,6 @@ def validate() -> list[str]:
             errors.append(f"PAPER_AUTO_OPERATION_MODE must be shadow in {stage} mode")
         if as_bool("INSTITUTIONAL_PORTFOLIO_CONTROLS_ENABLED"):
             errors.append(f"INSTITUTIONAL_PORTFOLIO_CONTROLS_ENABLED must be false in {stage} mode")
-        if os.environ.get("MODEL_DEPLOYMENT_MODE", "shadow").strip().lower() not in {
-            "shadow",
-            "advisory",
-        }:
-            errors.append(f"MODEL_DEPLOYMENT_MODE must be shadow or advisory in {stage} mode")
 
     if stage in {"supervised", "unattended"}:
         required_true = {

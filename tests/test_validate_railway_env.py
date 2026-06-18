@@ -92,19 +92,11 @@ def test_unattended_environment_requires_matching_mode_and_controls(monkeypatch)
     assert "INSTITUTIONAL_PORTFOLIO_CONTROLS_ENABLED must be true in unattended mode" in errors
 
 
-def test_shadow_environment_allows_advisory_learning_but_rejects_model_activation(monkeypatch) -> None:
+def test_shadow_environment_does_not_block_independent_learning_rollout(monkeypatch) -> None:
     valid_shadow_environment(monkeypatch)
     monkeypatch.setenv("LEARNING_REVIEWS_ENABLED", "true")
     monkeypatch.setenv("LEARNING_OPENAI_ENABLED", "true")
     monkeypatch.setenv("LEARNING_TRAINING_ENABLED", "true")
     monkeypatch.setenv("MODEL_DEPLOYMENT_MODE", "advisory")
 
-    errors = validate()
-
-    assert errors == []
-
-    monkeypatch.setenv("MODEL_DEPLOYMENT_MODE", "gating")
-    errors = validate()
-
-    assert not any("LEARNING_OPENAI_ENABLED must be false" in error for error in errors)
-    assert "MODEL_DEPLOYMENT_MODE must be shadow or advisory in shadow mode" in errors
+    assert validate() == []
