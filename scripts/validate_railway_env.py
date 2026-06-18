@@ -65,7 +65,6 @@ def validate() -> list[str]:
             "AUTO_EXECUTION_WORKER_ENABLED",
             "AUTO_PROPOSE_ENABLED",
             "AUTO_EXECUTE_AFTER_APPROVAL",
-            "LEARNING_TRAINING_ENABLED",
             "LEARNING_AUTO_PROMOTE_PAPER_ENABLED",
             "LEARNING_LIVE_PROMOTION_ENABLED",
         }
@@ -75,8 +74,11 @@ def validate() -> list[str]:
             errors.append(f"PAPER_AUTO_OPERATION_MODE must be shadow in {stage} mode")
         if as_bool("INSTITUTIONAL_PORTFOLIO_CONTROLS_ENABLED"):
             errors.append(f"INSTITUTIONAL_PORTFOLIO_CONTROLS_ENABLED must be false in {stage} mode")
-        if os.environ.get("MODEL_DEPLOYMENT_MODE", "shadow").strip().lower() != "shadow":
-            errors.append(f"MODEL_DEPLOYMENT_MODE must be shadow in {stage} mode")
+        if os.environ.get("MODEL_DEPLOYMENT_MODE", "shadow").strip().lower() not in {
+            "shadow",
+            "advisory",
+        }:
+            errors.append(f"MODEL_DEPLOYMENT_MODE must be shadow or advisory in {stage} mode")
 
     if stage in {"supervised", "unattended"}:
         required_true = {
