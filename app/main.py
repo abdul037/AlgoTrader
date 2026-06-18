@@ -22,6 +22,12 @@ from app.execution.routes import router as execution_router
 from app.execution.trader import TraderService
 from app.institutional.routes import router as institutional_router
 from app.institutional.service import InstitutionalGovernanceService
+from app.learning.artifacts import build_artifact_store
+from app.learning.critic import build_trade_review_client
+from app.learning.modeling import LearningModelService
+from app.learning.repository import LearningRepository
+from app.learning.routes import router as learning_router
+from app.learning.service import LearningService
 from app.ledger.repository import LedgerRepository
 from app.ledger.service import LedgerService
 from app.logging_config import configure_logging
@@ -124,6 +130,12 @@ class ConfigSummary(BaseModel):
     etoro_demo_v2_enabled: bool
     etoro_parallel_comparison_enabled: bool
     rollout_stage: str
+    learning_capture_enabled: bool
+    learning_worker_enabled: bool
+    learning_reviews_enabled: bool
+    learning_training_enabled: bool
+    learning_auto_promote_paper_enabled: bool
+    model_deployment_mode: str
     automation_paused: bool
     automation_kill_switch_enabled: bool
 
@@ -235,11 +247,32 @@ def create_app(
     portfolio_risk_repository = PortfolioRiskRepository(database)
     rollout_gate_repository = RolloutGateRepository(database)
     etoro_demo_idempotency_repository = EToroDemoIdempotencyRepository(database)
+    execution_repository = ExecutionRepository(database)
+    proposal_repository = ProposalRepository(database)
+    learning_repository = LearningRepository(database)
     app.state.strategy_governance_repository = strategy_governance_repository
     app.state.broker_governance_repository = broker_governance_repository
     app.state.portfolio_risk_repository = portfolio_risk_repository
     app.state.rollout_gate_repository = rollout_gate_repository
     app.state.etoro_demo_idempotency_repository = etoro_demo_idempotency_repository
+    app.state.learning_repository = learning_repository
+    app.state.learning_model_service = LearningModelService(
+        settings=app_settings,
+        repository=learning_repository,
+        artifact_store=build_artifact_store(app_settings),
+        run_logs=run_log_repository,
+    )
+    app.state.learning_service = LearningService(
+        settings=app_settings,
+        repository=learning_repository,
+        executions=execution_repository,
+        proposals=proposal_repository,
+        market_data=app.state.market_data_engine,
+        model_service=app.state.learning_model_service,
+        critic=build_trade_review_client(app_settings),
+        run_logs=run_log_repository,
+        notifier=app.state.telegram_notifier,
+    )
     app.state.institutional_service = InstitutionalGovernanceService(
         settings=app_settings,
         strategies=strategy_governance_repository,
@@ -247,6 +280,7 @@ def create_app(
         portfolio_risk=portfolio_risk_repository,
         rollout_gates=rollout_gate_repository,
     )
+    app.state.learning_model_service.institutional = app.state.institutional_service
     app.state.institutional_service.initialize_known_capabilities()
     app.state.etoro_demo_v2_client = None
     if app_settings.etoro_demo_v2_enabled:
@@ -301,6 +335,7 @@ def create_app(
         backtest_repository=backtest_repository,
         scan_decision_repository=scan_decision_repository,
         telegram_notifier=app.state.telegram_notifier,
+        learning_service=app.state.learning_service,
     )
     app.state.batch_backtest_service = BatchBacktestService(
         settings=app_settings,
@@ -308,11 +343,9 @@ def create_app(
         backtest_repository=backtest_repository,
         run_log_repository=run_log_repository,
     )
-    execution_repository = ExecutionRepository(database)
     broker_order_repository = BrokerOrderSnapshotRepository(database)
     broker_position_repository = BrokerPositionSnapshotRepository(database)
     safety_state_repository = SafetyStateRepository(database)
-    proposal_repository = ProposalRepository(database)
     execution_queue_repository = ExecutionQueueRepository(database)
     paper_position_repository = PaperPositionRepository(database)
     paper_trade_repository = PaperTradeRepository(database)
@@ -342,6 +375,7 @@ def create_app(
         run_log_repository=run_log_repository,
         broker=app.state.broker,
         risk_manager=risk_manager,
+        learning_service=app.state.learning_service,
     )
     app.state.parallel_broker_comparison_service = ParallelBrokerComparisonService(
         settings=app_settings,
@@ -370,6 +404,7 @@ def create_app(
         broker_router=app.state.broker_router,
         risk_manager=risk_manager,
         parallel_broker_service=app.state.parallel_broker_comparison_service,
+        learning_service=app.state.learning_service,
     )
     app.state.safety_state_repository = safety_state_repository
     app.state.broker_order_repository = broker_order_repository
@@ -385,6 +420,7 @@ def create_app(
         run_logs=run_log_repository,
         automation=app.state.automation_service,
         broker_governance=broker_governance_repository,
+        learning_service=app.state.learning_service,
     )
     app.state.auto_trading_service = PaperAutoTradingService(
         settings=app_settings,
@@ -418,6 +454,7 @@ def create_app(
         reconciliation_service=app.state.reconciliation_service,
         etoro_reconciliation_service=app.state.etoro_demo_reconciliation_service,
         auto_trading_service=app.state.auto_trading_service,
+        learning_service=app.state.learning_service,
     )
     app.state.telegram_command_service = TelegramBotService(
         settings=app_settings,
@@ -432,6 +469,7 @@ def create_app(
         automation_service=app.state.automation_service,
         runtime_state_repository=runtime_state_repository,
         run_log_repository=run_log_repository,
+        learning_service=app.state.learning_service,
     )
     app.state.telegram_alert_scheduler = None
 
@@ -449,6 +487,7 @@ def create_app(
     app.include_router(execution_router)
     app.include_router(paper_router)
     app.include_router(institutional_router)
+    app.include_router(learning_router)
     app.include_router(metrics_router)
 
     @app.on_event("startup")
@@ -483,6 +522,7 @@ def create_app(
             or (app_settings.alpaca_enabled and app_settings.alpaca_reconciliation_enabled)
             or app_settings.etoro_demo_v2_enabled
             or app_settings.auto_execution_worker_enabled
+            or app_settings.learning_worker_enabled
         ):
             return
         scheduler = TelegramAlertScheduler(app.state.telegram_command_service)
@@ -577,6 +617,12 @@ def create_app(
             etoro_demo_v2_enabled=app_settings.etoro_demo_v2_enabled,
             etoro_parallel_comparison_enabled=app_settings.etoro_parallel_comparison_enabled,
             rollout_stage=app_settings.rollout_stage,
+            learning_capture_enabled=app_settings.learning_capture_enabled,
+            learning_worker_enabled=app_settings.learning_worker_enabled,
+            learning_reviews_enabled=app_settings.learning_reviews_enabled,
+            learning_training_enabled=app_settings.learning_training_enabled,
+            learning_auto_promote_paper_enabled=app_settings.learning_auto_promote_paper_enabled,
+            model_deployment_mode=app_settings.model_deployment_mode,
             automation_paused=app.state.automation_service.is_paused(),
             automation_kill_switch_enabled=app.state.automation_service.kill_switch_enabled(),
         )

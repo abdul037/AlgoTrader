@@ -64,6 +64,10 @@ class TelegramBotService:
         "/schedule_status - scheduler bucket status\n"
         "/reconciliation - Alpaca account and order reconciliation status\n"
         "/strategy_status - active/deactivated strategy health\n"
+        "/learning_status - learning pipeline, model, and job health\n"
+        "/trade_review EXECUTION_ID - persisted deterministic/AI trade review\n"
+        "/learning_digest - recent review and model digest\n"
+        "/model_status - champion and challenger model status\n"
         "/blacklist [add SYMBOL reason|remove SYMBOL] - inspect or change the symbol blacklist\n"
         "/circuit_status - circuit-breaker and account-verification status\n"
         "/clear_circuit CONFIRM - reconcile and clear a resolved circuit-breaker reason\n"
@@ -89,6 +93,7 @@ class TelegramBotService:
         automation_service: Any | None = None,
         runtime_state_repository: RuntimeStateRepository | Any,
         run_log_repository: RunLogRepository | Any,
+        learning_service: Any | None = None,
     ):
         self.settings = settings
         self.notifier = notifier
@@ -102,6 +107,7 @@ class TelegramBotService:
         self.automation = automation_service
         self.state = runtime_state_repository
         self.logs = run_log_repository
+        self.learning = learning_service
         self._approval_adapter = SignalApprovalAdapter()
         self._scan_executor = ThreadPoolExecutor(max_workers=1)
         self._scan_lock = threading.Lock()
@@ -419,6 +425,22 @@ class TelegramBotService:
 
         if command == "/strategy_status":
             self.notifier.send_text(self._strategy_health_message(), chat_id=chat_id)
+            return
+
+        if command == "/learning_status":
+            self.notifier.send_text(self._learning_status_message(), chat_id=chat_id)
+            return
+
+        if command == "/trade_review":
+            self.notifier.send_text(self._trade_review_message(args), chat_id=chat_id)
+            return
+
+        if command == "/learning_digest":
+            self.notifier.send_text(self._learning_digest_message(), chat_id=chat_id)
+            return
+
+        if command == "/model_status":
+            self.notifier.send_text(self._model_status_message(), chat_id=chat_id)
             return
 
         if command == "/blacklist":
@@ -1135,6 +1157,55 @@ class TelegramBotService:
                 ),
             ]
         )
+
+    def _learning_status_message(self) -> str:
+        if self.learning is None:
+            return "Learning service is not configured."
+        status = self.learning.status()
+        return "\n".join(
+            [
+                "Learning status",
+                f"Capture: {'on' if status.get('capture_enabled') else 'off'} | worker: {'on' if status.get('worker_enabled') else 'off'}",
+                f"Reviews: {int(status.get('reviews') or 0)} | pending jobs: {int(status.get('pending_jobs') or 0)} | failed jobs: {int(status.get('failed_jobs') or 0)}",
+                f"Model: {status.get('active_model_version') or 'none'} | mode: {status.get('model_deployment_mode') or 'shadow'}",
+                f"Excessive drift events: {int(status.get('excessive_drift') or 0)}",
+            ]
+        )
+
+    def _trade_review_message(self, args: list[str]) -> str:
+        if self.learning is None:
+            return "Learning service is not configured."
+        if not args:
+            return "Usage: /trade_review EXECUTION_ID"
+        review = self.learning.repository.get_review(args[0])
+        if review is None:
+            return f"No completed trade review for {args[0]}."
+        return "\n".join(
+            [
+                f"Trade review: {review.execution_id}",
+                f"Reviewer: {review.reviewer} | confidence: {review.confidence:.2f}",
+                review.summary,
+                "Categories: " + (", ".join(review.failure_categories) or "none"),
+            ]
+        )
+
+    def _learning_digest_message(self) -> str:
+        if self.learning is None:
+            return "Learning service is not configured."
+        return self.learning.daily_digest()
+
+    def _model_status_message(self) -> str:
+        if self.learning is None:
+            return "Learning service is not configured."
+        models = self.learning.repository.list_models(limit=5)
+        if not models:
+            return "Model status: no challengers or champion models."
+        lines = ["Model status"]
+        lines.extend(
+            f"{item.id} | {item.status} | {item.deployment_mode} | rows {int(item.metrics.get('accepted_oos_trades') or 0)}"
+            for item in models
+        )
+        return "\n".join(lines)
 
     def _performance_message(self) -> str:
         if self.paper_trading_service is None:

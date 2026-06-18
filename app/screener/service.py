@@ -7,12 +7,18 @@ from typing import Any
 from app.backtesting.batch import BatchBacktestService
 from app.backtesting.strategy_selection import (
     active_strategy_names as _active_strategy_names,
+)
+from app.backtesting.strategy_selection import (
     strategy_kwargs_for as _strategy_kwargs,
+)
+from app.backtesting.strategy_selection import (
     strategy_specs_for as _strategy_specs,
 )
+from app.intelligence import MarketIntelligenceService
 from app.live_signal_schema import LiveSignalSnapshot
 from app.models.screener import MarketUniverseResponse, ScreenerRunResponse
 from app.runtime_settings import AppSettings
+from app.screener.filters import ScreenerFilterPipeline
 from app.screener.service_backtests import (
     backtest_validation,
     bars_for_timeframe,
@@ -41,10 +47,16 @@ from app.screener.service_snapshots import (
     build_no_trade_snapshot,
     snapshot_from_signal,
 )
-from app.screener.filters import ScreenerFilterPipeline
-from app.intelligence import MarketIntelligenceService
 from app.telegram_notify import TelegramNotifier
 from app.universe import resolve_universe
+
+__all__ = [
+    "BatchBacktestService",
+    "MarketScreenerService",
+    "_active_strategy_names",
+    "_strategy_kwargs",
+    "_strategy_specs",
+]
 
 
 class MarketScreenerService:
@@ -60,6 +72,7 @@ class MarketScreenerService:
         backtest_repository: Any | None = None,
         scan_decision_repository: Any | None = None,
         telegram_notifier: TelegramNotifier | Any | None = None,
+        learning_service: Any | None = None,
     ):
         self.settings = settings
         self.market_data = market_data_engine
@@ -68,6 +81,7 @@ class MarketScreenerService:
         self.backtests = backtest_repository
         self.scan_decisions = scan_decision_repository
         self.notifier = telegram_notifier
+        self.learning = learning_service
         self.filters = ScreenerFilterPipeline(settings)
         self.intelligence = MarketIntelligenceService(settings, market_data_engine)
 
@@ -132,7 +146,8 @@ class MarketScreenerService:
         return self._build_no_trade_snapshot(normalized, response=response, force_refresh=force_refresh)
 
     def _snapshot_from_signal(self, signal: Any, **kwargs: Any) -> LiveSignalSnapshot:
-        return snapshot_from_signal(self, signal, **kwargs)
+        snapshot = snapshot_from_signal(self, signal, **kwargs)
+        return self.learning.apply_to_snapshot(snapshot) if self.learning is not None else snapshot
 
     def _backtest_validation(self, symbol: str, strategy_name: str, timeframe: str | None = None) -> dict[str, Any]:
         return backtest_validation(self, symbol, strategy_name, timeframe)

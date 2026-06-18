@@ -173,6 +173,14 @@ docker compose start cx-algobot
 
 Live trading remains out of scope.
 
+## Continuous Learning
+
+Continuous-learning evidence capture is additive and enabled by default.
+Reviews, OpenAI calls, training, model gating, and automatic paper promotion
+remain disabled until their separate gates pass. Follow
+[`continuous_learning_runbook.md`](continuous_learning_runbook.md) before
+creating Railway worker or cron services.
+
 ## Institutional Readiness Records
 
 Strategy promotion, broker identity/capability evidence, broker comparisons,

@@ -39,6 +39,7 @@ class ExecutionCoordinator:
         risk_manager: RiskManager | None = None,
         risk_context_factory: Callable[[Any, Any, Any], Any] | None = None,
         parallel_broker_service: Any | None = None,
+        learning_service: Any | None = None,
     ):
         self.settings = settings
         self.proposals = proposal_service
@@ -53,6 +54,7 @@ class ExecutionCoordinator:
         self.risk_manager = risk_manager or RiskManager(settings)
         self.risk_context_factory = risk_context_factory or build_risk_context
         self.parallel_broker = parallel_broker_service
+        self.learning = learning_service
 
     def enqueue_approved_proposal(self, proposal_id: str) -> ExecutionQueueRecord:
         proposal = self.proposals.get_proposal(proposal_id)
@@ -249,7 +251,7 @@ class ExecutionCoordinator:
                     "fill_price": paper_position.entry_price,
                 },
             )
-            self.executions.create(execution)
+            self._create_execution(execution)
             self.proposals.mark_executed(proposal.id, execution.id)
         elif self.settings.execution_mode in {"paper", "live"}:
             if record.payload.get("execution_id"):
@@ -279,7 +281,7 @@ class ExecutionCoordinator:
                             "broker_error": str(exc),
                         },
                     )
-                    self.executions.create(execution)
+                    self._create_execution(execution)
                     self.proposals.mark_executed(proposal.id, execution.id)
                 else:
                     execution = ExecutionRecord(
@@ -290,7 +292,7 @@ class ExecutionCoordinator:
                         response_payload={"broker": broker_name},
                         error_message=str(exc),
                     )
-                    self.executions.create(execution)
+                    self._create_execution(execution)
                     record.status = ExecutionQueueStatus.BLOCKED
                     record.ready_for_execution = False
                     record.validation_reason = "broker_submission_failed"
@@ -437,6 +439,17 @@ class ExecutionCoordinator:
             "client_order_id": client_order_id,
             "broker": broker_name,
         }
+        if self.learning is not None:
+            self.learning.record_proposal_event(
+                proposal,
+                event_type="pre_submit_validation",
+                payload={
+                    "broker": broker_name,
+                    "quote_price": quote_price,
+                    "request": request_payload,
+                    "risk_rechecked": True,
+                },
+            )
         if hasattr(broker, "submit_order"):
             capped_amount = min(
                 float(proposal.order.amount_usd),
@@ -490,7 +503,7 @@ class ExecutionCoordinator:
                     else dict(getattr(broker_execution, "response_payload", {}) or {}),
                 },
             )
-            self.executions.create(execution)
+            self._create_execution(execution)
             self.proposals.mark_executed(proposal.id, execution.id)
             self.logs.log(
                 "order_submitted",
@@ -517,7 +530,7 @@ class ExecutionCoordinator:
                 request_payload=request_payload,
                 response_payload={"broker": broker_name, "broker_response": response.model_dump()},
             )
-            self.executions.create(execution)
+            self._create_execution(execution)
             self.proposals.mark_executed(proposal.id, execution.id)
             self.logs.log(
                 "order_submitted",
@@ -542,6 +555,12 @@ class ExecutionCoordinator:
             primary_execution=execution,
             primary_broker=broker_name,
         )
+
+    def _create_execution(self, execution: ExecutionRecord) -> ExecutionRecord:
+        persisted = self.executions.create(execution)
+        if self.learning is not None:
+            self.learning.record_execution_event(persisted, event_type="submitted")
+        return persisted
 
     @staticmethod
     def _alpaca_bracket_reasons(proposal: Any, quote_price: float) -> list[str]:

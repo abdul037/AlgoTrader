@@ -532,6 +532,179 @@ CREATE TABLE IF NOT EXISTS rollout_gate_evidence (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_rollout_gate_unique
 ON rollout_gate_evidence(stage, gate_name);
+
+CREATE TABLE IF NOT EXISTS learning_decision_snapshots (
+    id TEXT PRIMARY KEY,
+    decision_key TEXT NOT NULL,
+    signal_id TEXT,
+    execution_id TEXT,
+    symbol TEXT NOT NULL,
+    strategy_name TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    deterministic_eligible INTEGER NOT NULL DEFAULT 0,
+    accepted INTEGER NOT NULL DEFAULT 0,
+    deterministic_score REAL,
+    adjusted_score REAL,
+    model_version_id TEXT,
+    features_json TEXT NOT NULL,
+    decision_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_decision_key
+ON learning_decision_snapshots(decision_key);
+CREATE INDEX IF NOT EXISTS idx_learning_decision_lookup
+ON learning_decision_snapshots(symbol, strategy_name, timeframe, created_at);
+
+CREATE TABLE IF NOT EXISTS learning_outcome_labels (
+    id TEXT PRIMARY KEY,
+    decision_snapshot_id TEXT NOT NULL,
+    label_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    net_pnl_usd REAL,
+    net_r REAL,
+    profitable INTEGER,
+    source TEXT NOT NULL,
+    horizon TEXT,
+    details_json TEXT NOT NULL,
+    labeled_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_outcome_unique
+ON learning_outcome_labels(decision_snapshot_id, label_type, source, horizon);
+
+CREATE TABLE IF NOT EXISTS learning_lifecycle_events (
+    id TEXT PRIMARY KEY,
+    event_key TEXT NOT NULL,
+    execution_id TEXT,
+    proposal_id TEXT,
+    broker_order_id TEXT,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    occurred_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_lifecycle_event_key
+ON learning_lifecycle_events(event_key);
+CREATE INDEX IF NOT EXISTS idx_learning_lifecycle_execution
+ON learning_lifecycle_events(execution_id, occurred_at);
+
+CREATE TABLE IF NOT EXISTS learning_trade_reviews (
+    id TEXT PRIMARY KEY,
+    execution_id TEXT NOT NULL,
+    outcome_label_id TEXT,
+    status TEXT NOT NULL,
+    reviewer TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    findings_json TEXT NOT NULL,
+    failure_categories_json TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0,
+    critic_model TEXT,
+    estimated_cost_usd REAL NOT NULL DEFAULT 0,
+    details_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_review_execution
+ON learning_trade_reviews(execution_id);
+
+CREATE TABLE IF NOT EXISTS learning_experiments (
+    id TEXT PRIMARY KEY,
+    trade_review_id TEXT,
+    title TEXT NOT NULL,
+    hypothesis TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    status TEXT NOT NULL,
+    details_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS learning_dataset_versions (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    row_count INTEGER NOT NULL DEFAULT 0,
+    accepted_oos_trades INTEGER NOT NULL DEFAULT 0,
+    feature_schema_hash TEXT NOT NULL,
+    source_cutoff_at TEXT NOT NULL,
+    train_start_at TEXT,
+    train_end_at TEXT,
+    holdout_start_at TEXT,
+    holdout_end_at TEXT,
+    artifact_uri TEXT,
+    details_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS learning_meta_model_versions (
+    id TEXT PRIMARY KEY,
+    dataset_version_id TEXT NOT NULL,
+    parent_version_id TEXT,
+    model_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    deployment_mode TEXT NOT NULL,
+    feature_names_json TEXT NOT NULL,
+    artifact_uri TEXT NOT NULL,
+    artifact_hash TEXT NOT NULL,
+    metrics_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_learning_model_status
+ON learning_meta_model_versions(status, deployment_mode, created_at);
+
+CREATE TABLE IF NOT EXISTS learning_model_evaluations (
+    id TEXT PRIMARY KEY,
+    model_version_id TEXT NOT NULL,
+    champion_version_id TEXT,
+    status TEXT NOT NULL,
+    metrics_json TEXT NOT NULL,
+    blockers_json TEXT NOT NULL,
+    shadow_sessions INTEGER NOT NULL DEFAULT 0,
+    leakage_passed INTEGER NOT NULL DEFAULT 0,
+    schema_passed INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS learning_model_promotions (
+    id TEXT PRIMARY KEY,
+    model_version_id TEXT NOT NULL,
+    target_mode TEXT NOT NULL,
+    approved INTEGER NOT NULL DEFAULT 0,
+    signed_by TEXT,
+    blockers_json TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS learning_drift_snapshots (
+    id TEXT PRIMARY KEY,
+    model_version_id TEXT,
+    drift_score REAL NOT NULL DEFAULT 0,
+    excessive INTEGER NOT NULL DEFAULT 0,
+    feature_drift_json TEXT NOT NULL,
+    details_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS learning_jobs (
+    id TEXT PRIMARY KEY,
+    idempotency_key TEXT NOT NULL,
+    job_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    error TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    scheduled_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_job_idempotency
+ON learning_jobs(idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_learning_job_status
+ON learning_jobs(status, scheduled_at);
 """
 
 

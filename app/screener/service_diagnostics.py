@@ -148,7 +148,7 @@ def record_scan_decision(
 ) -> None:
     if service.scan_decisions is None:
         return
-    service.scan_decisions.create(
+    record = service.scan_decisions.create(
         scan_task=scan_task,
         symbol=signal.symbol,
         strategy_name=signal.strategy_name,
@@ -161,6 +161,8 @@ def record_scan_decision(
         rejection_reasons=list(filter_outcome.rejection_reasons),
         payload=payload,
     )
+    if getattr(service, "learning", None) is not None:
+        service.learning.capture_scan_decision(record, signal=signal)
 
 
 def market_data_status(service: Any, *, history: Any, quote: Any) -> dict[str, Any]:

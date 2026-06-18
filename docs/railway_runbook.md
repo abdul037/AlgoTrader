@@ -111,6 +111,11 @@ backup services are not started. Use Railway logs and `/metrics` during the
 initial observation period. Configure an independent scheduled PostgreSQL
 export before unattended activation.
 
+The governed learning worker and cron services are separate Railway services.
+Keep them disabled during the current shadow observation. Their commands and
+staged flags are documented in
+[`continuous_learning_runbook.md`](continuous_learning_runbook.md).
+
 ## Verify Deployment
 
 Review the pre-deploy migration and application logs, then verify:

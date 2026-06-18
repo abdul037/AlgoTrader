@@ -34,6 +34,7 @@ class AlpacaReconciliationService:
         run_logs: Any,
         automation: Any,
         broker_governance: Any | None = None,
+        learning_service: Any | None = None,
     ):
         self.settings = settings
         self.alpaca = alpaca_client
@@ -45,6 +46,7 @@ class AlpacaReconciliationService:
         self.logs = run_logs
         self.automation = automation
         self.broker_governance = broker_governance
+        self.learning = learning_service
 
     def reconcile(self) -> dict[str, Any]:
         if self.alpaca is None or not bool(getattr(self.settings, "alpaca_reconciliation_enabled", True)):
@@ -204,6 +206,11 @@ class AlpacaReconciliationService:
         execution.realized_pnl_usd = self._realized_pnl(payload)
         execution.updated_at = utc_now().isoformat()
         self.executions.update(execution)
+        if self.learning is not None:
+            self.learning.record_execution_event(
+                execution,
+                event_type=self._learning_event_type(payload),
+            )
         if self.broker_governance is not None:
             fill_price = float(payload.get("filled_avg_price") or 0.0) or None
             proposed_price = float((execution.request_payload or {}).get("proposed_price") or 0.0)
@@ -218,6 +225,21 @@ class AlpacaReconciliationService:
                 fill_price=fill_price,
                 slippage_bps=slippage_bps,
             )
+
+    @staticmethod
+    def _learning_event_type(payload: dict[str, Any]) -> str:
+        legs = list(payload.get("legs") or [])
+        if any(
+            str(leg.get("status") or "").lower() == "filled"
+            and str(leg.get("side") or "").lower() == "sell"
+            for leg in legs
+        ):
+            return "closure"
+        if str(payload.get("status") or "").lower() == "filled":
+            return "fill"
+        if legs:
+            return "protective_order_change"
+        return "reconciled"
 
     @staticmethod
     def _realized_pnl(payload: dict[str, Any]) -> float:

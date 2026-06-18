@@ -925,6 +925,8 @@ Telegram smoke test:
 Production deployment notes, backup/restore commands, webhook reset, and emergency stop steps are in [`docs/production_runbook.md`](docs/production_runbook.md).
 Implementation status and evidence still required are in
 [`docs/institutional_roadmap_status.md`](docs/institutional_roadmap_status.md).
+The governed trade-review and challenger-model rollout is documented in
+[`docs/continuous_learning_runbook.md`](docs/continuous_learning_runbook.md).
 
 Institutional governance endpoints:
 

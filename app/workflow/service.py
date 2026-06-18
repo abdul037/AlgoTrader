@@ -67,6 +67,7 @@ class SignalWorkflowService:
         reconciliation_service: Any | None = None,
         etoro_reconciliation_service: Any | None = None,
         auto_trading_service: Any | None = None,
+        learning_service: Any | None = None,
     ):
         self.settings = settings
         self.market_screener = market_screener
@@ -82,6 +83,7 @@ class SignalWorkflowService:
         self.reconciliation = reconciliation_service
         self.etoro_reconciliation = etoro_reconciliation_service
         self.auto_trading = auto_trading_service
+        self.learning = learning_service
         self._approval_adapter = SignalApprovalAdapter()
 
     def run_scheduled_tasks(self) -> dict[str, int]:
@@ -253,6 +255,13 @@ class SignalWorkflowService:
                 processed = self.auto_trading.process_ready_queue()
                 if processed:
                     completed.append("auto_execution_queue")
+            if self.learning is not None:
+                scheduled = self.learning.schedule_due_jobs()
+                if scheduled:
+                    completed.append("learning_jobs_scheduled")
+                processed_learning = self.learning.process_jobs(limit=10)
+                if processed_learning:
+                    completed.append("learning_jobs_processed")
             if self._is_due("workflow:last_open_signal_check_at", self.settings.open_signal_check_interval_minutes):
                 result = self.check_open_signals(notify=notify)
                 completed.append("open_signal_check")
@@ -333,6 +342,10 @@ class SignalWorkflowService:
         if last_etoro_error:
             status = "warning"
             reasons.append("etoro_api_errors")
+        learning = self.learning.status() if self.learning is not None else {}
+        if int(learning.get("failed_jobs") or 0) > 0:
+            status = "warning"
+            reasons.append("learning_jobs_failed")
         return {
             "status": status,
             "reasons": reasons,
@@ -343,6 +356,9 @@ class SignalWorkflowService:
             "last_etoro_error_at": last_etoro_error_at,
             "pending_match_count": pending_count,
             "stale_pending_match_count": stale_pending_count,
+            "active_meta_model_version": learning.get("active_model_version"),
+            "model_deployment_mode": learning.get("model_deployment_mode", "shadow"),
+            "learning": learning,
         }
 
     def _run_scan_task(self, **kwargs: Any) -> WorkflowTaskResponse:

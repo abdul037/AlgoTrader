@@ -53,6 +53,36 @@ def metrics(request: Request) -> Response:
             "algobot_broker_reconciliation_failures_total": (
                 "SELECT COUNT(*) FROM broker_reconciliation_results WHERE status = 'error'"
             ),
+            "algobot_learning_decisions_total": "SELECT COUNT(*) FROM learning_decision_snapshots",
+            "algobot_learning_real_labels_total": (
+                "SELECT COUNT(*) FROM learning_outcome_labels WHERE label_type = 'real'"
+            ),
+            "algobot_learning_counterfactual_labels_total": (
+                "SELECT COUNT(*) FROM learning_outcome_labels WHERE label_type = 'counterfactual'"
+            ),
+            "algobot_learning_reviews_total": "SELECT COUNT(*) FROM learning_trade_reviews",
+            "algobot_learning_experiments_total": "SELECT COUNT(*) FROM learning_experiments",
+            "algobot_learning_models_total": "SELECT COUNT(*) FROM learning_meta_model_versions",
+            "algobot_learning_review_backlog": (
+                "SELECT COUNT(*) FROM learning_jobs WHERE job_type = 'review_trade' AND status = 'pending'"
+            ),
+            "algobot_learning_jobs_failed": (
+                "SELECT COUNT(*) FROM learning_jobs WHERE status = 'failed'"
+            ),
+            "algobot_learning_excessive_drift_total": (
+                "SELECT COUNT(*) FROM learning_drift_snapshots WHERE excessive = 1"
+            ),
+            "algobot_learning_promotions_approved": (
+                "SELECT COUNT(*) FROM learning_model_promotions WHERE approved = 1"
+            ),
+            "algobot_learning_rollbacks_total": (
+                "SELECT COUNT(*) FROM learning_model_promotions "
+                "WHERE blockers_json LIKE '%operator_rollback%'"
+            ),
+            "algobot_learning_champion_active": (
+                "SELECT COUNT(*) FROM learning_meta_model_versions "
+                "WHERE status = 'champion' AND deployment_mode IN ('paper','live')"
+            ),
         }.items():
             counts[name] = int(connection.execute(query).fetchone()[0])
         realized_row = connection.execute(
@@ -84,6 +114,14 @@ def metrics(request: Request) -> Response:
             ORDER BY created_at DESC LIMIT 1
             """
         ).fetchone()
+        learning_cost_row = connection.execute(
+            """
+            SELECT COALESCE(SUM(estimated_cost_usd), 0.0) AS value
+            FROM learning_trade_reviews
+            WHERE created_at >= ?
+            """,
+            (datetime.now(UTC).date().isoformat(),),
+        ).fetchone()
 
     latest_reconciliation = dict(reconciliation_row) if reconciliation_row is not None else {}
     institutional_readiness = request.app.state.institutional_service.readiness()
@@ -112,6 +150,20 @@ def metrics(request: Request) -> Response:
                 bool(etoro_reconciliation_row and etoro_reconciliation_row["status"] == "ok")
             ),
             "algobot_institutional_rollout_ready": int(institutional_readiness["ready"]),
+            "algobot_learning_review_cost_today_usd": float(
+                learning_cost_row["value"] if learning_cost_row else 0.0
+            ),
+            "algobot_learning_capture_enabled": int(request.app.state.settings.learning_capture_enabled),
+            "algobot_learning_worker_enabled": int(request.app.state.settings.learning_worker_enabled),
+            "algobot_learning_reviews_enabled": int(request.app.state.settings.learning_reviews_enabled),
+            "algobot_learning_training_enabled": int(request.app.state.settings.learning_training_enabled),
+            "algobot_learning_openai_enabled": int(request.app.state.settings.learning_openai_enabled),
+            "algobot_learning_auto_promote_paper_enabled": int(
+                request.app.state.settings.learning_auto_promote_paper_enabled
+            ),
+            "algobot_learning_model_gating_enabled": int(
+                request.app.state.settings.model_deployment_mode == "gating"
+            ),
         }
     )
     lines = [f"{name} {value}" for name, value in sorted(counts.items())]

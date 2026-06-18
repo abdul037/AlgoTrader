@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from app.approvals.service import ProposalService
 from app.broker.etoro_client import BrokerClient
-from app.runtime_settings import AppSettings
 from app.models.approval import ApprovalStatus, TradeProposalCreate
 from app.models.execution import BrokerOrderResponse, ExecutionRecord, ExecutionStatus
 from app.models.signal import Signal, SignalAction
 from app.risk.context import build_risk_context
 from app.risk.guardrails import RiskManager
 from app.risk.position_sizing import calculate_position_size
+from app.runtime_settings import AppSettings
 from app.storage.repositories import ExecutionRepository, RunLogRepository
 from app.utils.time import utc_now
 
@@ -27,6 +27,7 @@ class TraderService:
         run_log_repository: RunLogRepository,
         broker: BrokerClient,
         risk_manager: RiskManager,
+        learning_service=None,
     ):
         self.settings = settings
         self.proposals = proposal_service
@@ -34,6 +35,7 @@ class TraderService:
         self.logs = run_log_repository
         self.broker = broker
         self.risk_manager = risk_manager
+        self.learning = learning_service
 
     def propose_from_signal(
         self,
@@ -88,7 +90,7 @@ class TraderService:
                 mode=self.settings.etoro_account_mode,
                 error_message="Proposal must be approved before execution",
             )
-            self.executions.create(blocked)
+            self._create_execution(blocked, "blocked")
             raise PermissionError("Proposal must be approved before execution")
 
         risk_context = build_risk_context(self.settings, self.broker, self.executions)
@@ -101,16 +103,25 @@ class TraderService:
                 error_message="; ".join(risk.reasons),
                 request_payload={**proposal.order.model_dump(), "client_order_id": client_order_id},
             )
-            self.executions.create(blocked)
+            self._create_execution(blocked, "blocked")
             raise ValueError("; ".join(risk.reasons))
 
+        if self.learning is not None:
+            self.learning.record_proposal_event(
+                proposal,
+                event_type="pre_submit_validation",
+                payload={
+                    "request": {**proposal.order.model_dump(), "client_order_id": client_order_id},
+                    "risk_rechecked": True,
+                },
+            )
         execution = ExecutionRecord(
             proposal_id=proposal_id,
             status=ExecutionStatus.VALIDATED,
             mode=self.settings.etoro_account_mode,
             request_payload={**proposal.order.model_dump(), "client_order_id": client_order_id},
         )
-        self.executions.create(execution)
+        self._create_execution(execution, "submitted")
 
         if proposal.order.side.value == "sell":
             broker_response = self.broker.close_position(proposal.order.symbol)
@@ -124,6 +135,8 @@ class TraderService:
         execution.response_payload = broker_response.model_dump()
         execution.updated_at = utc_now().isoformat()
         self.executions.update(execution)
+        if self.learning is not None:
+            self.learning.record_execution_event(execution, event_type="broker_response")
 
         self.proposals.mark_executed(proposal_id, execution.id)
         self.logs.log(
@@ -136,6 +149,12 @@ class TraderService:
             },
         )
         return execution
+
+    def _create_execution(self, execution: ExecutionRecord, event_type: str) -> ExecutionRecord:
+        persisted = self.executions.create(execution)
+        if self.learning is not None:
+            self.learning.record_execution_event(persisted, event_type=event_type)
+        return persisted
 
     @staticmethod
     def _map_broker_status(response: BrokerOrderResponse) -> str:

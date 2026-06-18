@@ -1,0 +1,66 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Learning Safety Flags",
+      "gridPos": {"h": 5, "w": 8, "x": 0, "y": 0},
+      "targets": [
+        {"expr": "algobot_learning_capture_enabled", "legendFormat": "Capture"},
+        {"expr": "algobot_learning_training_enabled", "legendFormat": "Training"},
+        {"expr": "algobot_learning_model_gating_enabled", "legendFormat": "Gating"},
+        {"expr": "algobot_learning_auto_promote_paper_enabled", "legendFormat": "Auto promote"}
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Learning Pipeline",
+      "gridPos": {"h": 5, "w": 8, "x": 8, "y": 0},
+      "targets": [
+        {"expr": "algobot_learning_review_backlog", "legendFormat": "Review backlog"},
+        {"expr": "algobot_learning_jobs_failed", "legendFormat": "Failed jobs"},
+        {"expr": "algobot_learning_excessive_drift_total", "legendFormat": "Excessive drift"}
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Models And Governance",
+      "gridPos": {"h": 5, "w": 8, "x": 16, "y": 0},
+      "targets": [
+        {"expr": "algobot_learning_models_total", "legendFormat": "Models"},
+        {"expr": "algobot_learning_champion_active", "legendFormat": "Champion"},
+        {"expr": "algobot_learning_promotions_approved", "legendFormat": "Promotions"},
+        {"expr": "algobot_learning_rollbacks_total", "legendFormat": "Rollbacks"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Evidence And Reviews",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
+      "targets": [
+        {"expr": "algobot_learning_decisions_total", "legendFormat": "Decisions"},
+        {"expr": "algobot_learning_real_labels_total", "legendFormat": "Real labels"},
+        {"expr": "algobot_learning_counterfactual_labels_total", "legendFormat": "Counterfactual labels"},
+        {"expr": "algobot_learning_reviews_total", "legendFormat": "Reviews"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "OpenAI Review Cost",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
+      "targets": [
+        {"expr": "algobot_learning_review_cost_today_usd", "legendFormat": "USD today"}
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["algobot", "learning", "paper"],
+  "templating": {"list": []},
+  "time": {"from": "now-7d", "to": "now"},
+  "timezone": "browser",
+  "title": "CX AlgoBot Continuous Learning",
+  "uid": "cx-algobot-learning",
+  "version": 1
+}
