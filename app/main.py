@@ -537,6 +537,16 @@ def create_app(
 
     @app.get("/health", response_model=HealthResponse, tags=["system"])
     def health() -> HealthResponse:
+        return HealthResponse(
+            status="ok",
+            account_mode=app_settings.etoro_account_mode,
+            require_approval=app_settings.require_approval,
+            reason="process_ready",
+            model_deployment_mode=app_settings.model_deployment_mode,
+        )
+
+    @app.get("/health/details", response_model=HealthResponse, tags=["system"])
+    def detailed_health() -> HealthResponse:
         workflow_health = app.state.workflow_service.health_summary()
         return HealthResponse(
             status=str(workflow_health.get("status") or "ok"),
