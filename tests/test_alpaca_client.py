@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 from alpaca.data.timeframe import TimeFrameUnit
 from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
 from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
@@ -281,6 +282,53 @@ def test_submit_limit_order_uses_LimitOrderRequest_with_limit_price(monkeypatch)
     assert request.side == OrderSide.SELL
     assert request.limit_price == 201.25
     assert request.time_in_force == TimeInForce.GTC
+
+
+def test_submit_extended_hours_limit_order_sets_alpaca_flag(monkeypatch):
+    client, trading, _ = _client(monkeypatch)
+
+    client.submit_order(
+        symbol="AAPL",
+        side="buy",
+        qty=0.5,
+        order_type="limit",
+        limit_price=201.25,
+        time_in_force="day",
+        extended_hours=True,
+    )
+
+    request = trading.submitted_requests[0]
+    assert isinstance(request, LimitOrderRequest)
+    assert request.extended_hours is True
+    assert request.time_in_force == TimeInForce.DAY
+
+
+def test_extended_hours_rejects_market_orders(monkeypatch):
+    client, _, _ = _client(monkeypatch)
+
+    with pytest.raises(ValueError, match="extended-hours orders must be limit orders"):
+        client.submit_order(
+            symbol="AAPL",
+            side="buy",
+            qty=1,
+            order_type="market",
+            time_in_force="day",
+            extended_hours=True,
+        )
+
+
+def test_extended_hours_rejects_bracket_orders(monkeypatch):
+    client, _, _ = _client(monkeypatch)
+
+    with pytest.raises(ValueError, match="bracket orders cannot be submitted"):
+        client.submit_bracket_order(
+            symbol="AAPL",
+            side="buy",
+            qty=1,
+            stop_loss_price=190.0,
+            take_profit_price=220.0,
+            extended_hours=True,
+        )
 
 
 def test_cancel_order_returns_true_on_success_false_on_already_done(monkeypatch):

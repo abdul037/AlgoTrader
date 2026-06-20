@@ -53,6 +53,16 @@ class AppSettings(BaseSettings):
     alpaca_reconciliation_enabled: bool = True
     alpaca_reconciliation_interval_seconds: int = 60
     alpaca_require_bracket_orders: bool = True
+    extended_hours_experiment_enabled: bool = False
+    extended_hours_experiment_submit_enabled: bool = False
+    extended_hours_whitelist: list[str] = Field(default_factory=lambda: ["SPY", "QQQ"])
+    extended_hours_max_notional_usd: float = 100.0
+    extended_hours_max_qty: float = 1.0
+    extended_hours_max_open_orders: int = 1
+    extended_hours_max_spread_bps: float = 75.0
+    extended_hours_max_quote_age_seconds: int = 30
+    extended_hours_order_ttl_seconds: int = 300
+    extended_hours_etoro_probe_enabled: bool = False
 
     require_approval: bool = True
     telegram_enabled: bool = False

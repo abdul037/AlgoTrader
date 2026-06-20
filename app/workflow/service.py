@@ -88,13 +88,6 @@ class SignalWorkflowService:
 
     def run_scheduled_tasks(self) -> dict[str, int]:
         summary = {"alerts_sent": 0, "closed_signals": 0, "ledger_cycles": 0, "buckets_run": 0}
-        if self._bucket_due("maintenance"):
-            result = self.run_maintenance(notify=True)
-            if result.status == "ok":
-                summary["alerts_sent"] += result.alerts_sent
-                summary["closed_signals"] += result.closed_signals
-                summary["ledger_cycles"] += int((result.detail or "").count("ledger_cycle"))
-                summary["buckets_run"] += 1
         if self.automation is not None:
             blockers = self.automation.scan_blockers()
             if blockers:
@@ -102,6 +95,14 @@ class SignalWorkflowService:
                 for bucket_name in self.SCAN_BUCKETS:
                     self._record_bucket_state(bucket_name, status="paused", error=",".join(blockers))
                 return summary
+
+        if self._bucket_due("maintenance"):
+            result = self.run_maintenance(notify=True)
+            if result.status == "ok":
+                summary["alerts_sent"] += result.alerts_sent
+                summary["closed_signals"] += result.closed_signals
+                summary["ledger_cycles"] += int((result.detail or "").count("ledger_cycle"))
+                summary["buckets_run"] += 1
 
         if not self.settings.screener_scheduler_enabled:
             return summary

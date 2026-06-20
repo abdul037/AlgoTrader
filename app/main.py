@@ -20,6 +20,8 @@ from app.broker.comparison import ParallelBrokerComparisonService
 from app.execution.coordinator import ExecutionCoordinator
 from app.execution.routes import router as execution_router
 from app.execution.trader import TraderService
+from app.experiments.extended_hours import ExtendedHoursExperimentService
+from app.experiments.routes import router as extended_hours_router
 from app.institutional.routes import router as institutional_router
 from app.institutional.service import InstitutionalGovernanceService
 from app.learning.artifacts import build_artifact_store
@@ -53,6 +55,7 @@ from app.storage.repositories import (
     EToroDemoIdempotencyRepository,
     ExecutionQueueRepository,
     ExecutionRepository,
+    ExtendedHoursExperimentRepository,
     PaperPositionRepository,
     PaperTradeRepository,
     PortfolioRiskRepository,
@@ -346,6 +349,7 @@ def create_app(
     broker_order_repository = BrokerOrderSnapshotRepository(database)
     broker_position_repository = BrokerPositionSnapshotRepository(database)
     safety_state_repository = SafetyStateRepository(database)
+    extended_hours_repository = ExtendedHoursExperimentRepository(database)
     execution_queue_repository = ExecutionQueueRepository(database)
     paper_position_repository = PaperPositionRepository(database)
     paper_trade_repository = PaperTradeRepository(database)
@@ -409,6 +413,7 @@ def create_app(
     app.state.safety_state_repository = safety_state_repository
     app.state.broker_order_repository = broker_order_repository
     app.state.broker_position_repository = broker_position_repository
+    app.state.extended_hours_experiment_repository = extended_hours_repository
     app.state.reconciliation_service = AlpacaReconciliationService(
         settings=app_settings,
         alpaca_client=alpaca_client,
@@ -421,6 +426,15 @@ def create_app(
         automation=app.state.automation_service,
         broker_governance=broker_governance_repository,
         learning_service=app.state.learning_service,
+    )
+    app.state.extended_hours_experiment_service = ExtendedHoursExperimentService(
+        settings=app_settings,
+        alpaca_client=alpaca_client,
+        etoro_demo_client=app.state.etoro_demo_v2_client,
+        repository=extended_hours_repository,
+        safety_state=safety_state_repository,
+        automation=app.state.automation_service,
+        run_logs=run_log_repository,
     )
     app.state.auto_trading_service = PaperAutoTradingService(
         settings=app_settings,
@@ -485,6 +499,7 @@ def create_app(
     app.include_router(workflow_router)
     app.include_router(automation_router)
     app.include_router(execution_router)
+    app.include_router(extended_hours_router)
     app.include_router(paper_router)
     app.include_router(institutional_router)
     app.include_router(learning_router)

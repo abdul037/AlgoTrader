@@ -1322,6 +1322,231 @@ class EToroDemoIdempotencyRepository:
         return results
 
 
+class ExtendedHoursExperimentRepository:
+    """Persist supervised extended-hours experiment evidence."""
+
+    OPEN_STATUSES = {
+        "submitted",
+        "accepted",
+        "new",
+        "partially_filled",
+        "filled",
+        "pending_exit",
+        "exit_submitted",
+    }
+    EXPIRABLE_STATUSES = {"submitted", "accepted", "new"}
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def create_order(self, item: dict[str, Any]) -> dict[str, Any]:
+        now = utc_now().isoformat()
+        payload = {
+            "id": item["id"],
+            "broker": item.get("broker", "alpaca"),
+            "symbol": str(item["symbol"]).upper(),
+            "side": item.get("side", "buy"),
+            "qty": float(item.get("qty") or 0.0),
+            "limit_price": float(item.get("limit_price") or 0.0),
+            "notional_usd": float(item.get("notional_usd") or 0.0),
+            "status": item.get("status", "created"),
+            "client_order_id": item.get("client_order_id"),
+            "broker_order_id": item.get("broker_order_id"),
+            "quote_json": json.dumps(item.get("quote") or {}),
+            "spread_bps": item.get("spread_bps"),
+            "quote_age_seconds": item.get("quote_age_seconds"),
+            "fill_price": item.get("fill_price"),
+            "filled_qty": float(item.get("filled_qty") or 0.0),
+            "exit_client_order_id": item.get("exit_client_order_id"),
+            "exit_broker_order_id": item.get("exit_broker_order_id"),
+            "exit_limit_price": item.get("exit_limit_price"),
+            "exit_fill_price": item.get("exit_fill_price"),
+            "realized_pnl_usd": item.get("realized_pnl_usd"),
+            "operator": item.get("operator"),
+            "failure_reason": item.get("failure_reason"),
+            "created_at": item.get("created_at") or now,
+            "updated_at": item.get("updated_at") or now,
+            "submitted_at": item.get("submitted_at"),
+            "filled_at": item.get("filled_at"),
+            "canceled_at": item.get("canceled_at"),
+            "closed_at": item.get("closed_at"),
+            "expires_at": item.get("expires_at"),
+        }
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO extended_hours_experiment_orders (
+                    id, broker, symbol, side, qty, limit_price, notional_usd,
+                    status, client_order_id, broker_order_id, quote_json, spread_bps,
+                    quote_age_seconds, fill_price, filled_qty, exit_client_order_id,
+                    exit_broker_order_id, exit_limit_price, exit_fill_price,
+                    realized_pnl_usd, operator, failure_reason, created_at, updated_at,
+                    submitted_at, filled_at, canceled_at, closed_at, expires_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                tuple(payload[key] for key in payload),
+            )
+        return self.get_order(payload["id"]) or payload
+
+    def get_order(self, order_id: str) -> dict[str, Any] | None:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM extended_hours_experiment_orders WHERE id = ?",
+                (order_id,),
+            ).fetchone()
+        return self._order(row) if row is not None else None
+
+    def get_by_client_order_id(self, client_order_id: str) -> dict[str, Any] | None:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM extended_hours_experiment_orders
+                WHERE client_order_id = ?
+                """,
+                (client_order_id,),
+            ).fetchone()
+        return self._order(row) if row is not None else None
+
+    def update_order(self, order_id: str, **updates: Any) -> dict[str, Any]:
+        if not updates:
+            existing = self.get_order(order_id)
+            if existing is None:
+                raise LookupError(order_id)
+            return existing
+        allowed = {
+            "status",
+            "broker_order_id",
+            "fill_price",
+            "filled_qty",
+            "exit_client_order_id",
+            "exit_broker_order_id",
+            "exit_limit_price",
+            "exit_fill_price",
+            "realized_pnl_usd",
+            "failure_reason",
+            "submitted_at",
+            "filled_at",
+            "canceled_at",
+            "closed_at",
+            "expires_at",
+        }
+        invalid = sorted(set(updates) - allowed)
+        if invalid:
+            raise ValueError(f"Unsupported extended-hours order update fields: {invalid}")
+        updates["updated_at"] = utc_now().isoformat()
+        assignments = ", ".join(f"{key} = ?" for key in updates)
+        values = list(updates.values()) + [order_id]
+        with self.db.connect() as connection:
+            connection.execute(
+                f"UPDATE extended_hours_experiment_orders SET {assignments} WHERE id = ?",
+                values,
+            )
+        updated = self.get_order(order_id)
+        if updated is None:
+            raise LookupError(order_id)
+        return updated
+
+    def list_orders(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM extended_hours_experiment_orders
+                ORDER BY created_at DESC LIMIT ?
+                """,
+                (max(1, limit),),
+            ).fetchall()
+        return [self._order(row) for row in rows]
+
+    def list_expired_open_orders(self, *, now_iso: str) -> list[dict[str, Any]]:
+        placeholders = ",".join("?" for _ in self.EXPIRABLE_STATUSES)
+        params = [*sorted(self.EXPIRABLE_STATUSES), now_iso]
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM extended_hours_experiment_orders
+                WHERE status IN ({placeholders})
+                AND broker_order_id IS NOT NULL
+                AND expires_at IS NOT NULL
+                AND expires_at <= ?
+                """,
+                params,
+            ).fetchall()
+        return [self._order(row) for row in rows]
+
+    def open_order_count(self) -> int:
+        placeholders = ",".join("?" for _ in self.OPEN_STATUSES)
+        with self.db.connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT COUNT(*) AS count FROM extended_hours_experiment_orders
+                WHERE status IN ({placeholders})
+                """,
+                tuple(sorted(self.OPEN_STATUSES)),
+            ).fetchone()
+        return int(row["count"] if row is not None else 0)
+
+    def record_etoro_probe(
+        self,
+        *,
+        probe_id: str,
+        status: str,
+        classification: str,
+        account_verified: bool,
+        evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        created_at = utc_now().isoformat()
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO extended_hours_etoro_probes (
+                    id, status, classification, account_verified, evidence_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    probe_id,
+                    status,
+                    classification,
+                    1 if account_verified else 0,
+                    json.dumps(evidence),
+                    created_at,
+                ),
+            )
+        return {
+            "id": probe_id,
+            "status": status,
+            "classification": classification,
+            "account_verified": account_verified,
+            "evidence": evidence,
+            "created_at": created_at,
+        }
+
+    def list_etoro_probes(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM extended_hours_etoro_probes
+                ORDER BY created_at DESC LIMIT ?
+                """,
+                (max(1, limit),),
+            ).fetchall()
+        return [self._etoro_probe(row) for row in rows]
+
+    @staticmethod
+    def _order(row: Any) -> dict[str, Any]:
+        item = dict(row)
+        item["quote"] = json.loads(item.pop("quote_json") or "{}")
+        return item
+
+    @staticmethod
+    def _etoro_probe(row: Any) -> dict[str, Any]:
+        item = dict(row)
+        item["account_verified"] = bool(item.get("account_verified"))
+        item["evidence"] = json.loads(item.pop("evidence_json") or "{}")
+        return item
+
+
 class PortfolioRiskRepository:
     """Persist portfolio-level risk snapshots."""
 

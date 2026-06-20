@@ -252,6 +252,7 @@ class AlpacaClient(BrokerClient):
         stop_price: float | None = None,
         time_in_force: str = "day",
         client_order_id: str | None = None,
+        extended_hours: bool = False,
     ) -> ExecutionRecord:
         """Call TradingClient.submit_order and preserve client_order_id idempotency."""
 
@@ -264,6 +265,7 @@ class AlpacaClient(BrokerClient):
             stop_price=stop_price,
             time_in_force=time_in_force,
             client_order_id=client_order_id,
+            extended_hours=extended_hours,
         )
         try:
             order = self.trading_client.submit_order(request)
@@ -308,9 +310,12 @@ class AlpacaClient(BrokerClient):
         stop_loss_price: float,
         time_in_force: str = "day",
         client_order_id: str | None = None,
+        extended_hours: bool = False,
     ) -> ExecutionRecord:
         """Submit a broker-native protected market entry."""
 
+        if extended_hours:
+            raise ValueError("Alpaca bracket orders cannot be submitted for extended hours")
         normalized_side = _to_order_side(side)
         if normalized_side != OrderSide.BUY:
             raise ValueError("Unattended Alpaca bracket execution currently supports long entries only")
@@ -471,15 +476,24 @@ class AlpacaClient(BrokerClient):
         stop_price: float | None,
         time_in_force: str,
         client_order_id: str | None,
+        extended_hours: bool = False,
     ) -> MarketOrderRequest | LimitOrderRequest | StopOrderRequest:
         normalized_type = order_type.strip().lower()
+        normalized_time_in_force = _to_time_in_force(time_in_force)
+        if extended_hours:
+            if normalized_type != "limit":
+                raise ValueError("Alpaca extended-hours orders must be limit orders")
+            if normalized_time_in_force != TimeInForce.DAY:
+                raise ValueError("Alpaca extended-hours orders require time_in_force='day'")
         common = {
             "symbol": symbol.upper().strip(),
             "qty": float(qty),
             "side": _to_order_side(side),
-            "time_in_force": _to_time_in_force(time_in_force),
+            "time_in_force": normalized_time_in_force,
             "client_order_id": client_order_id,
         }
+        if extended_hours:
+            common["extended_hours"] = True
         if normalized_type == "market":
             return MarketOrderRequest(type=OrderType.MARKET, **common)
         if normalized_type == "limit":

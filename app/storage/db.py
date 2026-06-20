@@ -499,6 +499,58 @@ CREATE TABLE IF NOT EXISTS etoro_demo_order_requests (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_etoro_demo_request_id
 ON etoro_demo_order_requests(request_id);
 
+CREATE TABLE IF NOT EXISTS extended_hours_experiment_orders (
+    id TEXT PRIMARY KEY,
+    broker TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    qty REAL NOT NULL DEFAULT 0,
+    limit_price REAL NOT NULL DEFAULT 0,
+    notional_usd REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    client_order_id TEXT,
+    broker_order_id TEXT,
+    quote_json TEXT NOT NULL,
+    spread_bps REAL,
+    quote_age_seconds REAL,
+    fill_price REAL,
+    filled_qty REAL NOT NULL DEFAULT 0,
+    exit_client_order_id TEXT,
+    exit_broker_order_id TEXT,
+    exit_limit_price REAL,
+    exit_fill_price REAL,
+    realized_pnl_usd REAL,
+    operator TEXT,
+    failure_reason TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    submitted_at TEXT,
+    filled_at TEXT,
+    canceled_at TEXT,
+    closed_at TEXT,
+    expires_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ext_hours_client_order
+ON extended_hours_experiment_orders(client_order_id)
+WHERE client_order_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_ext_hours_status
+ON extended_hours_experiment_orders(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_ext_hours_symbol
+ON extended_hours_experiment_orders(symbol, created_at);
+
+CREATE TABLE IF NOT EXISTS extended_hours_etoro_probes (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    classification TEXT NOT NULL,
+    account_verified INTEGER NOT NULL DEFAULT 0,
+    evidence_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ext_hours_etoro_probe_created
+ON extended_hours_etoro_probes(created_at);
+
 CREATE TABLE IF NOT EXISTS portfolio_risk_snapshots (
     id TEXT PRIMARY KEY,
     broker TEXT NOT NULL,
