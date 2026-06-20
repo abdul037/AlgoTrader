@@ -100,6 +100,25 @@ def test_parallel_comparison_mirrors_eligible_alpaca_paper_signal(tmp_path):
     assert completed["comparison_cost_usd"] == 1.5
 
 
+def test_comparison_fill_update_allows_missing_fill_price(tmp_path):
+    service, _etoro, _automation, brokers = _service(tmp_path)
+    service.mirror(
+        proposal=_proposal(),
+        primary_execution=SimpleNamespace(broker_order_id="alpaca-1"),
+        primary_broker="alpaca",
+    )
+
+    brokers.update_comparison_fill(
+        broker="alpaca",
+        broker_order_id="alpaca-1",
+        fill_price=None,
+    )
+
+    comparison = brokers.list_comparisons()[0]
+    assert comparison["status"] == "submitted"
+    assert comparison["primary_fill_price"] is None
+
+
 def test_parallel_comparison_trips_circuit_breaker_for_unverified_account(tmp_path):
     service, _etoro, automation, _brokers = _service(tmp_path, verified=False)
 

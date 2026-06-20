@@ -1159,6 +1159,17 @@ class BrokerGovernanceRepository:
             completed_column = "primary_fill_price"
         else:
             raise ValueError(f"Unsupported comparison broker {broker}")
+        status_expression = (
+            f"""
+                    CASE
+                        WHEN {completed_column} IS NOT NULL
+                        THEN 'completed'
+                        ELSE status
+                    END
+            """
+            if fill_price is not None
+            else "status"
+        )
         with self.db.connect() as connection:
             connection.execute(
                 f"""
@@ -1166,14 +1177,10 @@ class BrokerGovernanceRepository:
                 SET {fill_column} = ?,
                     {cost_column} = ?,
                     {slippage_column} = ?,
-                    status = CASE
-                        WHEN ? IS NOT NULL AND {completed_column} IS NOT NULL
-                        THEN 'completed'
-                        ELSE status
-                    END
+                    status = {status_expression}
                 WHERE {match_column} = ?
                 """,
-                (fill_price, cost_usd, slippage_bps, fill_price, broker_order_id),
+                (fill_price, cost_usd, slippage_bps, broker_order_id),
             )
 
     def list_capabilities(self) -> list[dict[str, Any]]:
