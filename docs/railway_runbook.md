@@ -116,11 +116,18 @@ Keep them disabled during the current shadow observation. Their commands and
 staged flags are documented in
 [`continuous_learning_runbook.md`](continuous_learning_runbook.md).
 
+`scripts/ops_readiness.py` is read-only and reports the current Railway,
+OpenAI, governance, rollout-gate, proposal, queue, execution, and learning
+blockers. It should show no Railway authentication or OpenAI API key blockers
+before advisory reviews are enabled. Credits on the OpenAI account are not
+enough; Railway must have a valid `LEARNING_OPENAI_API_KEY` secret.
+
 ## Verify Deployment
 
 Review the pre-deploy migration and application logs, then verify:
 
 ```bash
+python3 scripts/ops_readiness.py --since 2026-06-17T00:00:00+00:00
 curl -fsS https://YOUR-RAILWAY-DOMAIN/health
 curl -fsS https://YOUR-RAILWAY-DOMAIN/automation/status
 curl -fsS https://YOUR-RAILWAY-DOMAIN/automation/reconciliation
