@@ -200,6 +200,8 @@ def test_get_quote_returns_market_quote_with_source_alpaca(monkeypatch):
     assert quote.ask == 200.1
     assert quote.last_execution == 200.0
     assert quote.timestamp == "2026-05-01T14:31:00+00:00"
+    assert quote.data_age_seconds is not None
+    assert quote.data_age_seconds > 0
 
 
 def test_get_bars_translates_timeframe_strings_to_alpaca_timeframes(monkeypatch):

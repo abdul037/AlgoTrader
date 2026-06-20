@@ -217,7 +217,7 @@ class AlpacaClient(BrokerClient):
             used_fallback=False,
             from_cache=False,
             quote_derived_from_history=False,
-            data_age_seconds=0.0,
+            data_age_seconds=_data_age_seconds(timestamp),
         )
 
     def get_bars(
@@ -740,6 +740,14 @@ def _iso_timestamp(value: Any) -> str | None:
     ts = pd.Timestamp(value)
     ts = ts.tz_localize(UTC) if ts.tzinfo is None else ts.tz_convert(UTC)
     return ts.isoformat()
+
+
+def _data_age_seconds(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    ts = pd.Timestamp(value)
+    ts = ts.tz_localize(UTC) if ts.tzinfo is None else ts.tz_convert(UTC)
+    return max(0.0, (datetime.now(UTC) - ts.to_pydatetime()).total_seconds())
 
 
 def _enum_value(value: Any) -> str:
