@@ -36,9 +36,7 @@ class Check:
 def _mask(value: str | None) -> str:
     if not value:
         return "missing"
-    if len(value) <= 8:
-        return "present"
-    return f"present:{value[:4]}...{value[-4:]}"
+    return f"present({len(value)} chars)"
 
 
 def _railway_auth_status() -> Check:

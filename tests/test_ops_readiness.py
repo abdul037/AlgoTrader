@@ -25,6 +25,21 @@ def test_deployment_checks_report_missing_openai_key_without_calling_railway(mon
     assert checks["paper_safety_flags"].status == "pass"
 
 
+def test_deployment_checks_never_print_openai_key_fragments(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "bot.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("RAILWAY_TOKEN", "token")
+    monkeypatch.setenv("LEARNING_OPENAI_API_KEY", "sk-proj-secret-fragment")
+    _clear_settings_cache()
+
+    checks = {check.name: check for check in ops_readiness._deployment_checks()}
+
+    assert checks["openai_api_key"].status == "pass"
+    assert checks["openai_api_key"].detail == "LEARNING_OPENAI_API_KEY/OPENAI_API_KEY is present(23 chars)"
+    assert "sk-" not in checks["openai_api_key"].detail
+    assert "secret" not in checks["openai_api_key"].detail
+
+
 def test_database_checks_report_missing_paper_auto_evidence(monkeypatch, tmp_path) -> None:
     settings = make_settings(tmp_path)
     Database(settings).initialize()
