@@ -97,6 +97,9 @@ class AppSettings(BaseSettings):
     require_direct_quote_for_alerts: bool = False
     require_uncached_market_data_for_alerts: bool = False
     max_market_data_age_seconds: int = 120
+    screener_market_data_timeout_seconds: float = 20.0
+    screener_intelligence_timeout_seconds: float = 20.0
+    screener_batch_deadline_seconds: float = 180.0
     screener_default_timeframes: list[str] = Field(default_factory=lambda: ["15m", "1h", "1d"])
     screener_intraday_timeframes: list[str] = Field(default_factory=lambda: ["1m", "5m", "10m", "15m"])
     intelligent_scan_timeframes: list[str] = Field(default_factory=lambda: ["5m", "15m", "1h", "1d", "1w"])
@@ -207,10 +210,10 @@ class AppSettings(BaseSettings):
     confluence_min_close_location: float = 0.62
 
     max_risk_per_trade_pct: float = 1.0
-    max_daily_loss_usd: float = 100.0
-    max_weekly_loss_usd: float = 300.0
-    max_open_positions: int = 3
-    max_trades_per_day: int = 5
+    max_daily_loss_usd: float = 10.0
+    max_weekly_loss_usd: float = 25.0
+    max_open_positions: int = 1
+    max_trades_per_day: int = 2
     per_symbol_position_limit: int = 1
     max_consecutive_losses_before_cooldown: int = 2
     rollout_stage: str = "stage_1_validation"
@@ -317,8 +320,8 @@ class AppSettings(BaseSettings):
     max_equity_leverage: int = 5
     max_gold_leverage: int = 10
 
-    default_trade_amount_usd: float = 1000.0
-    max_trade_amount_usd: float = 1000.0
+    default_trade_amount_usd: float = 100.0
+    max_trade_amount_usd: float = 100.0
     proposal_expiry_minutes: int = 240
     live_signal_interval: str = "OneDay"
     live_signal_candles_count: int = 250

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import pandas as pd
@@ -52,6 +53,12 @@ class FakeMarketDataEngine:
                 "data_age_seconds": 30.0,
             }
         )
+
+
+class SlowMarketDataEngine(FakeMarketDataEngine):
+    def get_history(self, *args, **kwargs):
+        time.sleep(0.2)
+        return super().get_history(*args, **kwargs)
 
 
 class FakeSignalStateRepository:
@@ -407,3 +414,31 @@ def test_screener_uses_strategy_near_miss_diagnostics_when_no_signal_fires(tmp_p
     assert response.closest_rejections
     assert response.closest_rejections[0]["status"] == "no_signal"
     assert response.closest_rejections[0]["strategy_name"] == "rsi_vwap_ema_confluence"
+
+
+def test_screener_market_data_timeout_records_error_without_blocking_scan(tmp_path) -> None:
+    frame = _frame([100.0 + index for index in range(90)])
+    quote = MarketQuote(symbol="NVDA", bid=100.0, ask=100.1, last_execution=100.05, timestamp="2026-04-11T10:00:00Z")
+    service = MarketScreenerService(
+        settings=make_settings(
+            tmp_path,
+            market_universe_symbols=["NVDA"],
+            screener_default_timeframes=["1d"],
+            screener_market_data_timeout_seconds=0.01,
+            screener_batch_deadline_seconds=5,
+        ),
+        market_data_engine=SlowMarketDataEngine({("NVDA", "1d"): frame}, {"NVDA": quote}),
+        signal_state_repository=FakeSignalStateRepository(),
+        run_log_repository=FakeRunLogRepository(),
+        backtest_repository=FakeBacktestRepository(summary=None),
+        scan_decision_repository=FakeScanDecisionRepository(),
+        telegram_notifier=FakeTelegramNotifier(),
+    )
+
+    started = time.monotonic()
+    response = service.scan_universe(limit=3)
+
+    assert time.monotonic() - started < 0.15
+    assert response.candidates == []
+    assert response.rejection_summary["market_data_timeout"] == 1
+    assert any("timeout_after" in item for item in response.errors)

@@ -97,6 +97,27 @@ def test_automation_routes_smoke(tmp_path) -> None:
     assert kill_response.json()["kill_switch_enabled"] is True
 
 
+def test_continuous_readiness_requires_control_token_and_reports_gates(tmp_path) -> None:
+    app = create_app(
+        make_settings(tmp_path, control_api_token="secret", alpaca_expected_account_number="PAPER-1"),
+        broker=MockBroker(),
+        enable_background_jobs=False,
+    )
+    client = TestClient(app)
+
+    assert client.get("/automation/continuous-readiness").status_code == 403
+
+    response = client.get("/automation/continuous-readiness", headers={"X-Control-Token": "secret"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "continuous_paper"
+    assert payload["ready_for_unattended"] is False
+    assert payload["risk_caps"]["max_trade_amount_usd"] == 100.0
+    assert "no_production_approved_strategy" in payload["blockers"]
+    assert payload["extended_hours"]["mode"] == "supervised"
+
+
 def test_live_queue_execution_blocks_without_live_gates(tmp_path) -> None:
     app = create_app(
         make_settings(

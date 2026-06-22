@@ -254,20 +254,28 @@ class LearningService:
                 job_type="counterfactual_labels",
             )
         ]
-        if now.hour >= int(self.settings.learning_nightly_training_hour_utc):
+        if bool(self.settings.learning_training_enabled) and now.hour >= int(self.settings.learning_nightly_training_hour_utc):
             jobs.append(
                 LearningJob(
                     idempotency_key=f"nightly-train:{now.date().isoformat()}",
                     job_type="train_challenger",
                 )
             )
-        if now.weekday() == int(self.settings.learning_weekly_evaluation_weekday):
+        if (
+            bool(self.settings.learning_training_enabled)
+            and now.weekday() == int(self.settings.learning_weekly_evaluation_weekday)
+        ):
             jobs.append(
                 LearningJob(
                     idempotency_key=f"weekly-evaluate:{now.date().isoformat()}",
                     job_type="evaluate_challengers",
                 )
             )
+        if (
+            bool(self.settings.learning_reviews_enabled)
+            and bool(self.settings.learning_openai_enabled)
+            and now.weekday() == int(self.settings.learning_weekly_evaluation_weekday)
+        ):
             jobs.append(
                 LearningJob(
                     idempotency_key=f"weekly-synthesis:{now.date().isoformat()}",

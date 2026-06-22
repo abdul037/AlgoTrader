@@ -65,3 +65,22 @@ def test_openai_failure_falls_back_to_deterministic_review(tmp_path) -> None:
 
     assert review.reviewer == "deterministic"
     assert "critic_error" in review.details
+
+
+def test_learning_scheduler_does_not_queue_training_when_disabled(tmp_path) -> None:
+    app = create_app(
+        make_settings(
+            tmp_path,
+            learning_worker_enabled=True,
+            learning_training_enabled=False,
+            learning_reviews_enabled=False,
+            learning_openai_enabled=False,
+        ),
+        broker=MockBroker(),
+        enable_background_jobs=False,
+    )
+
+    jobs = app.state.learning_service.schedule_due_jobs()
+
+    assert jobs
+    assert {job.job_type for job in jobs} == {"counterfactual_labels"}

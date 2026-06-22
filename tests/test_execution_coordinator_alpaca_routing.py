@@ -158,6 +158,7 @@ def queued_app(
         "broker_for_equities": "alpaca",
         "broker_for_non_equities": "etoro",
         "paper_broker": "alpaca",
+        "max_trade_amount_usd": 1000,
     }
     settings_values.update(settings_overrides)
     app = create_app(

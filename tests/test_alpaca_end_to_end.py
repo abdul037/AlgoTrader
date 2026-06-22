@@ -22,6 +22,7 @@ def test_alpaca_paper_end_to_end_with_idempotent_retry(tmp_path) -> None:
             broker_for_equities="alpaca",
             broker_for_non_equities="etoro",
             paper_broker="alpaca",
+            max_trade_amount_usd=1000,
         ),
         broker=MockBroker(),
         alpaca_client=alpaca,

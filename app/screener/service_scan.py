@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import concurrent.futures
+import time
 from typing import Any
 
 from app.backtesting.strategy_selection import strategy_kwargs_for as _strategy_kwargs
@@ -14,6 +16,27 @@ from app.screener.scoring import build_backtest_snapshot, freshness_for_decision
 from app.strategies import get_strategy
 from app.universe import resolve_universe
 from app.utils.time import utc_now
+
+
+class ScanTimeoutError(RuntimeError):
+    """Raised when a bounded scan subtask exceeds its configured timeout."""
+
+
+def _bounded_call(label: str, timeout_seconds: float, func: Any, *args: Any, **kwargs: Any) -> Any:
+    """Run one blocking scan dependency behind a small timeout."""
+
+    timeout = float(timeout_seconds or 0.0)
+    if timeout <= 0:
+        return func(*args, **kwargs)
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="screener-timeout")
+    future = executor.submit(func, *args, **kwargs)
+    try:
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError as exc:
+        future.cancel()
+        raise ScanTimeoutError(f"{label}_timeout_after_{timeout:g}s") from exc
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def scan_universe(
@@ -39,6 +62,10 @@ def scan_universe(
     evaluated_symbols = 0
     abort_scan = False
     quote_cache: dict[str, Any] = {}
+    started_at = time.monotonic()
+    deadline_seconds = float(getattr(service.settings, "screener_batch_deadline_seconds", 180.0) or 0.0)
+    market_data_timeout = float(getattr(service.settings, "screener_market_data_timeout_seconds", 20.0) or 0.0)
+    intelligence_timeout = float(getattr(service.settings, "screener_intelligence_timeout_seconds", 20.0) or 0.0)
     service.logs.log(
         "market_universe_scan_started",
         {
@@ -51,6 +78,9 @@ def scan_universe(
     )
 
     for symbol in universe:
+        if deadline_seconds > 0 and (time.monotonic() - started_at) >= deadline_seconds:
+            errors.append("scan_deadline_exceeded")
+            break
         if service._scan_cancelled(cancel_event):
             errors.append("scan_cancelled")
             break
@@ -58,12 +88,19 @@ def scan_universe(
             break
         evaluated_symbols += 1
         for timeframe in scan_timeframes:
+            if deadline_seconds > 0 and (time.monotonic() - started_at) >= deadline_seconds:
+                errors.append("scan_deadline_exceeded")
+                abort_scan = True
+                break
             if service._scan_cancelled(cancel_event):
                 errors.append("scan_cancelled")
                 abort_scan = True
                 break
             try:
-                history = service.market_data.get_history(
+                history = _bounded_call(
+                    f"{symbol}_{timeframe}_history",
+                    market_data_timeout,
+                    service.market_data.get_history,
                     symbol,
                     timeframe=timeframe,
                     bars=service._bars_for_timeframe(timeframe),
@@ -71,7 +108,10 @@ def scan_universe(
                 )
                 quote = quote_cache.get(symbol)
                 if quote is None:
-                    quote = service.market_data.get_quote(
+                    quote = _bounded_call(
+                        f"{symbol}_{timeframe}_quote",
+                        market_data_timeout,
+                        service.market_data.get_quote,
                         symbol,
                         timeframe=timeframe,
                         force_refresh=force_refresh,
@@ -91,6 +131,18 @@ def scan_universe(
                 )
                 abort_scan = True
                 break
+            except ScanTimeoutError as exc:
+                errors.append(f"{symbol} {timeframe}: {exc}")
+                service._add_scan_diagnostic(
+                    rejection_summary,
+                    closest_rejections,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    strategy_name="market_data",
+                    status="error",
+                    rejection_reasons=["market_data_timeout"],
+                )
+                continue
             except Exception as exc:
                 errors.append(f"{symbol} {timeframe}: {exc}")
                 service._add_scan_diagnostic(
@@ -214,14 +266,30 @@ def scan_universe(
                         **accuracy_profile.measurements,
                     }
                 )
-                intelligence = service.intelligence.analyze(
-                    symbol=signal.symbol,
-                    timeframe=timeframe,
-                    history=history,
-                    quote=quote,
-                    signal=signal,
-                    force_refresh=force_refresh,
-                )
+                try:
+                    intelligence = _bounded_call(
+                        f"{symbol}_{timeframe}_{signal.strategy_name}_intelligence",
+                        intelligence_timeout,
+                        service.intelligence.analyze,
+                        symbol=signal.symbol,
+                        timeframe=timeframe,
+                        history=history,
+                        quote=quote,
+                        signal=signal,
+                        force_refresh=force_refresh,
+                    )
+                except ScanTimeoutError as exc:
+                    errors.append(f"{symbol} {timeframe} {signal.strategy_name}: {exc}")
+                    service._add_scan_diagnostic(
+                        rejection_summary,
+                        closest_rejections,
+                        symbol=signal.symbol,
+                        timeframe=timeframe,
+                        strategy_name=signal.strategy_name,
+                        status="error",
+                        rejection_reasons=["intelligence_timeout"],
+                    )
+                    continue
                 if service.settings.require_verified_market_data_for_alerts and not market_data_status["verified"]:
                     suppressed += 1
                     service._add_scan_diagnostic(

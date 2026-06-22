@@ -55,8 +55,8 @@ class PaperAutoTradingService:
         if not bool(getattr(self.settings, "auto_execution_worker_enabled", False)):
             blockers.append("auto_execution_worker_disabled")
         operation_mode = str(getattr(self.settings, "paper_auto_operation_mode", "shadow"))
-        if operation_mode == "shadow":
-            blockers.append("paper_auto_operation_mode_shadow")
+        if operation_mode != "unattended":
+            blockers.append(f"paper_auto_operation_mode_{operation_mode}")
         if (
             operation_mode == "unattended"
             and self.institutional_governance is not None

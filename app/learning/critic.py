@@ -70,7 +70,7 @@ class OpenAITradeReviewClient:
     """OpenAI Responses API client with strict structured output and no tools."""
 
     def __init__(self, settings: Any):
-        self.api_key = settings.learning_openai_api_key
+        self.api_key = str(settings.learning_openai_api_key or "").strip()
         self.base_url = settings.learning_openai_base_url.rstrip("/")
         self.model_name = settings.learning_trade_critic_model
         self.weekly_model_name = settings.learning_weekly_synthesis_model

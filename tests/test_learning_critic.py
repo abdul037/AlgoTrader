@@ -40,7 +40,7 @@ def test_openai_critic_uses_structured_responses_without_tools(tmp_path, monkeyp
         tmp_path,
         learning_reviews_enabled=True,
         learning_openai_enabled=True,
-        learning_openai_api_key="test-key",
+        learning_openai_api_key="test-key\n",
         learning_openai_max_retries=0,
     )
     captured = []
@@ -56,6 +56,7 @@ def test_openai_critic_uses_structured_responses_without_tools(tmp_path, monkeyp
     client.synthesize({"reviews": []})
 
     assert result["summary"] == "reviewed"
+    assert captured[0]["headers"]["Authorization"] == "Bearer test-key"
     assert captured[0]["json"]["store"] is False
     assert captured[0]["json"]["tools"] == []
     assert captured[0]["json"]["text"]["format"]["strict"] is True

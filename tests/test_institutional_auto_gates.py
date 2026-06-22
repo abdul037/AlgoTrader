@@ -62,6 +62,7 @@ def test_supervised_auto_blocks_unapproved_strategy(tmp_path):
     ).candidate_blockers(_candidate())
 
     assert "strategy_not_production_approved" in blockers
+    assert "paper_auto_operation_mode_supervised" in blockers
     assert "institutional_rollout_not_ready" not in blockers
 
 

@@ -35,7 +35,26 @@ def run_scan_task(
     }
     if "scan_task" in inspect.signature(service.market_screener.scan_universe).parameters:
         kwargs["scan_task"] = task
-    response = service.market_screener.scan_universe(**kwargs)
+    try:
+        response = service.market_screener.scan_universe(**kwargs)
+    except Exception as exc:  # noqa: BLE001 - workflow must not block future runs
+        error = f"scan_failed:{exc}"
+        service.run_logs.log(
+            f"workflow_{task}_failed",
+            {
+                "started_at": utc_now().isoformat(),
+                "timeframes": timeframes,
+                "symbols_requested": kwargs["symbols"],
+                "error": error,
+            },
+        )
+        return WorkflowTaskResponse(
+            task=task,
+            status="error",
+            detail=f"{task.replace('_', ' ').title()} failed.",
+            open_signals=len(service.tracked_signals.list(status="open", limit=500)),
+            errors=[error],
+        )
     alerts_sent = service._send_scan_alerts(task=task, response=response, notify=notify)
     service._track_candidates(response, origin=origin)
     proposals_created = service._auto_propose_candidates(response, origin=origin, notify=notify)
