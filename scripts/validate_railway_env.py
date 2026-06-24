@@ -19,8 +19,9 @@ def validate() -> list[str]:
         errors.append("DATABASE_URL must use postgresql+psycopg")
     if "sslmode=require" not in database_url:
         errors.append("DATABASE_URL must require TLS")
-    if stage not in {"bootstrap", "shadow", "supervised", "unattended"}:
-        errors.append("DEPLOYMENT_STAGE must be bootstrap, shadow, supervised, or unattended")
+    valid_stages = {"bootstrap", "shadow", "supervised", "unattended", "paper_exploration"}
+    if stage not in valid_stages:
+        errors.append("DEPLOYMENT_STAGE must be bootstrap, shadow, supervised, unattended, or paper_exploration")
     if paper_auto_mode not in {"shadow", "supervised", "unattended"}:
         errors.append("PAPER_AUTO_OPERATION_MODE must be shadow, supervised, or unattended")
     if len(os.environ.get("CONTROL_API_TOKEN", "")) < 32:
@@ -70,6 +71,31 @@ def validate() -> list[str]:
         errors.extend(f"{name} must be true in {stage} mode" for name in required_true if not as_bool(name))
         if paper_auto_mode != stage:
             errors.append(f"PAPER_AUTO_OPERATION_MODE must be {stage} in {stage} mode")
+
+    if stage == "paper_exploration":
+        required_true = {
+            "ALPACA_REQUIRE_BRACKET_ORDERS",
+            "PAPER_SCANNER_EXPLORATION_ENABLED",
+            "PAPER_SCANNER_BYPASS_PRODUCTION_APPROVAL",
+            "AUTO_PROPOSE_ENABLED",
+            "PAPER_AUTO_APPROVE_PROPOSALS",
+            "AUTO_EXECUTION_WORKER_ENABLED",
+        }
+        required_false = {
+            "EXTENDED_HOURS_EXPERIMENT_SUBMIT_ENABLED",
+            "CRYPTO_PAPER_SUBMIT_ENABLED",
+            "LEARNING_LIVE_PROMOTION_ENABLED",
+        }
+        errors.extend(f"{name} must be true in paper_exploration mode" for name in required_true if not as_bool(name))
+        errors.extend(f"{name} must be false in paper_exploration mode" for name in required_false if as_bool(name))
+        if paper_auto_mode != "unattended":
+            errors.append("PAPER_AUTO_OPERATION_MODE must be unattended in paper_exploration mode")
+        if os.environ.get("MODEL_DEPLOYMENT_MODE", "").strip().lower() == "gating":
+            errors.append("MODEL_DEPLOYMENT_MODE must not be gating in paper_exploration mode")
+        if os.environ.get("BROKER_FOR_EQUITIES", "alpaca").strip().lower() != "alpaca":
+            errors.append("BROKER_FOR_EQUITIES must be alpaca in paper_exploration mode")
+        if os.environ.get("PAPER_BROKER", "alpaca").strip().lower() != "alpaca":
+            errors.append("PAPER_BROKER must be alpaca in paper_exploration mode")
 
     if stage == "bootstrap":
         required_true = {"AUTOMATION_PAUSED_DEFAULT", "KILL_SWITCH_ENABLED"}

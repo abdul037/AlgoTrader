@@ -64,6 +64,9 @@ def continuous_readiness(request: Request):
     workflow_status = request.app.state.workflow_service.status()
     institutional_readiness = request.app.state.institutional_service.readiness()
     approved_versions = list(institutional_readiness.get("approved_strategy_versions") or [])
+    approved_exploration_strategies = (
+        request.app.state.strategy_governance_repository.approved_paper_exploration_strategies()
+    )
     queued = request.app.state.execution_queue_repository.list(
         status=ExecutionQueueStatus.QUEUED,
         limit=200,
@@ -106,9 +109,32 @@ def continuous_readiness(request: Request):
         and bool(settings.auto_execution_worker_enabled)
         and str(settings.paper_auto_operation_mode) == "unattended"
     )
+    exploration_blockers = [
+        item
+        for item in blockers
+        if item
+        not in {
+            "no_production_approved_strategy",
+            "learning_failed_jobs_present",
+            "model_gating_without_champion",
+        }
+    ]
+    if not bool(settings.paper_scanner_exploration_enabled):
+        exploration_blockers.append("paper_scanner_exploration_disabled")
+    if not bool(settings.paper_scanner_bypass_production_approval):
+        exploration_blockers.append("paper_scanner_bypass_disabled")
+    if not approved_exploration_strategies:
+        exploration_blockers.append("no_paper_exploration_approved_strategy")
+    if not auto_flags_ready:
+        exploration_blockers.append("auto_flags_not_ready")
+    if not bool(settings.alpaca_require_bracket_orders):
+        exploration_blockers.append("bracket_orders_not_required")
+    if not bool(settings.paper_exploration_require_regular_hours):
+        exploration_blockers.append("paper_exploration_regular_hours_not_required")
     return {
         "mode": "continuous_paper",
         "ready_for_unattended": not blockers and auto_flags_ready,
+        "ready_for_paper_exploration": not exploration_blockers,
         "shadow_ready": not [
             item
             for item in blockers
@@ -128,6 +154,16 @@ def continuous_readiness(request: Request):
             "paper_auto_approve_proposals": settings.paper_auto_approve_proposals,
             "auto_execution_worker_enabled": settings.auto_execution_worker_enabled,
             "paper_auto_operation_mode": settings.paper_auto_operation_mode,
+        },
+        "paper_exploration": {
+            "enabled": settings.paper_scanner_exploration_enabled,
+            "bypass_production_approval": settings.paper_scanner_bypass_production_approval,
+            "allowed_strategies": list(settings.paper_scanner_allowed_strategies),
+            "require_backtest_validated": settings.paper_exploration_require_backtest_validated,
+            "require_regular_hours": settings.paper_exploration_require_regular_hours,
+            "ready": not exploration_blockers,
+            "blockers": sorted(set(exploration_blockers)),
+            "approved_strategies": approved_exploration_strategies,
         },
         "risk_caps": {
             "default_trade_amount_usd": settings.default_trade_amount_usd,
@@ -173,6 +209,7 @@ def continuous_readiness(request: Request):
         },
         "strategies": {
             "approved_production_versions": approved_versions,
+            "approved_paper_exploration_strategies": approved_exploration_strategies,
             "strategy_health": strategy_health,
         },
         "learning": learning_status,

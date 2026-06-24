@@ -210,10 +210,10 @@ class AppSettings(BaseSettings):
     confluence_min_close_location: float = 0.62
 
     max_risk_per_trade_pct: float = 1.0
-    max_daily_loss_usd: float = 10.0
-    max_weekly_loss_usd: float = 25.0
-    max_open_positions: int = 1
-    max_trades_per_day: int = 2
+    max_daily_loss_usd: float = 50.0
+    max_weekly_loss_usd: float = 125.0
+    max_open_positions: int = 3
+    max_trades_per_day: int = 6
     per_symbol_position_limit: int = 1
     max_consecutive_losses_before_cooldown: int = 2
     rollout_stage: str = "stage_1_validation"
@@ -244,6 +244,11 @@ class AppSettings(BaseSettings):
     paper_auto_approve_proposals: bool = False
     auto_execution_worker_enabled: bool = False
     paper_auto_operation_mode: Literal["shadow", "supervised", "unattended"] = "shadow"
+    paper_scanner_exploration_enabled: bool = False
+    paper_scanner_bypass_production_approval: bool = False
+    paper_scanner_allowed_strategies: list[str] = Field(default_factory=lambda: ["all"])
+    paper_exploration_require_backtest_validated: bool = False
+    paper_exploration_require_regular_hours: bool = True
     auto_execution_min_score: float = 65.0
     auto_execution_regular_hours_only: bool = True
     strategy_health_enabled: bool = True
@@ -320,8 +325,8 @@ class AppSettings(BaseSettings):
     max_equity_leverage: int = 5
     max_gold_leverage: int = 10
 
-    default_trade_amount_usd: float = 100.0
-    max_trade_amount_usd: float = 100.0
+    default_trade_amount_usd: float = 500.0
+    max_trade_amount_usd: float = 500.0
     proposal_expiry_minutes: int = 240
     live_signal_interval: str = "OneDay"
     live_signal_candles_count: int = 250
@@ -376,6 +381,7 @@ class AppSettings(BaseSettings):
         "single_symbol_analysis_timeframes",
         "swing_scan_timeframes",
         "screener_active_strategy_names",
+        "paper_scanner_allowed_strategies",
         mode="before",
     )
     @classmethod
@@ -387,6 +393,7 @@ class AppSettings(BaseSettings):
             "single_symbol_analysis_timeframes",
             "swing_scan_timeframes",
             "screener_active_strategy_names",
+            "paper_scanner_allowed_strategies",
         }
         normalize = str.lower if info.field_name in lowercase_fields else str.upper
         if value is None:

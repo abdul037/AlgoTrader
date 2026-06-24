@@ -113,9 +113,11 @@ def test_continuous_readiness_requires_control_token_and_reports_gates(tmp_path)
     payload = response.json()
     assert payload["mode"] == "continuous_paper"
     assert payload["ready_for_unattended"] is False
-    assert payload["risk_caps"]["max_trade_amount_usd"] == 100.0
+    assert payload["risk_caps"]["max_trade_amount_usd"] == 500.0
     assert "no_production_approved_strategy" in payload["blockers"]
     assert payload["extended_hours"]["mode"] == "supervised"
+    assert payload["paper_exploration"]["ready"] is False
+    assert "paper_scanner_exploration_disabled" in payload["paper_exploration"]["blockers"]
 
 
 def test_live_queue_execution_blocks_without_live_gates(tmp_path) -> None:

@@ -3,9 +3,9 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app.institutional.service import ROLLOUT_GATES, InstitutionalGovernanceService
-from app.main import create_app
 from app.models.institutional import (
     PortfolioRiskSnapshot,
+    PromotionDecision,
     RolloutGateEvidence,
     StrategyAudit,
     StrategyVersion,
@@ -142,6 +142,32 @@ def test_failed_reassessment_revokes_production_approval(tmp_path):
     assert strategies.strategy_production_approved("reassessed") is False
 
 
+def test_paper_exploration_approval_is_not_production_approval(tmp_path):
+    _service_instance, strategies = _service(tmp_path)
+    version = strategies.create_version(
+        StrategyVersion(
+            strategy_name="scanner_strategy",
+            code_version="abc",
+            dataset_version="paper-exploration",
+            timeframe="multi",
+            status="paper_exploration",
+        )
+    )
+    strategies.record_decision(
+        PromotionDecision(
+            strategy_version_id=version.id,
+            target_stage="paper_exploration",
+            approved=True,
+            decided_by="operator",
+            evidence={"scope": "alpaca_paper_only"},
+        )
+    )
+
+    assert strategies.strategy_paper_exploration_approved("scanner_strategy") is True
+    assert strategies.strategy_production_approved("scanner_strategy") is False
+    assert strategies.approved_paper_exploration_strategies() == ["scanner_strategy"]
+
+
 def test_rollout_readiness_requires_signed_gates_strategy_and_clean_risk(tmp_path):
     service, strategies = _service(tmp_path)
     version = strategies.create_version(
@@ -224,6 +250,8 @@ def test_passed_rollout_gate_requires_signer_and_evidence(tmp_path):
 
 
 def test_institutional_mutations_use_control_api_token(tmp_path):
+    from app.main import create_app
+
     app = create_app(
         make_settings(tmp_path, control_api_token="control-secret"),
         broker=MockBroker(),

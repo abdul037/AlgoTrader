@@ -953,6 +953,22 @@ class StrategyGovernanceRepository:
             ).fetchall()
         return [str(row["strategy_version_id"]) for row in rows]
 
+    def approved_paper_exploration_strategies(self) -> list[str]:
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT version.strategy_name
+                FROM promotion_decisions AS decision
+                JOIN strategy_versions AS version
+                  ON version.id = decision.strategy_version_id
+                WHERE decision.approved = 1
+                  AND decision.target_stage = 'paper_exploration'
+                  AND version.status = 'paper_exploration'
+                ORDER BY version.strategy_name
+                """
+            ).fetchall()
+        return [str(row["strategy_name"]) for row in rows]
+
     def strategy_production_approved(self, strategy_name: str) -> bool:
         with self.db.connect() as connection:
             row = connection.execute(
@@ -965,6 +981,24 @@ class StrategyGovernanceRepository:
                   AND decision.target_stage = 'production_candidate'
                   AND version.strategy_name = ?
                   AND version.status = 'production_candidate'
+                LIMIT 1
+                """,
+                (strategy_name,),
+            ).fetchone()
+        return row is not None
+
+    def strategy_paper_exploration_approved(self, strategy_name: str) -> bool:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM promotion_decisions AS decision
+                JOIN strategy_versions AS version
+                  ON version.id = decision.strategy_version_id
+                WHERE decision.approved = 1
+                  AND decision.target_stage = 'paper_exploration'
+                  AND version.strategy_name = ?
+                  AND version.status = 'paper_exploration'
                 LIMIT 1
                 """,
                 (strategy_name,),

@@ -92,6 +92,25 @@ def test_unattended_environment_requires_matching_mode_and_controls(monkeypatch)
     assert "INSTITUTIONAL_PORTFOLIO_CONTROLS_ENABLED must be true in unattended mode" in errors
 
 
+def test_paper_exploration_environment_allows_paper_auto_flags(monkeypatch) -> None:
+    valid_shadow_environment(monkeypatch)
+    monkeypatch.setenv("DEPLOYMENT_STAGE", "paper_exploration")
+    monkeypatch.setenv("BROKER_FOR_EQUITIES", "alpaca")
+    monkeypatch.setenv("PAPER_BROKER", "alpaca")
+    monkeypatch.setenv("PAPER_AUTO_OPERATION_MODE", "unattended")
+    monkeypatch.setenv("PAPER_SCANNER_EXPLORATION_ENABLED", "true")
+    monkeypatch.setenv("PAPER_SCANNER_BYPASS_PRODUCTION_APPROVAL", "true")
+    monkeypatch.setenv("AUTO_PROPOSE_ENABLED", "true")
+    monkeypatch.setenv("PAPER_AUTO_APPROVE_PROPOSALS", "true")
+    monkeypatch.setenv("AUTO_EXECUTION_WORKER_ENABLED", "true")
+    monkeypatch.setenv("EXTENDED_HOURS_EXPERIMENT_SUBMIT_ENABLED", "false")
+    monkeypatch.setenv("CRYPTO_PAPER_SUBMIT_ENABLED", "false")
+    monkeypatch.setenv("LEARNING_LIVE_PROMOTION_ENABLED", "false")
+    monkeypatch.setenv("MODEL_DEPLOYMENT_MODE", "shadow")
+
+    assert validate() == []
+
+
 def test_shadow_environment_does_not_block_independent_learning_rollout(monkeypatch) -> None:
     valid_shadow_environment(monkeypatch)
     monkeypatch.setenv("LEARNING_REVIEWS_ENABLED", "true")

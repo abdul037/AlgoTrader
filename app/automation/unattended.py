@@ -46,6 +46,7 @@ class PaperAutoTradingService:
         metadata = dict(getattr(candidate, "metadata", {}) or {})
         symbol = str(getattr(candidate, "symbol", "") or "").upper()
         strategy = str(getattr(candidate, "strategy_name", "") or "")
+        paper_exploration = self._paper_exploration_strategy_approved(strategy)
         if self.settings.execution_mode != "paper" or bool(self.settings.enable_real_trading):
             blockers.append("paper_only_policy")
         if not str(getattr(self.settings, "alpaca_expected_account_number", "") or "").strip():
@@ -61,11 +62,15 @@ class PaperAutoTradingService:
             operation_mode == "unattended"
             and self.institutional_governance is not None
             and not self.institutional_governance.readiness()["ready"]
+            and not paper_exploration
         ):
             blockers.append("institutional_rollout_not_ready")
         if not self.reconciliation.account_verified():
             blockers.append("alpaca_account_not_verified")
-        if bool(getattr(self.settings, "auto_execution_regular_hours_only", True)) and (
+        regular_hours_required = bool(getattr(self.settings, "auto_execution_regular_hours_only", True))
+        if paper_exploration:
+            regular_hours_required = bool(getattr(self.settings, "paper_exploration_require_regular_hours", True))
+        if regular_hours_required and (
             self.alpaca is None or not self.alpaca.is_regular_market_open()
         ):
             blockers.append("outside_regular_market_hours")
@@ -73,7 +78,10 @@ class PaperAutoTradingService:
             blockers.append("candidate_not_execution_ready")
         if not bool(metadata.get("alert_eligible", False)):
             blockers.append("candidate_not_alert_eligible")
-        if not bool(metadata.get("backtest_validated", False)):
+        backtest_required = True
+        if paper_exploration:
+            backtest_required = bool(getattr(self.settings, "paper_exploration_require_backtest_validated", False))
+        if backtest_required and not bool(metadata.get("backtest_validated", False)):
             blockers.append("candidate_not_backtest_validated")
         if float(getattr(candidate, "score", 0.0) or 0.0) < float(
             getattr(self.settings, "auto_execution_min_score", 65.0)
@@ -97,6 +105,7 @@ class PaperAutoTradingService:
             strategy
             and self.strategy_governance is not None
             and not self.strategy_governance.strategy_production_approved(strategy)
+            and not paper_exploration
         ):
             blockers.append("strategy_not_production_approved")
         if str(getattr(candidate, "signal_role", "") or "").lower() == "entry_short":
@@ -119,9 +128,34 @@ class PaperAutoTradingService:
             strategy
             and self.strategy_governance is not None
             and not self.strategy_governance.strategy_production_approved(strategy)
+            and not self._paper_exploration_strategy_approved(strategy)
         ):
             blockers.append("strategy_not_production_approved")
         return blockers
+
+    def _paper_exploration_strategy_approved(self, strategy: str) -> bool:
+        if not strategy or self.strategy_governance is None:
+            return False
+        if not bool(getattr(self.settings, "paper_scanner_exploration_enabled", False)):
+            return False
+        if not bool(getattr(self.settings, "paper_scanner_bypass_production_approval", False)):
+            return False
+        if self.settings.execution_mode != "paper" or bool(self.settings.enable_real_trading):
+            return False
+        if not self._paper_exploration_strategy_allowed(strategy):
+            return False
+        checker = getattr(self.strategy_governance, "strategy_paper_exploration_approved", None)
+        if checker is None:
+            return False
+        return bool(checker(strategy))
+
+    def _paper_exploration_strategy_allowed(self, strategy: str) -> bool:
+        allowed = {
+            str(item).strip().lower()
+            for item in (getattr(self.settings, "paper_scanner_allowed_strategies", []) or [])
+            if str(item).strip()
+        }
+        return "all" in allowed or strategy.strip().lower() in allowed
 
     def approve_enqueue_execute(self, proposal: Any, candidate: Any) -> Any | None:
         blockers = self.candidate_blockers(candidate)
