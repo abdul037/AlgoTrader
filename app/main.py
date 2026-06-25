@@ -68,8 +68,11 @@ from app.storage.repositories import (
     SignalRepository,
     SignalStateRepository,
     StrategyGovernanceRepository,
+    StrategyLabRepository,
     TrackedSignalRepository,
 )
+from app.strategy_lab.routes import router as strategy_lab_router
+from app.strategy_lab.service import StrategyLabService
 from app.telegram_notify import TelegramNotifier
 from app.workflow.routes import router as workflow_router
 from app.workflow.service import SignalWorkflowService
@@ -246,6 +249,7 @@ def create_app(
     alert_history_repository = AlertHistoryRepository(database)
     scan_decision_repository = ScanDecisionRepository(database)
     strategy_governance_repository = StrategyGovernanceRepository(database)
+    strategy_lab_repository = StrategyLabRepository(database)
     broker_governance_repository = BrokerGovernanceRepository(database)
     portfolio_risk_repository = PortfolioRiskRepository(database)
     rollout_gate_repository = RolloutGateRepository(database)
@@ -254,6 +258,7 @@ def create_app(
     proposal_repository = ProposalRepository(database)
     learning_repository = LearningRepository(database)
     app.state.strategy_governance_repository = strategy_governance_repository
+    app.state.strategy_lab_repository = strategy_lab_repository
     app.state.broker_governance_repository = broker_governance_repository
     app.state.portfolio_risk_repository = portfolio_risk_repository
     app.state.rollout_gate_repository = rollout_gate_repository
@@ -285,6 +290,14 @@ def create_app(
     )
     app.state.learning_model_service.institutional = app.state.institutional_service
     app.state.institutional_service.initialize_known_capabilities()
+    app.state.strategy_lab_service = StrategyLabService(
+        settings=app_settings,
+        repository=strategy_lab_repository,
+        market_data_engine=app.state.market_data_engine,
+        backtest_repository=backtest_repository,
+        run_log_repository=run_log_repository,
+        strategy_governance=strategy_governance_repository,
+    )
     app.state.etoro_demo_v2_client = None
     if app_settings.etoro_demo_v2_enabled:
         from app.broker.etoro_demo_v2 import EToroDemoV2Client
@@ -339,6 +352,7 @@ def create_app(
         scan_decision_repository=scan_decision_repository,
         telegram_notifier=app.state.telegram_notifier,
         learning_service=app.state.learning_service,
+        strategy_lab_service=app.state.strategy_lab_service,
     )
     app.state.batch_backtest_service = BatchBacktestService(
         settings=app_settings,
@@ -503,6 +517,7 @@ def create_app(
     app.include_router(paper_router)
     app.include_router(institutional_router)
     app.include_router(learning_router)
+    app.include_router(strategy_lab_router)
     app.include_router(metrics_router)
 
     @app.on_event("startup")

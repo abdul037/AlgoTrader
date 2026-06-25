@@ -157,6 +157,23 @@ def test_primary_strategy_mode_limits_specs_to_confluence(tmp_path) -> None:
         assert {spec.name for spec in specs} == {"rsi_vwap_ema_confluence"}
 
 
+def test_scheduled_all_mode_reaches_all_36_strategy_specs(tmp_path) -> None:
+    settings = make_settings(
+        tmp_path,
+        screener_active_strategy_names=["all"],
+        screener_spec_coverage_mode="scheduled_all",
+    )
+
+    intraday = sum(len(_strategy_specs(settings, timeframe=timeframe)) for timeframe in ["1m", "5m", "10m", "15m"])
+    swing = sum(len(_strategy_specs(settings, timeframe=timeframe)) for timeframe in ["1h", "1d"])
+    end_of_day = len(_strategy_specs(settings, timeframe="1w"))
+
+    assert intraday == 17
+    assert swing == 14
+    assert end_of_day == 5
+    assert intraday + swing + end_of_day == 36
+
+
 def test_screener_scan_returns_ranked_candidates(tmp_path) -> None:
     daily = _frame([100 + (index * 0.8) for index in range(120)] + [198, 202, 206, 211, 218])
     daily.loc[daily.index[-1], "volume"] = daily["volume"].tail(20).mean() * 2.0

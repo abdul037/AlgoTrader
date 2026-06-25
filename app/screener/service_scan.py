@@ -6,14 +6,11 @@ import concurrent.futures
 import time
 from typing import Any
 
-from app.backtesting.strategy_selection import strategy_kwargs_for as _strategy_kwargs
-from app.backtesting.strategy_selection import strategy_specs_for as _strategy_specs
 from app.broker.etoro_rate_limit import EToroRateLimitError
 from app.models.screener import ScreenerRunResponse
 from app.screener.accuracy import build_accuracy_profile
 from app.screener.filters import FilterOutcome, build_market_context
 from app.screener.scoring import build_backtest_snapshot, freshness_for_decision, rank_live_signal
-from app.strategies import get_strategy
 from app.universe import resolve_universe
 from app.utils.time import utc_now
 
@@ -60,6 +57,8 @@ def scan_universe(
     suppressed = 0
     evaluated_strategy_runs = 0
     evaluated_symbols = 0
+    timed_out_runs = 0
+    specs_by_timeframe: dict[str, int] = {}
     abort_scan = False
     quote_cache: dict[str, Any] = {}
     started_at = time.monotonic()
@@ -132,6 +131,7 @@ def scan_universe(
                 abort_scan = True
                 break
             except ScanTimeoutError as exc:
+                timed_out_runs += 1
                 errors.append(f"{symbol} {timeframe}: {exc}")
                 service._add_scan_diagnostic(
                     rejection_summary,
@@ -156,16 +156,20 @@ def scan_universe(
                 )
                 continue
 
-            for spec in _strategy_specs(service.settings, timeframe=timeframe):
+            specs = service._strategy_specs_for_timeframe(timeframe)
+            specs_by_timeframe.setdefault(timeframe, len(specs))
+            for spec in specs:
                 if service._scan_cancelled(cancel_event):
                     errors.append("scan_cancelled")
                     abort_scan = True
                     break
                 evaluated_strategy_runs += 1
-                strategy = get_strategy(spec.name, **_strategy_kwargs(service.settings, spec))
+                strategy = service._build_strategy(spec)
                 try:
                     signal = strategy.generate_signal(history.copy(), symbol)
                 except Exception as exc:
+                    if isinstance(exc, ScanTimeoutError):
+                        timed_out_runs += 1
                     errors.append(f"{symbol} {timeframe} {spec.name}: {exc}")
                     service._add_scan_diagnostic(
                         rejection_summary,
@@ -279,6 +283,7 @@ def scan_universe(
                         force_refresh=force_refresh,
                     )
                 except ScanTimeoutError as exc:
+                    timed_out_runs += 1
                     errors.append(f"{symbol} {timeframe} {signal.strategy_name}: {exc}")
                     service._add_scan_diagnostic(
                         rejection_summary,
@@ -542,6 +547,11 @@ def scan_universe(
         item.model_copy(update={"rank": index + 1})
         for index, item in enumerate(ranked[:top_k])
     ]
+    expected_strategy_runs = 0
+    for timeframe in scan_timeframes:
+        expected_strategy_runs += len(service._strategy_specs_for_timeframe(timeframe)) * len(universe)
+    skipped_strategy_runs = max(expected_strategy_runs - evaluated_strategy_runs, 0)
+    deadline_exceeded = any("scan_deadline_exceeded" in error for error in errors)
     response = ScreenerRunResponse(
         generated_at=utc_now().isoformat(),
         universe_name=service.settings.market_universe_name,
@@ -554,6 +564,20 @@ def scan_universe(
         errors=errors,
         rejection_summary=dict(sorted(rejection_summary.items(), key=lambda item: (-item[1], item[0]))),
         closest_rejections=service._rank_closest_rejections(closest_rejections),
+        coverage={
+            "mode": str(getattr(service.settings, "screener_spec_coverage_mode", "default")),
+            "timeframes": scan_timeframes,
+            "specs_by_timeframe": specs_by_timeframe,
+            "symbols_requested": len(universe),
+            "symbols_evaluated": evaluated_symbols,
+            "expected_strategy_runs": expected_strategy_runs,
+            "evaluated_strategy_runs": evaluated_strategy_runs,
+            "skipped_strategy_runs": skipped_strategy_runs,
+            "timed_out_runs": timed_out_runs,
+            "deadline_exceeded": deadline_exceeded,
+            "candidates_found": len(candidates),
+            "proposals_created": 0,
+        },
     )
     if notify and service.notifier is not None and hasattr(service.notifier, "send_text"):
         sent = bool(service.notifier.send_text(service.notifier.format_screener_summary(response)))
@@ -574,6 +598,7 @@ def scan_universe(
             "errors": errors,
             "rejection_summary": response.rejection_summary,
             "closest_rejections": response.closest_rejections,
+            "coverage": response.coverage,
         },
     )
     return response

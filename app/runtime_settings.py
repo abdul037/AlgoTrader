@@ -198,6 +198,7 @@ class AppSettings(BaseSettings):
     screener_score_weight_regime_alignment: float = 10.0
     screener_score_weight_indicator_confluence: float = 10.0
     screener_score_weight_accuracy_quality: float = 12.0
+    screener_spec_coverage_mode: Literal["default", "scheduled_all"] = "default"
     confluence_minimum_score: float = 0.84
     confluence_minimum_relative_volume: float = 1.25
     confluence_minimum_adx: float = 20.0
@@ -313,6 +314,13 @@ class AppSettings(BaseSettings):
     learning_min_shadow_sessions: int = 20
     learning_job_max_attempts: int = 3
     learning_worker_poll_seconds: int = 30
+    strategy_lab_enabled: bool = False
+    strategy_lab_generation_enabled: bool = False
+    strategy_lab_paper_trading_enabled: bool = False
+    strategy_lab_max_generations_per_day: int = 3
+    strategy_lab_min_backtest_trades: int = 100
+    strategy_lab_min_profit_factor: float = 1.15
+    strategy_lab_max_drawdown_pct: float = 12.0
 
     allowed_instruments: list[str] = Field(
         default_factory=lambda: ["NVDA", "GOOG", "GOOGL", "AMD", "MU", "GOLD"]

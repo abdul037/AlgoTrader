@@ -58,6 +58,8 @@ def run_scan_task(
     alerts_sent = service._send_scan_alerts(task=task, response=response, notify=notify)
     service._track_candidates(response, origin=origin)
     proposals_created = service._auto_propose_candidates(response, origin=origin, notify=notify)
+    if hasattr(response, "coverage"):
+        response.coverage["proposals_created"] = proposals_created
     service.runtime_state.set(state_key, utc_now().isoformat())
     service.run_logs.log(
         f"workflow_{task}_completed",
@@ -70,6 +72,7 @@ def run_scan_task(
             "proposals_created": proposals_created,
             "timeframes": timeframes,
             "errors": response.errors,
+            "coverage": getattr(response, "coverage", {}),
         },
     )
     return WorkflowTaskResponse(

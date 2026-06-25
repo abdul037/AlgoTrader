@@ -147,13 +147,16 @@ class SignalWorkflowService:
             self.settings,
             limit=int(getattr(self.settings, "market_universe_limit", 100) or 100),
         )
+        timeframes = self._normalized_timeframes(getattr(self.settings, "swing_scan_timeframes", ["1d", "1w"]))
+        if str(getattr(self.settings, "screener_spec_coverage_mode", "default")) == "scheduled_all":
+            timeframes = ["1h", "1d"]
         return self._execute_guarded(
             "swing_scan",
             lambda: self._run_scan_task(
                 task="swing_scan",
                 state_key="workflow:last_swing_scan_at",
                 origin="swing_scan",
-                timeframes=self._normalized_timeframes(getattr(self.settings, "swing_scan_timeframes", ["1d", "1w"])),
+                timeframes=timeframes,
                 notify=notify,
                 force_refresh=force_refresh,
                 symbols=symbols,
@@ -191,13 +194,16 @@ class SignalWorkflowService:
         )
 
     def run_end_of_day_scan(self, *, notify: bool = True, force_refresh: bool = False) -> WorkflowTaskResponse:
+        timeframes = ["15m", "1h", "1d", "1w"]
+        if str(getattr(self.settings, "screener_spec_coverage_mode", "default")) == "scheduled_all":
+            timeframes = ["1w"]
         return self._execute_guarded(
             "end_of_day_scan",
             lambda: self._run_scan_task(
                 task="end_of_day_scan",
                 state_key="workflow:last_end_of_day_scan_at",
                 origin="end_of_day_scan",
-                timeframes=["15m", "1h", "1d", "1w"],
+                timeframes=timeframes,
                 notify=notify,
                 force_refresh=force_refresh,
             ),

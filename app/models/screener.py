@@ -31,6 +31,7 @@ class ScreenerRunResponse(BaseModel):
     errors: list[str] = Field(default_factory=list)
     rejection_summary: dict[str, int] = Field(default_factory=dict)
     closest_rejections: list[dict[str, Any]] = Field(default_factory=list)
+    coverage: dict[str, Any] = Field(default_factory=dict)
 
 
 class ScanDecisionRecord(BaseModel):

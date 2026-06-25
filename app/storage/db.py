@@ -757,6 +757,33 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_job_idempotency
 ON learning_jobs(idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_learning_job_status
 ON learning_jobs(status, scheduled_at);
+
+CREATE TABLE IF NOT EXISTS strategy_lab_generated_strategies (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    dsl_json TEXT NOT NULL,
+    source TEXT NOT NULL,
+    latest_backtest_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_lab_generated_status
+ON strategy_lab_generated_strategies(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS strategy_lab_backtests (
+    id TEXT PRIMARY KEY,
+    generated_strategy_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    metrics_json TEXT NOT NULL,
+    blockers_json TEXT NOT NULL,
+    results_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_lab_backtests_strategy
+ON strategy_lab_backtests(generated_strategy_id, created_at);
 """
 
 

@@ -360,6 +360,34 @@ def test_intraday_scan_rotates_top100_batches(tmp_path) -> None:
     assert screener.calls[1]["symbols"] == ["NVDA", "AMD"]
 
 
+def test_scheduled_all_mode_uses_bucket_specific_timeframes(tmp_path) -> None:
+    screener = FakeMarketScreener([])
+    workflow = SignalWorkflowService(
+        settings=make_settings(
+            tmp_path,
+            screener_spec_coverage_mode="scheduled_all",
+            market_universe_symbols=["AAPL", "MSFT"],
+            market_universe_limit=2,
+            intraday_active_shortlist_size=0,
+        ),
+        market_screener=screener,
+        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="AAPL", last_execution=101.0)),
+        notifier=FakeNotifier(),
+        tracked_signals=FakeTrackedSignals(),
+        alert_history=FakeAlertHistory(),
+        runtime_state=FakeState(),
+        run_logs=FakeLogs(),
+    )
+
+    workflow.run_intraday_scan(notify=False)
+    workflow.run_swing_scan(notify=False)
+    workflow.run_end_of_day_scan(notify=False)
+
+    assert screener.calls[0]["timeframes"] == ["1m", "5m", "10m", "15m"]
+    assert screener.calls[1]["timeframes"] == ["1h", "1d"]
+    assert screener.calls[2]["timeframes"] == ["1w"]
+
+
 def test_intraday_rotation_includes_active_shortlist_before_batch(tmp_path) -> None:
     screener = FakeMarketScreener([])
     tracked = FakeTrackedSignals()

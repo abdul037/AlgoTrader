@@ -26,6 +26,7 @@ from app.models.live_signal import LiveSignalSnapshot
 from app.models.paper import PaperPerformanceSummary, PaperPositionRecord, PaperTradeRecord
 from app.models.screener import ScanDecisionRecord
 from app.models.signal import Signal
+from app.models.strategy_lab import GeneratedStrategyRecord, StrategyLabBacktestRecord, StrategyLabDsl
 from app.models.workflow import AlertHistoryRecord, TrackedSignalRecord
 from app.storage.db import Database
 from app.utils.time import utc_now
@@ -1024,6 +1025,143 @@ class StrategyGovernanceRepository:
         payload["blockers"] = json.loads(payload.pop("blockers_json") or "[]")
         payload["evidence"] = json.loads(payload.pop("evidence_json") or "{}")
         return PromotionDecision.model_validate(payload)
+
+
+class StrategyLabRepository:
+    """Persist generated strategy DSL specs and validation evidence."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def create_generated(self, item: GeneratedStrategyRecord) -> GeneratedStrategyRecord:
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO strategy_lab_generated_strategies (
+                    id, name, status, dsl_json, source, latest_backtest_id, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item.id,
+                    item.name,
+                    item.status,
+                    item.dsl.model_dump_json(),
+                    item.source,
+                    item.latest_backtest_id,
+                    item.created_at,
+                    item.updated_at,
+                ),
+            )
+        return item
+
+    def get_generated(self, generated_id: str) -> GeneratedStrategyRecord | None:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM strategy_lab_generated_strategies WHERE id = ?",
+                (generated_id,),
+            ).fetchone()
+        return None if row is None else self._generated(row)
+
+    def get_generated_by_name(self, name: str) -> GeneratedStrategyRecord | None:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM strategy_lab_generated_strategies WHERE name = ?",
+                (name,),
+            ).fetchone()
+        return None if row is None else self._generated(row)
+
+    def list_generated(self, *, status: str | None = None, limit: int = 200) -> list[GeneratedStrategyRecord]:
+        query = "SELECT * FROM strategy_lab_generated_strategies"
+        params: list[Any] = []
+        if status is not None:
+            query += " WHERE status = ?"
+            params.append(status)
+        query += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(max(1, limit))
+        with self.db.connect() as connection:
+            rows = connection.execute(query, tuple(params)).fetchall()
+        return [self._generated(row) for row in rows]
+
+    def update_generated_status(
+        self,
+        generated_id: str,
+        *,
+        status: str,
+        latest_backtest_id: str | None = None,
+    ) -> GeneratedStrategyRecord:
+        updated_at = utc_now().isoformat()
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                UPDATE strategy_lab_generated_strategies
+                SET status = ?, latest_backtest_id = COALESCE(?, latest_backtest_id), updated_at = ?
+                WHERE id = ?
+                """,
+                (status, latest_backtest_id, updated_at, generated_id),
+            )
+        item = self.get_generated(generated_id)
+        if item is None:
+            raise KeyError(f"Generated strategy {generated_id} not found")
+        return item
+
+    def record_backtest(self, item: StrategyLabBacktestRecord) -> StrategyLabBacktestRecord:
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO strategy_lab_backtests (
+                    id, generated_strategy_id, status, metrics_json, blockers_json, results_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item.id,
+                    item.generated_strategy_id,
+                    item.status,
+                    json.dumps(item.metrics),
+                    json.dumps(item.blockers),
+                    json.dumps(item.results),
+                    item.created_at,
+                ),
+            )
+        return item
+
+    def latest_backtest(self, generated_strategy_id: str) -> StrategyLabBacktestRecord | None:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM strategy_lab_backtests
+                WHERE generated_strategy_id = ?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (generated_strategy_id,),
+            ).fetchone()
+        return None if row is None else self._backtest(row)
+
+    @staticmethod
+    def _generated(row: Any) -> GeneratedStrategyRecord:
+        return GeneratedStrategyRecord(
+            id=row["id"],
+            name=row["name"],
+            status=row["status"],
+            dsl=StrategyLabDsl.model_validate_json(row["dsl_json"]),
+            source=row["source"],
+            latest_backtest_id=row["latest_backtest_id"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _backtest(row: Any) -> StrategyLabBacktestRecord:
+        return StrategyLabBacktestRecord(
+            id=row["id"],
+            generated_strategy_id=row["generated_strategy_id"],
+            status=row["status"],
+            metrics=json.loads(row["metrics_json"] or "{}"),
+            blockers=json.loads(row["blockers_json"] or "[]"),
+            results=json.loads(row["results_json"] or "[]"),
+            created_at=row["created_at"],
+        )
 
 
 class BrokerGovernanceRepository:

@@ -47,6 +47,7 @@ from app.screener.service_snapshots import (
     build_no_trade_snapshot,
     snapshot_from_signal,
 )
+from app.strategies import get_strategy
 from app.telegram_notify import TelegramNotifier
 from app.universe import resolve_universe
 
@@ -73,6 +74,7 @@ class MarketScreenerService:
         scan_decision_repository: Any | None = None,
         telegram_notifier: TelegramNotifier | Any | None = None,
         learning_service: Any | None = None,
+        strategy_lab_service: Any | None = None,
     ):
         self.settings = settings
         self.market_data = market_data_engine
@@ -82,6 +84,7 @@ class MarketScreenerService:
         self.scan_decisions = scan_decision_repository
         self.notifier = telegram_notifier
         self.learning = learning_service
+        self.strategy_lab = strategy_lab_service
         self.filters = ScreenerFilterPipeline(settings)
         self.intelligence = MarketIntelligenceService(settings, market_data_engine)
 
@@ -151,6 +154,19 @@ class MarketScreenerService:
 
     def _backtest_validation(self, symbol: str, strategy_name: str, timeframe: str | None = None) -> dict[str, Any]:
         return backtest_validation(self, symbol, strategy_name, timeframe)
+
+    def _strategy_specs_for_timeframe(self, timeframe: str) -> list[Any]:
+        specs = list(_strategy_specs(self.settings, timeframe=timeframe))
+        if self.strategy_lab is not None:
+            specs.extend(self.strategy_lab.active_specs(timeframe=timeframe))
+        return specs
+
+    def _build_strategy(self, spec: Any) -> Any:
+        if self.strategy_lab is not None:
+            strategy = self.strategy_lab.build_strategy_for_spec(spec)
+            if strategy is not None:
+                return strategy
+        return get_strategy(spec.name, **_strategy_kwargs(self.settings, spec))
 
     def _get_latest_backtest_summary(
         self,
