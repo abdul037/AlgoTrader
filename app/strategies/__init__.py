@@ -9,6 +9,14 @@ from app.strategies.gold_momentum import GoldMomentumStrategy
 from app.strategies.intraday_vwap_trend import IntradayVWAPTrendStrategy
 from app.strategies.ma_crossover import MACrossoverStrategy
 from app.strategies.ema_trend_stack import EMATrendStackStrategy
+from app.strategies.enhanced import (
+    ATRDonchianTrendBreakoutStrategy,
+    AnchoredVWAPPullbackContinuationStrategy,
+    GapContinuationFadeStrategy,
+    RegimeFilteredMeanReversionStrategy,
+    RelativeStrengthMomentumStrategy,
+    VolatilityContractionBreakoutStrategy,
+)
 from app.strategies.mean_reversion import MeanReversionStrategy
 from app.strategies.momentum_breakout import MomentumBreakoutStrategy
 from app.strategies.pullback_trend import PullbackTrendStrategy
@@ -27,6 +35,7 @@ class StrategySpec:
     timeframe: str
     style: str
     default_kwargs: dict[str, object] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 STRATEGY_REGISTRY: dict[str, type[BaseStrategy]] = {
@@ -42,6 +51,54 @@ STRATEGY_REGISTRY: dict[str, type[BaseStrategy]] = {
     "rsi_reversal": RSIReversalStrategy,
     "vwap_reclaim": VWAPReclaimStrategy,
     "rsi_vwap_ema_confluence": RSIVWAPEMAConfluenceStrategy,
+    "volatility_contraction_breakout": VolatilityContractionBreakoutStrategy,
+    "relative_strength_momentum": RelativeStrengthMomentumStrategy,
+    "atr_donchian_trend_breakout": ATRDonchianTrendBreakoutStrategy,
+    "anchored_vwap_pullback_continuation": AnchoredVWAPPullbackContinuationStrategy,
+    "gap_continuation_fade": GapContinuationFadeStrategy,
+    "regime_filtered_mean_reversion": RegimeFilteredMeanReversionStrategy,
+}
+
+CORE_STRATEGY_NAMES = frozenset(
+    {
+        "ma_crossover",
+        "pullback_trend",
+        "gold_momentum",
+        "trend_following",
+        "momentum_breakout",
+        "mean_reversion",
+        "intraday_vwap_trend",
+        "ema_trend_stack",
+        "rsi_trend_continuation",
+        "rsi_reversal",
+        "vwap_reclaim",
+        "rsi_vwap_ema_confluence",
+    }
+)
+
+ENHANCED_RESEARCH_STRATEGY_NAMES = frozenset(
+    {
+        "volatility_contraction_breakout",
+        "relative_strength_momentum",
+        "atr_donchian_trend_breakout",
+        "anchored_vwap_pullback_continuation",
+        "gap_continuation_fade",
+        "regime_filtered_mean_reversion",
+    }
+)
+
+CORE_METADATA = {
+    "pack": "core_scanner",
+    "asset_class": "us_equity",
+    "paper_stage": "paper_exploration",
+    "live_enabled": False,
+}
+
+ENHANCED_METADATA = {
+    "pack": "enhanced_research",
+    "asset_class": "us_equity",
+    "paper_stage": "research",
+    "live_enabled": False,
 }
 
 
@@ -82,6 +139,31 @@ STRATEGY_SPECS: list[StrategySpec] = [
     StrategySpec("ema_trend_stack", timeframe="1w", style="position", default_kwargs={"timeframe": "1w"}),
     StrategySpec("rsi_trend_continuation", timeframe="1w", style="position", default_kwargs={"timeframe": "1w"}),
     StrategySpec("rsi_vwap_ema_confluence", timeframe="1w", style="confluence", default_kwargs={"timeframe": "1w", "minimum_relative_volume": 1.0}),
+    StrategySpec("volatility_contraction_breakout", timeframe="15m", style="breakout", default_kwargs={"timeframe": "15m"}, metadata=ENHANCED_METADATA),
+    StrategySpec("volatility_contraction_breakout", timeframe="1d", style="breakout", default_kwargs={"timeframe": "1d"}, metadata=ENHANCED_METADATA),
+    StrategySpec("relative_strength_momentum", timeframe="1h", style="momentum", default_kwargs={"timeframe": "1h"}, metadata=ENHANCED_METADATA),
+    StrategySpec("relative_strength_momentum", timeframe="1d", style="momentum", default_kwargs={"timeframe": "1d"}, metadata=ENHANCED_METADATA),
+    StrategySpec("atr_donchian_trend_breakout", timeframe="1h", style="trend_breakout", default_kwargs={"timeframe": "1h"}, metadata=ENHANCED_METADATA),
+    StrategySpec("atr_donchian_trend_breakout", timeframe="1d", style="trend_breakout", default_kwargs={"timeframe": "1d"}, metadata=ENHANCED_METADATA),
+    StrategySpec("atr_donchian_trend_breakout", timeframe="1w", style="trend_breakout", default_kwargs={"timeframe": "1w"}, metadata=ENHANCED_METADATA),
+    StrategySpec("anchored_vwap_pullback_continuation", timeframe="5m", style="pullback_continuation", default_kwargs={"timeframe": "5m"}, metadata=ENHANCED_METADATA),
+    StrategySpec("anchored_vwap_pullback_continuation", timeframe="15m", style="pullback_continuation", default_kwargs={"timeframe": "15m"}, metadata=ENHANCED_METADATA),
+    StrategySpec("anchored_vwap_pullback_continuation", timeframe="1h", style="pullback_continuation", default_kwargs={"timeframe": "1h"}, metadata=ENHANCED_METADATA),
+    StrategySpec("gap_continuation_fade", timeframe="5m", style="gap", default_kwargs={"timeframe": "5m"}, metadata=ENHANCED_METADATA),
+    StrategySpec("gap_continuation_fade", timeframe="15m", style="gap", default_kwargs={"timeframe": "15m"}, metadata=ENHANCED_METADATA),
+    StrategySpec("regime_filtered_mean_reversion", timeframe="1h", style="mean_reversion", default_kwargs={"timeframe": "1h"}, metadata=ENHANCED_METADATA),
+    StrategySpec("regime_filtered_mean_reversion", timeframe="1d", style="mean_reversion", default_kwargs={"timeframe": "1d"}, metadata=ENHANCED_METADATA),
+]
+
+STRATEGY_SPECS = [
+    StrategySpec(
+        spec.name,
+        timeframe=spec.timeframe,
+        style=spec.style,
+        default_kwargs=spec.default_kwargs,
+        metadata=dict(spec.metadata or (CORE_METADATA if spec.name in CORE_STRATEGY_NAMES else ENHANCED_METADATA)),
+    )
+    for spec in STRATEGY_SPECS
 ]
 
 
@@ -115,6 +197,11 @@ def get_strategy_specs(
 
 __all__ = [
     "BaseStrategy",
+    "ATRDonchianTrendBreakoutStrategy",
+    "AnchoredVWAPPullbackContinuationStrategy",
+    "CORE_STRATEGY_NAMES",
+    "ENHANCED_RESEARCH_STRATEGY_NAMES",
+    "GapContinuationFadeStrategy",
     "GoldMomentumStrategy",
     "IntradayVWAPTrendStrategy",
     "EMATrendStackStrategy",
@@ -125,8 +212,11 @@ __all__ = [
     "RSIReversalStrategy",
     "RSITrendContinuationStrategy",
     "RSIVWAPEMAConfluenceStrategy",
+    "RegimeFilteredMeanReversionStrategy",
+    "RelativeStrengthMomentumStrategy",
     "StrategySpec",
     "TrendFollowingStrategy",
+    "VolatilityContractionBreakoutStrategy",
     "VWAPReclaimStrategy",
     "get_strategy",
     "get_strategy_specs",

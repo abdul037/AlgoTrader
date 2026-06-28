@@ -62,4 +62,5 @@ class BatchBacktestSummary(BaseModel):
     provider: str
     results: list[dict] = Field(default_factory=list)
     aggregate_metrics: dict[str, float] = Field(default_factory=dict)
+    audit_rankings: list[dict[str, Any]] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)

@@ -9,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 
 from app.backtesting.cost_model import CostModel, zero_cost_model
+from app.backtesting.batch import BatchBacktestService
 from app.backtesting.engine import BacktestEngine, EngineConfig
 from app.backtesting.metrics import (
     bars_per_year_for,
@@ -49,6 +50,7 @@ def test_backtest_metrics_are_sane(tmp_path: Path) -> None:
     assert result.metrics["number_of_trades"] >= 1
     assert result.metrics["max_drawdown_pct"] >= 0
     assert "sharpe_like" in result.metrics
+    assert "expectancy_usd" in result.metrics
     assert result.ending_cash > 0
 
 
@@ -78,6 +80,49 @@ def test_leakage_tripwire_fires_when_large_sample_exceeds_limits() -> None:
     })
     assert triggered is True
     assert reason is not None and "profit_factor" in reason
+
+
+def test_batch_backtest_audit_rankings_surface_paper_candidates() -> None:
+    rankings = BatchBacktestService._audit_rankings(
+        [
+            {
+                "strategy_name": "relative_strength_momentum",
+                "timeframe": "1d",
+                "number_of_trades": 60,
+                "expectancy_usd": 4.5,
+                "profit_factor": 1.3,
+                "sharpe_like": 1.1,
+                "max_drawdown_pct": 7.5,
+                "total_return_pct": 8.0,
+            },
+            {
+                "strategy_name": "relative_strength_momentum",
+                "timeframe": "1d",
+                "number_of_trades": 55,
+                "expectancy_usd": 3.8,
+                "profit_factor": 1.25,
+                "sharpe_like": 0.9,
+                "max_drawdown_pct": 8.0,
+                "total_return_pct": 5.0,
+            },
+            {
+                "strategy_name": "weak_strategy",
+                "timeframe": "1d",
+                "number_of_trades": 120,
+                "expectancy_usd": -1.0,
+                "profit_factor": 0.8,
+                "sharpe_like": -0.2,
+                "max_drawdown_pct": 15.0,
+                "total_return_pct": -4.0,
+            },
+        ],
+        [],
+    )
+
+    assert rankings[0]["strategy_name"] == "relative_strength_momentum"
+    assert rankings[0]["total_trades"] == 115
+    assert rankings[0]["promotion_hint"] == "paper_candidate"
+    assert rankings[-1]["promotion_hint"] == "research_only"
 
 
 # ---------------------------------------------------------------------------

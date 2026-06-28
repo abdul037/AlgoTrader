@@ -15,6 +15,7 @@ from app.models.institutional import (
     StrategyAudit,
     StrategyVersion,
 )
+from app.strategies.catalog import build_strategy_catalog_report
 
 router = APIRouter(prefix="/institutional", tags=["institutional"])
 
@@ -35,7 +36,14 @@ def readiness(request: Request):
 @router.get("/strategies")
 def strategies(request: Request):
     repository = request.app.state.strategy_governance_repository
-    return {"versions": repository.list_versions(), "audits": repository.list_audits()}
+    return {
+        "versions": repository.list_versions(),
+        "audits": repository.list_audits(),
+        "catalog": build_strategy_catalog_report(
+            settings=request.app.state.settings,
+            governance=repository,
+        ),
+    }
 
 
 @router.post("/strategies")

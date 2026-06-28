@@ -15,6 +15,7 @@ that still want an in-sample pass can set ``walk_forward=False``.
 
 from __future__ import annotations
 
+from math import isfinite
 from typing import Any
 
 from app.backtesting.engine import BacktestEngine, EngineConfig
@@ -118,6 +119,7 @@ class BatchBacktestService:
             provider=provider or self.settings.primary_market_data_provider,
             results=sorted(results, key=lambda item: item.get("annualized_return_pct", 0.0), reverse=True),
             aggregate_metrics=aggregate,
+            audit_rankings=self._audit_rankings(results, errors + tripwires),
             errors=errors + tripwires,
         )
         self.logs.log(
@@ -240,5 +242,99 @@ class BatchBacktestService:
             "average_max_drawdown_pct": avg("max_drawdown_pct"),
         }
 
+    @staticmethod
+    def _audit_rankings(results: list[dict[str, Any]], errors: list[str]) -> list[dict[str, Any]]:
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for item in results:
+            key = (str(item.get("strategy_name") or ""), str(item.get("timeframe") or ""))
+            grouped.setdefault(key, []).append(item)
+
+        rankings: list[dict[str, Any]] = []
+        for (strategy_name, timeframe), items in grouped.items():
+            if not strategy_name:
+                continue
+            total_trades = sum(int(item.get("number_of_trades", 0) or 0) for item in items)
+            leakage_warnings = [
+                error
+                for error in errors
+                if strategy_name in error and ("leakage" in error.lower() or "tripwire" in error.lower())
+            ]
+            avg_expectancy = _avg(items, "expectancy_usd")
+            avg_profit_factor = _avg(items, "profit_factor", cap=99.0)
+            avg_sharpe = _avg(items, "sharpe_like")
+            avg_drawdown = _avg(items, "max_drawdown_pct")
+            profitable_run_pct = _profitable_run_pct(items)
+            score = (
+                (avg_sharpe * 25.0)
+                + (avg_profit_factor * 10.0)
+                + (avg_expectancy * 0.1)
+                + (profitable_run_pct * 0.15)
+                + (min(total_trades, 200) * 0.05)
+                - (avg_drawdown * 1.5)
+                - (len(leakage_warnings) * 25.0)
+            )
+            rankings.append(
+                {
+                    "strategy_name": strategy_name,
+                    "timeframe": timeframe,
+                    "runs": len(items),
+                    "total_trades": total_trades,
+                    "average_expectancy_usd": round(avg_expectancy, 4),
+                    "average_profit_factor": round(avg_profit_factor, 4),
+                    "average_sharpe_like": round(avg_sharpe, 4),
+                    "average_max_drawdown_pct": round(avg_drawdown, 4),
+                    "profitable_run_pct": round(profitable_run_pct, 2),
+                    "leakage_warning_count": len(leakage_warnings),
+                    "risk_adjusted_rank_score": round(score, 4),
+                    "promotion_hint": _promotion_hint(
+                        total_trades=total_trades,
+                        expectancy=avg_expectancy,
+                        profit_factor=avg_profit_factor,
+                        drawdown=avg_drawdown,
+                        leakage_warning_count=len(leakage_warnings),
+                    ),
+                }
+            )
+        return sorted(rankings, key=lambda item: item["risk_adjusted_rank_score"], reverse=True)
+
 
 __all__ = ["BatchBacktestService"]
+
+
+def _avg(items: list[dict[str, Any]], key: str, *, cap: float | None = None) -> float:
+    if not items:
+        return 0.0
+    values = []
+    for item in items:
+        try:
+            value = float(item.get(key, 0.0) or 0.0)
+        except (TypeError, ValueError):
+            value = 0.0
+        if not isfinite(value):
+            value = cap if cap is not None else 0.0
+        if cap is not None:
+            value = min(value, cap)
+        values.append(value)
+    return sum(values) / len(values)
+
+
+def _profitable_run_pct(items: list[dict[str, Any]]) -> float:
+    if not items:
+        return 0.0
+    profitable = [item for item in items if float(item.get("total_return_pct", 0.0) or 0.0) > 0.0]
+    return (len(profitable) / len(items)) * 100.0
+
+
+def _promotion_hint(
+    *,
+    total_trades: int,
+    expectancy: float,
+    profit_factor: float,
+    drawdown: float,
+    leakage_warning_count: int,
+) -> str:
+    if leakage_warning_count:
+        return "blocked_leakage_warning"
+    if total_trades >= 100 and expectancy > 0.0 and profit_factor >= 1.15 and drawdown <= 12.0:
+        return "paper_candidate"
+    return "research_only"

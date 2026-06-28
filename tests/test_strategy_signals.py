@@ -4,6 +4,15 @@ import pandas as pd
 import pytest
 
 from app.models.signal import SignalAction
+from app.strategies import enhanced as enhanced_module
+from app.strategies.enhanced import (
+    ATRDonchianTrendBreakoutStrategy,
+    AnchoredVWAPPullbackContinuationStrategy,
+    GapContinuationFadeStrategy,
+    RegimeFilteredMeanReversionStrategy,
+    RelativeStrengthMomentumStrategy,
+    VolatilityContractionBreakoutStrategy,
+)
 from app.strategies import ema_trend_stack as ema_trend_stack_module
 from app.strategies.ema_trend_stack import EMATrendStackStrategy
 from app.strategies.gold_momentum import GoldMomentumStrategy
@@ -155,3 +164,141 @@ def test_ema_trend_stack_suppresses_signal_when_atr_missing(monkeypatch: pytest.
     assert signal is None
     assert strategy.last_diagnostics is not None
     assert "atr_unavailable" in strategy.last_diagnostics["rejection_reasons"]
+
+
+def _enhanced_frame(rows: int = 100) -> pd.DataFrame:
+    timestamps = pd.date_range("2026-01-01 14:30", periods=rows, tz="UTC", freq="h")
+    close = [100.0 + (index * 0.05) for index in range(rows)]
+    frame = pd.DataFrame(
+        {
+            "timestamp": timestamps,
+            "open": [price - 0.2 for price in close],
+            "high": [price + 0.8 for price in close],
+            "low": [price - 0.8 for price in close],
+            "close": close,
+            "volume": [2_000_000 for _ in range(rows)],
+        }
+    )
+    frame["ema_9"] = frame["close"] + 0.6
+    frame["ema_20"] = frame["close"] - 1.0
+    frame["ema_50"] = frame["close"] - 2.0
+    frame["ema_200"] = frame["close"] - 4.0
+    frame["ema_9_slope"] = 0.4
+    frame["ema_20_slope"] = 0.3
+    frame["ema_50_slope"] = 0.2
+    frame["vwap"] = frame["close"] - 1.2
+    frame["rsi_14"] = 58.0
+    frame["stoch_rsi"] = 0.55
+    frame["macd_hist"] = 0.4
+    frame["bb_width_pct"] = 4.0
+    frame["bb_mid"] = frame["close"]
+    frame["bb_lower"] = frame["close"] - 3.0
+    frame["atr_14"] = 2.0
+    frame["atr_pct"] = 1.5
+    frame["adx_14"] = 22.0
+    frame["relative_volume"] = 1.4
+    frame["avg_dollar_volume_20"] = 50_000_000.0
+    frame["opening_range_high"] = frame["high"].rolling(5).max()
+    frame["opening_range_low"] = frame["low"].rolling(5).min()
+    frame["swing_high_10"] = frame["high"].rolling(10).max().shift(1)
+    frame["swing_low_10"] = frame["low"].rolling(10).min().shift(1)
+    frame["range_high_20"] = frame["high"].rolling(20).max().shift(1)
+    frame["range_low_20"] = frame["low"].rolling(20).min().shift(1)
+    return frame
+
+
+@pytest.mark.parametrize(
+    ("strategy", "customize"),
+    [
+        (
+            VolatilityContractionBreakoutStrategy(timeframe="1d"),
+            lambda frame: frame.assign(
+                close=[*frame["close"].iloc[:-1], 120.0],
+                high=[*frame["high"].iloc[:-1], 121.0],
+                low=[*frame["low"].iloc[:-1], 118.5],
+                ema_20=[*frame["ema_20"].iloc[:-1], 116.0],
+                ema_50=[*frame["ema_50"].iloc[:-1], 112.0],
+                range_high_20=[*frame["range_high_20"].iloc[:-1], 118.0],
+                bb_width_pct=[*frame["bb_width_pct"].iloc[:-1], 2.0],
+            ),
+        ),
+        (
+            RelativeStrengthMomentumStrategy(timeframe="1d"),
+            lambda frame: frame.assign(
+                close=[100.0 for _ in range(70)] + [105.0 + index for index in range(30)],
+                high=[101.0 for _ in range(70)] + [106.0 + index for index in range(30)],
+                low=[99.0 for _ in range(70)] + [104.0 + index for index in range(30)],
+                ema_50=[110.0 for _ in range(100)],
+                ema_200=[105.0 for _ in range(100)],
+            ),
+        ),
+        (
+            ATRDonchianTrendBreakoutStrategy(timeframe="1d"),
+            lambda frame: frame.assign(
+                close=[*frame["close"].iloc[:-1], 120.0],
+                high=[*[110.0 for _ in range(len(frame) - 1)], 121.0],
+                low=[*[98.0 for _ in range(len(frame) - 1)], 118.0],
+                ema_20=[*frame["ema_20"].iloc[:-1], 116.0],
+                ema_50=[*frame["ema_50"].iloc[:-1], 112.0],
+            ),
+        ),
+        (
+            AnchoredVWAPPullbackContinuationStrategy(timeframe="15m"),
+            lambda frame: frame.assign(
+                open=[*frame["open"].iloc[:-1], 104.0],
+                close=[*frame["close"].iloc[:-1], 105.0],
+                high=[*frame["high"].iloc[:-1], 105.8],
+                low=[*frame["low"].iloc[:-2], 102.2, 101.8],
+                vwap=[*frame["vwap"].iloc[:-1], 102.0],
+                ema_20=[*frame["ema_20"].iloc[:-1], 103.0],
+                ema_50=[*frame["ema_50"].iloc[:-1], 100.0],
+                relative_volume=[*frame["relative_volume"].iloc[:-1], 1.0],
+            ),
+        ),
+        (
+            GapContinuationFadeStrategy(timeframe="15m"),
+            lambda frame: frame.assign(
+                open=[*frame["open"].iloc[:-1], 101.2],
+                close=[*frame["close"].iloc[:-2], 100.0, 102.5],
+                high=[*frame["high"].iloc[:-1], 103.0],
+                low=[*frame["low"].iloc[:-1], 101.0],
+                relative_volume=[*frame["relative_volume"].iloc[:-1], 1.6],
+            ),
+        ),
+        (
+            RegimeFilteredMeanReversionStrategy(timeframe="1d"),
+            lambda frame: frame.assign(
+                open=[*frame["open"].iloc[:-1], 95.5],
+                close=[*frame["close"].iloc[:-1], 96.0],
+                high=[*frame["high"].iloc[:-1], 97.0],
+                low=[*frame["low"].iloc[:-1], 95.0],
+                ema_50=[*frame["ema_50"].iloc[:-1], 100.0],
+                ema_200=[*frame["ema_200"].iloc[:-1], 100.0],
+                rsi_14=[*frame["rsi_14"].iloc[:-1], 31.0],
+                stoch_rsi=[*frame["stoch_rsi"].iloc[:-1], 0.2],
+                adx_14=[*frame["adx_14"].iloc[:-1], 18.0],
+                bb_lower=[*frame["bb_lower"].iloc[:-1], 96.2],
+                bb_mid=[*frame["bb_mid"].iloc[:-1], 100.0],
+                vwap=[*frame["vwap"].iloc[:-1], 99.0],
+            ),
+        ),
+    ],
+)
+def test_enhanced_research_strategies_emit_valid_long_only_trade_plans(
+    monkeypatch: pytest.MonkeyPatch,
+    strategy,
+    customize,
+) -> None:
+    enriched = customize(_enhanced_frame())
+    monkeypatch.setattr(enhanced_module, "enrich_technical_indicators", lambda data, timeframe: enriched)
+
+    signal = strategy.generate_signal(enriched, "NVDA")
+
+    assert signal is not None
+    assert signal.action == SignalAction.BUY
+    assert signal.stop_loss is not None and signal.price is not None and signal.take_profit is not None
+    assert signal.stop_loss < signal.price < signal.take_profit
+    assert signal.metadata["pack"] == "enhanced_research"
+    assert signal.metadata["asset_class"] == "us_equity"
+    assert signal.metadata["live_enabled"] is False
+    assert signal.metadata["signal_role"] == "entry_long"

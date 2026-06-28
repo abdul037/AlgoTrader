@@ -8,6 +8,8 @@ from typing import Any
 
 from fastapi import APIRouter, Request, Response
 
+from app.strategies.catalog import build_strategy_catalog_report
+
 router = APIRouter(tags=["observability"])
 
 
@@ -125,6 +127,10 @@ def metrics(request: Request) -> Response:
 
     latest_reconciliation = dict(reconciliation_row) if reconciliation_row is not None else {}
     institutional_readiness = request.app.state.institutional_service.readiness()
+    strategy_catalog = build_strategy_catalog_report(
+        settings=request.app.state.settings,
+        governance=request.app.state.strategy_governance_repository,
+    )
     account = json.loads(latest_reconciliation.get("account_json") or "{}")
     equity = float(account.get("equity") or 0.0)
     last_equity = float(account.get("last_equity") or equity)
@@ -150,6 +156,19 @@ def metrics(request: Request) -> Response:
                 bool(etoro_reconciliation_row and etoro_reconciliation_row["status"] == "ok")
             ),
             "algobot_institutional_rollout_ready": int(institutional_readiness["ready"]),
+            "algobot_strategy_families_total": strategy_catalog["total_strategy_families"],
+            "algobot_strategy_specs_total": strategy_catalog["total_strategy_specs"],
+            "algobot_strategy_specs_active": strategy_catalog["total_active_specs"],
+            "algobot_strategy_families_enhanced_total": strategy_catalog[
+                "enhanced_research_strategy_families"
+            ],
+            "algobot_strategy_specs_enhanced_total": strategy_catalog[
+                "enhanced_research_strategy_specs"
+            ],
+            "algobot_paper_approved_strategy_families": strategy_catalog["paper_approved_count"],
+            "algobot_production_qualified_strategy_families": strategy_catalog[
+                "production_qualified_count"
+            ],
             "algobot_learning_review_cost_today_usd": float(
                 learning_cost_row["value"] if learning_cost_row else 0.0
             ),

@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 from app.backtesting.cost_model import CostModel, is_extended_hours
 from app.backtesting.metrics import (
     DAILY_BARS_PER_YEAR,
+    compute_expectancy,
     compute_max_drawdown,
     compute_sharpe_like,
     summarize_trades,
@@ -534,6 +535,7 @@ def _compile_metrics(
         "bars_per_year": float(bars_per_year),
     }
     metrics.update(summarize_trades(trades))
+    metrics.update(compute_expectancy(trades))
     return metrics
 
 

@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from app.models.automation import AutomationStateChange, AutomationStatus
 from app.models.execution_queue import ExecutionQueueStatus
+from app.strategies.catalog import build_strategy_catalog_report
 
 router = APIRouter(prefix="/automation", tags=["automation"])
 
@@ -66,6 +67,10 @@ def continuous_readiness(request: Request):
     approved_versions = list(institutional_readiness.get("approved_strategy_versions") or [])
     approved_exploration_strategies = (
         request.app.state.strategy_governance_repository.approved_paper_exploration_strategies()
+    )
+    strategy_catalog = build_strategy_catalog_report(
+        settings=settings,
+        governance=request.app.state.strategy_governance_repository,
     )
     queued = request.app.state.execution_queue_repository.list(
         status=ExecutionQueueStatus.QUEUED,
@@ -211,6 +216,7 @@ def continuous_readiness(request: Request):
             "approved_production_versions": approved_versions,
             "approved_paper_exploration_strategies": approved_exploration_strategies,
             "strategy_health": strategy_health,
+            "catalog": strategy_catalog,
         },
         "learning": learning_status,
     }
