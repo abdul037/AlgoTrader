@@ -64,6 +64,10 @@ class GeneratedRuleStrategy(BaseStrategy):
 
 
 def _with_indicators(frame: pd.DataFrame, dsl: StrategyLabDsl) -> pd.DataFrame:
+    close = frame["close"].astype(float)
+    high = frame["high"].astype(float)
+    low = frame["low"].astype(float)
+    volume = frame["volume"].astype(float)
     for indicator in dsl.indicators:
         source = frame[indicator.source].astype(float)
         if indicator.kind == "sma":
@@ -77,7 +81,41 @@ def _with_indicators(frame: pd.DataFrame, dsl: StrategyLabDsl) -> pd.DataFrame:
             rs = gains / losses
             frame[indicator.name] = 100 - (100 / (1 + rs))
         elif indicator.kind == "volume_sma":
-            frame[indicator.name] = frame["volume"].astype(float).rolling(indicator.period).mean()
+            frame[indicator.name] = volume.rolling(indicator.period).mean()
+        elif indicator.kind == "atr":
+            previous_close = close.shift(1)
+            true_range = pd.concat(
+                [
+                    high - low,
+                    (high - previous_close).abs(),
+                    (low - previous_close).abs(),
+                ],
+                axis=1,
+            ).max(axis=1)
+            frame[indicator.name] = true_range.rolling(indicator.period).mean()
+        elif indicator.kind == "roc":
+            frame[indicator.name] = close.pct_change(indicator.period) * 100.0
+        elif indicator.kind in {"bb_upper", "bb_lower", "bb_width"}:
+            mid = close.rolling(indicator.period).mean()
+            std = close.rolling(indicator.period).std()
+            upper = mid + (std * 2.0)
+            lower = mid - (std * 2.0)
+            if indicator.kind == "bb_upper":
+                frame[indicator.name] = upper
+            elif indicator.kind == "bb_lower":
+                frame[indicator.name] = lower
+            else:
+                frame[indicator.name] = ((upper - lower) / mid.replace(0.0, pd.NA)) * 100.0
+        elif indicator.kind == "donchian_high":
+            frame[indicator.name] = high.rolling(indicator.period).max().shift(1)
+        elif indicator.kind == "donchian_low":
+            frame[indicator.name] = low.rolling(indicator.period).min().shift(1)
+        elif indicator.kind == "relative_volume":
+            average_volume = volume.rolling(indicator.period).mean().replace(0.0, pd.NA)
+            frame[indicator.name] = volume / average_volume
+        elif indicator.kind == "vwap":
+            cumulative_volume = volume.cumsum().replace(0.0, pd.NA)
+            frame[indicator.name] = (close * volume).cumsum() / cumulative_volume
     return frame
 
 

@@ -24,6 +24,7 @@ from app.models.institutional import (
 )
 from app.models.live_signal import LiveSignalSnapshot
 from app.models.paper import PaperPerformanceSummary, PaperPositionRecord, PaperTradeRecord
+from app.models.rl_policy import RLPolicyProposal, RLPolicyVersion
 from app.models.screener import ScanDecisionRecord
 from app.models.signal import Signal
 from app.models.strategy_lab import GeneratedStrategyRecord, StrategyLabBacktestRecord, StrategyLabDsl
@@ -1160,6 +1161,193 @@ class StrategyLabRepository:
             metrics=json.loads(row["metrics_json"] or "{}"),
             blockers=json.loads(row["blockers_json"] or "[]"),
             results=json.loads(row["results_json"] or "[]"),
+            created_at=row["created_at"],
+        )
+
+
+class RLPolicyRepository:
+    """Persist offline RL policies and proposal decisions."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def record_version(self, item: RLPolicyVersion) -> RLPolicyVersion:
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO rl_policy_versions (
+                    id, status, dataset_version, reward_model_version, row_count,
+                    accepted_rows, metrics_json, policy_json, blockers_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item.id,
+                    item.status,
+                    item.dataset_version,
+                    item.reward_model_version,
+                    item.row_count,
+                    item.accepted_rows,
+                    json.dumps(item.metrics, sort_keys=True),
+                    json.dumps(item.policy, sort_keys=True),
+                    json.dumps(item.blockers),
+                    item.created_at,
+                ),
+            )
+        return item
+
+    def latest_version(self, *, eligible_only: bool = False) -> RLPolicyVersion | None:
+        query = "SELECT * FROM rl_policy_versions"
+        params: tuple[Any, ...] = ()
+        if eligible_only:
+            query += " WHERE status IN ('paper_candidate', 'shadow')"
+        query += " ORDER BY created_at DESC LIMIT 1"
+        with self.db.connect() as connection:
+            row = connection.execute(query, params).fetchone()
+        return None if row is None else self._version(row)
+
+    def list_versions(self, *, limit: int = 100) -> list[RLPolicyVersion]:
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM rl_policy_versions ORDER BY created_at DESC LIMIT ?",
+                (max(1, limit),),
+            ).fetchall()
+        return [self._version(row) for row in rows]
+
+    def record_proposal(self, item: RLPolicyProposal) -> RLPolicyProposal:
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO rl_policy_proposals (
+                    id, decision_key, policy_version_id, scan_decision_id, proposal_id,
+                    symbol, strategy_name, timeframe, status, score, blockers_json,
+                    metadata_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(decision_key) DO NOTHING
+                """,
+                (
+                    item.id,
+                    item.decision_key,
+                    item.policy_version_id,
+                    item.scan_decision_id,
+                    item.proposal_id,
+                    item.symbol.upper(),
+                    item.strategy_name,
+                    item.timeframe,
+                    item.status,
+                    item.score,
+                    json.dumps(item.blockers),
+                    json.dumps(item.metadata, sort_keys=True),
+                    item.created_at,
+                ),
+            )
+        return self.get_proposal_by_key(item.decision_key) or item
+
+    def get_proposal_by_key(self, decision_key: str) -> RLPolicyProposal | None:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM rl_policy_proposals WHERE decision_key = ?",
+                (decision_key,),
+            ).fetchone()
+        return None if row is None else self._proposal(row)
+
+    def update_proposal_status(
+        self,
+        decision_key: str,
+        *,
+        status: str,
+        proposal_id: str | None = None,
+        blockers: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> RLPolicyProposal | None:
+        existing = self.get_proposal_by_key(decision_key)
+        if existing is None:
+            return None
+        merged_metadata = {**existing.metadata, **(metadata or {})}
+        blockers_payload = existing.blockers if blockers is None else blockers
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                UPDATE rl_policy_proposals
+                SET status = ?,
+                    proposal_id = COALESCE(?, proposal_id),
+                    blockers_json = ?,
+                    metadata_json = ?
+                WHERE decision_key = ?
+                """,
+                (
+                    status,
+                    proposal_id,
+                    json.dumps(blockers_payload),
+                    json.dumps(merged_metadata, sort_keys=True),
+                    decision_key,
+                ),
+            )
+        return self.get_proposal_by_key(decision_key)
+
+    def list_proposals(self, *, limit: int = 200, status: str | None = None) -> list[RLPolicyProposal]:
+        query = "SELECT * FROM rl_policy_proposals"
+        params: list[Any] = []
+        if status is not None:
+            query += " WHERE status = ?"
+            params.append(status)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, limit))
+        with self.db.connect() as connection:
+            rows = connection.execute(query, tuple(params)).fetchall()
+        return [self._proposal(row) for row in rows]
+
+    def proposal_count_since(self, since_iso: str, *, statuses: set[str] | None = None) -> int:
+        query = "SELECT COUNT(*) FROM rl_policy_proposals WHERE created_at >= ?"
+        params: list[Any] = [since_iso]
+        if statuses:
+            placeholders = ", ".join(["?"] * len(statuses))
+            query += f" AND status IN ({placeholders})"
+            params.extend(sorted(statuses))
+        with self.db.connect() as connection:
+            return int(connection.execute(query, tuple(params)).fetchone()[0])
+
+    def counts(self) -> dict[str, int]:
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                "SELECT status, COUNT(*) AS count FROM rl_policy_proposals GROUP BY status"
+            ).fetchall()
+            versions = connection.execute("SELECT COUNT(*) FROM rl_policy_versions").fetchone()[0]
+        result = {str(row["status"]): int(row["count"]) for row in rows}
+        result["versions"] = int(versions)
+        return result
+
+    @staticmethod
+    def _version(row: Any) -> RLPolicyVersion:
+        return RLPolicyVersion(
+            id=row["id"],
+            status=row["status"],
+            dataset_version=row["dataset_version"],
+            reward_model_version=row["reward_model_version"],
+            row_count=int(row["row_count"]),
+            accepted_rows=int(row["accepted_rows"]),
+            metrics=json.loads(row["metrics_json"] or "{}"),
+            policy=json.loads(row["policy_json"] or "{}"),
+            blockers=json.loads(row["blockers_json"] or "[]"),
+            created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _proposal(row: Any) -> RLPolicyProposal:
+        return RLPolicyProposal(
+            id=row["id"],
+            decision_key=row["decision_key"],
+            policy_version_id=row["policy_version_id"],
+            scan_decision_id=row["scan_decision_id"],
+            proposal_id=row["proposal_id"],
+            symbol=row["symbol"],
+            strategy_name=row["strategy_name"],
+            timeframe=row["timeframe"],
+            status=row["status"],
+            score=float(row["score"] or 0.0),
+            blockers=json.loads(row["blockers_json"] or "[]"),
+            metadata=json.loads(row["metadata_json"] or "{}"),
             created_at=row["created_at"],
         )
 

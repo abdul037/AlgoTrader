@@ -322,6 +322,16 @@ class AppSettings(BaseSettings):
     strategy_lab_min_profit_factor: float = 1.15
     strategy_lab_max_drawdown_pct: float = 12.0
 
+    rl_policy_enabled: bool = False
+    rl_policy_training_enabled: bool = False
+    rl_policy_paper_proposals_enabled: bool = False
+    rl_policy_max_notional_usd: float = 500.0
+    rl_policy_max_proposals_per_day: int = 1
+    rl_policy_min_backtest_trades: int = 150
+    rl_policy_min_profit_factor: float = 1.20
+    rl_policy_max_drawdown_pct: float = 12.0
+    rl_policy_min_score_to_propose: float = 65.0
+
     allowed_instruments: list[str] = Field(
         default_factory=lambda: ["NVDA", "GOOG", "GOOGL", "AMD", "MU", "GOLD"]
     )

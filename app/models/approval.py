@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -37,6 +38,7 @@ class TradeProposalCreate(BaseModel):
     notes: str = ""
     asset_class: AssetClass = AssetClass.UNKNOWN
     signal: Signal | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     def to_order(self) -> TradeOrder:
         """Convert the proposal request to a trade order."""
@@ -52,6 +54,7 @@ class TradeProposalCreate(BaseModel):
             strategy_name=self.strategy_name,
             rationale=self.rationale,
             asset_class=self.asset_class,
+            metadata=self.metadata,
         )
 
 

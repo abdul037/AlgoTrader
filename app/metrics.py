@@ -85,6 +85,13 @@ def metrics(request: Request) -> Response:
                 "SELECT COUNT(*) FROM learning_meta_model_versions "
                 "WHERE status = 'champion' AND deployment_mode IN ('paper','live')"
             ),
+            "algobot_rl_policy_versions_total": "SELECT COUNT(*) FROM rl_policy_versions",
+            "algobot_rl_policy_proposals_total": "SELECT COUNT(*) FROM rl_policy_proposals WHERE status IN ('proposed','queued')",
+            "algobot_rl_policy_rejections_total": "SELECT COUNT(*) FROM rl_policy_proposals WHERE status IN ('rejected','blocked')",
+            "algobot_strategy_lab_generated_total": "SELECT COUNT(*) FROM strategy_lab_generated_strategies",
+            "algobot_strategy_lab_paper_generated_total": (
+                "SELECT COUNT(*) FROM strategy_lab_generated_strategies WHERE status = 'paper_generated'"
+            ),
         }.items():
             counts[name] = int(connection.execute(query).fetchone()[0])
         realized_row = connection.execute(
@@ -182,6 +189,10 @@ def metrics(request: Request) -> Response:
             ),
             "algobot_learning_model_gating_enabled": int(
                 request.app.state.settings.model_deployment_mode == "gating"
+            ),
+            "algobot_rl_policy_enabled": int(request.app.state.settings.rl_policy_enabled),
+            "algobot_rl_policy_paper_proposals_enabled": int(
+                request.app.state.settings.rl_policy_paper_proposals_enabled
             ),
         }
     )

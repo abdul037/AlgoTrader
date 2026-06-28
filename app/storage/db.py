@@ -784,6 +784,43 @@ CREATE TABLE IF NOT EXISTS strategy_lab_backtests (
 
 CREATE INDEX IF NOT EXISTS idx_strategy_lab_backtests_strategy
 ON strategy_lab_backtests(generated_strategy_id, created_at);
+
+CREATE TABLE IF NOT EXISTS rl_policy_versions (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    dataset_version TEXT NOT NULL,
+    reward_model_version TEXT NOT NULL,
+    row_count INTEGER NOT NULL DEFAULT 0,
+    accepted_rows INTEGER NOT NULL DEFAULT 0,
+    metrics_json TEXT NOT NULL,
+    policy_json TEXT NOT NULL,
+    blockers_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_rl_policy_versions_status
+ON rl_policy_versions(status, created_at);
+
+CREATE TABLE IF NOT EXISTS rl_policy_proposals (
+    id TEXT PRIMARY KEY,
+    decision_key TEXT NOT NULL UNIQUE,
+    policy_version_id TEXT,
+    scan_decision_id INTEGER,
+    proposal_id TEXT,
+    symbol TEXT NOT NULL,
+    strategy_name TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    status TEXT NOT NULL,
+    score REAL NOT NULL DEFAULT 0,
+    blockers_json TEXT NOT NULL,
+    metadata_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_rl_policy_proposals_created
+ON rl_policy_proposals(created_at);
+CREATE INDEX IF NOT EXISTS idx_rl_policy_proposals_status
+ON rl_policy_proposals(status, created_at);
 """
 
 

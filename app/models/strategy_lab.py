@@ -9,7 +9,21 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from app.utils.ids import generate_id
 from app.utils.time import utc_now
 
-IndicatorKind = Literal["sma", "ema", "rsi", "volume_sma"]
+IndicatorKind = Literal[
+    "sma",
+    "ema",
+    "rsi",
+    "volume_sma",
+    "atr",
+    "roc",
+    "bb_upper",
+    "bb_lower",
+    "bb_width",
+    "donchian_high",
+    "donchian_low",
+    "relative_volume",
+    "vwap",
+]
 ConditionKind = Literal["above", "below", "crosses_above", "crosses_below"]
 Timeframe = Literal["1m", "5m", "10m", "15m", "1h", "1d", "1w"]
 
@@ -17,7 +31,7 @@ Timeframe = Literal["1m", "5m", "10m", "15m", "1h", "1d", "1w"]
 class StrategyLabIndicator(BaseModel):
     name: str = Field(min_length=1, max_length=40)
     kind: IndicatorKind
-    source: Literal["close", "volume"] = "close"
+    source: Literal["open", "high", "low", "close", "volume"] = "close"
     period: int = Field(ge=2, le=250)
 
     @field_validator("name")
@@ -112,6 +126,11 @@ class StrategyGenerationRequest(BaseModel):
     prompt: str = Field(default="", max_length=1000)
     dsl: StrategyLabDsl | None = None
     source: str = "operator"
+
+
+class StrategyConceptPackRequest(BaseModel):
+    count: int = Field(default=25, ge=1, le=25)
+    source: str = "strategy_lab_concept_pack"
 
 
 class StrategyBacktestRequest(BaseModel):

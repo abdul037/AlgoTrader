@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.models.strategy_lab import (
     StrategyBacktestRequest,
+    StrategyConceptPackRequest,
     StrategyGenerationRequest,
     StrategyLabCondition,
     StrategyLabDsl,
@@ -23,7 +24,7 @@ from app.storage.repositories import (
     StrategyGovernanceRepository,
     StrategyLabRepository,
 )
-from app.strategy_lab.dsl import GeneratedRuleStrategy
+from app.strategy_lab.dsl import GeneratedRuleStrategy, _with_indicators
 from app.strategy_lab.routes import router as strategy_lab_router
 from app.strategy_lab.service import StrategyLabService
 from tests.conftest import make_settings
@@ -123,6 +124,63 @@ def test_generated_rule_strategy_builds_long_only_valid_signal() -> None:
     assert signal.action.value == "buy"
     assert signal.stop_loss < signal.price < signal.take_profit
     assert signal.metadata["strategy_lab_generated"] is True
+
+
+def test_strategy_lab_dsl_supports_expanded_safe_indicators() -> None:
+    dsl = StrategyLabDsl(
+        name="generated_expanded_indicator_test",
+        description="Expanded indicator coverage",
+        timeframe="1d",
+        indicators=[
+            StrategyLabIndicator(name="atr_14", kind="atr", source="close", period=14),
+            StrategyLabIndicator(name="roc_10", kind="roc", source="close", period=10),
+            StrategyLabIndicator(name="bb_upper_20", kind="bb_upper", source="close", period=20),
+            StrategyLabIndicator(name="bb_lower_20", kind="bb_lower", source="close", period=20),
+            StrategyLabIndicator(name="bb_width_20", kind="bb_width", source="close", period=20),
+            StrategyLabIndicator(name="donchian_high_20", kind="donchian_high", source="high", period=20),
+            StrategyLabIndicator(name="donchian_low_20", kind="donchian_low", source="low", period=20),
+            StrategyLabIndicator(name="rv_20", kind="relative_volume", source="volume", period=20),
+        ],
+        entry_conditions=[StrategyLabCondition(kind="above", left="close", right="donchian_high_20")],
+        stop_loss_pct=2.0,
+        take_profit_pct=4.0,
+    )
+
+    enriched = _with_indicators(_frame(80), dsl)
+    last = enriched.iloc[-1]
+
+    for column in [
+        "atr_14",
+        "roc_10",
+        "bb_upper_20",
+        "bb_lower_20",
+        "bb_width_20",
+        "donchian_high_20",
+        "donchian_low_20",
+        "rv_20",
+    ]:
+        assert pd.notna(last[column])
+    assert last["bb_upper_20"] > last["bb_lower_20"]
+    assert last["donchian_high_20"] == enriched["high"].iloc[-21:-1].max()
+    assert last["donchian_low_20"] == enriched["low"].iloc[-21:-1].min()
+
+
+def test_strategy_lab_concept_pack_creates_twenty_five_idempotently(tmp_path) -> None:
+    service, repository, _governance = _service(tmp_path)
+
+    first = service.generate_concept_pack(StrategyConceptPackRequest())
+    second = service.generate_concept_pack(StrategyConceptPackRequest())
+    records = repository.list_generated(limit=100)
+    names = {record.name for record in records}
+
+    assert first["requested"] == 25
+    assert len(first["created"]) == 25
+    assert len(second["created"]) == 0
+    assert len(second["existing"]) == 25
+    assert len(records) == 25
+    assert any("momentum" in name for name in names)
+    assert any("volume_expansion" in name for name in names)
+    assert any("regime" in name for name in names)
 
 
 def test_strategy_lab_backtest_and_promote_paper_records_governance(tmp_path) -> None:

@@ -62,6 +62,7 @@ def continuous_readiness(request: Request):
     )
     reconciliation_issues = _json_or_empty(latest_reconciliation.get("issues_json"), [])
     learning_status = request.app.state.learning_service.status()
+    rl_policy_status = request.app.state.rl_policy_service.status()
     workflow_status = request.app.state.workflow_service.status()
     institutional_readiness = request.app.state.institutional_service.readiness()
     approved_versions = list(institutional_readiness.get("approved_strategy_versions") or [])
@@ -219,6 +220,7 @@ def continuous_readiness(request: Request):
             "catalog": strategy_catalog,
         },
         "learning": learning_status,
+        "rl_policy": rl_policy_status,
     }
 
 

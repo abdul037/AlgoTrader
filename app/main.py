@@ -40,6 +40,8 @@ from app.notifications.telegram_bot import TelegramBotService
 from app.paper.routes import router as paper_router
 from app.paper.service import PaperTradingService
 from app.risk.guardrails import RiskManager
+from app.rl_policy.routes import router as rl_policy_router
+from app.rl_policy.service import RLPolicyService
 from app.runtime_settings import AppSettings, get_settings
 from app.screener.routes import router as screener_router
 from app.screener.service import BatchBacktestService, MarketScreenerService
@@ -60,6 +62,7 @@ from app.storage.repositories import (
     PaperTradeRepository,
     PortfolioRiskRepository,
     ProposalRepository,
+    RLPolicyRepository,
     RolloutGateRepository,
     RunLogRepository,
     RuntimeStateRepository,
@@ -250,6 +253,7 @@ def create_app(
     scan_decision_repository = ScanDecisionRepository(database)
     strategy_governance_repository = StrategyGovernanceRepository(database)
     strategy_lab_repository = StrategyLabRepository(database)
+    rl_policy_repository = RLPolicyRepository(database)
     broker_governance_repository = BrokerGovernanceRepository(database)
     portfolio_risk_repository = PortfolioRiskRepository(database)
     rollout_gate_repository = RolloutGateRepository(database)
@@ -259,6 +263,7 @@ def create_app(
     learning_repository = LearningRepository(database)
     app.state.strategy_governance_repository = strategy_governance_repository
     app.state.strategy_lab_repository = strategy_lab_repository
+    app.state.rl_policy_repository = rl_policy_repository
     app.state.broker_governance_repository = broker_governance_repository
     app.state.portfolio_risk_repository = portfolio_risk_repository
     app.state.rollout_gate_repository = rollout_gate_repository
@@ -464,6 +469,20 @@ def create_app(
         strategy_governance=strategy_governance_repository,
         institutional_governance=app.state.institutional_service,
     )
+    app.state.rl_policy_service = RLPolicyService(
+        settings=app_settings,
+        repository=rl_policy_repository,
+        scan_decisions=scan_decision_repository,
+        strategy_lab=app.state.strategy_lab_service,
+        strategy_governance=strategy_governance_repository,
+        proposal_service=app.state.proposal_service,
+        auto_trading=app.state.auto_trading_service,
+        automation=app.state.automation_service,
+        reconciliation=app.state.reconciliation_service,
+        safety_state=safety_state_repository,
+        alpaca_client=alpaca_client,
+        run_logs=run_log_repository,
+    )
     app.state.tracked_signal_repository = tracked_signal_repository
     app.state.alert_history_repository = alert_history_repository
     app.state.scan_decision_repository = scan_decision_repository
@@ -483,6 +502,7 @@ def create_app(
         etoro_reconciliation_service=app.state.etoro_demo_reconciliation_service,
         auto_trading_service=app.state.auto_trading_service,
         learning_service=app.state.learning_service,
+        rl_policy_service=app.state.rl_policy_service,
     )
     app.state.telegram_command_service = TelegramBotService(
         settings=app_settings,
@@ -518,6 +538,7 @@ def create_app(
     app.include_router(institutional_router)
     app.include_router(learning_router)
     app.include_router(strategy_lab_router)
+    app.include_router(rl_policy_router)
     app.include_router(metrics_router)
 
     @app.on_event("startup")

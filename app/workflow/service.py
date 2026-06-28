@@ -68,6 +68,7 @@ class SignalWorkflowService:
         etoro_reconciliation_service: Any | None = None,
         auto_trading_service: Any | None = None,
         learning_service: Any | None = None,
+        rl_policy_service: Any | None = None,
     ):
         self.settings = settings
         self.market_screener = market_screener
@@ -84,6 +85,7 @@ class SignalWorkflowService:
         self.etoro_reconciliation = etoro_reconciliation_service
         self.auto_trading = auto_trading_service
         self.learning = learning_service
+        self.rl_policy = rl_policy_service
         self._approval_adapter = SignalApprovalAdapter()
 
     def run_scheduled_tasks(self) -> dict[str, int]:
@@ -269,6 +271,26 @@ class SignalWorkflowService:
                 processed_learning = self.learning.process_jobs(limit=10)
                 if processed_learning:
                     completed.append("learning_jobs_processed")
+            if self.rl_policy is not None:
+                if bool(getattr(self.settings, "rl_policy_training_enabled", False)) and self._rl_policy_training_due():
+                    try:
+                        policy = self.rl_policy.train()
+                        completed.append("rl_policy_training")
+                        self.runtime_state.set("rl_policy:last_train_at", utc_now().isoformat())
+                        if getattr(policy, "blockers", None):
+                            self.run_logs.log("rl_policy_training_blocked", {"blockers": policy.blockers})
+                    except Exception as exc:  # noqa: BLE001 - maintenance should continue after RL failures
+                        errors.append(f"rl_policy_training:{exc}")
+                        self.run_logs.log("rl_policy_training_error", {"error": str(exc)})
+                if bool(getattr(self.settings, "rl_policy_paper_proposals_enabled", False)):
+                    try:
+                        proposal = self.rl_policy.propose()
+                        completed.append("rl_policy_proposal_check")
+                        if getattr(proposal, "status", "") == "queued":
+                            completed.append("rl_policy_proposal_queued")
+                    except Exception as exc:  # noqa: BLE001 - RL can never block reconciliation or safety work
+                        errors.append(f"rl_policy_proposal:{exc}")
+                        self.run_logs.log("rl_policy_proposal_error", {"error": str(exc)})
             if self._is_due("workflow:last_open_signal_check_at", self.settings.open_signal_check_interval_minutes):
                 result = self.check_open_signals(notify=notify)
                 completed.append("open_signal_check")
@@ -494,6 +516,9 @@ class SignalWorkflowService:
 
     def _ledger_cycle_due(self) -> bool:
         return ledger_cycle_due(self)
+
+    def _rl_policy_training_due(self) -> bool:
+        return self._is_due("rl_policy:last_train_at", 24 * 60)
 
     def _bucket_due(self, bucket_name: str) -> bool:
         if bucket_name == "maintenance":

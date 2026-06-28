@@ -6,7 +6,12 @@ from hmac import compare_digest
 
 from fastapi import APIRouter, HTTPException, Request, status
 
-from app.models.strategy_lab import StrategyBacktestRequest, StrategyGenerationRequest, StrategyPromotionRequest
+from app.models.strategy_lab import (
+    StrategyBacktestRequest,
+    StrategyConceptPackRequest,
+    StrategyGenerationRequest,
+    StrategyPromotionRequest,
+)
 
 router = APIRouter(prefix="/strategy-lab", tags=["strategy-lab"])
 
@@ -41,6 +46,15 @@ def generate_strategy(request: Request, payload: StrategyGenerationRequest):
     _require_control_token(request)
     try:
         return _service(request).generate(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post("/generate-concept-pack")
+def generate_concept_pack(request: Request, payload: StrategyConceptPackRequest | None = None):
+    _require_control_token(request)
+    try:
+        return _service(request).generate_concept_pack(payload or StrategyConceptPackRequest())
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 

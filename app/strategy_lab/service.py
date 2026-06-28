@@ -17,6 +17,7 @@ from app.models.institutional import PromotionDecision, StrategyVersion
 from app.models.strategy_lab import (
     GeneratedStrategyRecord,
     StrategyBacktestRequest,
+    StrategyConceptPackRequest,
     StrategyGenerationRequest,
     StrategyLabBacktestRecord,
     StrategyLabCondition,
@@ -46,8 +47,25 @@ STRATEGY_DSL_SCHEMA: dict[str, Any] = {
                 "additionalProperties": False,
                 "properties": {
                     "name": {"type": "string"},
-                    "kind": {"type": "string", "enum": ["sma", "ema", "rsi", "volume_sma"]},
-                    "source": {"type": "string", "enum": ["close", "volume"]},
+                    "kind": {
+                        "type": "string",
+                        "enum": [
+                            "sma",
+                            "ema",
+                            "rsi",
+                            "volume_sma",
+                            "atr",
+                            "roc",
+                            "bb_upper",
+                            "bb_lower",
+                            "bb_width",
+                            "donchian_high",
+                            "donchian_low",
+                            "relative_volume",
+                            "vwap",
+                        ],
+                    },
+                    "source": {"type": "string", "enum": ["open", "high", "low", "close", "volume"]},
                     "period": {"type": "integer", "minimum": 2, "maximum": 250},
                 },
                 "required": ["name", "kind", "source", "period"],
@@ -171,6 +189,28 @@ class StrategyLabService:
         created = self.repository.create_generated(item)
         self.logs.log("strategy_lab_generated", {"id": created.id, "name": created.name, "source": created.source})
         return created
+
+    def generate_concept_pack(self, request: StrategyConceptPackRequest) -> dict[str, Any]:
+        if not bool(getattr(self.settings, "strategy_lab_enabled", False)):
+            raise ValueError("strategy_lab_disabled")
+        if not bool(getattr(self.settings, "strategy_lab_generation_enabled", False)):
+            raise ValueError("strategy_lab_generation_disabled")
+        created: list[GeneratedStrategyRecord] = []
+        existing: list[GeneratedStrategyRecord] = []
+        for dsl in _concept_pack_dsls()[: request.count]:
+            prior = self.repository.get_generated_by_name(dsl.name)
+            if prior is not None:
+                existing.append(prior)
+                continue
+            item = self.repository.create_generated(
+                GeneratedStrategyRecord(name=dsl.name, dsl=dsl, source=request.source)
+            )
+            created.append(item)
+        self.logs.log(
+            "strategy_lab_concept_pack_generated",
+            {"requested": request.count, "created": len(created), "existing": len(existing)},
+        )
+        return {"created": created, "existing": existing, "requested": request.count}
 
     def backtest(self, generated_id: str, request: StrategyBacktestRequest) -> StrategyLabBacktestRecord:
         if not bool(getattr(self.settings, "strategy_lab_enabled", False)):
@@ -397,6 +437,178 @@ def _history_bars(timeframe: str) -> int:
     if timeframe == "1h":
         return 1200
     return 1500
+
+
+def _concept_pack_dsls() -> list[StrategyLabDsl]:
+    raw: list[dict[str, Any]] = [
+        {
+            "name": "generated_trend_breakout_donchian_20",
+            "description": "Donchian trend breakout with relative volume confirmation.",
+            "timeframe": "1d",
+            "indicators": [
+                StrategyLabIndicator(name="donchian_high_20", kind="donchian_high", source="high", period=20),
+                StrategyLabIndicator(name="ema_50", kind="ema", source="close", period=50),
+                StrategyLabIndicator(name="rv_20", kind="relative_volume", source="volume", period=20),
+            ],
+            "entry_conditions": [
+                StrategyLabCondition(kind="above", left="close", right="donchian_high_20"),
+                StrategyLabCondition(kind="above", left="close", right="ema_50"),
+                StrategyLabCondition(kind="above", left="rv_20", right=1.2),
+            ],
+            "stop_loss_pct": 4.0,
+            "take_profit_pct": 9.0,
+            "max_hold_bars": 20,
+        },
+        {
+            "name": "generated_hourly_atr_breakout_momentum",
+            "description": "Hourly momentum breakout with ATR and ROC confirmation.",
+            "timeframe": "1h",
+            "indicators": [
+                StrategyLabIndicator(name="donchian_high_24", kind="donchian_high", source="high", period=24),
+                StrategyLabIndicator(name="roc_12", kind="roc", source="close", period=12),
+                StrategyLabIndicator(name="atr_14", kind="atr", source="close", period=14),
+            ],
+            "entry_conditions": [
+                StrategyLabCondition(kind="above", left="close", right="donchian_high_24"),
+                StrategyLabCondition(kind="above", left="roc_12", right=1.0),
+                StrategyLabCondition(kind="above", left="atr_14", right=0.1),
+            ],
+            "stop_loss_pct": 2.0,
+            "take_profit_pct": 4.5,
+            "max_hold_bars": 16,
+        },
+        {
+            "name": "generated_vwap_pullback_reclaim_15m",
+            "description": "Intraday VWAP pullback reclaim with fast EMA support.",
+            "timeframe": "15m",
+            "indicators": [
+                StrategyLabIndicator(name="vwap_line", kind="vwap", source="close", period=20),
+                StrategyLabIndicator(name="ema_20", kind="ema", source="close", period=20),
+                StrategyLabIndicator(name="rv_20", kind="relative_volume", source="volume", period=20),
+            ],
+            "entry_conditions": [
+                StrategyLabCondition(kind="crosses_above", left="close", right="vwap_line"),
+                StrategyLabCondition(kind="above", left="close", right="ema_20"),
+                StrategyLabCondition(kind="above", left="rv_20", right=0.9),
+            ],
+            "stop_loss_pct": 1.2,
+            "take_profit_pct": 2.5,
+            "max_hold_bars": 12,
+        },
+        {
+            "name": "generated_bb_squeeze_breakout_1h",
+            "description": "Bollinger upper-band breakout after compression.",
+            "timeframe": "1h",
+            "indicators": [
+                StrategyLabIndicator(name="bb_upper_20", kind="bb_upper", source="close", period=20),
+                StrategyLabIndicator(name="bb_width_20", kind="bb_width", source="close", period=20),
+                StrategyLabIndicator(name="rv_20", kind="relative_volume", source="volume", period=20),
+            ],
+            "entry_conditions": [
+                StrategyLabCondition(kind="above", left="close", right="bb_upper_20"),
+                StrategyLabCondition(kind="below", left="bb_width_20", right=8.0),
+                StrategyLabCondition(kind="above", left="rv_20", right=1.1),
+            ],
+            "stop_loss_pct": 2.0,
+            "take_profit_pct": 4.0,
+            "max_hold_bars": 18,
+        },
+        {
+            "name": "generated_relative_strength_momentum_daily",
+            "description": "Daily momentum continuation using ROC, medium trend, and relative volume.",
+            "timeframe": "1d",
+            "indicators": [
+                StrategyLabIndicator(name="roc_20", kind="roc", source="close", period=20),
+                StrategyLabIndicator(name="ema_50", kind="ema", source="close", period=50),
+                StrategyLabIndicator(name="rv_20", kind="relative_volume", source="volume", period=20),
+            ],
+            "entry_conditions": [
+                StrategyLabCondition(kind="above", left="roc_20", right=3.0),
+                StrategyLabCondition(kind="above", left="close", right="ema_50"),
+                StrategyLabCondition(kind="above", left="rv_20", right=1.0),
+            ],
+            "stop_loss_pct": 4.0,
+            "take_profit_pct": 8.0,
+            "max_hold_bars": 18,
+        },
+        {
+            "name": "generated_volume_expansion_breakout_15m",
+            "description": "Intraday volume expansion breakout above short Donchian resistance.",
+            "timeframe": "15m",
+            "indicators": [
+                StrategyLabIndicator(name="donchian_high_12", kind="donchian_high", source="high", period=12),
+                StrategyLabIndicator(name="rv_20", kind="relative_volume", source="volume", period=20),
+                StrategyLabIndicator(name="ema_20", kind="ema", source="close", period=20),
+            ],
+            "entry_conditions": [
+                StrategyLabCondition(kind="above", left="close", right="donchian_high_12"),
+                StrategyLabCondition(kind="above", left="rv_20", right=1.5),
+                StrategyLabCondition(kind="above", left="close", right="ema_20"),
+            ],
+            "stop_loss_pct": 1.1,
+            "take_profit_pct": 2.3,
+            "max_hold_bars": 10,
+        },
+        {
+            "name": "generated_regime_mean_reversion_daily",
+            "description": "Daily mean reversion while price remains above long-term trend.",
+            "timeframe": "1d",
+            "indicators": [
+                StrategyLabIndicator(name="bb_lower_20", kind="bb_lower", source="close", period=20),
+                StrategyLabIndicator(name="rsi_14", kind="rsi", source="close", period=14),
+                StrategyLabIndicator(name="ema_200", kind="ema", source="close", period=200),
+            ],
+            "entry_conditions": [
+                StrategyLabCondition(kind="below", left="close", right="bb_lower_20"),
+                StrategyLabCondition(kind="below", left="rsi_14", right=38.0),
+                StrategyLabCondition(kind="above", left="close", right="ema_200"),
+            ],
+            "stop_loss_pct": 5.0,
+            "take_profit_pct": 7.5,
+            "max_hold_bars": 12,
+        },
+        {
+            "name": "generated_regime_filtered_breakout_weekly",
+            "description": "Weekly trend breakout filtered by long-term regime and momentum.",
+            "timeframe": "1w",
+            "indicators": [
+                StrategyLabIndicator(name="donchian_high_26", kind="donchian_high", source="high", period=26),
+                StrategyLabIndicator(name="ema_40", kind="ema", source="close", period=40),
+                StrategyLabIndicator(name="roc_12", kind="roc", source="close", period=12),
+            ],
+            "entry_conditions": [
+                StrategyLabCondition(kind="above", left="close", right="donchian_high_26"),
+                StrategyLabCondition(kind="above", left="close", right="ema_40"),
+                StrategyLabCondition(kind="above", left="roc_12", right=4.0),
+            ],
+            "stop_loss_pct": 6.0,
+            "take_profit_pct": 13.0,
+            "max_hold_bars": 14,
+        },
+    ]
+    families = list(raw)
+    while len(families) < 25:
+        base = raw[len(families) % len(raw)]
+        variant = dict(base)
+        variant_index = len(families) + 1
+        variant["name"] = f"{base['name']}_v{variant_index}"
+        variant["description"] = f"{base['description']} Variant {variant_index}."
+        variant["stop_loss_pct"] = round(float(base["stop_loss_pct"]) * (1.0 + ((variant_index % 3) * 0.1)), 2)
+        variant["take_profit_pct"] = round(float(base["take_profit_pct"]) * (1.0 + ((variant_index % 4) * 0.08)), 2)
+        variant["confidence"] = 0.55 + ((variant_index % 5) * 0.02)
+        families.append(variant)
+    dsls: list[StrategyLabDsl] = []
+    for item in families:
+        payload = dict(item)
+        confidence = float(payload.pop("confidence", 0.58))
+        dsls.append(
+            StrategyLabDsl(
+                confidence=confidence,
+                parameter_ranges={"concept_pack": True, "family": str(payload["name"]).removeprefix("generated_")},
+                **payload,
+            )
+        )
+    return dsls
 
 
 def _aggregate_trade_metrics(

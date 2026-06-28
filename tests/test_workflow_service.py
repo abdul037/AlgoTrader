@@ -194,6 +194,20 @@ class FakeLedgerService:
         }
 
 
+class FakeRLPolicy:
+    def __init__(self):
+        self.trained = 0
+        self.proposed = 0
+
+    def train(self):
+        self.trained += 1
+        return type("Policy", (), {"blockers": []})()
+
+    def propose(self):
+        self.proposed += 1
+        return type("Proposal", (), {"status": "queued"})()
+
+
 def _snapshot() -> LiveSignalSnapshot:
     return LiveSignalSnapshot(
         symbol="NVDA",
@@ -300,6 +314,39 @@ def test_scheduled_tasks_runs_ledger_cycle_when_due_even_without_screener_schedu
     assert summary["ledger_cycles"] == 1
     assert ledger.cycles == 1
     assert state.get("workflow:last_ledger_cycle_at") is not None
+
+
+def test_maintenance_runs_rl_policy_training_and_proposal_when_enabled(tmp_path) -> None:
+    state = FakeState()
+    rl_policy = FakeRLPolicy()
+    workflow = SignalWorkflowService(
+        settings=make_settings(
+            tmp_path,
+            rl_policy_enabled=True,
+            rl_policy_training_enabled=True,
+            rl_policy_paper_proposals_enabled=True,
+            ledger_enabled=False,
+            ledger_cycle_enabled=False,
+            open_signal_check_interval_minutes=9999,
+        ),
+        market_screener=FakeMarketScreener([]),
+        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="NVDA", last_execution=101.0)),
+        notifier=FakeNotifier(),
+        tracked_signals=FakeTrackedSignals(),
+        alert_history=FakeAlertHistory(),
+        runtime_state=state,
+        run_logs=FakeLogs(),
+        rl_policy_service=rl_policy,
+    )
+
+    result = workflow.run_maintenance(notify=False)
+
+    assert result.status == "ok"
+    assert rl_policy.trained == 1
+    assert rl_policy.proposed == 1
+    assert state.get("rl_policy:last_train_at") is not None
+    assert "rl_policy_training" in result.detail
+    assert "rl_policy_proposal_queued" in result.detail
 
 
 def test_scheduled_tasks_skip_scans_when_automation_paused(tmp_path) -> None:
