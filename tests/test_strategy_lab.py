@@ -199,6 +199,29 @@ def test_strategy_lab_backtest_and_promote_paper_records_governance(tmp_path) ->
     assert isinstance(service.build_strategy_for_spec(active_specs[0]), GeneratedRuleStrategy)
 
 
+def test_strategy_lab_loose_paper_gate_uses_lower_thresholds(tmp_path) -> None:
+    service, _repository, _governance = _service(tmp_path)
+    service.settings.strategy_lab_paper_gate_profile = "loose_paper_exploration"
+    service.settings.strategy_lab_loose_min_backtest_trades = 30
+    service.settings.strategy_lab_loose_min_profit_factor = 1.05
+    service.settings.strategy_lab_loose_max_drawdown_pct = 18.0
+
+    blockers = service._backtest_blockers(
+        metrics={
+            "number_of_trades": 30,
+            "expectancy_usd": 1.0,
+            "profit_factor": 1.05,
+            "max_drawdown_pct": 18.0,
+            "data_error_count": 0,
+            "valid_stop_target_coverage": True,
+        }
+    )
+
+    assert blockers == []
+    assert service.status()["gates"]["profile"] == "loose_paper_exploration"
+    assert service.status()["gates"]["min_backtest_trades"] == 30
+
+
 def test_strategy_lab_routes_are_control_token_protected(tmp_path) -> None:
     app = FastAPI()
     app.state.settings = make_settings(tmp_path, control_api_token="control-secret", strategy_lab_enabled=True)

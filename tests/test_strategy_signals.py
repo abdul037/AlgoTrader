@@ -8,7 +8,13 @@ from app.strategies import enhanced as enhanced_module
 from app.strategies.enhanced import (
     ATRDonchianTrendBreakoutStrategy,
     AnchoredVWAPPullbackContinuationStrategy,
+    EtfMegaCapRelativeStrengthRotationStrategy,
+    FailedBreakdownReversalStrategy,
     GapContinuationFadeStrategy,
+    InsideBarNarrowRangeBreakoutStrategy,
+    LiquidityExpansionContinuationStrategy,
+    MultiTimeframeTrendPullbackStrategy,
+    OpeningRangeBreakoutRetestStrategy,
     RegimeFilteredMeanReversionStrategy,
     RelativeStrengthMomentumStrategy,
     VolatilityContractionBreakoutStrategy,
@@ -282,6 +288,76 @@ def _enhanced_frame(rows: int = 100) -> pd.DataFrame:
                 vwap=[*frame["vwap"].iloc[:-1], 99.0],
             ),
         ),
+        (
+            OpeningRangeBreakoutRetestStrategy(timeframe="15m"),
+            lambda frame: frame.assign(
+                open=[*frame["open"].iloc[:-1], 106.0],
+                close=[*frame["close"].iloc[:-1], 108.0],
+                high=[*frame["high"].iloc[:-1], 109.0],
+                low=[*frame["low"].iloc[:-1], 104.0],
+                opening_range_high=[*frame["opening_range_high"].iloc[:-1], 106.0],
+                opening_range_low=[*frame["opening_range_low"].iloc[:-1], 101.0],
+                vwap=[*frame["vwap"].iloc[:-1], 104.0],
+                ema_20=[*frame["ema_20"].iloc[:-1], 103.0],
+                relative_volume=[*frame["relative_volume"].iloc[:-1], 1.2],
+            ),
+        ),
+        (
+            FailedBreakdownReversalStrategy(timeframe="1h"),
+            lambda frame: frame.assign(
+                open=[*frame["open"].iloc[:-1], 100.0],
+                close=[*[100.0 for _ in range(len(frame) - 1)], 104.0],
+                high=[*[105.0 for _ in range(len(frame) - 1)], 105.0],
+                low=[*[99.0 for _ in range(len(frame) - 1)], 96.0],
+                ema_200=[*[98.0 for _ in range(len(frame))]],
+                relative_volume=[*frame["relative_volume"].iloc[:-1], 1.1],
+            ),
+        ),
+        (
+            MultiTimeframeTrendPullbackStrategy(timeframe="1h"),
+            lambda frame: frame.assign(
+                open=[*frame["open"].iloc[:-1], 104.0],
+                close=[*frame["close"].iloc[:-1], 106.0],
+                high=[*frame["high"].iloc[:-1], 107.0],
+                low=[*frame["low"].iloc[:-1], 102.5],
+                ema_20=[*frame["ema_20"].iloc[:-1], 103.0],
+                ema_50=[*frame["ema_50"].iloc[:-1], 100.0],
+                ema_200=[*frame["ema_200"].iloc[:-1], 99.0],
+                relative_volume=[*frame["relative_volume"].iloc[:-1], 1.0],
+            ),
+        ),
+        (
+            InsideBarNarrowRangeBreakoutStrategy(timeframe="15m"),
+            lambda frame: frame.assign(
+                close=[*frame["close"].iloc[:-2], 101.0, 103.0],
+                high=[*frame["high"].iloc[:-3], 104.0, 102.0, 103.5],
+                low=[*frame["low"].iloc[:-3], 98.0, 100.0, 102.0],
+                relative_volume=[*frame["relative_volume"].iloc[:-1], 1.2],
+            ),
+        ),
+        (
+            LiquidityExpansionContinuationStrategy(timeframe="15m"),
+            lambda frame: frame.assign(
+                open=[*frame["open"].iloc[:-1], 102.0],
+                close=[*frame["close"].iloc[:-1], 106.0],
+                high=[*frame["high"].iloc[:-1], 106.5],
+                low=[*frame["low"].iloc[:-1], 101.5],
+                ema_20=[*frame["ema_20"].iloc[:-1], 103.0],
+                ema_50=[*frame["ema_50"].iloc[:-1], 100.0],
+                relative_volume=[*frame["relative_volume"].iloc[:-1], 1.5],
+            ),
+        ),
+        (
+            EtfMegaCapRelativeStrengthRotationStrategy(timeframe="1d"),
+            lambda frame: frame.assign(
+                close=[100.0 for _ in range(70)] + [104.0 + index for index in range(30)],
+                high=[101.0 for _ in range(70)] + [105.0 + index for index in range(30)],
+                low=[99.0 for _ in range(70)] + [103.0 + index for index in range(30)],
+                ema_50=[120.0 for _ in range(99)] + [112.0],
+                ema_200=[110.0 for _ in range(100)],
+                relative_volume=[*frame["relative_volume"].iloc[:-1], 1.0],
+            ),
+        ),
     ],
 )
 def test_enhanced_research_strategies_emit_valid_long_only_trade_plans(
@@ -302,3 +378,16 @@ def test_enhanced_research_strategies_emit_valid_long_only_trade_plans(
     assert signal.metadata["asset_class"] == "us_equity"
     assert signal.metadata["live_enabled"] is False
     assert signal.metadata["signal_role"] == "entry_long"
+
+
+def test_enhanced_research_strategy_records_near_miss_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
+    strategy = VolatilityContractionBreakoutStrategy(timeframe="1d")
+    enriched = _enhanced_frame().assign(relative_volume=0.2)
+    monkeypatch.setattr(enhanced_module, "enrich_technical_indicators", lambda data, timeframe: enriched)
+
+    signal = strategy.generate_signal(enriched, "NVDA")
+
+    assert signal is None
+    assert strategy.last_diagnostics["status"] == "no_signal"
+    assert "relative_volume_too_low" in strategy.last_diagnostics["rejection_reasons"]
+    assert "measurements" in strategy.last_diagnostics

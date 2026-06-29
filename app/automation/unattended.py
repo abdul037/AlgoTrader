@@ -6,6 +6,7 @@ from typing import Any
 
 from app.models.approval import ApprovalDecisionRequest
 from app.models.execution import ExecutionStatus
+from app.screener.profiles import effective_auto_execution_min_score
 from app.universe import resolve_universe
 
 
@@ -83,9 +84,7 @@ class PaperAutoTradingService:
             backtest_required = bool(getattr(self.settings, "paper_exploration_require_backtest_validated", False))
         if backtest_required and not bool(metadata.get("backtest_validated", False)):
             blockers.append("candidate_not_backtest_validated")
-        if float(getattr(candidate, "score", 0.0) or 0.0) < float(
-            getattr(self.settings, "auto_execution_min_score", 65.0)
-        ):
+        if float(getattr(candidate, "score", 0.0) or 0.0) < effective_auto_execution_min_score(self.settings):
             blockers.append("candidate_score_below_auto_threshold")
         if symbol not in resolve_universe(self.settings):
             blockers.append("symbol_not_in_execution_universe")

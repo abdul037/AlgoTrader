@@ -74,6 +74,8 @@ from app.storage.repositories import (
     StrategyLabRepository,
     TrackedSignalRepository,
 )
+from app.strategies.enhancement import StrategyEnhancementService
+from app.strategies.routes import router as strategy_enhancement_router
 from app.strategy_lab.routes import router as strategy_lab_router
 from app.strategy_lab.service import StrategyLabService
 from app.telegram_notify import TelegramNotifier
@@ -359,6 +361,11 @@ def create_app(
         learning_service=app.state.learning_service,
         strategy_lab_service=app.state.strategy_lab_service,
     )
+    app.state.strategy_enhancement_service = StrategyEnhancementService(
+        settings=app_settings,
+        scan_decisions=scan_decision_repository,
+        strategy_governance=strategy_governance_repository,
+    )
     app.state.batch_backtest_service = BatchBacktestService(
         settings=app_settings,
         market_data_engine=app.state.market_data_engine,
@@ -538,6 +545,7 @@ def create_app(
     app.include_router(institutional_router)
     app.include_router(learning_router)
     app.include_router(strategy_lab_router)
+    app.include_router(strategy_enhancement_router)
     app.include_router(rl_policy_router)
     app.include_router(metrics_router)
 

@@ -232,19 +232,21 @@ def market_data_status(service: Any, *, history: Any, quote: Any) -> dict[str, A
 def execution_blockers(
     service: Any,
     *,
+    settings: Any | None = None,
     market_data_status: dict[str, Any],
     final_score: float,
     risk_reward_ratio: float | None,
     actionability: str,
 ) -> list[str]:
+    effective_settings = settings or service.settings
     blockers: list[str] = []
     if not market_data_status["verified"]:
         blockers.append(str(market_data_status["verification_reason"]))
     if actionability != "alert":
         blockers.append(f"actionability_{actionability}")
-    if final_score < float(service.settings.screener_min_final_score_to_alert):
+    if final_score < float(effective_settings.screener_min_final_score_to_alert):
         blockers.append("final_score_below_alert_threshold")
-    if risk_reward_ratio is None or float(risk_reward_ratio) < float(service.settings.screener_min_reward_to_risk):
+    if risk_reward_ratio is None or float(risk_reward_ratio) < float(effective_settings.screener_min_reward_to_risk):
         blockers.append("reward_to_risk_below_threshold")
     return blockers
 

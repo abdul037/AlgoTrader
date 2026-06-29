@@ -167,13 +167,16 @@ class SignalWorkflowService:
         )
 
     def run_intelligent_scan(self, *, notify: bool = True, force_refresh: bool = False) -> WorkflowTaskResponse:
+        timeframes = self._normalized_timeframes(self.settings.intelligent_scan_timeframes)
+        if str(getattr(self.settings, "screener_spec_coverage_mode", "default")) == "scheduled_all":
+            timeframes = self._rotating_intelligent_timeframes()
         return self._execute_guarded(
             "intelligent_scan",
             lambda: self._run_scan_task(
                 task="intelligent_scan",
                 state_key="workflow:last_intelligent_scan_at",
                 origin="intelligent_scan",
-                timeframes=self._normalized_timeframes(self.settings.intelligent_scan_timeframes),
+                timeframes=timeframes,
                 notify=notify,
                 force_refresh=force_refresh,
             ),
@@ -500,6 +503,17 @@ class SignalWorkflowService:
     @staticmethod
     def _normalized_timeframes(timeframes: Any) -> list[str]:
         return [str(item).strip().lower() for item in list(timeframes or []) if str(item).strip()]
+
+    def _rotating_intelligent_timeframes(self) -> list[str]:
+        groups = [["1m", "5m"], ["10m", "15m"], ["1h"], ["1d"], ["1w"]]
+        key = "workflow:intelligent_scan_timeframe_group"
+        try:
+            index = int(self.runtime_state.get(key) or "0")
+        except ValueError:
+            index = 0
+        selected = groups[index % len(groups)]
+        self.runtime_state.set(key, str((index + 1) % len(groups)))
+        return selected
 
     def _track_candidates(self, response: Any, *, origin: str) -> None:
         track_candidates(self, response, origin=origin)

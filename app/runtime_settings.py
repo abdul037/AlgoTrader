@@ -250,6 +250,13 @@ class AppSettings(BaseSettings):
     paper_scanner_allowed_strategies: list[str] = Field(default_factory=lambda: ["all"])
     paper_exploration_require_backtest_validated: bool = False
     paper_exploration_require_regular_hours: bool = True
+    paper_exploration_signal_profile: Literal["off", "balanced_loose"] = "off"
+    paper_exploration_min_final_score_to_alert: float = 60.0
+    paper_exploration_min_final_score_to_keep: float = 50.0
+    paper_exploration_min_relative_volume: float = 0.90
+    paper_exploration_min_reward_to_risk: float = 1.20
+    paper_exploration_min_indicator_confluence: float = 0.35
+    paper_exploration_auto_execution_min_score: float = 60.0
     auto_execution_min_score: float = 65.0
     auto_execution_regular_hours_only: bool = True
     strategy_health_enabled: bool = True
@@ -318,9 +325,13 @@ class AppSettings(BaseSettings):
     strategy_lab_generation_enabled: bool = False
     strategy_lab_paper_trading_enabled: bool = False
     strategy_lab_max_generations_per_day: int = 3
+    strategy_lab_paper_gate_profile: Literal["standard", "loose_paper_exploration"] = "standard"
     strategy_lab_min_backtest_trades: int = 100
     strategy_lab_min_profit_factor: float = 1.15
     strategy_lab_max_drawdown_pct: float = 12.0
+    strategy_lab_loose_min_backtest_trades: int = 30
+    strategy_lab_loose_min_profit_factor: float = 1.05
+    strategy_lab_loose_max_drawdown_pct: float = 18.0
 
     rl_policy_enabled: bool = False
     rl_policy_training_enabled: bool = False

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pandas as pd
 
 from app.live_signal_schema import MarketQuote
+from app.screener.profiles import effective_auto_execution_min_score
 from app.screener.service import MarketScreenerService, _strategy_specs
 from app.screener.scoring import build_backtest_snapshot
 from tests.conftest import make_settings
@@ -168,10 +169,55 @@ def test_scheduled_all_mode_reaches_core_and_enhanced_strategy_specs(tmp_path) -
     swing = sum(len(_strategy_specs(settings, timeframe=timeframe)) for timeframe in ["1h", "1d"])
     end_of_day = len(_strategy_specs(settings, timeframe="1w"))
 
-    assert intraday == 22
-    assert swing == 22
+    assert intraday == 28
+    assert swing == 28
     assert end_of_day == 6
-    assert intraday + swing + end_of_day == 50
+    assert intraday + swing + end_of_day == 62
+
+
+def test_paper_exploration_profile_applies_only_to_effective_screener_settings(tmp_path) -> None:
+    settings = make_settings(
+        tmp_path,
+        execution_mode="paper",
+        enable_real_trading=False,
+        paper_scanner_exploration_enabled=True,
+        paper_exploration_signal_profile="balanced_loose",
+    )
+    service = MarketScreenerService(
+        settings=settings,
+        market_data_engine=FakeMarketDataEngine({}, {}),
+        signal_state_repository=FakeSignalStateRepository(),
+        run_log_repository=FakeRunLogRepository(),
+        telegram_notifier=FakeTelegramNotifier(),
+    )
+
+    assert settings.screener_min_final_score_to_alert == 65.0
+    assert service.effective_settings.screener_min_final_score_to_alert == 60.0
+    assert service.effective_settings.screener_min_final_score_to_keep == 50.0
+    assert service.effective_settings.screener_min_relative_volume == 0.90
+    assert service.effective_settings.screener_min_reward_to_risk == 1.20
+    assert service.effective_settings.screener_min_indicator_confluence == 0.35
+    assert effective_auto_execution_min_score(settings) == 60.0
+
+
+def test_paper_exploration_profile_is_disabled_for_live_mode(tmp_path) -> None:
+    settings = make_settings(
+        tmp_path,
+        execution_mode="live",
+        enable_real_trading=True,
+        paper_scanner_exploration_enabled=True,
+        paper_exploration_signal_profile="balanced_loose",
+    )
+    service = MarketScreenerService(
+        settings=settings,
+        market_data_engine=FakeMarketDataEngine({}, {}),
+        signal_state_repository=FakeSignalStateRepository(),
+        run_log_repository=FakeRunLogRepository(),
+        telegram_notifier=FakeTelegramNotifier(),
+    )
+
+    assert service.effective_settings.screener_min_final_score_to_alert == settings.screener_min_final_score_to_alert
+    assert effective_auto_execution_min_score(settings) == settings.auto_execution_min_score
 
 
 def test_screener_scan_returns_ranked_candidates(tmp_path) -> None:

@@ -12,7 +12,13 @@ from app.strategies.ema_trend_stack import EMATrendStackStrategy
 from app.strategies.enhanced import (
     ATRDonchianTrendBreakoutStrategy,
     AnchoredVWAPPullbackContinuationStrategy,
+    EtfMegaCapRelativeStrengthRotationStrategy,
+    FailedBreakdownReversalStrategy,
     GapContinuationFadeStrategy,
+    InsideBarNarrowRangeBreakoutStrategy,
+    LiquidityExpansionContinuationStrategy,
+    MultiTimeframeTrendPullbackStrategy,
+    OpeningRangeBreakoutRetestStrategy,
     RegimeFilteredMeanReversionStrategy,
     RelativeStrengthMomentumStrategy,
     VolatilityContractionBreakoutStrategy,
@@ -57,6 +63,12 @@ STRATEGY_REGISTRY: dict[str, type[BaseStrategy]] = {
     "anchored_vwap_pullback_continuation": AnchoredVWAPPullbackContinuationStrategy,
     "gap_continuation_fade": GapContinuationFadeStrategy,
     "regime_filtered_mean_reversion": RegimeFilteredMeanReversionStrategy,
+    "opening_range_breakout_retest": OpeningRangeBreakoutRetestStrategy,
+    "failed_breakdown_reversal": FailedBreakdownReversalStrategy,
+    "multi_timeframe_trend_pullback": MultiTimeframeTrendPullbackStrategy,
+    "inside_bar_narrow_range_breakout": InsideBarNarrowRangeBreakoutStrategy,
+    "liquidity_expansion_continuation": LiquidityExpansionContinuationStrategy,
+    "etf_mega_cap_relative_strength_rotation": EtfMegaCapRelativeStrengthRotationStrategy,
 }
 
 CORE_STRATEGY_NAMES = frozenset(
@@ -84,6 +96,12 @@ ENHANCED_RESEARCH_STRATEGY_NAMES = frozenset(
         "anchored_vwap_pullback_continuation",
         "gap_continuation_fade",
         "regime_filtered_mean_reversion",
+        "opening_range_breakout_retest",
+        "failed_breakdown_reversal",
+        "multi_timeframe_trend_pullback",
+        "inside_bar_narrow_range_breakout",
+        "liquidity_expansion_continuation",
+        "etf_mega_cap_relative_strength_rotation",
     }
 )
 
@@ -153,6 +171,18 @@ STRATEGY_SPECS: list[StrategySpec] = [
     StrategySpec("gap_continuation_fade", timeframe="15m", style="gap", default_kwargs={"timeframe": "15m"}, metadata=ENHANCED_METADATA),
     StrategySpec("regime_filtered_mean_reversion", timeframe="1h", style="mean_reversion", default_kwargs={"timeframe": "1h"}, metadata=ENHANCED_METADATA),
     StrategySpec("regime_filtered_mean_reversion", timeframe="1d", style="mean_reversion", default_kwargs={"timeframe": "1d"}, metadata=ENHANCED_METADATA),
+    StrategySpec("opening_range_breakout_retest", timeframe="5m", style="opening_range", default_kwargs={"timeframe": "5m"}, metadata=ENHANCED_METADATA),
+    StrategySpec("opening_range_breakout_retest", timeframe="15m", style="opening_range", default_kwargs={"timeframe": "15m"}, metadata=ENHANCED_METADATA),
+    StrategySpec("failed_breakdown_reversal", timeframe="15m", style="reversal", default_kwargs={"timeframe": "15m"}, metadata=ENHANCED_METADATA),
+    StrategySpec("failed_breakdown_reversal", timeframe="1h", style="reversal", default_kwargs={"timeframe": "1h"}, metadata=ENHANCED_METADATA),
+    StrategySpec("multi_timeframe_trend_pullback", timeframe="1h", style="pullback_continuation", default_kwargs={"timeframe": "1h"}, metadata=ENHANCED_METADATA),
+    StrategySpec("multi_timeframe_trend_pullback", timeframe="1d", style="pullback_continuation", default_kwargs={"timeframe": "1d"}, metadata=ENHANCED_METADATA),
+    StrategySpec("inside_bar_narrow_range_breakout", timeframe="15m", style="breakout", default_kwargs={"timeframe": "15m"}, metadata=ENHANCED_METADATA),
+    StrategySpec("inside_bar_narrow_range_breakout", timeframe="1h", style="breakout", default_kwargs={"timeframe": "1h"}, metadata=ENHANCED_METADATA),
+    StrategySpec("inside_bar_narrow_range_breakout", timeframe="1d", style="breakout", default_kwargs={"timeframe": "1d"}, metadata=ENHANCED_METADATA),
+    StrategySpec("liquidity_expansion_continuation", timeframe="5m", style="momentum", default_kwargs={"timeframe": "5m"}, metadata=ENHANCED_METADATA),
+    StrategySpec("liquidity_expansion_continuation", timeframe="15m", style="momentum", default_kwargs={"timeframe": "15m"}, metadata=ENHANCED_METADATA),
+    StrategySpec("etf_mega_cap_relative_strength_rotation", timeframe="1d", style="rotation", default_kwargs={"timeframe": "1d"}, metadata=ENHANCED_METADATA),
 ]
 
 STRATEGY_SPECS = [
@@ -201,13 +231,19 @@ __all__ = [
     "AnchoredVWAPPullbackContinuationStrategy",
     "CORE_STRATEGY_NAMES",
     "ENHANCED_RESEARCH_STRATEGY_NAMES",
+    "EtfMegaCapRelativeStrengthRotationStrategy",
+    "FailedBreakdownReversalStrategy",
     "GapContinuationFadeStrategy",
     "GoldMomentumStrategy",
     "IntradayVWAPTrendStrategy",
     "EMATrendStackStrategy",
     "MeanReversionStrategy",
     "MomentumBreakoutStrategy",
+    "InsideBarNarrowRangeBreakoutStrategy",
+    "LiquidityExpansionContinuationStrategy",
     "MACrossoverStrategy",
+    "MultiTimeframeTrendPullbackStrategy",
+    "OpeningRangeBreakoutRetestStrategy",
     "PullbackTrendStrategy",
     "RSIReversalStrategy",
     "RSITrendContinuationStrategy",

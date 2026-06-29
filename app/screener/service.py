@@ -19,6 +19,7 @@ from app.live_signal_schema import LiveSignalSnapshot
 from app.models.screener import MarketUniverseResponse, ScreenerRunResponse
 from app.runtime_settings import AppSettings
 from app.screener.filters import ScreenerFilterPipeline
+from app.screener.profiles import effective_screener_settings
 from app.screener.service_backtests import (
     backtest_validation,
     bars_for_timeframe,
@@ -77,6 +78,7 @@ class MarketScreenerService:
         strategy_lab_service: Any | None = None,
     ):
         self.settings = settings
+        self.effective_settings = effective_screener_settings(settings)
         self.market_data = market_data_engine
         self.signal_states = signal_state_repository
         self.logs = run_log_repository
@@ -85,8 +87,8 @@ class MarketScreenerService:
         self.notifier = telegram_notifier
         self.learning = learning_service
         self.strategy_lab = strategy_lab_service
-        self.filters = ScreenerFilterPipeline(settings)
-        self.intelligence = MarketIntelligenceService(settings, market_data_engine)
+        self.filters = ScreenerFilterPipeline(self.effective_settings)
+        self.intelligence = MarketIntelligenceService(self.effective_settings, market_data_engine)
 
     def get_universe(self, *, limit: int | None = None) -> MarketUniverseResponse:
         symbols = resolve_universe(self.settings, limit=limit)
@@ -224,6 +226,7 @@ class MarketScreenerService:
     ) -> list[str]:
         return execution_blockers(
             self,
+            settings=self.effective_settings,
             market_data_status=market_data_status,
             final_score=final_score,
             risk_reward_ratio=risk_reward_ratio,

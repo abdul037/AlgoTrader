@@ -256,7 +256,7 @@ def scan_universe(
                     history,
                     signal=signal,
                     context=context,
-                    settings=service.settings,
+                    settings=service.effective_settings,
                 )
                 signal.metadata.update(
                     {
@@ -384,7 +384,7 @@ def scan_universe(
                 )
                 provisional_freshness = "fresh" if previous_decision is None else "repeated_upgraded"
                 ranking = rank_live_signal(
-                    settings=service.settings,
+                    settings=service.effective_settings,
                     signal=signal,
                     context=context,
                     backtest_snapshot=backtest_snapshot,
@@ -434,7 +434,7 @@ def scan_universe(
                     )
                     continue
                 ranking = rank_live_signal(
-                    settings=service.settings,
+                    settings=service.effective_settings,
                     signal=signal,
                     context=context,
                     backtest_snapshot=backtest_snapshot,

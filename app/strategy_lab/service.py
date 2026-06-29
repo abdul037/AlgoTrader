@@ -141,9 +141,10 @@ class StrategyLabService:
             "paper_trading_enabled": bool(getattr(self.settings, "strategy_lab_paper_trading_enabled", False)),
             "max_generations_per_day": int(getattr(self.settings, "strategy_lab_max_generations_per_day", 3) or 0),
             "gates": {
-                "min_backtest_trades": int(getattr(self.settings, "strategy_lab_min_backtest_trades", 100) or 100),
-                "min_profit_factor": float(getattr(self.settings, "strategy_lab_min_profit_factor", 1.15) or 1.15),
-                "max_drawdown_pct": float(getattr(self.settings, "strategy_lab_max_drawdown_pct", 12.0) or 12.0),
+                "profile": self._gate_profile(),
+                "min_backtest_trades": self._gate_min_backtest_trades(),
+                "min_profit_factor": self._gate_min_profit_factor(),
+                "max_drawdown_pct": self._gate_max_drawdown_pct(),
                 "positive_expectancy_after_costs": True,
             },
             "counts": counts,
@@ -307,7 +308,13 @@ class StrategyLabService:
                 strategy_version_id=version.id,
                 target_stage="paper_exploration",
                 approved=True,
-                evidence={"strategy_lab_backtest_id": backtest.id, "metrics": backtest.metrics},
+                evidence={
+                    "strategy_lab_backtest_id": backtest.id,
+                    "metrics": backtest.metrics,
+                    "gate_profile": self._gate_profile(),
+                    "production_approval": False,
+                    "live_trading": False,
+                },
                 decided_by=request.decided_by,
             )
         )
@@ -414,19 +421,37 @@ class StrategyLabService:
 
     def _backtest_blockers(self, *, metrics: dict[str, Any]) -> list[str]:
         blockers: list[str] = []
-        if int(metrics.get("number_of_trades") or 0) < int(getattr(self.settings, "strategy_lab_min_backtest_trades", 100) or 100):
+        if int(metrics.get("number_of_trades") or 0) < self._gate_min_backtest_trades():
             blockers.append("insufficient_valid_historical_trades")
         if float(metrics.get("expectancy_usd") or 0.0) <= 0:
             blockers.append("non_positive_expectancy_after_costs")
-        if float(metrics.get("profit_factor") or 0.0) < float(getattr(self.settings, "strategy_lab_min_profit_factor", 1.15) or 1.15):
+        if float(metrics.get("profit_factor") or 0.0) < self._gate_min_profit_factor():
             blockers.append("profit_factor_below_strategy_lab_gate")
-        if float(metrics.get("max_drawdown_pct") or 0.0) > float(getattr(self.settings, "strategy_lab_max_drawdown_pct", 12.0) or 12.0):
+        if float(metrics.get("max_drawdown_pct") or 0.0) > self._gate_max_drawdown_pct():
             blockers.append("drawdown_above_strategy_lab_gate")
         if int(metrics.get("data_error_count") or 0) > 0:
             blockers.append("unexplained_data_or_leakage_errors")
         if not bool(metrics.get("valid_stop_target_coverage")):
             blockers.append("invalid_stop_or_target_generation")
         return blockers
+
+    def _gate_profile(self) -> str:
+        return str(getattr(self.settings, "strategy_lab_paper_gate_profile", "standard") or "standard")
+
+    def _gate_min_backtest_trades(self) -> int:
+        if self._gate_profile() == "loose_paper_exploration":
+            return int(getattr(self.settings, "strategy_lab_loose_min_backtest_trades", 30) or 30)
+        return int(getattr(self.settings, "strategy_lab_min_backtest_trades", 100) or 100)
+
+    def _gate_min_profit_factor(self) -> float:
+        if self._gate_profile() == "loose_paper_exploration":
+            return float(getattr(self.settings, "strategy_lab_loose_min_profit_factor", 1.05) or 1.05)
+        return float(getattr(self.settings, "strategy_lab_min_profit_factor", 1.15) or 1.15)
+
+    def _gate_max_drawdown_pct(self) -> float:
+        if self._gate_profile() == "loose_paper_exploration":
+            return float(getattr(self.settings, "strategy_lab_loose_max_drawdown_pct", 18.0) or 18.0)
+        return float(getattr(self.settings, "strategy_lab_max_drawdown_pct", 12.0) or 12.0)
 
 
 def _history_bars(timeframe: str) -> int:
@@ -584,6 +609,114 @@ def _concept_pack_dsls() -> list[StrategyLabDsl]:
             "stop_loss_pct": 6.0,
             "take_profit_pct": 13.0,
             "max_hold_bars": 14,
+        },
+        {
+            "name": "generated_opening_range_retest_15m",
+            "description": "Opening range reclaim after a controlled retest.",
+            "timeframe": "15m",
+            "indicators": [
+                StrategyLabIndicator(name="donchian_high_5", kind="donchian_high", source="high", period=5),
+                StrategyLabIndicator(name="vwap_line", kind="vwap", source="close", period=20),
+                StrategyLabIndicator(name="rv_20", kind="relative_volume", source="volume", period=20),
+            ],
+            "entry_conditions": [
+                StrategyLabCondition(kind="above", left="close", right="donchian_high_5"),
+                StrategyLabCondition(kind="above", left="close", right="vwap_line"),
+                StrategyLabCondition(kind="above", left="rv_20", right=0.9),
+            ],
+            "stop_loss_pct": 1.2,
+            "take_profit_pct": 2.4,
+            "max_hold_bars": 10,
+        },
+        {
+            "name": "generated_failed_breakdown_reversal_1h",
+            "description": "Hourly failed breakdown reversal filtered by RSI recovery.",
+            "timeframe": "1h",
+            "indicators": [
+                StrategyLabIndicator(name="donchian_low_20", kind="donchian_low", source="low", period=20),
+                StrategyLabIndicator(name="rsi_14", kind="rsi", source="close", period=14),
+                StrategyLabIndicator(name="ema_50", kind="ema", source="close", period=50),
+            ],
+            "entry_conditions": [
+                StrategyLabCondition(kind="above", left="close", right="donchian_low_20"),
+                StrategyLabCondition(kind="above", left="rsi_14", right=42.0),
+                StrategyLabCondition(kind="above", left="close", right="ema_50"),
+            ],
+            "stop_loss_pct": 2.2,
+            "take_profit_pct": 4.0,
+            "max_hold_bars": 16,
+        },
+        {
+            "name": "generated_multi_timeframe_pullback_1h",
+            "description": "Hourly trend pullback reclaiming fast EMA in a constructive regime.",
+            "timeframe": "1h",
+            "indicators": [
+                StrategyLabIndicator(name="ema_20", kind="ema", source="close", period=20),
+                StrategyLabIndicator(name="ema_50", kind="ema", source="close", period=50),
+                StrategyLabIndicator(name="rv_20", kind="relative_volume", source="volume", period=20),
+            ],
+            "entry_conditions": [
+                StrategyLabCondition(kind="crosses_above", left="close", right="ema_20"),
+                StrategyLabCondition(kind="above", left="ema_20", right="ema_50"),
+                StrategyLabCondition(kind="above", left="rv_20", right=0.85),
+            ],
+            "stop_loss_pct": 1.8,
+            "take_profit_pct": 4.0,
+            "max_hold_bars": 16,
+        },
+        {
+            "name": "generated_inside_bar_breakout_15m",
+            "description": "Short-term narrow-range breakout with volume expansion.",
+            "timeframe": "15m",
+            "indicators": [
+                StrategyLabIndicator(name="donchian_high_3", kind="donchian_high", source="high", period=3),
+                StrategyLabIndicator(name="bb_width_20", kind="bb_width", source="close", period=20),
+                StrategyLabIndicator(name="rv_20", kind="relative_volume", source="volume", period=20),
+            ],
+            "entry_conditions": [
+                StrategyLabCondition(kind="above", left="close", right="donchian_high_3"),
+                StrategyLabCondition(kind="below", left="bb_width_20", right=7.5),
+                StrategyLabCondition(kind="above", left="rv_20", right=0.95),
+            ],
+            "stop_loss_pct": 1.1,
+            "take_profit_pct": 2.3,
+            "max_hold_bars": 10,
+        },
+        {
+            "name": "generated_liquidity_expansion_continuation_5m",
+            "description": "Fast liquidity expansion continuation above VWAP and EMA support.",
+            "timeframe": "5m",
+            "indicators": [
+                StrategyLabIndicator(name="vwap_line", kind="vwap", source="close", period=20),
+                StrategyLabIndicator(name="ema_20", kind="ema", source="close", period=20),
+                StrategyLabIndicator(name="rv_20", kind="relative_volume", source="volume", period=20),
+            ],
+            "entry_conditions": [
+                StrategyLabCondition(kind="above", left="close", right="vwap_line"),
+                StrategyLabCondition(kind="above", left="close", right="ema_20"),
+                StrategyLabCondition(kind="above", left="rv_20", right=1.2),
+            ],
+            "stop_loss_pct": 0.9,
+            "take_profit_pct": 1.9,
+            "max_hold_bars": 8,
+        },
+        {
+            "name": "generated_mega_cap_rotation_daily",
+            "description": "Daily mega-cap rotation using trend and positive ROC.",
+            "timeframe": "1d",
+            "indicators": [
+                StrategyLabIndicator(name="ema_50", kind="ema", source="close", period=50),
+                StrategyLabIndicator(name="ema_200", kind="ema", source="close", period=200),
+                StrategyLabIndicator(name="roc_20", kind="roc", source="close", period=20),
+            ],
+            "entry_conditions": [
+                StrategyLabCondition(kind="above", left="close", right="ema_50"),
+                StrategyLabCondition(kind="above", left="ema_50", right="ema_200"),
+                StrategyLabCondition(kind="above", left="roc_20", right=1.5),
+            ],
+            "stop_loss_pct": 4.0,
+            "take_profit_pct": 8.5,
+            "max_hold_bars": 20,
         },
     ]
     families = list(raw)
