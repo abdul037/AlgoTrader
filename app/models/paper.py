@@ -62,6 +62,54 @@ class PaperTradeRecord(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class PaperBrokerOrderLeg(BaseModel):
+    """Broker order or protective leg snapshot for Alpaca Paper execution visibility."""
+
+    broker_order_id: str | None = None
+    client_order_id: str | None = None
+    side: str | None = None
+    order_type: str | None = None
+    status: str | None = None
+    quantity: float = 0.0
+    filled_qty: float = 0.0
+    filled_avg_price: float | None = None
+    limit_price: float | None = None
+    stop_price: float | None = None
+    created_at: str | None = None
+    filled_at: str | None = None
+    canceled_at: str | None = None
+
+
+class PaperBrokerExecutionRecord(BaseModel):
+    """Real broker-side Alpaca Paper execution lifecycle."""
+
+    execution_id: str
+    proposal_id: str
+    queue_id: str | None = None
+    symbol: str
+    strategy_name: str | None = None
+    source: str = "unknown"
+    mode: str
+    status: str
+    broker_order_id: str | None = None
+    client_order_id: str | None = None
+    side: str | None = None
+    order_class: str | None = None
+    quantity: float = 0.0
+    filled_qty: float = 0.0
+    entry_fill_price: float | None = None
+    exit_order_id: str | None = None
+    exit_fill_price: float | None = None
+    realized_pnl_usd: float = 0.0
+    created_at: str
+    updated_at: str
+    submitted_at: str | None = None
+    filled_at: str | None = None
+    canceled_at: str | None = None
+    legs: list[PaperBrokerOrderLeg] = Field(default_factory=list)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class PaperPerformanceSummary(BaseModel):
     """Aggregated paper trading performance view."""
 
@@ -92,6 +140,7 @@ class BotPerformanceDashboard(BaseModel):
     paper: PaperPerformanceSummary
     open_positions: list[PaperPositionRecord] = Field(default_factory=list)
     recent_trades: list[PaperTradeRecord] = Field(default_factory=list)
+    recent_broker_executions: list[PaperBrokerExecutionRecord] = Field(default_factory=list)
     recent_scan_decisions: list[dict[str, Any]] = Field(default_factory=list)
     provider_health: dict[str, Any] = Field(default_factory=dict)
     calibration_suggestions: list[str] = Field(default_factory=list)

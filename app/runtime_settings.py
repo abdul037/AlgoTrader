@@ -52,6 +52,8 @@ class AppSettings(BaseSettings):
     alpaca_live_expected_account_number: str = ""
     alpaca_reconciliation_enabled: bool = True
     alpaca_reconciliation_interval_seconds: int = 60
+    alpaca_reconciliation_max_attempts: int = 3
+    alpaca_reconciliation_retry_backoff_seconds: float = 1.0
     alpaca_require_bracket_orders: bool = True
     extended_hours_experiment_enabled: bool = False
     extended_hours_experiment_submit_enabled: bool = False

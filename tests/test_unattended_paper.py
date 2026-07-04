@@ -88,6 +88,49 @@ def reconciliation_service(tmp_path, *, expected: str, actual: str):
     return service, automation
 
 
+def test_reconciliation_retries_transient_broker_errors(tmp_path, monkeypatch):
+    service, automation = reconciliation_service(tmp_path, expected="PAPER-1", actual="PAPER-1")
+    service.settings.alpaca_reconciliation_max_attempts = 3
+    service.settings.alpaca_reconciliation_retry_backoff_seconds = 0
+    calls = {"count": 0}
+    original_get_account = service.alpaca.get_account_identity
+
+    def flaky_account():
+        calls["count"] += 1
+        if calls["count"] < 3:
+            raise ConnectionError("temporary broker disconnect")
+        return original_get_account()
+
+    monkeypatch.setattr(service.alpaca, "get_account_identity", flaky_account)
+
+    result = service.reconcile()
+
+    assert result["status"] == "ok"
+    assert calls["count"] == 3
+    assert automation.status().kill_switch_enabled is False
+
+
+def test_reconciliation_records_failure_only_after_retry_attempts(tmp_path):
+    service, automation = reconciliation_service(tmp_path, expected="PAPER-1", actual="PAPER-1")
+    service.settings.alpaca_reconciliation_max_attempts = 3
+    service.settings.alpaca_reconciliation_retry_backoff_seconds = 0
+    service.settings.reconciliation_failures_before_kill_switch = 1
+    calls = {"count": 0}
+
+    def failing_account():
+        calls["count"] += 1
+        raise ConnectionError("broker unavailable")
+
+    service.alpaca.get_account_identity = failing_account
+
+    result = service.reconcile()
+
+    assert result["status"] == "error"
+    assert calls["count"] == 3
+    assert result["consecutive_failures"] == 1
+    assert automation.status().kill_switch_enabled is True
+
+
 def test_reconciliation_verifies_expected_paper_account(tmp_path):
     service, automation = reconciliation_service(tmp_path, expected="PAPER-1", actual="PAPER-1")
 

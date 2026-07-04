@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any
 
 from app.models.approval import TradeProposal
-from app.models.paper import BotPerformanceDashboard, PaperPositionRecord, PaperTradeRecord
+from app.models.paper import (
+    BotPerformanceDashboard,
+    PaperBrokerExecutionRecord,
+    PaperBrokerOrderLeg,
+    PaperPositionRecord,
+    PaperTradeRecord,
+)
 from app.utils.time import utc_now
 
 
@@ -22,12 +29,18 @@ class PaperTradingService:
         trades: Any,
         run_logs: Any,
         scan_decisions: Any | None = None,
+        executions: Any | None = None,
+        broker_orders: Any | None = None,
+        execution_queue: Any | None = None,
     ):
         self.settings = settings
         self.positions = positions
         self.trades = trades
         self.logs = run_logs
         self.scan_decisions = scan_decisions
+        self.executions = executions
+        self.broker_orders = broker_orders
+        self.execution_queue = execution_queue
 
     def open_from_approved_proposal(
         self,
@@ -123,16 +136,47 @@ class PaperTradingService:
         summary = self.summary()
         open_positions = self.positions.list(status="open", limit=50)
         recent_trades = self.trades.list(limit=50)
+        recent_broker_executions = self.broker_executions(limit=50)
         recent_decisions = self._recent_scan_decisions(limit=50)
         return BotPerformanceDashboard(
             paper=summary,
             open_positions=open_positions,
             recent_trades=recent_trades,
+            recent_broker_executions=recent_broker_executions,
             recent_scan_decisions=recent_decisions,
             provider_health=self._provider_health(recent_decisions),
             calibration_suggestions=self._calibration_suggestions(summary.rejection_reason_counts),
             risk_controls=self._risk_controls(),
         )
+
+    def broker_executions(self, *, limit: int = 100) -> list[PaperBrokerExecutionRecord]:
+        """Return real Alpaca Paper broker executions distinct from simulated paper trades."""
+
+        if self.executions is None:
+            return []
+        executions = self.executions.list(limit=max(limit, 1))
+        queue_by_proposal = self._queue_by_proposal()
+        snapshots = self._broker_order_snapshots(limit=max(1000, limit * 20))
+        snapshots_by_execution: dict[str, list[dict[str, Any]]] = {}
+        snapshots_by_symbol: dict[str, list[dict[str, Any]]] = {}
+        for snapshot in snapshots:
+            execution_id = str(snapshot.get("execution_id") or "")
+            if execution_id:
+                snapshots_by_execution.setdefault(execution_id, []).append(snapshot)
+            symbol = str(snapshot.get("symbol") or "").upper()
+            if symbol:
+                snapshots_by_symbol.setdefault(symbol, []).append(snapshot)
+        records = [
+            self._broker_execution_record(
+                execution,
+                queue=queue_by_proposal.get(execution.proposal_id),
+                snapshots=snapshots_by_execution.get(execution.id, []),
+                symbol_snapshots=snapshots_by_symbol,
+            )
+            for execution in executions
+            if self._is_broker_paper_execution(execution)
+        ]
+        return records[: max(limit, 1)]
 
     def _close_position(self, position: PaperPositionRecord, *, exit_price: float, outcome: str) -> PaperTradeRecord:
         position.status = "closed"
@@ -176,6 +220,241 @@ class PaperTradingService:
             },
         )
         return trade
+
+    def _broker_execution_record(
+        self,
+        execution: Any,
+        *,
+        queue: Any | None,
+        snapshots: list[dict[str, Any]],
+        symbol_snapshots: dict[str, list[dict[str, Any]]],
+    ) -> PaperBrokerExecutionRecord:
+        broker_execution = dict((execution.response_payload or {}).get("broker_execution") or {})
+        parent = self._parent_snapshot(execution, snapshots) or {}
+        parent_payload = dict(parent.get("payload") or {})
+        payload = {**broker_execution, **{key: value for key, value in parent_payload.items() if value not in (None, "")}}
+        request_payload = dict(execution.request_payload or {})
+        symbol = str(payload.get("symbol") or request_payload.get("symbol") or getattr(queue, "symbol", "") or "").upper()
+        strategy_name = (
+            str(getattr(queue, "strategy_name", "") or "")
+            or str(request_payload.get("strategy_name") or "")
+            or self._payload_strategy_name(getattr(queue, "payload", None))
+        )
+        side = str(payload.get("side") or request_payload.get("side") or "")
+        entry_price = self._optional_float(payload.get("filled_avg_price") or parent.get("filled_avg_price"))
+        filled_qty = float(payload.get("filled_qty") or parent.get("filled_qty") or 0.0)
+        legs = self._broker_legs(payload=payload, snapshots=snapshots, parent_order_id=execution.broker_order_id)
+        exit_leg = next(
+            (
+                leg
+                for leg in legs
+                if str(leg.status or "").lower() == "filled"
+                and str(leg.side or "").lower() == "sell"
+                and leg.filled_avg_price is not None
+            ),
+            None,
+        )
+        exit_snapshot = None
+        if exit_leg is None:
+            exit_snapshot = self._nearest_exit_snapshot(
+                symbol=symbol,
+                parent_payload=payload,
+                symbol_snapshots=symbol_snapshots,
+            )
+        exit_price = (
+            exit_leg.filled_avg_price
+            if exit_leg is not None
+            else self._optional_float((exit_snapshot or {}).get("filled_avg_price"))
+        )
+        realized = float(getattr(execution, "realized_pnl_usd", 0.0) or 0.0)
+        if realized == 0.0 and entry_price is not None and exit_price is not None and filled_qty > 0:
+            realized = round((exit_price - entry_price) * filled_qty, 2)
+        return PaperBrokerExecutionRecord(
+            execution_id=execution.id,
+            proposal_id=execution.proposal_id,
+            queue_id=getattr(queue, "id", None),
+            symbol=symbol,
+            strategy_name=strategy_name or None,
+            source=self._execution_source(strategy_name, request_payload),
+            mode=execution.mode,
+            status=execution.status,
+            broker_order_id=execution.broker_order_id,
+            client_order_id=str(payload.get("client_order_id") or request_payload.get("client_order_id") or "") or None,
+            side=side or None,
+            order_class=str(payload.get("order_class") or parent.get("order_class") or "") or None,
+            quantity=float(payload.get("qty") or parent.get("qty") or filled_qty or 0.0),
+            filled_qty=filled_qty,
+            entry_fill_price=entry_price,
+            exit_order_id=(
+                exit_leg.broker_order_id
+                if exit_leg is not None
+                else str((exit_snapshot or {}).get("broker_order_id") or "") or None
+            ),
+            exit_fill_price=exit_price,
+            realized_pnl_usd=realized,
+            created_at=execution.created_at,
+            updated_at=execution.updated_at,
+            submitted_at=str(payload.get("submitted_at") or "") or None,
+            filled_at=str(payload.get("filled_at") or parent_payload.get("filled_at") or "") or None,
+            canceled_at=str(payload.get("canceled_at") or parent_payload.get("canceled_at") or "") or None,
+            legs=legs,
+            payload={
+                "broker": (execution.response_payload or {}).get("broker"),
+                "request": request_payload,
+                "exit_source": "bracket_leg" if exit_leg is not None else ("separate_close_order" if exit_snapshot else None),
+            },
+        )
+
+    def _queue_by_proposal(self) -> dict[str, Any]:
+        if self.execution_queue is None:
+            return {}
+        return {
+            item.proposal_id: item
+            for item in self.execution_queue.list(limit=1000)
+            if getattr(item, "proposal_id", None)
+        }
+
+    def _broker_order_snapshots(self, *, limit: int) -> list[dict[str, Any]]:
+        if self.broker_orders is None:
+            return []
+        snapshots = []
+        for row in self.broker_orders.list(limit=limit):
+            item = dict(row)
+            item["payload"] = self._json_or_empty(item.get("payload_json"), {})
+            snapshots.append(item)
+        return snapshots
+
+    @staticmethod
+    def _is_broker_paper_execution(execution: Any) -> bool:
+        payload = dict(getattr(execution, "response_payload", {}) or {})
+        return str(payload.get("broker") or "").lower() == "alpaca" or str(getattr(execution, "mode", "")).startswith("alpaca_")
+
+    @staticmethod
+    def _parent_snapshot(execution: Any, snapshots: list[dict[str, Any]]) -> dict[str, Any] | None:
+        broker_order_id = str(getattr(execution, "broker_order_id", "") or "")
+        for snapshot in snapshots:
+            if str(snapshot.get("broker_order_id") or "") == broker_order_id:
+                return snapshot
+        for snapshot in snapshots:
+            if not snapshot.get("parent_order_id"):
+                return snapshot
+        return None
+
+    def _broker_legs(
+        self,
+        *,
+        payload: dict[str, Any],
+        snapshots: list[dict[str, Any]],
+        parent_order_id: str | None,
+    ) -> list[PaperBrokerOrderLeg]:
+        snapshot_legs = [
+            item
+            for item in snapshots
+            if parent_order_id and str(item.get("parent_order_id") or "") == str(parent_order_id)
+        ]
+        if snapshot_legs:
+            return [self._leg_from_snapshot(item) for item in sorted(snapshot_legs, key=lambda row: str(row.get("created_at") or ""))]
+        return [self._leg_from_payload(item) for item in list(payload.get("legs") or [])]
+
+    @staticmethod
+    def _leg_from_snapshot(item: dict[str, Any]) -> PaperBrokerOrderLeg:
+        payload = dict(item.get("payload") or {})
+        return PaperBrokerOrderLeg(
+            broker_order_id=str(item.get("broker_order_id") or "") or None,
+            client_order_id=str(item.get("client_order_id") or payload.get("client_order_id") or "") or None,
+            side=str(item.get("side") or payload.get("side") or "") or None,
+            order_type=str(payload.get("type") or "") or None,
+            status=str(item.get("status") or payload.get("status") or "") or None,
+            quantity=float(payload.get("qty") or item.get("qty") or 0.0),
+            filled_qty=float(item.get("filled_qty") or payload.get("filled_qty") or 0.0),
+            filled_avg_price=PaperTradingService._optional_float(item.get("filled_avg_price") or payload.get("filled_avg_price")),
+            limit_price=PaperTradingService._optional_float(payload.get("limit_price")),
+            stop_price=PaperTradingService._optional_float(payload.get("stop_price")),
+            created_at=str(payload.get("created_at") or item.get("created_at") or "") or None,
+            filled_at=str(payload.get("filled_at") or "") or None,
+            canceled_at=str(payload.get("canceled_at") or "") or None,
+        )
+
+    @staticmethod
+    def _leg_from_payload(item: dict[str, Any]) -> PaperBrokerOrderLeg:
+        return PaperBrokerOrderLeg(
+            broker_order_id=str(item.get("broker_order_id") or "") or None,
+            client_order_id=str(item.get("client_order_id") or "") or None,
+            side=str(item.get("side") or "") or None,
+            order_type=str(item.get("type") or "") or None,
+            status=str(item.get("status") or "") or None,
+            quantity=float(item.get("qty") or 0.0),
+            filled_qty=float(item.get("filled_qty") or 0.0),
+            filled_avg_price=PaperTradingService._optional_float(item.get("filled_avg_price")),
+            limit_price=PaperTradingService._optional_float(item.get("limit_price")),
+            stop_price=PaperTradingService._optional_float(item.get("stop_price")),
+            created_at=str(item.get("created_at") or "") or None,
+            filled_at=str(item.get("filled_at") or "") or None,
+            canceled_at=str(item.get("canceled_at") or "") or None,
+        )
+
+    @staticmethod
+    def _nearest_exit_snapshot(
+        *,
+        symbol: str,
+        parent_payload: dict[str, Any],
+        symbol_snapshots: dict[str, list[dict[str, Any]]],
+    ) -> dict[str, Any] | None:
+        parent_created = str(parent_payload.get("created_at") or parent_payload.get("filled_at") or "")
+        candidates = [
+            item
+            for item in symbol_snapshots.get(symbol, [])
+            if not item.get("execution_id")
+            and str(item.get("side") or "").lower() == "sell"
+            and str(item.get("status") or "").lower() == "filled"
+            and str((item.get("payload") or {}).get("created_at") or item.get("created_at") or "") >= parent_created
+        ]
+        return (
+            sorted(
+                candidates,
+                key=lambda row: str((row.get("payload") or {}).get("created_at") or row.get("created_at") or ""),
+            )[0]
+            if candidates
+            else None
+        )
+
+    @staticmethod
+    def _execution_source(strategy_name: str, request_payload: dict[str, Any]) -> str:
+        if strategy_name == "manual_smoke":
+            return "manual_smoke"
+        metadata = dict(request_payload.get("metadata") or {})
+        if metadata.get("strategy_lab_generated") or str(strategy_name).startswith("generated_"):
+            return "generated_strategy"
+        if metadata.get("source") == "rl_policy":
+            return "rl_policy"
+        return "scanner_strategy" if strategy_name else "unknown"
+
+    @staticmethod
+    def _payload_strategy_name(payload: Any) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        order = dict(payload.get("order") or {})
+        return str(order.get("strategy_name") or "")
+
+    @staticmethod
+    def _json_or_empty(raw: Any, default: Any) -> Any:
+        if raw is None:
+            return default
+        if isinstance(raw, (dict, list)):
+            return raw
+        try:
+            return json.loads(str(raw))
+        except Exception:
+            return default
+
+    @staticmethod
+    def _optional_float(value: Any) -> float | None:
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     def _close_outcome(self, position: PaperPositionRecord, current_price: float) -> str | None:
         is_short = position.side == "sell"

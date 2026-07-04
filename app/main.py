@@ -420,6 +420,9 @@ def create_app(
         trades=paper_trade_repository,
         run_logs=run_log_repository,
         scan_decisions=scan_decision_repository,
+        executions=execution_repository,
+        broker_orders=broker_order_repository,
+        execution_queue=execution_queue_repository,
     )
     app.state.execution_coordinator = ExecutionCoordinator(
         settings=app_settings,

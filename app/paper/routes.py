@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
-from app.models.paper import BotPerformanceDashboard, PaperPerformanceSummary, PaperPositionRecord, PaperTradeRecord
+from app.models.paper import (
+    BotPerformanceDashboard,
+    PaperBrokerExecutionRecord,
+    PaperPerformanceSummary,
+    PaperPositionRecord,
+    PaperTradeRecord,
+)
 
 router = APIRouter(prefix="/paper", tags=["paper"])
 
@@ -31,6 +37,11 @@ def paper_positions(request: Request, status: str | None = None) -> list[PaperPo
 @router.get("/trades", response_model=list[PaperTradeRecord])
 def paper_trades(request: Request) -> list[PaperTradeRecord]:
     return request.app.state.paper_trade_repository.list(limit=500)
+
+
+@router.get("/broker-executions", response_model=list[PaperBrokerExecutionRecord])
+def paper_broker_executions(request: Request, limit: int = 100) -> list[PaperBrokerExecutionRecord]:
+    return _paper(request).broker_executions(limit=min(max(limit, 1), 500))
 
 
 @router.post("/refresh")

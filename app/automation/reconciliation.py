@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from app.models.execution import ExecutionStatus
@@ -51,10 +52,29 @@ class AlpacaReconciliationService:
     def reconcile(self) -> dict[str, Any]:
         if self.alpaca is None or not bool(getattr(self.settings, "alpaca_reconciliation_enabled", True)):
             return {"status": "disabled", "issues": []}
-        try:
-            result = self._reconcile()
-        except Exception as exc:
-            return self._record_failure([f"reconciliation_error:{exc}"])
+        result: dict[str, Any] | None = None
+        last_error: Exception | None = None
+        attempts = max(int(getattr(self.settings, "alpaca_reconciliation_max_attempts", 3) or 3), 1)
+        backoff = max(float(getattr(self.settings, "alpaca_reconciliation_retry_backoff_seconds", 1.0) or 0.0), 0.0)
+        for attempt in range(1, attempts + 1):
+            try:
+                result = self._reconcile()
+                last_error = None
+                break
+            except Exception as exc:  # noqa: BLE001 - broker SDK raises transport-specific exceptions
+                last_error = exc
+                self.logs.log(
+                    "alpaca_reconciliation_attempt_failed",
+                    {
+                        "attempt": attempt,
+                        "max_attempts": attempts,
+                        "error": str(exc),
+                    },
+                )
+                if attempt < attempts and backoff > 0:
+                    time.sleep(backoff)
+        if result is None:
+            return self._record_failure([f"reconciliation_error:{last_error}"])
 
         issues = list(result["issues"])
         if issues:
