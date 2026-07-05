@@ -39,6 +39,7 @@ from app.notifications.scheduler import TelegramAlertScheduler
 from app.notifications.telegram_bot import TelegramBotService
 from app.paper.routes import router as paper_router
 from app.paper.service import PaperTradingService
+from app.performance.routes import router as performance_router
 from app.risk.guardrails import RiskManager
 from app.rl_policy.routes import router as rl_policy_router
 from app.rl_policy.service import RLPolicyService
@@ -548,6 +549,7 @@ def create_app(
     app.include_router(execution_router)
     app.include_router(extended_hours_router)
     app.include_router(paper_router)
+    app.include_router(performance_router)
     app.include_router(institutional_router)
     app.include_router(learning_router)
     app.include_router(strategy_lab_router)

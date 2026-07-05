@@ -278,6 +278,13 @@ class AppSettings(BaseSettings):
     paper_trading_enabled: bool = True
     paper_account_balance_usd: float = 100000.0
     paper_slippage_bps: float = 3.0
+    weekly_profit_target_usd: float = 1000.0
+    weekly_target_window_weeks: int = 13
+    weekly_target_capital_scenarios_usd: list[float] = Field(
+        default_factory=lambda: [100_000.0, 250_000.0, 500_000.0]
+    )
+    weekly_target_min_closed_autonomous_trades: int = 100
+    weekly_target_min_clean_sessions: int = 20
     paper_max_hold_minutes_scalp: int = 90
     paper_max_hold_minutes_intraday: int = 480
     paper_max_hold_days_swing: int = 20
@@ -440,6 +447,20 @@ class AppSettings(BaseSettings):
     def _parse_chat_id_list(cls, value: Any) -> list[int]:
         def parse_item(item: Any) -> int:
             return int(str(item).strip())
+
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [parse_item(item) for item in value.split(",") if item.strip()]
+        if isinstance(value, (list, tuple, set)):
+            return [parse_item(item) for item in value if str(item).strip()]
+        raise TypeError("Expected a comma-separated string or iterable")
+
+    @field_validator("weekly_target_capital_scenarios_usd", mode="before")
+    @classmethod
+    def _parse_float_list(cls, value: Any) -> list[float]:
+        def parse_item(item: Any) -> float:
+            return float(str(item).strip().replace("_", ""))
 
         if value is None:
             return []

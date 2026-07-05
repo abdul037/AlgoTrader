@@ -316,6 +316,37 @@ def test_scheduled_tasks_runs_ledger_cycle_when_due_even_without_screener_schedu
     assert state.get("workflow:last_ledger_cycle_at") is not None
 
 
+def test_lightweight_health_does_not_mark_scan_buckets_stale_off_market(tmp_path, monkeypatch) -> None:
+    import app.workflow.schedule as schedule_module
+    import app.workflow.service as service_module
+
+    sunday = datetime(2026, 7, 5, 16, 0, tzinfo=UTC)
+    monkeypatch.setattr(service_module, "utc_now", lambda: sunday)
+    monkeypatch.setattr(schedule_module, "utc_now", lambda: sunday)
+    workflow = SignalWorkflowService(
+        settings=make_settings(tmp_path, schedule_timezone="UTC"),
+        market_screener=FakeMarketScreener([]),
+        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="NVDA", last_execution=101.0)),
+        notifier=FakeNotifier(),
+        tracked_signals=FakeTrackedSignals(),
+        alert_history=FakeAlertHistory(),
+        runtime_state=FakeState(),
+        run_logs=FakeLogs(),
+    )
+
+    health = workflow.lightweight_health()
+
+    scan_buckets = {
+        item["name"]: item
+        for item in health["buckets"]
+        if item["name"] in workflow.SCAN_BUCKETS
+    }
+    assert all(item["expected"] is False for item in scan_buckets.values())
+    assert all(item["stale"] is False for item in scan_buckets.values())
+    assert "scheduler_bucket_stale:maintenance" in health["blockers"]
+    assert not any(blocker.startswith("scheduler_bucket_stale:intraday_rotation") for blocker in health["blockers"])
+
+
 def test_maintenance_runs_rl_policy_training_and_proposal_when_enabled(tmp_path) -> None:
     state = FakeState()
     rl_policy = FakeRLPolicy()

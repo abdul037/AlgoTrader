@@ -399,6 +399,7 @@ class SignalWorkflowService:
         blockers: list[str] = []
         buckets: list[dict[str, Any]] = []
         now = utc_now()
+        now_local = self._local_now()
         for bucket_name in self.SCHEDULER_BUCKETS:
             prefix = self._bucket_state_prefix(bucket_name)
             enabled = self._bucket_enabled(bucket_name)
@@ -408,8 +409,14 @@ class SignalWorkflowService:
             last_status = self.runtime_state.get(f"{prefix}:last_status")
             last_error = self.runtime_state.get(f"{prefix}:last_error") or None
             threshold_seconds = self._bucket_freshness_threshold_seconds(bucket_name)
+            expected = self._bucket_expected_for_freshness(bucket_name, now_local=now_local)
             age_seconds = self._age_seconds(last_success_at, now=now)
-            stale = bool(enabled and not paused and (age_seconds is None or age_seconds > threshold_seconds))
+            stale = bool(
+                enabled
+                and not paused
+                and expected
+                and (age_seconds is None or age_seconds > threshold_seconds)
+            )
             if stale:
                 blockers.append(f"scheduler_bucket_stale:{bucket_name}")
             if enabled and last_status == "error":
@@ -419,6 +426,7 @@ class SignalWorkflowService:
                     "name": bucket_name,
                     "enabled": enabled,
                     "paused": paused,
+                    "expected": expected,
                     "last_run_at": last_run_at,
                     "last_success_at": last_success_at,
                     "age_seconds": age_seconds,
@@ -743,6 +751,27 @@ class SignalWorkflowService:
         if bucket_name == "swing_hourly":
             return max(int(getattr(self.settings, "swing_scan_interval_minutes", 60) or 60) * 60 * 2, 7200)
         return 36 * 60 * 60
+
+    def _bucket_expected_for_freshness(self, bucket_name: str, *, now_local: datetime) -> bool:
+        if bucket_name == "maintenance":
+            return True
+        if not is_market_day(now_local):
+            return False
+        if bucket_name == "premarket_scan":
+            return now_local >= self._combine_local_time(now_local, self.settings.premarket_scan_time_local)
+        if bucket_name == "market_open_scan":
+            return now_local >= self._combine_local_time(now_local, self.settings.market_open_scan_time_local)
+        if bucket_name == "end_of_day_scan":
+            return now_local >= self._combine_local_time(now_local, self.settings.end_of_day_scan_time_local)
+        if bucket_name == "intraday_rotation":
+            start = self._combine_local_time(now_local, self.settings.intraday_scan_start_local)
+            end = self._combine_local_time(now_local, self.settings.intraday_scan_end_local)
+            return start <= now_local <= end + timedelta(minutes=max(int(getattr(self.settings, "intraday_scan_interval_minutes", 15)), 1))
+        if bucket_name == "swing_hourly":
+            start = self._combine_local_time(now_local, self.settings.market_open_scan_time_local)
+            end = self._combine_local_time(now_local, self.settings.end_of_day_scan_time_local)
+            return start <= now_local <= end + timedelta(minutes=max(int(getattr(self.settings, "swing_scan_interval_minutes", 60)), 1))
+        return False
 
     @staticmethod
     def _age_seconds(timestamp: str | None, *, now: datetime) -> int | None:
