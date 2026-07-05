@@ -255,11 +255,12 @@ class PaperTradingService:
             None,
         )
         exit_snapshot = None
-        if exit_leg is None:
+        if exit_leg is None and side.lower() == "buy" and filled_qty > 0 and entry_price is not None:
             exit_snapshot = self._nearest_exit_snapshot(
                 symbol=symbol,
                 parent_payload=payload,
                 symbol_snapshots=symbol_snapshots,
+                filled_qty=filled_qty,
             )
         exit_price = (
             exit_leg.filled_avg_price
@@ -399,24 +400,77 @@ class PaperTradingService:
         symbol: str,
         parent_payload: dict[str, Any],
         symbol_snapshots: dict[str, list[dict[str, Any]]],
+        filled_qty: float,
     ) -> dict[str, Any] | None:
-        parent_created = str(parent_payload.get("created_at") or parent_payload.get("filled_at") or "")
+        parent_time = PaperTradingService._parse_timestamp(
+            parent_payload.get("filled_at") or parent_payload.get("created_at")
+        )
+        if parent_time is None:
+            return None
+        latest_exit_time = parent_time + timedelta(days=7)
         candidates = [
             item
             for item in symbol_snapshots.get(symbol, [])
-            if not item.get("execution_id")
-            and str(item.get("side") or "").lower() == "sell"
-            and str(item.get("status") or "").lower() == "filled"
-            and str((item.get("payload") or {}).get("created_at") or item.get("created_at") or "") >= parent_created
+            if PaperTradingService._is_matching_separate_exit_snapshot(
+                item,
+                filled_qty=filled_qty,
+                parent_time=parent_time,
+                latest_exit_time=latest_exit_time,
+            )
         ]
         return (
             sorted(
                 candidates,
-                key=lambda row: str((row.get("payload") or {}).get("created_at") or row.get("created_at") or ""),
+                key=lambda row: PaperTradingService._snapshot_timestamp(row) or latest_exit_time,
             )[0]
             if candidates
             else None
         )
+
+    @staticmethod
+    def _is_matching_separate_exit_snapshot(
+        item: dict[str, Any],
+        *,
+        filled_qty: float,
+        parent_time: datetime,
+        latest_exit_time: datetime,
+    ) -> bool:
+        if item.get("execution_id"):
+            return False
+        if str(item.get("side") or "").lower() != "sell":
+            return False
+        if str(item.get("status") or "").lower() != "filled":
+            return False
+        item_time = PaperTradingService._snapshot_timestamp(item)
+        if item_time is None or item_time < parent_time or item_time > latest_exit_time:
+            return False
+        payload = dict(item.get("payload") or {})
+        item_qty = PaperTradingService._optional_float(item.get("filled_qty") or payload.get("filled_qty"))
+        if item_qty is None or abs(item_qty - filled_qty) > 0.000001:
+            return False
+        return True
+
+    @staticmethod
+    def _snapshot_timestamp(item: dict[str, Any]) -> datetime | None:
+        payload = dict(item.get("payload") or {})
+        return PaperTradingService._parse_timestamp(
+            payload.get("filled_at")
+            or payload.get("created_at")
+            or item.get("filled_at")
+            or item.get("created_at")
+        )
+
+    @staticmethod
+    def _parse_timestamp(value: Any) -> datetime | None:
+        if value in (None, ""):
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=utc_now().tzinfo)
+        return parsed
 
     @staticmethod
     def _execution_source(strategy_name: str, request_payload: dict[str, Any]) -> str:

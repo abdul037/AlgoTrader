@@ -28,6 +28,38 @@ def test_paper_broker_executions_exposes_real_alpaca_lifecycle(tmp_path) -> None
     service = app.state.paper_trading_service
     service.executions.create(
         ExecutionRecord(
+            id="exec_canceled",
+            proposal_id="prop_canceled",
+            status="canceled",
+            mode="alpaca_paper",
+            broker_order_id="old-canceled-order",
+            request_payload={
+                "symbol": "NVDA",
+                "side": "buy",
+                "strategy_name": "manual_smoke",
+                "client_order_id": "old-client",
+            },
+            response_payload={
+                "broker": "alpaca",
+                "broker_execution": {
+                    "broker_order_id": "old-canceled-order",
+                    "client_order_id": "old-client",
+                    "symbol": "NVDA",
+                    "side": "buy",
+                    "qty": 0.1,
+                    "filled_qty": 0.0,
+                    "order_class": "simple",
+                    "status": "canceled",
+                    "created_at": "2026-05-17T21:18:49+00:00",
+                    "canceled_at": "2026-05-17T21:20:40+00:00",
+                },
+            },
+            created_at="2026-05-17T21:17:44+00:00",
+            updated_at="2026-05-17T21:20:40+00:00",
+        )
+    )
+    service.executions.create(
+        ExecutionRecord(
             id="exec_nvda",
             proposal_id="prop_nvda",
             status="filled",
@@ -175,7 +207,8 @@ def test_paper_broker_executions_exposes_real_alpaca_lifecycle(tmp_path) -> None
 
     assert trades == []
     assert response.status_code == 200
-    record = response.json()[0]
+    records = {item["execution_id"]: item for item in response.json()}
+    record = records["exec_nvda"]
     assert record["execution_id"] == "exec_nvda"
     assert record["queue_id"] == "queue_nvda"
     assert record["source"] == "manual_smoke"
@@ -184,4 +217,7 @@ def test_paper_broker_executions_exposes_real_alpaca_lifecycle(tmp_path) -> None
     assert record["exit_fill_price"] == 208.52
     assert record["realized_pnl_usd"] == -0.12
     assert len(record["legs"]) == 2
+    assert records["exec_canceled"]["exit_order_id"] is None
+    assert records["exec_canceled"]["exit_fill_price"] is None
+    assert records["exec_canceled"]["realized_pnl_usd"] == 0.0
     assert dashboard["recent_broker_executions"][0]["execution_id"] == "exec_nvda"
