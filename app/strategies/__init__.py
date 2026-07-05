@@ -12,6 +12,8 @@ from app.strategies.ema_trend_stack import EMATrendStackStrategy
 from app.strategies.enhanced import (
     ATRDonchianTrendBreakoutStrategy,
     AnchoredVWAPPullbackContinuationStrategy,
+    ConfluenceRecoveryBreakoutStrategy,
+    EarlyBreakoutPullbackContinuationStrategy,
     EtfMegaCapRelativeStrengthRotationStrategy,
     FailedBreakdownReversalStrategy,
     GapContinuationFadeStrategy,
@@ -20,6 +22,8 @@ from app.strategies.enhanced import (
     MultiTimeframeTrendPullbackStrategy,
     OpeningRangeBreakoutRetestStrategy,
     RegimeFilteredMeanReversionStrategy,
+    RegimeAlignedTrendContinuationStrategy,
+    RelativeVolumeReclaimContinuationStrategy,
     RelativeStrengthMomentumStrategy,
     VolatilityContractionBreakoutStrategy,
 )
@@ -69,6 +73,10 @@ STRATEGY_REGISTRY: dict[str, type[BaseStrategy]] = {
     "inside_bar_narrow_range_breakout": InsideBarNarrowRangeBreakoutStrategy,
     "liquidity_expansion_continuation": LiquidityExpansionContinuationStrategy,
     "etf_mega_cap_relative_strength_rotation": EtfMegaCapRelativeStrengthRotationStrategy,
+    "relative_volume_reclaim_continuation": RelativeVolumeReclaimContinuationStrategy,
+    "early_breakout_pullback_continuation": EarlyBreakoutPullbackContinuationStrategy,
+    "regime_aligned_trend_continuation": RegimeAlignedTrendContinuationStrategy,
+    "confluence_recovery_breakout": ConfluenceRecoveryBreakoutStrategy,
 }
 
 CORE_STRATEGY_NAMES = frozenset(
@@ -102,6 +110,10 @@ ENHANCED_RESEARCH_STRATEGY_NAMES = frozenset(
         "inside_bar_narrow_range_breakout",
         "liquidity_expansion_continuation",
         "etf_mega_cap_relative_strength_rotation",
+        "relative_volume_reclaim_continuation",
+        "early_breakout_pullback_continuation",
+        "regime_aligned_trend_continuation",
+        "confluence_recovery_breakout",
     }
 )
 
@@ -183,6 +195,14 @@ STRATEGY_SPECS: list[StrategySpec] = [
     StrategySpec("liquidity_expansion_continuation", timeframe="5m", style="momentum", default_kwargs={"timeframe": "5m"}, metadata=ENHANCED_METADATA),
     StrategySpec("liquidity_expansion_continuation", timeframe="15m", style="momentum", default_kwargs={"timeframe": "15m"}, metadata=ENHANCED_METADATA),
     StrategySpec("etf_mega_cap_relative_strength_rotation", timeframe="1d", style="rotation", default_kwargs={"timeframe": "1d"}, metadata=ENHANCED_METADATA),
+    StrategySpec("relative_volume_reclaim_continuation", timeframe="5m", style="pullback_continuation", default_kwargs={"timeframe": "5m"}, metadata=ENHANCED_METADATA),
+    StrategySpec("relative_volume_reclaim_continuation", timeframe="15m", style="pullback_continuation", default_kwargs={"timeframe": "15m"}, metadata=ENHANCED_METADATA),
+    StrategySpec("early_breakout_pullback_continuation", timeframe="15m", style="breakout", default_kwargs={"timeframe": "15m"}, metadata=ENHANCED_METADATA),
+    StrategySpec("early_breakout_pullback_continuation", timeframe="1h", style="breakout", default_kwargs={"timeframe": "1h"}, metadata=ENHANCED_METADATA),
+    StrategySpec("regime_aligned_trend_continuation", timeframe="1h", style="trend", default_kwargs={"timeframe": "1h"}, metadata=ENHANCED_METADATA),
+    StrategySpec("regime_aligned_trend_continuation", timeframe="1d", style="trend", default_kwargs={"timeframe": "1d"}, metadata=ENHANCED_METADATA),
+    StrategySpec("confluence_recovery_breakout", timeframe="15m", style="breakout", default_kwargs={"timeframe": "15m"}, metadata=ENHANCED_METADATA),
+    StrategySpec("confluence_recovery_breakout", timeframe="1h", style="breakout", default_kwargs={"timeframe": "1h"}, metadata=ENHANCED_METADATA),
 ]
 
 STRATEGY_SPECS = [
@@ -230,6 +250,8 @@ __all__ = [
     "ATRDonchianTrendBreakoutStrategy",
     "AnchoredVWAPPullbackContinuationStrategy",
     "CORE_STRATEGY_NAMES",
+    "ConfluenceRecoveryBreakoutStrategy",
+    "EarlyBreakoutPullbackContinuationStrategy",
     "ENHANCED_RESEARCH_STRATEGY_NAMES",
     "EtfMegaCapRelativeStrengthRotationStrategy",
     "FailedBreakdownReversalStrategy",
@@ -249,6 +271,8 @@ __all__ = [
     "RSITrendContinuationStrategy",
     "RSIVWAPEMAConfluenceStrategy",
     "RegimeFilteredMeanReversionStrategy",
+    "RegimeAlignedTrendContinuationStrategy",
+    "RelativeVolumeReclaimContinuationStrategy",
     "RelativeStrengthMomentumStrategy",
     "StrategySpec",
     "TrendFollowingStrategy",

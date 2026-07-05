@@ -118,7 +118,7 @@ def test_continuous_readiness_requires_control_token_and_reports_gates(tmp_path)
     assert payload["extended_hours"]["mode"] == "supervised"
     assert payload["paper_exploration"]["ready"] is False
     assert "paper_scanner_exploration_disabled" in payload["paper_exploration"]["blockers"]
-    assert payload["strategies"]["catalog"]["total_strategy_specs"] == 62
+    assert payload["strategies"]["catalog"]["total_strategy_specs"] == 70
     assert payload["strategies"]["catalog"]["production_qualified_count"] == 0
 
 

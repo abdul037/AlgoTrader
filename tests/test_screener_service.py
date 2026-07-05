@@ -169,10 +169,10 @@ def test_scheduled_all_mode_reaches_core_and_enhanced_strategy_specs(tmp_path) -
     swing = sum(len(_strategy_specs(settings, timeframe=timeframe)) for timeframe in ["1h", "1d"])
     end_of_day = len(_strategy_specs(settings, timeframe="1w"))
 
-    assert intraday == 28
-    assert swing == 28
+    assert intraday == 32
+    assert swing == 32
     assert end_of_day == 6
-    assert intraday + swing + end_of_day == 62
+    assert intraday + swing + end_of_day == 70
 
 
 def test_paper_exploration_profile_applies_only_to_effective_screener_settings(tmp_path) -> None:

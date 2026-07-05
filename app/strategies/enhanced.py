@@ -1073,3 +1073,338 @@ class EtfMegaCapRelativeStrengthRotationStrategy(BaseStrategy):
                 extra={"roc": round(roc, 4), "roc_window": self.roc_window},
             ),
         )
+
+
+class RelativeVolumeReclaimContinuationStrategy(BaseStrategy):
+    """Paper-only continuation setup for VWAP/EMA reclaims with moderate relative volume."""
+
+    name = "relative_volume_reclaim_continuation"
+    required_bars = 55
+
+    def __init__(
+        self,
+        *,
+        timeframe: str = "15m",
+        minimum_relative_volume: float = 0.85,
+        minimum_dollar_volume: float = 2_000_000.0,
+        risk_multiple: float = 2.0,
+    ):
+        self.timeframe = timeframe
+        self.minimum_relative_volume = minimum_relative_volume
+        self.minimum_dollar_volume = minimum_dollar_volume
+        self.risk_multiple = risk_multiple
+
+    def generate_signal(self, data: pd.DataFrame, symbol: str) -> Signal | None:
+        if not self._ensure_length(data):
+            _reject(self, rejection_reasons=["insufficient_data"])
+            return None
+        frame = enrich_technical_indicators(data, timeframe=self.timeframe)
+        last = frame.iloc[-1]
+        previous = frame.iloc[-2]
+        price = _safe_float(last.get("close"))
+        atr = _safe_float(last.get("atr_14"))
+        vwap = _safe_float(last.get("vwap"))
+        ema_20 = _safe_float(last.get("ema_20"))
+        ema_50 = _safe_float(last.get("ema_50"))
+        if price is None or atr is None or vwap is None or ema_20 is None or ema_50 is None:
+            _reject(self, rejection_reasons=["indicator_unavailable"], row=last)
+            return None
+        support = max(vwap, ema_20)
+        low = _safe_float(last.get("low"), price) or price
+        prev_close = _safe_float(previous.get("close"), price) or price
+        open_price = _safe_float(last.get("open"), price) or price
+        rsi = _safe_float(last.get("rsi_14"), 50.0) or 50.0
+        macd_hist = _safe_float(last.get("macd_hist"), 0.0) or 0.0
+        pulled_into_support = min(low, prev_close) <= support + (0.30 * atr)
+        reclaimed = price > support and price > open_price
+        trend_ok = price > ema_50 and ema_20 >= ema_50 * 0.995
+        volume_ok = (_safe_float(last.get("relative_volume"), 0.0) or 0.0) >= self.minimum_relative_volume
+        momentum_ok = rsi >= 48.0 and macd_hist >= -0.05
+        liquidity_ok = _liquidity_ok(last, self.minimum_dollar_volume)
+        checks = {
+            "trend_not_aligned": trend_ok,
+            "reclaim_not_confirmed": pulled_into_support and reclaimed,
+            "relative_volume_too_low": volume_ok,
+            "momentum_not_constructive": momentum_ok,
+            "average_dollar_volume_below_threshold": liquidity_ok,
+        }
+        if not all(checks.values()):
+            _reject(
+                self,
+                rejection_reasons=_condition_rejections(checks),
+                row=last,
+                score=56.0 if reclaimed or volume_ok else 43.0,
+                measurements={"support": support, "vwap": vwap, "ema_20": ema_20, "ema_50": ema_50},
+            )
+            return None
+        stop = min(_recent_low(frame, 8) or price - atr, support - (0.65 * atr), price - atr)
+        self.last_diagnostics = {}
+        return _long_signal(
+            self,
+            symbol=symbol,
+            price=price,
+            stop=stop,
+            risk_multiple=self.risk_multiple,
+            rationale="Relative-volume reclaim continuation confirmed near VWAP/EMA support.",
+            confidence=0.63,
+            metadata=_metadata(
+                row=last,
+                style="pullback_continuation",
+                setup_type="relative_volume_reclaim_continuation",
+                risk_reward=self.risk_multiple,
+                extra={"support": round(support, 4), "reclaim_level": "max_vwap_ema20"},
+            ),
+        )
+
+
+class EarlyBreakoutPullbackContinuationStrategy(BaseStrategy):
+    """Near-breakout continuation for candidates repeatedly rejected as not fully cleared."""
+
+    name = "early_breakout_pullback_continuation"
+    required_bars = 65
+
+    def __init__(
+        self,
+        *,
+        timeframe: str = "15m",
+        channel_window: int = 20,
+        breakout_tolerance_atr: float = 0.35,
+        minimum_relative_volume: float = 0.80,
+        risk_multiple: float = 2.2,
+    ):
+        self.timeframe = timeframe
+        self.channel_window = channel_window
+        self.breakout_tolerance_atr = breakout_tolerance_atr
+        self.minimum_relative_volume = minimum_relative_volume
+        self.risk_multiple = risk_multiple
+
+    def generate_signal(self, data: pd.DataFrame, symbol: str) -> Signal | None:
+        if not self._ensure_length(data):
+            _reject(self, rejection_reasons=["insufficient_data"])
+            return None
+        frame = enrich_technical_indicators(data, timeframe=self.timeframe)
+        prior = frame.iloc[:-1]
+        last = frame.iloc[-1]
+        price = _safe_float(last.get("close"))
+        atr = _safe_float(last.get("atr_14"))
+        channel_high = _recent_high(prior, self.channel_window)
+        if price is None or atr is None or channel_high is None:
+            _reject(self, rejection_reasons=["indicator_unavailable"], row=last)
+            return None
+        ema_20 = _safe_float(last.get("ema_20"), price) or price
+        ema_50 = _safe_float(last.get("ema_50"), ema_20) or ema_20
+        low = _safe_float(last.get("low"), price) or price
+        open_price = _safe_float(last.get("open"), price) or price
+        rsi = _safe_float(last.get("rsi_14"), 50.0) or 50.0
+        gap_atr = (channel_high - price) / max(atr, 0.01)
+        near_breakout = -0.20 <= gap_atr <= self.breakout_tolerance_atr
+        trend_ok = price > ema_20 and ema_20 >= ema_50 * 0.995
+        pullback_ok = low <= ema_20 + (0.45 * atr)
+        confirmation_ok = price > open_price and rsi >= 50.0
+        volume_ok = (_safe_float(last.get("relative_volume"), 0.0) or 0.0) >= self.minimum_relative_volume
+        checks = {
+            "breakout_level_not_cleared": near_breakout,
+            "trend_not_aligned": trend_ok,
+            "pullback_not_at_support": pullback_ok,
+            "confirmation_not_present": confirmation_ok,
+            "relative_volume_too_low": volume_ok,
+        }
+        if not all(checks.values()):
+            _reject(
+                self,
+                rejection_reasons=_condition_rejections(checks),
+                row=last,
+                score=56.0 if near_breakout else 43.0,
+                measurements={"channel_high": channel_high, "breakout_gap_atr": gap_atr},
+            )
+            return None
+        stop = min(_recent_low(frame, 10) or price - atr, ema_50 - (0.35 * atr), price - (1.15 * atr))
+        self.last_diagnostics = {}
+        return _long_signal(
+            self,
+            symbol=symbol,
+            price=price,
+            stop=stop,
+            risk_multiple=self.risk_multiple,
+            rationale="Early breakout pullback is within ATR tolerance of resistance and reclaiming trend support.",
+            confidence=0.62,
+            metadata=_metadata(
+                row=last,
+                style="breakout",
+                setup_type="early_breakout_pullback_continuation",
+                risk_reward=self.risk_multiple,
+                extra={"channel_high": round(channel_high, 4), "breakout_gap_atr": round(gap_atr, 4)},
+            ),
+        )
+
+
+class RegimeAlignedTrendContinuationStrategy(BaseStrategy):
+    """Trend continuation when the broader EMA regime is aligned but classic confluence is incomplete."""
+
+    name = "regime_aligned_trend_continuation"
+    required_bars = 90
+
+    def __init__(
+        self,
+        *,
+        timeframe: str = "1h",
+        roc_window: int = 12,
+        minimum_relative_volume: float = 0.75,
+        risk_multiple: float = 2.3,
+    ):
+        self.timeframe = timeframe
+        self.roc_window = roc_window
+        self.minimum_relative_volume = minimum_relative_volume
+        self.risk_multiple = risk_multiple
+
+    def generate_signal(self, data: pd.DataFrame, symbol: str) -> Signal | None:
+        if not self._ensure_length(data):
+            _reject(self, rejection_reasons=["insufficient_data"])
+            return None
+        frame = enrich_technical_indicators(data, timeframe=self.timeframe)
+        last = frame.iloc[-1]
+        price = _safe_float(last.get("close"))
+        atr = _safe_float(last.get("atr_14"))
+        if price is None or atr is None:
+            _reject(self, rejection_reasons=["indicator_unavailable"], row=last)
+            return None
+        ema_9 = _safe_float(last.get("ema_9"), price) or price
+        ema_20 = _safe_float(last.get("ema_20"), ema_9) or ema_9
+        ema_50 = _safe_float(last.get("ema_50"), ema_20) or ema_20
+        ema_200 = _safe_float(last.get("ema_200"), ema_50) or ema_50
+        low = _safe_float(last.get("low"), price) or price
+        open_price = _safe_float(last.get("open"), price) or price
+        rsi = _safe_float(last.get("rsi_14"), 50.0) or 50.0
+        adx = _safe_float(last.get("adx_14"), 0.0) or 0.0
+        macd_hist = _safe_float(last.get("macd_hist"), 0.0) or 0.0
+        roc = _safe_float(frame["close"].astype(float).pct_change(self.roc_window).iloc[-1], 0.0) or 0.0
+        regime_ok = price > ema_20 and ema_20 >= ema_50 * 0.995 and ema_50 >= ema_200 * 0.98
+        pullback_ok = low <= ema_20 + (0.55 * atr) and price >= ema_9 * 0.995
+        trend_strength_ok = adx >= 14.0 or roc >= 0.01
+        continuation_ok = rsi >= 50.0 and (price > open_price or macd_hist >= 0.0)
+        volume_ok = (_safe_float(last.get("relative_volume"), 0.0) or 0.0) >= self.minimum_relative_volume
+        checks = {
+            "regime_alignment_too_low": regime_ok,
+            "pullback_not_at_support": pullback_ok,
+            "trend_strength_too_low": trend_strength_ok,
+            "confirmation_not_present": continuation_ok,
+            "relative_volume_too_low": volume_ok,
+        }
+        if not all(checks.values()):
+            _reject(
+                self,
+                rejection_reasons=_condition_rejections(checks),
+                row=last,
+                score=57.0 if regime_ok and trend_strength_ok else 43.0,
+                measurements={"roc": roc, "ema_9": ema_9, "ema_20": ema_20, "ema_50": ema_50, "ema_200": ema_200},
+            )
+            return None
+        stop = min(_recent_low(frame, 12) or price - atr, ema_50 - (0.40 * atr), price - (1.35 * atr))
+        self.last_diagnostics = {}
+        return _long_signal(
+            self,
+            symbol=symbol,
+            price=price,
+            stop=stop,
+            risk_multiple=self.risk_multiple,
+            rationale="Regime-aligned trend continuation reclaimed fast-trend support with constructive momentum.",
+            confidence=0.64,
+            metadata=_metadata(
+                row=last,
+                style="trend",
+                setup_type="regime_aligned_trend_continuation",
+                risk_reward=self.risk_multiple,
+                extra={"roc": round(roc, 4), "roc_window": self.roc_window},
+            ),
+        )
+
+
+class ConfluenceRecoveryBreakoutStrategy(BaseStrategy):
+    """Recovery breakout that accepts partial confluence when compression, trend, and volume align."""
+
+    name = "confluence_recovery_breakout"
+    required_bars = 70
+
+    def __init__(
+        self,
+        *,
+        timeframe: str = "1h",
+        breakout_window: int = 20,
+        minimum_relative_volume: float = 0.85,
+        minimum_confluence_score: float = 0.35,
+        risk_multiple: float = 2.1,
+    ):
+        self.timeframe = timeframe
+        self.breakout_window = breakout_window
+        self.minimum_relative_volume = minimum_relative_volume
+        self.minimum_confluence_score = minimum_confluence_score
+        self.risk_multiple = risk_multiple
+
+    def generate_signal(self, data: pd.DataFrame, symbol: str) -> Signal | None:
+        if not self._ensure_length(data):
+            _reject(self, rejection_reasons=["insufficient_data"])
+            return None
+        frame = enrich_technical_indicators(data, timeframe=self.timeframe)
+        prior = frame.iloc[:-1]
+        last = frame.iloc[-1]
+        previous = frame.iloc[-2]
+        price = _safe_float(last.get("close"))
+        atr = _safe_float(last.get("atr_14"))
+        range_high = _recent_high(prior, self.breakout_window)
+        width = _safe_float(last.get("bb_width_pct"))
+        width_median = _safe_float(frame["bb_width_pct"].tail(self.breakout_window + 1).iloc[:-1].median())
+        if price is None or atr is None or range_high is None or width is None or width_median is None:
+            _reject(self, rejection_reasons=["indicator_unavailable"], row=last)
+            return None
+        ema_20 = _safe_float(last.get("ema_20"), price) or price
+        ema_50 = _safe_float(last.get("ema_50"), ema_20) or ema_20
+        vwap = _safe_float(last.get("vwap"), ema_20) or ema_20
+        open_price = _safe_float(last.get("open"), price) or price
+        prev_close = _safe_float(previous.get("close"), price) or price
+        confluence = compute_confluence_score(last)
+        compression_ok = width <= max(width_median * 1.05, 4.5)
+        trend_ok = price > ema_50 and ema_20 >= ema_50 * 0.995
+        reclaim_ok = price > max(ema_20, vwap) and prev_close <= max(ema_20, vwap) + (0.50 * atr)
+        breakout_ready = price >= range_high - (0.25 * atr) and price > open_price
+        volume_ok = (_safe_float(last.get("relative_volume"), 0.0) or 0.0) >= self.minimum_relative_volume
+        confluence_ok = confluence >= self.minimum_confluence_score
+        checks = {
+            "compression_not_present": compression_ok,
+            "trend_not_aligned": trend_ok,
+            "reclaim_not_confirmed": reclaim_ok,
+            "breakout_level_not_cleared": breakout_ready,
+            "relative_volume_too_low": volume_ok,
+            "confluence_too_low": confluence_ok,
+        }
+        if not all(checks.values()):
+            _reject(
+                self,
+                rejection_reasons=_condition_rejections(checks),
+                row=last,
+                score=57.0 if breakout_ready and confluence_ok else 43.0,
+                measurements={
+                    "range_high": range_high,
+                    "bb_width_median": width_median,
+                    "confluence": confluence,
+                    "vwap": vwap,
+                },
+            )
+            return None
+        stop = min(_recent_low(frame, 10) or price - atr, ema_50 - (0.45 * atr), price - (1.20 * atr))
+        self.last_diagnostics = {}
+        return _long_signal(
+            self,
+            symbol=symbol,
+            price=price,
+            stop=stop,
+            risk_multiple=self.risk_multiple,
+            rationale="Compression recovery breakout aligned enough confluence, volume, and trend for paper exploration.",
+            confidence=0.63,
+            metadata=_metadata(
+                row=last,
+                style="breakout",
+                setup_type="confluence_recovery_breakout",
+                risk_reward=self.risk_multiple,
+                extra={"range_high": round(range_high, 4), "confluence": round(confluence, 4)},
+            ),
+        )
