@@ -199,11 +199,21 @@ def test_paper_broker_executions_exposes_real_alpaca_lifecycle(tmp_path) -> None
             "filled_at": "2026-06-22T19:00:53+00:00",
         },
     )
+    service.safety_state.record_reconciliation(
+        status="ok",
+        account_number="PA3B287XBZYU",
+        orders_seen=4,
+        positions_seen=0,
+        issues=[],
+        account={"equity": 100000},
+    )
     client = TestClient(app)
 
     trades = client.get("/paper/trades").json()
     response = client.get("/paper/broker-executions")
     dashboard = client.get("/paper/dashboard").json()
+    lifecycles = client.get("/paper/lifecycles").json()
+    autonomous_lifecycles = client.get("/paper/lifecycles?autonomous_only=true").json()
 
     assert trades == []
     assert response.status_code == 200
@@ -221,3 +231,14 @@ def test_paper_broker_executions_exposes_real_alpaca_lifecycle(tmp_path) -> None
     assert records["exec_canceled"]["exit_fill_price"] is None
     assert records["exec_canceled"]["realized_pnl_usd"] == 0.0
     assert dashboard["recent_broker_executions"][0]["execution_id"] == "exec_nvda"
+    lifecycle = {item["execution_id"]: item for item in lifecycles}["exec_nvda"]
+    assert lifecycle["source"] == "manual_smoke"
+    assert lifecycle["autonomous"] is False
+    assert lifecycle["flags"]["entry_submitted"] is True
+    assert lifecycle["flags"]["entry_filled"] is True
+    assert lifecycle["flags"]["bracket_legs_verified"] is True
+    assert lifecycle["flags"]["exit_filled_or_position_flat"] is True
+    assert lifecycle["flags"]["reconciled"] is True
+    assert lifecycle["flags"]["duplicate_order_absent"] is True
+    assert "manual_or_unknown_source" in lifecycle["blockers"]
+    assert autonomous_lifecycles == []

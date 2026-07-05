@@ -10,6 +10,7 @@ from app.models.paper import (
     PaperPerformanceSummary,
     PaperPositionRecord,
     PaperTradeRecord,
+    PaperTradeLifecycleRecord,
 )
 
 router = APIRouter(prefix="/paper", tags=["paper"])
@@ -42,6 +43,30 @@ def paper_trades(request: Request) -> list[PaperTradeRecord]:
 @router.get("/broker-executions", response_model=list[PaperBrokerExecutionRecord])
 def paper_broker_executions(request: Request, limit: int = 100) -> list[PaperBrokerExecutionRecord]:
     return _paper(request).broker_executions(limit=min(max(limit, 1), 500))
+
+
+@router.get("/lifecycles", response_model=list[PaperTradeLifecycleRecord])
+def paper_lifecycles(
+    request: Request,
+    limit: int = 100,
+    source: str | None = None,
+    autonomous_only: bool = False,
+) -> list[PaperTradeLifecycleRecord]:
+    return _paper(request).lifecycles(
+        limit=min(max(limit, 1), 500),
+        source=source,
+        autonomous_only=autonomous_only,
+    )
+
+
+@router.get("/lifecycles/{execution_id}", response_model=PaperTradeLifecycleRecord)
+def paper_lifecycle(request: Request, execution_id: str) -> PaperTradeLifecycleRecord:
+    from fastapi import HTTPException, status
+
+    record = _paper(request).lifecycle(execution_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="paper lifecycle not found")
+    return record
 
 
 @router.post("/refresh")

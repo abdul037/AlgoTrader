@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from app.models.automation import AutomationStateChange, AutomationStatus
 from app.models.execution_queue import ExecutionQueueStatus
 from app.strategies.catalog import build_strategy_catalog_report
+from app.utils.time import utc_now
 
 router = APIRouter(prefix="/automation", tags=["automation"])
 
@@ -44,6 +45,46 @@ def _json_or_empty(raw: Any, default: Any) -> Any:
         return json.loads(str(raw))
     except Exception:
         return default
+
+
+def _date_part(timestamp: str | None) -> str | None:
+    if not timestamp:
+        return None
+    return str(timestamp)[:10]
+
+
+def _success_rate(values: list[bool]) -> float:
+    if not values:
+        return 0.0
+    return round(sum(1 for item in values if item) / len(values), 4)
+
+
+def _paper_performance_metrics(pnl_values: list[float]) -> dict[str, float | None]:
+    if not pnl_values:
+        return {
+            "gross_pnl_usd": 0.0,
+            "net_pnl_usd": 0.0,
+            "profit_factor": None,
+            "expectancy_usd": 0.0,
+            "max_drawdown_usd": 0.0,
+        }
+    gains = sum(value for value in pnl_values if value > 0)
+    losses = abs(sum(value for value in pnl_values if value < 0))
+    cumulative = 0.0
+    peak = 0.0
+    max_drawdown = 0.0
+    for value in pnl_values:
+        cumulative += value
+        peak = max(peak, cumulative)
+        max_drawdown = max(max_drawdown, peak - cumulative)
+    total = round(sum(pnl_values), 4)
+    return {
+        "gross_pnl_usd": total,
+        "net_pnl_usd": total,
+        "profit_factor": None if losses == 0 else round(gains / losses, 4),
+        "expectancy_usd": round(total / len(pnl_values), 4),
+        "max_drawdown_usd": round(max_drawdown, 4),
+    }
 
 
 @router.get("/status", response_model=AutomationStatus)
@@ -221,6 +262,154 @@ def continuous_readiness(request: Request):
         },
         "learning": learning_status,
         "rl_policy": rl_policy_status,
+    }
+
+
+@router.get("/production-readiness")
+def production_readiness(request: Request):
+    _require_control_token(request)
+    institutional_readiness = request.app.state.institutional_service.readiness()
+    approved_versions = list(institutional_readiness.get("approved_strategy_versions") or [])
+    learning_status = request.app.state.learning_service.status()
+    workflow_health = request.app.state.workflow_service.lightweight_health()
+    reconciliation_rows = request.app.state.safety_state_repository.list_reconciliations(limit=100)
+    latest_reconciliation = reconciliation_rows[0] if reconciliation_rows else None
+    reconciliation_issues = _json_or_empty(
+        latest_reconciliation.get("issues_json") if latest_reconciliation else None,
+        [],
+    )
+    lifecycles = request.app.state.paper_trading_service.lifecycles(limit=1000)
+    autonomous = [item for item in lifecycles if item.autonomous]
+    closed = [
+        item
+        for item in autonomous
+        if item.flags.entry_filled and item.flags.exit_filled_or_position_flat
+    ]
+    closed_by_strategy: dict[str, int] = {}
+    for item in closed:
+        strategy_name = item.strategy_name or "unknown"
+        closed_by_strategy[strategy_name] = closed_by_strategy.get(strategy_name, 0) + 1
+    promoted_strategy_trade_counts = []
+    for version_id in approved_versions:
+        try:
+            version = request.app.state.strategy_governance_repository.get_version(version_id)
+            strategy_name = version.strategy_name
+        except Exception:
+            strategy_name = "unknown"
+        promoted_strategy_trade_counts.append(
+            {
+                "strategy_version_id": version_id,
+                "strategy_name": strategy_name,
+                "closed_trades": closed_by_strategy.get(strategy_name, 0),
+            }
+        )
+
+    duplicate_order_count = sum(1 for item in lifecycles if not item.flags.duplicate_order_absent)
+    unprotected_position_count = sum(
+        1
+        for item in lifecycles
+        if item.flags.entry_filled
+        and not item.flags.bracket_legs_verified
+        and not item.flags.exit_filled_or_position_flat
+    )
+    unreconciled_lifecycle_count = sum(1 for item in lifecycles if item.flags.entry_filled and not item.flags.reconciled)
+    session_dates = sorted(
+        {
+            date
+            for item in closed
+            if (date := _date_part(item.updated_at or item.created_at)) is not None
+        }
+    )
+    pnl_values = [float(item.realized_pnl_usd or 0.0) for item in closed]
+    performance = _paper_performance_metrics(pnl_values)
+    reconciliation_success_rate = _success_rate(
+        [str(row.get("status") or "") == "ok" for row in reconciliation_rows]
+    )
+    critical_alerts = request.app.state.safety_state_repository.list_strategy_health()
+
+    blockers: list[str] = []
+    if len(approved_versions) < 1:
+        blockers.append("no_production_qualified_strategy")
+    if len(closed) < 100:
+        blockers.append("insufficient_autonomous_closed_trades")
+    if len(session_dates) < 20:
+        blockers.append("insufficient_clean_paper_sessions_initial")
+    if len(session_dates) < 60:
+        blockers.append("insufficient_clean_paper_sessions_production")
+    for item in promoted_strategy_trade_counts:
+        if int(item["closed_trades"]) < 30:
+            blockers.append(f"insufficient_closed_trades_for_promoted_strategy:{item['strategy_version_id']}")
+    if duplicate_order_count:
+        blockers.append("duplicate_broker_orders_present")
+    if unprotected_position_count:
+        blockers.append("unprotected_open_positions_present")
+    if unreconciled_lifecycle_count:
+        blockers.append("unreconciled_lifecycles_present")
+    if not latest_reconciliation or latest_reconciliation.get("status") != "ok":
+        blockers.append("reconciliation_not_ok")
+    if reconciliation_issues:
+        blockers.append("unresolved_reconciliation_issues")
+    if int(learning_status.get("failed_jobs") or 0) > 0:
+        blockers.append("unresolved_failed_learning_jobs")
+    blockers.extend(workflow_health.get("blockers") or [])
+    if critical_alerts:
+        blockers.append("unresolved_strategy_health_alerts")
+
+    initial_validated_blockers = [
+        item
+        for item in blockers
+        if item != "insufficient_clean_paper_sessions_production"
+    ]
+    return {
+        "mode": "production_grade_paper_readiness",
+        "ready": not blockers,
+        "initial_validated_ready": not initial_validated_blockers,
+        "production_grade_ready": not blockers,
+        "generated_at": utc_now().isoformat(),
+        "blockers": sorted(set(blockers)),
+        "gates": {
+            "minimum_initial_clean_sessions": 20,
+            "minimum_production_clean_sessions": 60,
+            "minimum_closed_autonomous_trades": 100,
+            "minimum_closed_trades_per_promoted_strategy": 30,
+            "zero_duplicate_orders": duplicate_order_count == 0,
+            "zero_unprotected_positions": unprotected_position_count == 0,
+            "no_failed_learning_jobs": int(learning_status.get("failed_jobs") or 0) == 0,
+            "clean_reconciliation": bool(
+                latest_reconciliation
+                and latest_reconciliation.get("status") == "ok"
+                and not reconciliation_issues
+            ),
+        },
+        "metrics": {
+            "production_qualified_strategy_count": len(approved_versions),
+            "production_qualified_strategy_versions": approved_versions,
+            "autonomous_lifecycle_count": len(autonomous),
+            "autonomous_closed_trade_count": len(closed),
+            "closed_trades_by_strategy": closed_by_strategy,
+            "closed_trades_by_promoted_strategy": promoted_strategy_trade_counts,
+            "paper_sessions_observed": len(session_dates),
+            "paper_session_dates": session_dates,
+            "duplicate_order_count": duplicate_order_count,
+            "unprotected_position_count": unprotected_position_count,
+            "unreconciled_lifecycle_count": unreconciled_lifecycle_count,
+            "reconciliation_success_rate": reconciliation_success_rate,
+            "gross_pnl_usd": performance["gross_pnl_usd"],
+            "net_pnl_usd": performance["net_pnl_usd"],
+            "profit_factor": performance["profit_factor"],
+            "expectancy_usd": performance["expectancy_usd"],
+            "max_drawdown_usd": performance["max_drawdown_usd"],
+            "learning_failed_jobs": int(learning_status.get("failed_jobs") or 0),
+            "unresolved_critical_alert_count": len(critical_alerts),
+        },
+        "reconciliation": {
+            "latest_status": latest_reconciliation.get("status") if latest_reconciliation else "never_run",
+            "latest_account_number": latest_reconciliation.get("account_number") if latest_reconciliation else None,
+            "latest_created_at": latest_reconciliation.get("created_at") if latest_reconciliation else None,
+            "issues": reconciliation_issues,
+        },
+        "scheduler": workflow_health,
+        "learning": learning_status,
     }
 
 

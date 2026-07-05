@@ -65,6 +65,8 @@ class TelegramBotService:
         "/reconciliation - Alpaca account and order reconciliation status\n"
         "/strategy_status - active/deactivated strategy health\n"
         "/learning_status - learning pipeline, model, and job health\n"
+        "/learning_jobs [status] - list failed, pending, or completed learning jobs\n"
+        "/learning_retry JOB_ID - retry a recoverable failed learning job\n"
         "/trade_review EXECUTION_ID - persisted deterministic/AI trade review\n"
         "/learning_digest - recent review and model digest\n"
         "/model_status - champion and challenger model status\n"
@@ -429,6 +431,14 @@ class TelegramBotService:
 
         if command == "/learning_status":
             self.notifier.send_text(self._learning_status_message(), chat_id=chat_id)
+            return
+
+        if command == "/learning_jobs":
+            self.notifier.send_text(self._learning_jobs_message(args), chat_id=chat_id)
+            return
+
+        if command == "/learning_retry":
+            self.notifier.send_text(self._learning_retry_message(args), chat_id=chat_id)
             return
 
         if command == "/trade_review":
@@ -1171,6 +1181,41 @@ class TelegramBotService:
                 f"Excessive drift events: {int(status.get('excessive_drift') or 0)}",
             ]
         )
+
+    def _learning_jobs_message(self, args: list[str]) -> str:
+        if self.learning is None:
+            return "Learning service is not configured."
+        status_filter = args[0].lower() if args else "failed"
+        if status_filter not in {"failed", "pending", "completed", "running", "resolved"}:
+            return "Usage: /learning_jobs [failed|pending|completed|running|resolved]"
+        jobs = self.learning.list_job_summaries(status=status_filter, limit=5)
+        if not jobs:
+            return f"Learning jobs: no {status_filter} jobs."
+        lines = [f"Learning jobs: {status_filter}"]
+        for job in jobs:
+            error = str(job.get("error") or "")
+            if len(error) > 80:
+                error = error[:77] + "..."
+            lines.append(
+                f"{job.get('id')} | {job.get('job_type')} | attempts {job.get('attempts')} | "
+                f"next {job.get('next_action')}"
+            )
+            if error:
+                lines.append(f"error: {error}")
+        return "\n".join(lines)
+
+    def _learning_retry_message(self, args: list[str]) -> str:
+        if self.learning is None:
+            return "Learning service is not configured."
+        if not args:
+            return "Usage: /learning_retry JOB_ID"
+        try:
+            job = self.learning.retry_job(args[0])
+        except KeyError:
+            return f"Learning job {args[0]} was not found."
+        except ValueError as exc:
+            return f"Learning job {args[0]} was not retried: {exc}"
+        return f"Learning job {job.get('id')} queued for retry. Attempts so far: {job.get('attempts')}."
 
     def _trade_review_message(self, args: list[str]) -> str:
         if self.learning is None:

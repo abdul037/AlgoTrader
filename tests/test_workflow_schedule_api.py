@@ -22,6 +22,24 @@ class FakeWorkflowSchedule:
             )
         ]
 
+    def lightweight_health(self):
+        return {
+            "status": "ok",
+            "scheduler_enabled": True,
+            "blockers": [],
+            "buckets": [
+                {
+                    "name": "intraday_rotation",
+                    "enabled": True,
+                    "paused": False,
+                    "stale": False,
+                    "age_seconds": 60,
+                    "freshness_threshold_seconds": 3600,
+                    "last_status": "ok",
+                }
+            ],
+        }
+
     def run_bucket(self, bucket_name: str, *, notify: bool = True, force_refresh: bool = True):
         if bucket_name == "unknown_bucket":
             raise KeyError("Unknown workflow bucket: unknown_bucket")
@@ -48,6 +66,20 @@ def test_workflow_schedule_status_route(tmp_path) -> None:
     assert payload[0]["enabled"] is True
     assert payload[0]["last_status"] == "ok"
     assert payload[0]["next_due_at"] == "2026-05-04T10:15:00-04:00"
+
+
+def test_workflow_health_route_is_lightweight(tmp_path) -> None:
+    app = create_app(make_settings(tmp_path), broker=MockBroker(), enable_background_jobs=False)
+    app.state.workflow_service = FakeWorkflowSchedule()
+    client = TestClient(app)
+
+    response = client.get("/workflow/health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["buckets"][0]["name"] == "intraday_rotation"
+    assert payload["buckets"][0]["stale"] is False
 
 
 def test_workflow_run_bucket_route(tmp_path) -> None:

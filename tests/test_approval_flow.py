@@ -122,6 +122,29 @@ def test_continuous_readiness_requires_control_token_and_reports_gates(tmp_path)
     assert payload["strategies"]["catalog"]["production_qualified_count"] == 0
 
 
+def test_production_readiness_reports_evidence_blockers(tmp_path) -> None:
+    app = create_app(
+        make_settings(tmp_path, control_api_token="secret", alpaca_expected_account_number="PAPER-1"),
+        broker=MockBroker(),
+        enable_background_jobs=False,
+    )
+    client = TestClient(app)
+
+    assert client.get("/automation/production-readiness").status_code == 403
+
+    response = client.get("/automation/production-readiness", headers={"X-Control-Token": "secret"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "production_grade_paper_readiness"
+    assert payload["ready"] is False
+    assert payload["metrics"]["production_qualified_strategy_count"] == 0
+    assert payload["metrics"]["autonomous_closed_trade_count"] == 0
+    assert "no_production_qualified_strategy" in payload["blockers"]
+    assert "insufficient_autonomous_closed_trades" in payload["blockers"]
+    assert "reconciliation_not_ok" in payload["blockers"]
+
+
 def test_live_queue_execution_blocks_without_live_gates(tmp_path) -> None:
     app = create_app(
         make_settings(

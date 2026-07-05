@@ -321,6 +321,103 @@ class LearningService:
             completed.append(job)
         return completed
 
+    def job_summary(self, job: LearningJob) -> dict[str, Any]:
+        next_action = "none"
+        if job.status == "failed":
+            next_action = "retry_or_resolve"
+        elif job.status == "pending":
+            next_action = "process"
+        elif job.status == "running":
+            next_action = "wait"
+        return {
+            "id": job.id,
+            "idempotency_key": job.idempotency_key,
+            "job_type": job.job_type,
+            "status": job.status,
+            "payload": dict(job.payload),
+            "result": dict(job.result),
+            "attempts": job.attempts,
+            "error": job.error,
+            "scheduled_at": job.scheduled_at,
+            "started_at": job.started_at,
+            "completed_at": job.completed_at,
+            "recoverable": job.status in {"failed", "running"},
+            "next_action": next_action,
+        }
+
+    def list_job_summaries(self, *, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        return [
+            self.job_summary(job)
+            for job in self.repository.list_jobs(status=status, limit=limit)
+        ]
+
+    def get_job_summary(self, job_id: str) -> dict[str, Any]:
+        job = self.repository.get_job(job_id)
+        if job is None:
+            raise KeyError(f"Learning job {job_id} not found")
+        return self.job_summary(job)
+
+    def retry_job(self, job_id: str) -> LearningJob:
+        job = self.repository.get_job(job_id)
+        if job is None:
+            raise KeyError(f"Learning job {job_id} not found")
+        if job.status not in {"failed", "running"}:
+            raise ValueError(f"Learning job {job_id} cannot be retried from status {job.status}")
+        previous_error = job.error
+        job.status = "pending"
+        job.error = ""
+        job.result = {
+            **dict(job.result),
+            "retry_requested_at": utc_now().isoformat(),
+            "previous_error": previous_error,
+            "previous_attempts": job.attempts,
+        }
+        job.started_at = None
+        job.completed_at = None
+        self.logs.log(
+            "learning_job_retry_requested",
+            {
+                "job_id": job.id,
+                "job_type": job.job_type,
+                "previous_error": previous_error,
+                "attempts": job.attempts,
+            },
+        )
+        return self.repository.update_job(job)
+
+    def resolve_job(self, job_id: str, *, signed_by: str, evidence: dict[str, Any]) -> LearningJob:
+        if not signed_by.strip():
+            raise ValueError("signed_by is required")
+        if not evidence:
+            raise ValueError("evidence is required")
+        job = self.repository.get_job(job_id)
+        if job is None:
+            raise KeyError(f"Learning job {job_id} not found")
+        if job.status != "failed":
+            raise ValueError(f"Learning job {job_id} can only be resolved from failed status")
+        previous_error = job.error
+        job.status = "resolved"
+        job.error = ""
+        job.result = {
+            **dict(job.result),
+            "resolved_at": utc_now().isoformat(),
+            "resolved_by": signed_by.strip(),
+            "resolution_evidence": dict(evidence),
+            "previous_error": previous_error,
+            "previous_attempts": job.attempts,
+        }
+        job.completed_at = utc_now().isoformat()
+        self.logs.log(
+            "learning_job_resolved",
+            {
+                "job_id": job.id,
+                "job_type": job.job_type,
+                "resolved_by": signed_by.strip(),
+                "previous_error": previous_error,
+            },
+        )
+        return self.repository.update_job(job)
+
     def review_execution(self, execution_id: str, *, retry: bool = False) -> TradeReview:
         existing = self.repository.get_review(execution_id)
         if existing is not None and not retry:

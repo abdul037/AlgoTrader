@@ -75,6 +75,7 @@ from app.storage.repositories import (
     TrackedSignalRepository,
 )
 from app.strategies.enhancement import StrategyEnhancementService
+from app.strategies.qualification_routes import router as strategy_qualification_router
 from app.strategies.routes import router as strategy_enhancement_router
 from app.strategy_lab.routes import router as strategy_lab_router
 from app.strategy_lab.service import StrategyLabService
@@ -423,6 +424,8 @@ def create_app(
         executions=execution_repository,
         broker_orders=broker_order_repository,
         execution_queue=execution_queue_repository,
+        learning_repository=learning_repository,
+        safety_state=safety_state_repository,
     )
     app.state.execution_coordinator = ExecutionCoordinator(
         settings=app_settings,
@@ -549,6 +552,7 @@ def create_app(
     app.include_router(learning_router)
     app.include_router(strategy_lab_router)
     app.include_router(strategy_enhancement_router)
+    app.include_router(strategy_qualification_router)
     app.include_router(rl_policy_router)
     app.include_router(metrics_router)
 

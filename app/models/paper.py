@@ -110,6 +110,42 @@ class PaperBrokerExecutionRecord(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class PaperLifecycleFlags(BaseModel):
+    """Completeness flags for one broker-backed paper trade lifecycle."""
+
+    entry_submitted: bool = False
+    entry_filled: bool = False
+    bracket_legs_verified: bool = False
+    exit_filled_or_position_flat: bool = False
+    reconciled: bool = False
+    review_created: bool = False
+    duplicate_order_absent: bool = True
+
+
+class PaperTradeLifecycleRecord(BaseModel):
+    """End-to-end evidence view for one paper execution lifecycle."""
+
+    id: str
+    execution_id: str
+    proposal_id: str
+    queue_id: str | None = None
+    symbol: str
+    strategy_name: str | None = None
+    source: str = "unknown"
+    autonomous: bool = False
+    status: str
+    broker_order_id: str | None = None
+    client_order_id: str | None = None
+    entry_fill_price: float | None = None
+    exit_fill_price: float | None = None
+    realized_pnl_usd: float = 0.0
+    created_at: str
+    updated_at: str
+    flags: PaperLifecycleFlags = Field(default_factory=PaperLifecycleFlags)
+    blockers: list[str] = Field(default_factory=list)
+    execution: PaperBrokerExecutionRecord
+
+
 class PaperPerformanceSummary(BaseModel):
     """Aggregated paper trading performance view."""
 

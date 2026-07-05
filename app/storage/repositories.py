@@ -2194,6 +2194,14 @@ class SafetyStateRepository:
             ).fetchone()
         return None if row is None else dict(row)
 
+    def list_reconciliations(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM reconciliation_runs ORDER BY id DESC LIMIT ?",
+                (max(1, limit),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def blacklist(self, symbol: str, *, reason: str) -> None:
         now = utc_now().isoformat()
         with self.db.connect() as connection:

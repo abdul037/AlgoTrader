@@ -482,6 +482,13 @@ class LearningRepository:
             self._job,
         )
 
+    def get_job(self, job_id: str) -> LearningJob | None:
+        return self._one(
+            "SELECT * FROM learning_jobs WHERE id = ?",
+            (job_id,),
+            self._job,
+        )
+
     def list_jobs(self, *, status: str | None = None, limit: int = 100) -> list[LearningJob]:
         query = "SELECT * FROM learning_jobs"
         params: tuple[Any, ...] = ()

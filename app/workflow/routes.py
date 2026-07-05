@@ -24,6 +24,11 @@ def workflow_schedule(request: Request) -> list[WorkflowBucketStatus]:
     return _workflow(request).schedule_statuses()
 
 
+@router.get("/health")
+def workflow_health(request: Request):
+    return _workflow(request).lightweight_health()
+
+
 @router.get("/tracked-signals", response_model=list[TrackedSignalRecord])
 def tracked_signals(
     request: Request,

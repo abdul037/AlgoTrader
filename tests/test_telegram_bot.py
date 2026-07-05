@@ -503,6 +503,33 @@ class FakeWorkflowSchedule:
         return {"last_successful_screener_run_at": "2026-05-04T10:00:00-04:00"}
 
 
+class FakeLearningService:
+    def __init__(self):
+        self.retried: list[str] = []
+
+    def list_job_summaries(self, *, status: str | None = None, limit: int = 100):
+        return [
+            {
+                "id": "job_1",
+                "job_type": "trade_review",
+                "status": status or "failed",
+                "attempts": 2,
+                "error": "temporary outage",
+                "next_action": "retry_or_resolve",
+            }
+        ]
+
+    def retry_job(self, job_id: str):
+        self.retried.append(job_id)
+        return {
+            "id": job_id,
+            "job_type": "trade_review",
+            "status": "pending",
+            "attempts": 2,
+            "next_action": "process",
+        }
+
+
 def test_send_due_alerts_respects_runtime_state() -> None:
     notifier = FakeNotifier()
     state = FakeStateRepo()
@@ -1030,6 +1057,37 @@ def test_telegram_propose_top_scans_and_creates_best_proposal() -> None:
     assert notifier.sent[0][0].startswith("Top opportunity proposal created")
     assert "Order: NVDA BUY $20.00" in notifier.sent[0][0]
     assert "Approve: /approve prop_test" in notifier.sent[0][0]
+
+
+def test_telegram_learning_jobs_and_retry_commands() -> None:
+    notifier = FakeNotifier()
+    learning = FakeLearningService()
+    notifier.updates = [
+        {
+            "update_id": 1,
+            "message": {"chat": {"id": 7329410595}, "text": "/learning_jobs"},
+        },
+        {
+            "update_id": 2,
+            "message": {"chat": {"id": 7329410595}, "text": "/learning_retry job_1"},
+        },
+    ]
+    bot = TelegramBotService(
+        settings=FakeSettings(),
+        notifier=notifier,
+        live_signals=FakeLiveSignals(),
+        learning_service=learning,
+        runtime_state_repository=FakeStateRepo(),
+        run_log_repository=FakeRunLogRepo(),
+    )
+
+    processed = bot.poll_once(timeout_seconds=0)
+
+    assert processed == 2
+    assert notifier.sent[0][0].startswith("Learning jobs: failed")
+    assert "job_1 | trade_review | attempts 2" in notifier.sent[0][0]
+    assert notifier.sent[1][0] == "Learning job job_1 queued for retry. Attempts so far: 2."
+    assert learning.retried == ["job_1"]
 
 
 def test_poll_once_replies_with_error_when_command_fails() -> None:

@@ -12,8 +12,10 @@ from app.models.paper import (
     BotPerformanceDashboard,
     PaperBrokerExecutionRecord,
     PaperBrokerOrderLeg,
+    PaperLifecycleFlags,
     PaperPositionRecord,
     PaperTradeRecord,
+    PaperTradeLifecycleRecord,
 )
 from app.utils.time import utc_now
 
@@ -32,6 +34,8 @@ class PaperTradingService:
         executions: Any | None = None,
         broker_orders: Any | None = None,
         execution_queue: Any | None = None,
+        learning_repository: Any | None = None,
+        safety_state: Any | None = None,
     ):
         self.settings = settings
         self.positions = positions
@@ -41,6 +45,8 @@ class PaperTradingService:
         self.executions = executions
         self.broker_orders = broker_orders
         self.execution_queue = execution_queue
+        self.learning_repository = learning_repository
+        self.safety_state = safety_state
 
     def open_from_approved_proposal(
         self,
@@ -177,6 +183,138 @@ class PaperTradingService:
             if self._is_broker_paper_execution(execution)
         ]
         return records[: max(limit, 1)]
+
+    def lifecycles(
+        self,
+        *,
+        limit: int = 100,
+        source: str | None = None,
+        autonomous_only: bool = False,
+    ) -> list[PaperTradeLifecycleRecord]:
+        records = [
+            self._lifecycle_from_execution(record)
+            for record in self.broker_executions(limit=max(limit, 1))
+        ]
+        if source:
+            records = [record for record in records if record.source == source]
+        if autonomous_only:
+            records = [record for record in records if record.autonomous]
+        return records[: max(limit, 1)]
+
+    def lifecycle(self, execution_id: str) -> PaperTradeLifecycleRecord | None:
+        for record in self.lifecycles(limit=1000):
+            if record.execution_id == execution_id or record.id == execution_id:
+                return record
+        return None
+
+    def _lifecycle_from_execution(self, execution: PaperBrokerExecutionRecord) -> PaperTradeLifecycleRecord:
+        entry_submitted = bool(execution.broker_order_id)
+        entry_filled = bool(execution.filled_qty > 0 and execution.entry_fill_price is not None)
+        bracket_legs_verified = self._bracket_legs_verified(execution)
+        exit_filled_or_position_flat = bool(
+            execution.exit_fill_price is not None
+            or (entry_filled and self._latest_reconciliation_positions_seen() == 0)
+        )
+        reconciled = self._latest_reconciliation_ok()
+        review_created = self._review_created(execution.execution_id)
+        duplicate_order_absent = self._duplicate_client_order_absent(execution.client_order_id)
+        flags = PaperLifecycleFlags(
+            entry_submitted=entry_submitted,
+            entry_filled=entry_filled,
+            bracket_legs_verified=bracket_legs_verified,
+            exit_filled_or_position_flat=exit_filled_or_position_flat,
+            reconciled=reconciled,
+            review_created=review_created,
+            duplicate_order_absent=duplicate_order_absent,
+        )
+        blockers = [
+            name
+            for name, passed in flags.model_dump().items()
+            if not bool(passed)
+        ]
+        autonomous = execution.source in {"scanner_strategy", "generated_strategy", "rl_policy"}
+        if not autonomous:
+            blockers.append("manual_or_unknown_source")
+        return PaperTradeLifecycleRecord(
+            id=execution.execution_id,
+            execution_id=execution.execution_id,
+            proposal_id=execution.proposal_id,
+            queue_id=execution.queue_id,
+            symbol=execution.symbol,
+            strategy_name=execution.strategy_name,
+            source=execution.source,
+            autonomous=autonomous,
+            status=execution.status,
+            broker_order_id=execution.broker_order_id,
+            client_order_id=execution.client_order_id,
+            entry_fill_price=execution.entry_fill_price,
+            exit_fill_price=execution.exit_fill_price,
+            realized_pnl_usd=execution.realized_pnl_usd,
+            created_at=execution.created_at,
+            updated_at=execution.updated_at,
+            flags=flags,
+            blockers=blockers,
+            execution=execution,
+        )
+
+    @staticmethod
+    def _bracket_legs_verified(execution: PaperBrokerExecutionRecord) -> bool:
+        if str(execution.order_class or "").lower() != "bracket":
+            return False
+        sell_legs = [
+            leg
+            for leg in execution.legs
+            if str(leg.side or "").lower() == "sell"
+        ]
+        has_stop = any(leg.stop_price is not None or str(leg.order_type or "").lower() == "stop" for leg in sell_legs)
+        has_target = any(leg.limit_price is not None or str(leg.order_type or "").lower() == "limit" for leg in sell_legs)
+        return has_stop and has_target
+
+    def _latest_reconciliation(self) -> dict[str, Any]:
+        if self.safety_state is None:
+            return {}
+        return dict(self.safety_state.latest_reconciliation() or {})
+
+    def _latest_reconciliation_ok(self) -> bool:
+        latest = self._latest_reconciliation()
+        issues = self._json_or_empty(latest.get("issues_json"), [])
+        return str(latest.get("status") or "") == "ok" and not issues
+
+    def _latest_reconciliation_positions_seen(self) -> int:
+        latest = self._latest_reconciliation()
+        try:
+            return int(latest.get("positions_seen") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _review_created(self, execution_id: str) -> bool:
+        if self.learning_repository is None:
+            return False
+        return self.learning_repository.get_review(execution_id) is not None
+
+    def _duplicate_client_order_absent(self, client_order_id: str | None) -> bool:
+        if not client_order_id:
+            return True
+        count = 0
+        if self.executions is not None:
+            for execution in self.executions.list(limit=1000):
+                request_payload = dict(getattr(execution, "request_payload", {}) or {})
+                response_payload = dict(getattr(execution, "response_payload", {}) or {})
+                broker_execution = dict(response_payload.get("broker_execution") or {})
+                if client_order_id in {
+                    str(request_payload.get("client_order_id") or ""),
+                    str(broker_execution.get("client_order_id") or ""),
+                }:
+                    count += 1
+        if self.broker_orders is not None:
+            for snapshot in self.broker_orders.list(limit=1000):
+                payload = self._json_or_empty(snapshot.get("payload_json"), {})
+                if client_order_id in {
+                    str(snapshot.get("client_order_id") or ""),
+                    str(payload.get("client_order_id") or ""),
+                }:
+                    count += 1
+        return count <= 2
 
     def _close_position(self, position: PaperPositionRecord, *, exit_price: float, outcome: str) -> PaperTradeRecord:
         position.status = "closed"

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.execution.interfaces import SignalApprovalAdapter
@@ -393,6 +393,49 @@ class SignalWorkflowService:
             "learning": learning,
         }
 
+    def lightweight_health(self) -> dict[str, Any]:
+        """Return scheduler freshness without triggering scan due calculations."""
+
+        blockers: list[str] = []
+        buckets: list[dict[str, Any]] = []
+        now = utc_now()
+        for bucket_name in self.SCHEDULER_BUCKETS:
+            prefix = self._bucket_state_prefix(bucket_name)
+            enabled = self._bucket_enabled(bucket_name)
+            paused = self._bucket_paused(bucket_name)
+            last_success_at = self.runtime_state.get(f"{prefix}:last_success_at")
+            last_run_at = self.runtime_state.get(f"{prefix}:last_run_at")
+            last_status = self.runtime_state.get(f"{prefix}:last_status")
+            last_error = self.runtime_state.get(f"{prefix}:last_error") or None
+            threshold_seconds = self._bucket_freshness_threshold_seconds(bucket_name)
+            age_seconds = self._age_seconds(last_success_at, now=now)
+            stale = bool(enabled and not paused and (age_seconds is None or age_seconds > threshold_seconds))
+            if stale:
+                blockers.append(f"scheduler_bucket_stale:{bucket_name}")
+            if enabled and last_status == "error":
+                blockers.append(f"scheduler_bucket_error:{bucket_name}")
+            buckets.append(
+                {
+                    "name": bucket_name,
+                    "enabled": enabled,
+                    "paused": paused,
+                    "last_run_at": last_run_at,
+                    "last_success_at": last_success_at,
+                    "age_seconds": age_seconds,
+                    "freshness_threshold_seconds": threshold_seconds,
+                    "stale": stale,
+                    "last_status": last_status,
+                    "last_error": last_error,
+                }
+            )
+        return {
+            "status": "ok" if not blockers else "warning",
+            "scheduler_enabled": bool(self.settings.screener_scheduler_enabled),
+            "generated_at": now.isoformat(),
+            "blockers": sorted(set(blockers)),
+            "buckets": buckets,
+        }
+
     def _run_scan_task(self, **kwargs: Any) -> WorkflowTaskResponse:
         return run_scan_task(self, **kwargs)
 
@@ -691,6 +734,27 @@ class SignalWorkflowService:
     @staticmethod
     def _bucket_state_prefix(bucket_name: str) -> str:
         return f"workflow:bucket:{bucket_name}"
+
+    def _bucket_freshness_threshold_seconds(self, bucket_name: str) -> int:
+        if bucket_name == "maintenance":
+            return max(int(getattr(self.settings, "alpaca_reconciliation_interval_seconds", 60) or 60) * 5, 900)
+        if bucket_name == "intraday_rotation":
+            return max(int(getattr(self.settings, "intraday_scan_interval_minutes", 15) or 15) * 60 * 3, 3600)
+        if bucket_name == "swing_hourly":
+            return max(int(getattr(self.settings, "swing_scan_interval_minutes", 60) or 60) * 60 * 2, 7200)
+        return 36 * 60 * 60
+
+    @staticmethod
+    def _age_seconds(timestamp: str | None, *, now: datetime) -> int | None:
+        if not timestamp:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return max(0, int((now - parsed.astimezone(timezone.utc)).total_seconds()))
 
     def _bucket_next_due_at(self, bucket_name: str) -> str | None:
         if not self._bucket_enabled(bucket_name):
