@@ -19,9 +19,10 @@ class FakeScanDecisionRepository:
                 strategy_name="volatility_contraction_breakout",
                 timeframe="15m",
                 status="no_signal",
-                final_score=54.0,
+                final_score=56.0,
                 rejection_reasons=["relative_volume_too_low"],
                 reason_codes=["relative_volume_too_low"],
+                payload={"measurements": {"relative_volume": 0.78}},
             ),
             SimpleNamespace(
                 created_at="2026-06-29T18:01:00+00:00",
@@ -32,6 +33,7 @@ class FakeScanDecisionRepository:
                 final_score=49.0,
                 rejection_reasons=["indicator_confluence_too_low"],
                 reason_codes=["indicator_confluence_too_low"],
+                payload={"measurements": {"relative_volume": 0.92}},
             ),
         ]
 
@@ -52,6 +54,7 @@ def _client(tmp_path) -> TestClient:
         control_api_token="control-secret",
         paper_scanner_exploration_enabled=True,
         paper_exploration_signal_profile="balanced_loose",
+        paper_near_miss_promotion_enabled=True,
     )
     app.state.settings = settings
     app.state.strategy_enhancement_service = StrategyEnhancementService(
@@ -82,6 +85,8 @@ def test_strategy_enhancement_near_misses_and_tuning_are_read_only(tmp_path) -> 
 
     assert near_misses["rows_analyzed"] == 2
     assert near_misses["top_reasons"]["relative_volume_too_low"] == 1
+    assert near_misses["near_miss_promotable_count"] == 1
+    assert "unsupported_reason:indicator_confluence_too_low" in near_misses["near_miss_top_blocked_reasons"]
     assert tuning["dry_run"] is True
     assert tuning["mutated"] is False
     assert "broker" in tuning["blocked_changes"]

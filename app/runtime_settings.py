@@ -132,6 +132,10 @@ class AppSettings(BaseSettings):
     intraday_scan_interval_minutes: int = 15
     scalp_scan_batch_size: int = 20
     intraday_active_shortlist_size: int = 20
+    intraday_active_mover_shortlist_enabled: bool = False
+    intraday_active_mover_shortlist_size: int = 30
+    intraday_active_mover_refresh_minutes: int = 15
+    intraday_active_mover_scan_limit: int = 80
     open_signal_check_interval_minutes: int = 5
     daily_summary_hour_utc: int = 20
     track_alerted_signals: bool = True
@@ -201,6 +205,8 @@ class AppSettings(BaseSettings):
     screener_score_weight_indicator_confluence: float = 10.0
     screener_score_weight_accuracy_quality: float = 12.0
     screener_spec_coverage_mode: Literal["default", "scheduled_all"] = "default"
+    screener_spec_batch_size: int = 0
+    screener_spec_batch_mode: Literal["off", "rotating"] = "off"
     confluence_minimum_score: float = 0.84
     confluence_minimum_relative_volume: float = 1.25
     confluence_minimum_adx: float = 20.0
@@ -255,10 +261,16 @@ class AppSettings(BaseSettings):
     paper_exploration_signal_profile: Literal["off", "balanced_loose"] = "off"
     paper_exploration_min_final_score_to_alert: float = 60.0
     paper_exploration_min_final_score_to_keep: float = 50.0
-    paper_exploration_min_relative_volume: float = 0.90
+    paper_exploration_min_relative_volume: float = 0.80
+    paper_exploration_near_miss_min_relative_volume: float = 0.75
     paper_exploration_min_reward_to_risk: float = 1.20
     paper_exploration_min_indicator_confluence: float = 0.35
     paper_exploration_auto_execution_min_score: float = 60.0
+    paper_near_miss_promotion_enabled: bool = False
+    paper_near_miss_max_score_gap: float = 5.0
+    paper_near_miss_allowed_reasons: list[str] = Field(
+        default_factory=lambda: ["relative_volume_too_low", "final_score_below_auto_threshold"]
+    )
     auto_execution_min_score: float = 65.0
     auto_execution_regular_hours_only: bool = True
     strategy_health_enabled: bool = True
@@ -420,6 +432,7 @@ class AppSettings(BaseSettings):
         "swing_scan_timeframes",
         "screener_active_strategy_names",
         "paper_scanner_allowed_strategies",
+        "paper_near_miss_allowed_reasons",
         mode="before",
     )
     @classmethod
@@ -432,6 +445,7 @@ class AppSettings(BaseSettings):
             "swing_scan_timeframes",
             "screener_active_strategy_names",
             "paper_scanner_allowed_strategies",
+            "paper_near_miss_allowed_reasons",
         }
         normalize = str.lower if info.field_name in lowercase_fields else str.upper
         if value is None:

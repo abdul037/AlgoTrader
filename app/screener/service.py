@@ -108,6 +108,7 @@ class MarketScreenerService:
         notify: bool = False,
         force_refresh: bool = False,
         scan_task: str = "manual_scan",
+        strategy_spec_keys: list[str] | None = None,
         cancel_event: Any | None = None,
     ) -> ScreenerRunResponse:
         return scan_universe(
@@ -119,6 +120,7 @@ class MarketScreenerService:
             notify=notify,
             force_refresh=force_refresh,
             scan_task=scan_task,
+            strategy_spec_keys=strategy_spec_keys,
             cancel_event=cancel_event,
         )
 
@@ -157,11 +159,29 @@ class MarketScreenerService:
     def _backtest_validation(self, symbol: str, strategy_name: str, timeframe: str | None = None) -> dict[str, Any]:
         return backtest_validation(self, symbol, strategy_name, timeframe)
 
-    def _strategy_specs_for_timeframe(self, timeframe: str) -> list[Any]:
+    def _strategy_specs_for_timeframe(self, timeframe: str, strategy_spec_keys: list[str] | set[str] | None = None) -> list[Any]:
         specs = list(_strategy_specs(self.settings, timeframe=timeframe))
         if self.strategy_lab is not None:
             specs.extend(self.strategy_lab.active_specs(timeframe=timeframe))
+        if strategy_spec_keys:
+            requested = {str(item).strip().lower() for item in strategy_spec_keys if str(item).strip()}
+            specs = [spec for spec in specs if self._strategy_spec_key(spec) in requested]
         return specs
+
+    def strategy_spec_keys_for_timeframes(self, timeframes: list[str]) -> list[str]:
+        """Return stable spec keys for workflow-level scheduled batching."""
+
+        keys: list[str] = []
+        for timeframe in timeframes:
+            for spec in self._strategy_specs_for_timeframe(str(timeframe).strip().lower()):
+                key = self._strategy_spec_key(spec)
+                if key not in keys:
+                    keys.append(key)
+        return keys
+
+    @staticmethod
+    def _strategy_spec_key(spec: Any) -> str:
+        return f"{str(getattr(spec, 'name', '')).strip().lower()}:{str(getattr(spec, 'timeframe', '')).strip().lower()}"
 
     def _build_strategy(self, spec: Any) -> Any:
         if self.strategy_lab is not None:

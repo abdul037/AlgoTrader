@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
+
+import pandas as pd
 
 from app.live_signal_schema import LiveSignalSnapshot, MarketQuote, SignalState
 from app.models.screener import ScreenerRunResponse
@@ -9,8 +12,9 @@ from tests.conftest import make_settings
 
 
 class FakeMarketScreener:
-    def __init__(self, candidates):
+    def __init__(self, candidates, *, spec_keys=None):
         self.candidates = candidates
+        self.spec_keys = list(spec_keys or [])
         self.calls = []
 
     def scan_universe(self, **kwargs):
@@ -27,6 +31,10 @@ class FakeMarketScreener:
             errors=[],
         )
 
+    def strategy_spec_keys_for_timeframes(self, timeframes):
+        requested = {str(item).lower() for item in timeframes}
+        return [key for key in self.spec_keys if key.rsplit(":", 1)[-1] in requested]
+
 
 class FailingMarketScreener:
     def scan_universe(self, **kwargs):
@@ -39,6 +47,39 @@ class FakeMarketDataEngine:
 
     def get_quote(self, symbol: str, *, timeframe: str = "1d", force_refresh: bool = False):
         return self.quote
+
+
+class ActiveMoverMarketData:
+    def __init__(self):
+        self.frames = {}
+        self.quotes = {}
+
+    def add(self, symbol: str, *, last_volume_multiplier: float, quote: MarketQuote):
+        timestamps = pd.date_range("2026-07-06T14:00:00Z", periods=40, freq="5min", tz="UTC")
+        rows = []
+        for index, timestamp in enumerate(timestamps):
+            price = 100.0 + index * 0.1
+            rows.append(
+                {
+                    "timestamp": timestamp,
+                    "open": price - 0.05,
+                    "high": price + 0.2,
+                    "low": price - 0.2,
+                    "close": price,
+                    "volume": 1_000_000,
+                }
+            )
+        frame = pd.DataFrame(rows)
+        frame.loc[frame.index[-1], "volume"] = 1_000_000 * last_volume_multiplier
+        frame.attrs.update({"provider": "alpaca", "used_fallback": False, "from_cache": False, "data_age_seconds": 0.0})
+        self.frames[symbol.upper()] = frame
+        self.quotes[symbol.upper()] = quote
+
+    def get_history(self, symbol: str, *, timeframe: str = "5m", bars: int = 40, force_refresh: bool = False):
+        return self.frames[symbol.upper()].copy()
+
+    def get_quote(self, symbol: str, *, timeframe: str = "5m", force_refresh: bool = False):
+        return self.quotes[symbol.upper()]
 
 
 class FakeNotifier:
@@ -438,6 +479,42 @@ def test_intraday_scan_rotates_top100_batches(tmp_path) -> None:
     assert screener.calls[1]["symbols"] == ["NVDA", "AMD"]
 
 
+def test_intraday_scan_rotates_strategy_spec_batches(tmp_path) -> None:
+    spec_keys = [f"strategy_{index}:5m" for index in range(18)]
+    screener = FakeMarketScreener([], spec_keys=spec_keys)
+    state = FakeState()
+    workflow = SignalWorkflowService(
+        settings=make_settings(
+            tmp_path,
+            market_universe_symbols=["AAPL", "MSFT"],
+            market_universe_limit=2,
+            scalp_scan_batch_size=2,
+            intraday_active_shortlist_size=0,
+            screener_intraday_timeframes=["5m"],
+            screener_spec_batch_mode="rotating",
+            screener_spec_batch_size=8,
+        ),
+        market_screener=screener,
+        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="AAPL", last_execution=101.0)),
+        notifier=FakeNotifier(),
+        tracked_signals=FakeTrackedSignals(),
+        alert_history=FakeAlertHistory(),
+        runtime_state=state,
+        run_logs=FakeLogs(),
+    )
+
+    workflow.run_intraday_scan(notify=False)
+    workflow.run_intraday_scan(notify=False)
+    workflow.run_intraday_scan(notify=False)
+
+    assert screener.calls[0]["strategy_spec_keys"] == spec_keys[:8]
+    assert screener.calls[1]["strategy_spec_keys"] == spec_keys[8:16]
+    assert screener.calls[2]["strategy_spec_keys"] == [*spec_keys[16:], *spec_keys[:6]]
+    coverage = json.loads(state.get("workflow:intraday_scan:last_scan_coverage"))
+    assert coverage["spec_batch_size"] == 8
+    assert coverage["spec_batch_total"] == 18
+
+
 def test_scheduled_all_mode_uses_bucket_specific_timeframes(tmp_path) -> None:
     screener = FakeMarketScreener([])
     workflow = SignalWorkflowService(
@@ -492,6 +569,67 @@ def test_intraday_rotation_includes_active_shortlist_before_batch(tmp_path) -> N
 
     assert screener.calls[0]["symbols"] == ["NVDA", "AAPL", "MSFT"]
     assert screener.calls[0]["timeframes"] == ["1m", "5m", "10m", "15m"]
+
+
+def test_intraday_rotation_prioritizes_active_movers_and_skips_bad_quotes(tmp_path) -> None:
+    screener = FakeMarketScreener([])
+    market_data = ActiveMoverMarketData()
+    market_data.add(
+        "FAST",
+        last_volume_multiplier=2.4,
+        quote=MarketQuote(symbol="FAST", bid=100.0, ask=100.1, last_execution=100.05, data_age_seconds=1),
+    )
+    market_data.add(
+        "SLOW",
+        last_volume_multiplier=0.8,
+        quote=MarketQuote(symbol="SLOW", bid=100.0, ask=100.1, last_execution=100.05, data_age_seconds=1),
+    )
+    market_data.add(
+        "STALE",
+        last_volume_multiplier=3.0,
+        quote=MarketQuote(symbol="STALE", bid=100.0, ask=100.1, last_execution=100.05, data_age_seconds=999),
+    )
+    market_data.add(
+        "WIDE",
+        last_volume_multiplier=3.0,
+        quote=MarketQuote(symbol="WIDE", bid=100.0, ask=105.0, last_execution=102.5, data_age_seconds=1),
+    )
+    market_data.add(
+        "BLK",
+        last_volume_multiplier=3.0,
+        quote=MarketQuote(symbol="BLK", bid=100.0, ask=100.1, last_execution=100.05, data_age_seconds=1),
+    )
+    workflow = SignalWorkflowService(
+        settings=make_settings(
+            tmp_path,
+            market_universe_symbols=["FAST", "SLOW", "STALE", "WIDE", "BLK", "AAPL"],
+            market_universe_limit=6,
+            scalp_scan_batch_size=2,
+            intraday_active_shortlist_size=0,
+            intraday_active_mover_shortlist_enabled=True,
+            intraday_active_mover_shortlist_size=2,
+            intraday_active_mover_scan_limit=5,
+            blocked_instruments=["BLK"],
+            max_market_data_age_seconds=30,
+            screener_max_spread_bps=50,
+        ),
+        market_screener=screener,
+        market_data_engine=market_data,
+        notifier=FakeNotifier(),
+        tracked_signals=FakeTrackedSignals(),
+        alert_history=FakeAlertHistory(),
+        runtime_state=FakeState(),
+        run_logs=FakeLogs(),
+    )
+
+    workflow.run_intraday_scan(notify=False)
+
+    assert screener.calls[0]["symbols"][:2] == ["FAST", "SLOW"]
+    assert "STALE" not in screener.calls[0]["symbols"][:2]
+    assert "WIDE" not in screener.calls[0]["symbols"][:2]
+    assert "BLK" not in screener.calls[0]["symbols"][:2]
+    health = workflow.lightweight_health()
+    assert health["scan_coverage"]["active_mover_shortlist"]["symbols"] == ["FAST", "SLOW"]
 
 
 def test_scheduler_bucket_status_respects_new_york_market_weekdays(tmp_path, monkeypatch) -> None:

@@ -5,7 +5,10 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any
 
-from app.screener.profiles import effective_auto_execution_min_score, paper_exploration_profile_enabled
+from app.screener.profiles import (
+    effective_auto_execution_min_score,
+    paper_exploration_profile_enabled,
+)
 from app.strategies import CORE_STRATEGY_NAMES, ENHANCED_RESEARCH_STRATEGY_NAMES, STRATEGY_SPECS
 
 
@@ -45,6 +48,8 @@ class StrategyEnhancementService:
             "rows_analyzed": len(rows),
             "status_counts": dict(Counter(row.status for row in rows)),
             "top_reasons": self._top_reasons(rows),
+            "near_miss_promotable_count": sum(1 for row in rows if self._is_promotable_near_miss(row)),
+            "near_miss_top_blocked_reasons": self._near_miss_blockers(rows),
             "top_strategy_timeframes": self._top_strategy_timeframes(rows),
             "top_symbols": dict(Counter(row.symbol for row in rows).most_common(20)),
             "examples": [self._example(row) for row in rows[:25]],
@@ -136,9 +141,13 @@ class StrategyEnhancementService:
                 "screener_min_final_score_to_alert": self.settings.paper_exploration_min_final_score_to_alert,
                 "screener_min_final_score_to_keep": self.settings.paper_exploration_min_final_score_to_keep,
                 "screener_min_relative_volume": self.settings.paper_exploration_min_relative_volume,
+                "screener_near_miss_min_relative_volume": self.settings.paper_exploration_near_miss_min_relative_volume,
                 "screener_min_reward_to_risk": self.settings.paper_exploration_min_reward_to_risk,
                 "screener_min_indicator_confluence": self.settings.paper_exploration_min_indicator_confluence,
                 "auto_execution_min_score": effective_auto_execution_min_score(self.settings),
+                "paper_near_miss_promotion_enabled": self.settings.paper_near_miss_promotion_enabled,
+                "paper_near_miss_max_score_gap": self.settings.paper_near_miss_max_score_gap,
+                "paper_near_miss_allowed_reasons": self.settings.paper_near_miss_allowed_reasons,
             },
         }
 
@@ -176,6 +185,63 @@ class StrategyEnhancementService:
             "final_score": row.final_score,
             "rejection_reasons": row.rejection_reasons,
         }
+
+    def _is_promotable_near_miss(self, row: Any) -> bool:
+        payload = dict(getattr(row, "payload", {}) or {})
+        metadata = dict(payload.get("metadata") or {})
+        if metadata.get("signal_classification") == "paper_near_miss":
+            return True
+        reasons = {
+            str(item).strip().lower()
+            for item in (getattr(row, "rejection_reasons", []) or getattr(row, "reason_codes", []) or [])
+            if str(item).strip()
+        }
+        allowed = {
+            str(item).strip().lower()
+            for item in (getattr(self.settings, "paper_near_miss_allowed_reasons", []) or [])
+            if str(item).strip()
+        }
+        if not reasons or reasons - allowed:
+            return False
+        measurements = dict(payload.get("measurements") or {})
+        relative_volume = float(measurements.get("relative_volume") or 0.0)
+        if relative_volume < float(getattr(self.settings, "paper_exploration_near_miss_min_relative_volume", 0.75)):
+            return False
+        score = float(getattr(row, "final_score", None) or 0.0)
+        minimum = effective_auto_execution_min_score(self.settings) - float(
+            getattr(self.settings, "paper_near_miss_max_score_gap", 5.0) or 0.0
+        )
+        return score >= minimum
+
+    def _near_miss_blockers(self, rows: list[Any]) -> dict[str, int]:
+        counter: Counter[str] = Counter()
+        allowed = {
+            str(item).strip().lower()
+            for item in (getattr(self.settings, "paper_near_miss_allowed_reasons", []) or [])
+            if str(item).strip()
+        }
+        minimum = effective_auto_execution_min_score(self.settings) - float(
+            getattr(self.settings, "paper_near_miss_max_score_gap", 5.0) or 0.0
+        )
+        rvol_floor = float(getattr(self.settings, "paper_exploration_near_miss_min_relative_volume", 0.75))
+        for row in rows:
+            if self._is_promotable_near_miss(row):
+                continue
+            payload = dict(getattr(row, "payload", {}) or {})
+            reasons = {
+                str(item).strip().lower()
+                for item in (getattr(row, "rejection_reasons", []) or getattr(row, "reason_codes", []) or [])
+                if str(item).strip()
+            }
+            unsupported = reasons - allowed
+            if unsupported:
+                counter.update([f"unsupported_reason:{reason}" for reason in unsupported])
+            measurements = dict(payload.get("measurements") or {})
+            if float(measurements.get("relative_volume") or 0.0) < rvol_floor:
+                counter["relative_volume_below_near_miss_floor"] += 1
+            if float(getattr(row, "final_score", None) or 0.0) < minimum:
+                counter["score_gap_too_large"] += 1
+        return dict(counter.most_common(20))
 
     @staticmethod
     def _specs_by_timeframe() -> dict[str, int]:

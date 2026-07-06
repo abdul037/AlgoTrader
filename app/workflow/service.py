@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+import json
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.execution.interfaces import SignalApprovalAdapter
@@ -442,6 +443,7 @@ class SignalWorkflowService:
             "generated_at": now.isoformat(),
             "blockers": sorted(set(blockers)),
             "buckets": buckets,
+            "scan_coverage": self._scan_coverage_summary(),
         }
 
     def _run_scan_task(self, **kwargs: Any) -> WorkflowTaskResponse:
@@ -524,7 +526,12 @@ class SignalWorkflowService:
     def _intraday_scan_symbols(self) -> list[str]:
         universe = resolve_universe(
             self.settings,
-            limit=int(getattr(self.settings, "market_universe_limit", 100) or 100),
+            limit=int(
+                max(
+                    int(getattr(self.settings, "market_universe_limit", 100) or 100),
+                    int(getattr(self.settings, "intraday_active_mover_scan_limit", 80) or 80),
+                )
+            ),
         )
         if not universe:
             return []
@@ -545,11 +552,149 @@ class SignalWorkflowService:
                 symbol = str(getattr(record, "symbol", "") or "").upper()
                 if symbol:
                     active.append(symbol)
+        movers = self._active_mover_shortlist(universe)
         combined: list[str] = []
-        for symbol in [*active, *rotated]:
+        for symbol in [*active, *movers, *rotated]:
             if symbol not in combined:
                 combined.append(symbol)
         return combined
+
+    def _active_mover_shortlist(self, universe: list[str]) -> list[str]:
+        if not bool(getattr(self.settings, "intraday_active_mover_shortlist_enabled", False)):
+            return []
+        refresh_minutes = max(int(getattr(self.settings, "intraday_active_mover_refresh_minutes", 15) or 15), 1)
+        cached = self._load_active_mover_state()
+        cached_at = cached.get("generated_at")
+        cached_age_seconds = self._age_seconds(cached_at, now=utc_now()) if cached_at else None
+        if cached_age_seconds is not None and float(cached_age_seconds) <= refresh_minutes * 60:
+            return list(cached.get("symbols") or [])
+
+        scan_limit = max(1, int(getattr(self.settings, "intraday_active_mover_scan_limit", 80) or 80))
+        shortlist_size = max(0, int(getattr(self.settings, "intraday_active_mover_shortlist_size", 30) or 30))
+        if shortlist_size <= 0:
+            return []
+        candidates: list[dict[str, Any]] = []
+        errors: list[str] = []
+        for symbol in universe[:scan_limit]:
+            if self._symbol_blocked_for_shortlist(symbol):
+                continue
+            try:
+                history = self.market_data.get_history(symbol, timeframe="5m", bars=40, force_refresh=True)
+                quote = self.market_data.get_quote(symbol, timeframe="5m", force_refresh=True)
+                ranked = self._rank_active_mover(symbol, history=history, quote=quote)
+            except Exception as exc:  # noqa: BLE001 - a bad symbol must not block the shortlist
+                errors.append(f"{symbol}:{exc}")
+                continue
+            if ranked is not None:
+                candidates.append(ranked)
+        ranked_symbols = [
+            item["symbol"]
+            for item in sorted(candidates, key=lambda item: float(item["score"]), reverse=True)[:shortlist_size]
+        ]
+        self._store_active_mover_state(
+            {
+                "generated_at": utc_now().isoformat(),
+                "symbols": ranked_symbols,
+                "evaluated": len(candidates),
+                "scan_limit": scan_limit,
+                "scores": sorted(candidates, key=lambda item: float(item["score"]), reverse=True)[:shortlist_size],
+                "errors": errors[:10],
+            }
+        )
+        return ranked_symbols
+
+    def _rank_active_mover(self, symbol: str, *, history: Any, quote: Any) -> dict[str, Any] | None:
+        if history is None or len(history) < 20:
+            return None
+        quote_age = getattr(quote, "data_age_seconds", None)
+        max_age = float(getattr(self.settings, "max_market_data_age_seconds", 120) or 120)
+        if quote_age is not None and float(quote_age) > max_age:
+            return None
+        bid = getattr(quote, "bid", None)
+        ask = getattr(quote, "ask", None)
+        if bid is None or ask is None or float(bid) <= 0 or float(ask) <= 0 or float(ask) < float(bid):
+            return None
+        mid = (float(bid) + float(ask)) / 2.0
+        spread_bps = ((float(ask) - float(bid)) / max(mid, 0.01)) * 10_000.0
+        if spread_bps > float(getattr(self.settings, "screener_max_spread_bps", 50.0)):
+            return None
+        frame = history.tail(40).copy()
+        last = frame.iloc[-1]
+        close = float(last["close"])
+        volume = float(last["volume"])
+        avg_volume = float(frame["volume"].tail(20).mean() or 0.0)
+        relative_volume = volume / avg_volume if avg_volume > 0 else 0.0
+        short_window_close = float(frame["close"].iloc[-6]) if len(frame) >= 6 else float(frame["close"].iloc[0])
+        short_move_pct = abs((close - short_window_close) / max(short_window_close, 0.01)) * 100.0
+        session_open = float(frame["open"].iloc[0])
+        intraday_move_pct = abs((close - session_open) / max(session_open, 0.01)) * 100.0
+        dollar_volume = close * volume
+        score = (
+            min(relative_volume / 2.0, 2.0) * 35.0
+            + min(short_move_pct / 2.5, 2.0) * 25.0
+            + min(intraday_move_pct / 4.0, 2.0) * 20.0
+            + min(dollar_volume / 50_000_000.0, 2.0) * 10.0
+            + max(0.0, 1.0 - min(spread_bps / max(float(self.settings.screener_max_spread_bps), 1.0), 1.0)) * 10.0
+        )
+        return {
+            "symbol": symbol.upper(),
+            "score": round(score, 4),
+            "relative_volume": round(relative_volume, 4),
+            "short_move_pct": round(short_move_pct, 4),
+            "intraday_move_pct": round(intraday_move_pct, 4),
+            "dollar_volume": round(dollar_volume, 2),
+            "spread_bps": round(spread_bps, 4),
+        }
+
+    def _symbol_blocked_for_shortlist(self, symbol: str) -> bool:
+        normalized = symbol.upper().strip()
+        if normalized in {item.upper() for item in getattr(self.settings, "blocked_instruments", []) or []}:
+            return True
+        safety = getattr(getattr(self, "auto_trading", None), "safety", None)
+        if safety is not None and hasattr(safety, "is_blacklisted"):
+            try:
+                if safety.is_blacklisted(normalized):
+                    return True
+            except Exception:  # noqa: BLE001
+                return True
+        alpaca = getattr(getattr(self, "auto_trading", None), "alpaca", None)
+        if alpaca is not None and hasattr(alpaca, "is_supported_equity"):
+            try:
+                return not bool(alpaca.is_supported_equity(normalized))
+            except Exception:  # noqa: BLE001
+                return True
+        return False
+
+    def _load_active_mover_state(self) -> dict[str, Any]:
+        raw = self.runtime_state.get("workflow:intraday_active_movers")
+        if not raw:
+            return {}
+        try:
+            loaded = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+    def _store_active_mover_state(self, payload: dict[str, Any]) -> None:
+        try:
+            self.runtime_state.set("workflow:intraday_active_movers", json.dumps(payload, default=str))
+        except Exception:  # noqa: BLE001 - shortlist telemetry must not block scans
+            return
+
+    def _scan_coverage_summary(self) -> dict[str, Any]:
+        coverage: dict[str, Any] = {
+            "active_mover_shortlist": self._load_active_mover_state(),
+            "latest_by_task": {},
+        }
+        for task in ("premarket_scan", "market_open_scan", "intraday_scan", "swing_scan", "end_of_day_scan"):
+            raw = self.runtime_state.get(f"workflow:{task}:last_scan_coverage")
+            if not raw:
+                continue
+            try:
+                coverage["latest_by_task"][task] = json.loads(raw)
+            except json.JSONDecodeError:
+                coverage["latest_by_task"][task] = {"error": "invalid_scan_coverage_state"}
+        return coverage
 
     @staticmethod
     def _normalized_timeframes(timeframes: Any) -> list[str]:
@@ -782,8 +927,8 @@ class SignalWorkflowService:
         except ValueError:
             return None
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return max(0, int((now - parsed.astimezone(timezone.utc)).total_seconds()))
+            parsed = parsed.replace(tzinfo=UTC)
+        return max(0, int((now - parsed.astimezone(UTC)).total_seconds()))
 
     def _bucket_next_due_at(self, bucket_name: str) -> str | None:
         if not self._bucket_enabled(bucket_name):

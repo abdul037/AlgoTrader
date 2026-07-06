@@ -10,6 +10,10 @@ from app.broker.etoro_rate_limit import EToroRateLimitError
 from app.models.screener import ScreenerRunResponse
 from app.screener.accuracy import build_accuracy_profile
 from app.screener.filters import FilterOutcome, build_market_context
+from app.screener.profiles import (
+    effective_auto_execution_min_score,
+    paper_exploration_profile_enabled,
+)
 from app.screener.scoring import build_backtest_snapshot, freshness_for_decision, rank_live_signal
 from app.universe import resolve_universe
 from app.utils.time import utc_now
@@ -36,6 +40,162 @@ def _bounded_call(label: str, timeout_seconds: float, func: Any, *args: Any, **k
         executor.shutdown(wait=False, cancel_futures=True)
 
 
+def _normalize_spec_keys(strategy_spec_keys: list[str] | set[str] | tuple[str, ...] | None) -> set[str]:
+    return {str(item).strip().lower() for item in strategy_spec_keys or [] if str(item).strip()}
+
+
+def _spec_key(spec: Any) -> str:
+    return f"{str(getattr(spec, 'name', '')).strip().lower()}:{str(getattr(spec, 'timeframe', '')).strip().lower()}"
+
+
+def _strategy_specs_for_timeframe(service: Any, timeframe: str, requested_spec_keys: set[str]) -> list[Any]:
+    try:
+        return list(service._strategy_specs_for_timeframe(timeframe, strategy_spec_keys=requested_spec_keys or None))
+    except TypeError:
+        specs = list(service._strategy_specs_for_timeframe(timeframe))
+        if requested_spec_keys:
+            specs = [spec for spec in specs if _spec_key(spec) in requested_spec_keys]
+        return specs
+
+
+def _near_miss_allowed_reasons(settings: Any) -> set[str]:
+    return {
+        str(item).strip().lower()
+        for item in (getattr(settings, "paper_near_miss_allowed_reasons", []) or [])
+        if str(item).strip()
+    }
+
+
+def _paper_near_miss_blockers(
+    service: Any,
+    *,
+    signal: Any,
+    context: Any,
+    market_data_status: dict[str, Any],
+    filter_outcome: FilterOutcome,
+    ranking: dict[str, Any],
+    reasons: list[str],
+) -> list[str]:
+    settings = service.settings
+    blockers: list[str] = []
+    if not bool(getattr(settings, "paper_near_miss_promotion_enabled", False)):
+        blockers.append("paper_near_miss_disabled")
+    if not paper_exploration_profile_enabled(settings):
+        blockers.append("paper_exploration_profile_inactive")
+    action_value = getattr(getattr(signal, "action", None), "value", getattr(signal, "action", ""))
+    if str(action_value).lower() != "buy":
+        blockers.append("paper_near_miss_long_only")
+    if str(getattr(signal, "metadata", {}).get("signal_role") or "entry_long").lower() == "entry_short":
+        blockers.append("paper_near_miss_short_blocked")
+    entry = float(getattr(signal, "price", None) or getattr(context, "current_price", 0.0) or 0.0)
+    stop = getattr(signal, "stop_loss", None)
+    target = getattr(signal, "take_profit", None)
+    if stop is None or target is None:
+        blockers.append("paper_near_miss_bracket_missing")
+    else:
+        try:
+            if not (float(stop) < entry < float(target)):
+                blockers.append("paper_near_miss_invalid_bracket")
+        except (TypeError, ValueError):
+            blockers.append("paper_near_miss_invalid_bracket")
+    if not bool(market_data_status.get("verified", False)):
+        blockers.append(str(market_data_status.get("verification_reason") or "market_data_unverified"))
+    spread_bps = getattr(context, "spread_bps", None)
+    if spread_bps is None:
+        blockers.append("paper_near_miss_spread_unavailable")
+    elif float(spread_bps) > float(getattr(settings, "screener_max_spread_bps", 50.0)):
+        blockers.append("paper_near_miss_spread_too_wide")
+    risk_reward = getattr(signal, "metadata", {}).get("risk_reward_ratio")
+    if risk_reward is None:
+        risk_reward = service._compute_risk_reward(signal)
+    if risk_reward is None or float(risk_reward) < float(service.effective_settings.screener_min_reward_to_risk):
+        blockers.append("paper_near_miss_reward_to_risk_too_low")
+    near_miss_rvol_floor = float(getattr(settings, "paper_exploration_near_miss_min_relative_volume", 0.75))
+    if float(getattr(context, "relative_volume", 0.0) or 0.0) < near_miss_rvol_floor:
+        blockers.append("paper_near_miss_relative_volume_too_low")
+    allowed = _near_miss_allowed_reasons(settings)
+    normalized_reasons = {str(reason).strip().lower() for reason in reasons if str(reason).strip()}
+    unsupported_reasons = sorted(normalized_reasons - allowed)
+    if unsupported_reasons:
+        blockers.append("paper_near_miss_unsupported_reasons:" + ",".join(unsupported_reasons))
+    if filter_outcome.watchlist_only:
+        blockers.append("paper_near_miss_watchlist_filter")
+    score = float(ranking.get("final_score") or 0.0)
+    minimum = effective_auto_execution_min_score(settings) - float(getattr(settings, "paper_near_miss_max_score_gap", 5.0) or 0.0)
+    if score < minimum:
+        blockers.append("paper_near_miss_score_gap_too_large")
+    return blockers
+
+
+def _maybe_promote_paper_near_miss(
+    service: Any,
+    *,
+    signal: Any,
+    quote: Any,
+    timeframe: str,
+    context: Any,
+    intelligence: Any,
+    market_data_status: dict[str, Any],
+    filter_outcome: FilterOutcome,
+    backtest_snapshot: dict[str, Any],
+    ranking: dict[str, Any],
+    freshness: str,
+    reasons: list[str],
+) -> Any | None:
+    blockers = _paper_near_miss_blockers(
+        service,
+        signal=signal,
+        context=context,
+        market_data_status=market_data_status,
+        filter_outcome=filter_outcome,
+        ranking=ranking,
+        reasons=reasons,
+    )
+    if blockers:
+        return None
+    snapshot = service._snapshot_from_signal(
+        signal,
+        quote=quote,
+        timeframe=timeframe,
+        context=context,
+        intelligence=intelligence,
+        market_data_status=market_data_status,
+        filter_outcome=filter_outcome,
+        backtest_snapshot=backtest_snapshot,
+        ranking=ranking,
+        freshness=freshness,
+    )
+    original_metadata = dict(snapshot.metadata or {})
+    metadata = {
+        **original_metadata,
+        "alert_eligible": True,
+        "execution_ready": True,
+        "execution_blockers": [],
+        "paper_near_miss_original_execution_blockers": list(original_metadata.get("execution_blockers") or []),
+        "paper_near_miss_original_actionability": ranking.get("actionability"),
+        "paper_near_miss_reasons": list(dict.fromkeys(reasons)),
+        "paper_near_miss_score_gap": round(
+            effective_auto_execution_min_score(service.settings) - float(ranking.get("final_score") or 0.0),
+            4,
+        ),
+        "paper_near_miss_min_relative_volume": float(
+            getattr(service.settings, "paper_exploration_near_miss_min_relative_volume", 0.75)
+        ),
+        "production_qualified": False,
+        "signal_classification": "paper_near_miss",
+        "source": "paper_near_miss",
+    }
+    return snapshot.model_copy(
+        update={
+            "execution_ready": True,
+            "tradable": True,
+            "direction_label": "buy",
+            "metadata": metadata,
+            "reject_reasons": list(dict.fromkeys(reasons)),
+        }
+    )
+
+
 def scan_universe(
     service: Any,
     *,
@@ -46,10 +206,12 @@ def scan_universe(
     notify: bool = False,
     force_refresh: bool = False,
     scan_task: str = "manual_scan",
+    strategy_spec_keys: list[str] | None = None,
     cancel_event: Any | None = None,
 ) -> ScreenerRunResponse:
     universe = [symbol.upper() for symbol in (symbols or resolve_universe(service.settings))]
     scan_timeframes = [timeframe.lower() for timeframe in (timeframes or service.settings.screener_default_timeframes)]
+    requested_spec_keys = _normalize_spec_keys(strategy_spec_keys)
     candidates: list[Any] = []
     errors: list[str] = []
     rejection_summary: dict[str, int] = {}
@@ -59,6 +221,7 @@ def scan_universe(
     evaluated_symbols = 0
     timed_out_runs = 0
     specs_by_timeframe: dict[str, int] = {}
+    evaluated_spec_keys: set[str] = set()
     abort_scan = False
     quote_cache: dict[str, Any] = {}
     started_at = time.monotonic()
@@ -72,6 +235,7 @@ def scan_universe(
             "universe_name": service.settings.market_universe_name,
             "symbols": universe,
             "timeframes": scan_timeframes,
+            "strategy_spec_keys": sorted(requested_spec_keys),
             "validated_only": validated_only,
         },
     )
@@ -156,7 +320,7 @@ def scan_universe(
                 )
                 continue
 
-            specs = service._strategy_specs_for_timeframe(timeframe)
+            specs = _strategy_specs_for_timeframe(service, timeframe, requested_spec_keys)
             specs_by_timeframe.setdefault(timeframe, len(specs))
             for spec in specs:
                 if service._scan_cancelled(cancel_event):
@@ -164,6 +328,7 @@ def scan_universe(
                     abort_scan = True
                     break
                 evaluated_strategy_runs += 1
+                evaluated_spec_keys.add(_spec_key(spec))
                 strategy = service._build_strategy(spec)
                 try:
                     signal = strategy.generate_signal(history.copy(), symbol)
@@ -342,6 +507,82 @@ def scan_universe(
                     filter_outcome.reason_codes.append("market_data_unverified")
                 filter_outcome.measurements.update(market_data_status)
                 if not filter_outcome.passed:
+                    previous_decision = (
+                        service.scan_decisions.get_latest(
+                            symbol=signal.symbol,
+                            strategy_name=signal.strategy_name,
+                            timeframe=timeframe,
+                            since_minutes=service.settings.screener_duplicate_alert_window_minutes,
+                            statuses=["candidate", "watchlist", "alerted"],
+                        )
+                        if service.scan_decisions is not None and scan_task != "manual_scan"
+                        else None
+                    )
+                    provisional_freshness = "fresh" if previous_decision is None else "repeated_upgraded"
+                    ranking = rank_live_signal(
+                        settings=service.effective_settings,
+                        signal=signal,
+                        context=context,
+                        backtest_snapshot=backtest_snapshot,
+                        intelligence=intelligence,
+                        watchlist_only=False,
+                        freshness=provisional_freshness,
+                    )
+                    freshness, suppress_repeat = freshness_for_decision(
+                        previous_decision,
+                        final_score=float(ranking["final_score"]),
+                        minimum_improvement=float(service.settings.screener_min_score_improvement_for_repeat),
+                    )
+                    near_miss_reasons = list(filter_outcome.rejection_reasons)
+                    if float(ranking["final_score"]) < effective_auto_execution_min_score(service.settings):
+                        near_miss_reasons.append("final_score_below_auto_threshold")
+                    near_miss = None if suppress_repeat else _maybe_promote_paper_near_miss(
+                        service,
+                        signal=signal,
+                        quote=quote,
+                        timeframe=timeframe,
+                        context=context,
+                        intelligence=intelligence,
+                        market_data_status=market_data_status,
+                        filter_outcome=filter_outcome,
+                        backtest_snapshot=backtest_snapshot,
+                        ranking=ranking,
+                        freshness=freshness,
+                        reasons=near_miss_reasons,
+                    )
+                    if near_miss is not None:
+                        service.signal_states.upsert(near_miss)
+                        candidates.append(near_miss)
+                        service._add_scan_diagnostic(
+                            rejection_summary,
+                            closest_rejections,
+                            symbol=near_miss.symbol,
+                            timeframe=timeframe,
+                            strategy_name=near_miss.strategy_name,
+                            status="paper_near_miss",
+                            rejection_reasons=near_miss_reasons,
+                            final_score=near_miss.score,
+                            measurements=filter_outcome.measurements,
+                        )
+                        service._record_scan_decision(
+                            scan_task=scan_task,
+                            signal=signal,
+                            timeframe=timeframe,
+                            status="candidate",
+                            final_score=near_miss.score,
+                            alert_eligible=True,
+                            freshness=freshness,
+                            filter_outcome=FilterOutcome(
+                                passed=True,
+                                pass_reasons=[*filter_outcome.pass_reasons, "paper_near_miss_promoted"],
+                                rejection_reasons=near_miss_reasons,
+                                reason_codes=[*filter_outcome.reason_codes, "paper_near_miss_promoted"],
+                                measurements=filter_outcome.measurements,
+                                watchlist_only=False,
+                            ),
+                            payload=near_miss.model_dump(),
+                        )
+                        continue
                     suppressed += 1
                     service._add_scan_diagnostic(
                         rejection_summary,
@@ -443,6 +684,42 @@ def scan_universe(
                     freshness=freshness,
                 )
                 if ranking["actionability"] == "reject":
+                    near_miss = _maybe_promote_paper_near_miss(
+                        service,
+                        signal=signal,
+                        quote=quote,
+                        timeframe=timeframe,
+                        context=context,
+                        intelligence=intelligence,
+                        market_data_status=market_data_status,
+                        filter_outcome=filter_outcome,
+                        backtest_snapshot=backtest_snapshot,
+                        ranking=ranking,
+                        freshness=freshness,
+                        reasons=["final_score_below_auto_threshold"],
+                    )
+                    if near_miss is not None:
+                        service.signal_states.upsert(near_miss)
+                        candidates.append(near_miss)
+                        service._record_scan_decision(
+                            scan_task=scan_task,
+                            signal=signal,
+                            timeframe=timeframe,
+                            status="candidate",
+                            final_score=near_miss.score,
+                            alert_eligible=True,
+                            freshness=freshness,
+                            filter_outcome=FilterOutcome(
+                                passed=True,
+                                pass_reasons=[*filter_outcome.pass_reasons, "paper_near_miss_promoted"],
+                                rejection_reasons=["final_score_below_auto_threshold"],
+                                reason_codes=[*filter_outcome.reason_codes, "paper_near_miss_promoted"],
+                                measurements={**filter_outcome.measurements, **intelligence.measurements},
+                                watchlist_only=False,
+                            ),
+                            payload=near_miss.model_dump(),
+                        )
+                        continue
                     suppressed += 1
                     service._add_scan_diagnostic(
                         rejection_summary,
@@ -492,6 +769,23 @@ def scan_universe(
                     ranking=ranking,
                     freshness=freshness,
                 )
+                if not bool(snapshot.metadata.get("alert_eligible", False)):
+                    promoted = _maybe_promote_paper_near_miss(
+                        service,
+                        signal=signal,
+                        quote=quote,
+                        timeframe=timeframe,
+                        context=context,
+                        intelligence=intelligence,
+                        market_data_status=market_data_status,
+                        filter_outcome=filter_outcome,
+                        backtest_snapshot=backtest_snapshot,
+                        ranking=ranking,
+                        freshness=freshness,
+                        reasons=["final_score_below_auto_threshold"],
+                    )
+                    if promoted is not None:
+                        snapshot = promoted
                 if validated_only and not bool(snapshot.metadata.get("backtest_validated")):
                     suppressed += 1
                     service._add_scan_diagnostic(
@@ -549,9 +843,13 @@ def scan_universe(
     ]
     expected_strategy_runs = 0
     for timeframe in scan_timeframes:
-        expected_strategy_runs += len(service._strategy_specs_for_timeframe(timeframe)) * len(universe)
+        expected_strategy_runs += len(_strategy_specs_for_timeframe(service, timeframe, requested_spec_keys)) * len(universe)
     skipped_strategy_runs = max(expected_strategy_runs - evaluated_strategy_runs, 0)
     deadline_exceeded = any("scan_deadline_exceeded" in error for error in errors)
+    requested_spec_count = len(requested_spec_keys) if requested_spec_keys else sum(
+        len(_strategy_specs_for_timeframe(service, timeframe, set())) for timeframe in scan_timeframes
+    )
+    evaluated_spec_count = len(evaluated_spec_keys)
     response = ScreenerRunResponse(
         generated_at=utc_now().isoformat(),
         universe_name=service.settings.market_universe_name,
@@ -568,6 +866,10 @@ def scan_universe(
             "mode": str(getattr(service.settings, "screener_spec_coverage_mode", "default")),
             "timeframes": scan_timeframes,
             "specs_by_timeframe": specs_by_timeframe,
+            "requested_spec_keys": sorted(requested_spec_keys),
+            "specs_requested": requested_spec_count,
+            "specs_evaluated": evaluated_spec_count,
+            "specs_skipped": max(requested_spec_count - evaluated_spec_count, 0),
             "symbols_requested": len(universe),
             "symbols_evaluated": evaluated_symbols,
             "expected_strategy_runs": expected_strategy_runs,

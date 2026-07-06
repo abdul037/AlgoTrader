@@ -251,3 +251,65 @@ def test_unattended_candidate_requires_explicit_opt_in(tmp_path):
 
     assert "paper_auto_approve_disabled" in blockers
     assert "auto_execution_worker_disabled" in blockers
+
+
+def test_paper_near_miss_uses_configured_score_gap_without_bypassing_safety(tmp_path):
+    settings = make_settings(
+        tmp_path,
+        execution_mode="paper",
+        enable_real_trading=False,
+        alpaca_expected_account_number="PAPER-1",
+        paper_auto_approve_proposals=True,
+        auto_execution_worker_enabled=True,
+        paper_auto_operation_mode="unattended",
+        paper_scanner_exploration_enabled=True,
+        paper_scanner_bypass_production_approval=True,
+        paper_exploration_signal_profile="balanced_loose",
+        paper_near_miss_promotion_enabled=True,
+        paper_near_miss_max_score_gap=5.0,
+        market_universe_symbols=["NVDA"],
+    )
+    safety = SimpleNamespace(
+        is_blacklisted=lambda _symbol: False,
+        strategy_active=lambda _strategy: True,
+    )
+    governance = SimpleNamespace(
+        strategy_production_approved=lambda _strategy: False,
+        strategy_paper_exploration_approved=lambda _strategy: True,
+    )
+    service = PaperAutoTradingService(
+        settings=settings,
+        proposal_service=None,
+        execution_coordinator=None,
+        automation=SimpleNamespace(execution_blockers=lambda: []),
+        reconciliation=SimpleNamespace(account_verified=lambda: True),
+        safety_state=safety,
+        executions=None,
+        run_logs=None,
+        notifier=None,
+        alpaca_client=SimpleNamespace(
+            is_regular_market_open=lambda: True,
+            is_supported_equity=lambda _symbol: True,
+        ),
+        strategy_governance=governance,
+    )
+    candidate = SimpleNamespace(
+        symbol="NVDA",
+        strategy_name="momentum_breakout",
+        execution_ready=True,
+        signal_role="entry_long",
+        score=56.0,
+        stop_loss=95.0,
+        take_profit=110.0,
+        metadata={
+            "alert_eligible": True,
+            "backtest_validated": False,
+            "signal_classification": "paper_near_miss",
+            "source": "paper_near_miss",
+        },
+    )
+
+    blockers = service.candidate_blockers(candidate)
+
+    assert "candidate_score_below_auto_threshold" not in blockers
+    assert blockers == []

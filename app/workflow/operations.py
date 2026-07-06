@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from typing import Any
 
 from app.models.workflow import WorkflowTaskResponse
@@ -21,18 +22,24 @@ def run_scan_task(
     force_refresh: bool,
     symbols: list[str] | None = None,
 ) -> WorkflowTaskResponse:
+    spec_batch = _rotating_spec_batch(service, task=task, timeframes=timeframes)
+    effective_timeframes = timeframes
+    if spec_batch:
+        effective_timeframes = list(spec_batch["timeframes"])
     kwargs = {
         "symbols": symbols
         or resolve_universe(
             service.settings,
             limit=int(getattr(service.settings, "workflow_scan_default_universe_limit", 25) or 25),
         ),
-        "timeframes": timeframes,
+        "timeframes": effective_timeframes,
         "limit": service.settings.screener_top_k,
         "validated_only": service.settings.require_backtest_validation_for_alerts,
         "notify": False,
         "force_refresh": force_refresh,
     }
+    if spec_batch:
+        kwargs["strategy_spec_keys"] = spec_batch["strategy_spec_keys"]
     if "scan_task" in inspect.signature(service.market_screener.scan_universe).parameters:
         kwargs["scan_task"] = task
     try:
@@ -43,8 +50,9 @@ def run_scan_task(
             f"workflow_{task}_failed",
             {
                 "started_at": utc_now().isoformat(),
-                "timeframes": timeframes,
+                "timeframes": effective_timeframes,
                 "symbols_requested": kwargs["symbols"],
+                "spec_batch": spec_batch or {},
                 "error": error,
             },
         )
@@ -60,6 +68,17 @@ def run_scan_task(
     proposals_created = service._auto_propose_candidates(response, origin=origin, notify=notify)
     if hasattr(response, "coverage"):
         response.coverage["proposals_created"] = proposals_created
+        if spec_batch:
+            response.coverage.update(
+                {
+                    "spec_batch_index": spec_batch["batch_index"],
+                    "spec_batch_size": spec_batch["batch_size"],
+                    "spec_batch_mode": spec_batch["mode"],
+                    "spec_batch_total": spec_batch["total_specs"],
+                    "spec_batch_rotation_key": spec_batch["rotation_key"],
+                }
+            )
+        _record_scan_coverage(service, task=task, coverage=response.coverage)
     service.runtime_state.set(state_key, utc_now().isoformat())
     service.run_logs.log(
         f"workflow_{task}_completed",
@@ -70,7 +89,7 @@ def run_scan_task(
             "symbols_passed": [item.symbol for item in response.candidates],
             "alerts_sent": alerts_sent,
             "proposals_created": proposals_created,
-            "timeframes": timeframes,
+            "timeframes": effective_timeframes,
             "errors": response.errors,
             "coverage": getattr(response, "coverage", {}),
         },
@@ -84,6 +103,58 @@ def run_scan_task(
         open_signals=len(service.tracked_signals.list(status="open", limit=500)),
         errors=list(response.errors),
     )
+
+
+def _rotating_spec_batch(service: Any, *, task: str, timeframes: list[str]) -> dict[str, Any] | None:
+    mode = str(getattr(service.settings, "screener_spec_batch_mode", "off") or "off").lower()
+    batch_size = int(getattr(service.settings, "screener_spec_batch_size", 0) or 0)
+    if mode != "rotating" or batch_size <= 0:
+        return None
+    if not hasattr(service.market_screener, "strategy_spec_keys_for_timeframes"):
+        return None
+    spec_keys = list(service.market_screener.strategy_spec_keys_for_timeframes(timeframes))
+    if not spec_keys:
+        return None
+    bounded_batch_size = max(1, min(batch_size, len(spec_keys)))
+    rotation_key = f"workflow:spec_batch_offset:{task}:{','.join(timeframes)}"
+    try:
+        offset = int(service.runtime_state.get(rotation_key) or "0")
+    except ValueError:
+        offset = 0
+    offset = offset % len(spec_keys)
+    selected = (spec_keys + spec_keys)[offset : offset + bounded_batch_size]
+    service.runtime_state.set(rotation_key, str((offset + bounded_batch_size) % len(spec_keys)))
+    selected_timeframes = _timeframes_for_spec_keys(selected, fallback=timeframes)
+    return {
+        "mode": mode,
+        "rotation_key": rotation_key,
+        "batch_index": offset // bounded_batch_size,
+        "batch_size": bounded_batch_size,
+        "total_specs": len(spec_keys),
+        "strategy_spec_keys": selected,
+        "timeframes": selected_timeframes,
+    }
+
+
+def _timeframes_for_spec_keys(spec_keys: list[str], *, fallback: list[str]) -> list[str]:
+    selected: list[str] = []
+    for key in spec_keys:
+        if ":" not in key:
+            continue
+        timeframe = key.rsplit(":", 1)[1].strip().lower()
+        if timeframe and timeframe not in selected:
+            selected.append(timeframe)
+    return selected or fallback
+
+
+def _record_scan_coverage(service: Any, *, task: str, coverage: dict[str, Any]) -> None:
+    try:
+        service.runtime_state.set(
+            f"workflow:{task}:last_scan_coverage",
+            json.dumps({"recorded_at": utc_now().isoformat(), **dict(coverage)}, default=str),
+        )
+    except Exception:  # noqa: BLE001 - coverage state must not break scans
+        return
 
 
 def track_candidates(service: Any, response: Any, *, origin: str) -> None:

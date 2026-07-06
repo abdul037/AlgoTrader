@@ -48,6 +48,12 @@ class PaperAutoTradingService:
         symbol = str(getattr(candidate, "symbol", "") or "").upper()
         strategy = str(getattr(candidate, "strategy_name", "") or "")
         paper_exploration = self._paper_exploration_strategy_approved(strategy)
+        paper_near_miss = (
+            paper_exploration
+            and bool(getattr(self.settings, "paper_near_miss_promotion_enabled", False))
+            and str(metadata.get("signal_classification") or "").lower() == "paper_near_miss"
+            and str(metadata.get("source") or "").lower() == "paper_near_miss"
+        )
         if self.settings.execution_mode != "paper" or bool(self.settings.enable_real_trading):
             blockers.append("paper_only_policy")
         if not str(getattr(self.settings, "alpaca_expected_account_number", "") or "").strip():
@@ -84,7 +90,10 @@ class PaperAutoTradingService:
             backtest_required = bool(getattr(self.settings, "paper_exploration_require_backtest_validated", False))
         if backtest_required and not bool(metadata.get("backtest_validated", False)):
             blockers.append("candidate_not_backtest_validated")
-        if float(getattr(candidate, "score", 0.0) or 0.0) < effective_auto_execution_min_score(self.settings):
+        minimum_score = effective_auto_execution_min_score(self.settings)
+        if paper_near_miss:
+            minimum_score -= float(getattr(self.settings, "paper_near_miss_max_score_gap", 5.0) or 0.0)
+        if float(getattr(candidate, "score", 0.0) or 0.0) < minimum_score:
             blockers.append("candidate_score_below_auto_threshold")
         if symbol not in resolve_universe(self.settings):
             blockers.append("symbol_not_in_execution_universe")

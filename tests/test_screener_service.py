@@ -6,9 +6,10 @@ from types import SimpleNamespace
 import pandas as pd
 
 from app.live_signal_schema import MarketQuote
+from app.models.signal import Signal, SignalAction
 from app.screener.profiles import effective_auto_execution_min_score
-from app.screener.service import MarketScreenerService, _strategy_specs
 from app.screener.scoring import build_backtest_snapshot
+from app.screener.service import MarketScreenerService, _strategy_specs
 from tests.conftest import make_settings
 
 
@@ -194,7 +195,7 @@ def test_paper_exploration_profile_applies_only_to_effective_screener_settings(t
     assert settings.screener_min_final_score_to_alert == 65.0
     assert service.effective_settings.screener_min_final_score_to_alert == 60.0
     assert service.effective_settings.screener_min_final_score_to_keep == 50.0
-    assert service.effective_settings.screener_min_relative_volume == 0.90
+    assert service.effective_settings.screener_min_relative_volume == 0.80
     assert service.effective_settings.screener_min_reward_to_risk == 1.20
     assert service.effective_settings.screener_min_indicator_confluence == 0.35
     assert effective_auto_execution_min_score(settings) == 60.0
@@ -505,3 +506,99 @@ def test_screener_market_data_timeout_records_error_without_blocking_scan(tmp_pa
     assert response.candidates == []
     assert response.rejection_summary["market_data_timeout"] == 1
     assert any("timeout_after" in item for item in response.errors)
+
+
+def test_paper_near_miss_promotion_creates_execution_ready_candidate(tmp_path, monkeypatch) -> None:
+    frame = _frame([100 + (index * 0.25) for index in range(90)])
+    frame.loc[frame.index[-1], "volume"] = frame["volume"].tail(20).mean() * 0.76
+    quote = MarketQuote(symbol="NVDA", bid=122.0, ask=122.05, last_execution=122.03, timestamp="2026-04-11T10:00:00Z")
+    decisions = FakeScanDecisionRepository()
+    service = MarketScreenerService(
+        settings=make_settings(
+            tmp_path,
+            market_universe_symbols=["NVDA"],
+            screener_default_timeframes=["1d"],
+            execution_mode="paper",
+            enable_real_trading=False,
+            paper_scanner_exploration_enabled=True,
+            paper_exploration_signal_profile="balanced_loose",
+            paper_near_miss_promotion_enabled=True,
+            paper_exploration_min_relative_volume=0.80,
+            paper_exploration_near_miss_min_relative_volume=0.75,
+            screener_weak_backtest_action="rank_only",
+            screener_min_confidence=0.1,
+            screener_min_trend_strength_pct=0.0,
+            screener_min_efficiency_ratio=0.0,
+            screener_min_execution_quality=0.0,
+            screener_min_accuracy_score=0.0,
+            screener_min_confirmation_score=0.0,
+            screener_max_false_positive_risk=1.0,
+            screener_min_market_regime_score=0.0,
+            screener_min_timeframe_alignment_score=0.0,
+            screener_min_sector_strength_score=0.0,
+            screener_min_benchmark_strength_score=0.0,
+            screener_min_recent_backtest_consistency=0.0,
+        ),
+        market_data_engine=FakeMarketDataEngine({("NVDA", "1d"): frame}, {"NVDA": quote}),
+        signal_state_repository=FakeSignalStateRepository(),
+        run_log_repository=FakeRunLogRepository(),
+        backtest_repository=FakeBacktestRepository(
+            summary={
+                "strategy_name": "near_miss_strategy",
+                "completed_at": "2026-04-10T12:00:00Z",
+                "out_of_sample": True,
+                "metrics": {
+                    "number_of_trades": 40,
+                    "profit_factor": 1.8,
+                    "win_rate": 58.0,
+                    "max_drawdown_pct": 10.0,
+                    "out_of_sample": True,
+                },
+                "trades": [{"pnl_pct": 1.0}, {"pnl_pct": -0.4}, {"pnl_pct": 0.8}],
+            }
+        ),
+        scan_decision_repository=decisions,
+        telegram_notifier=FakeTelegramNotifier(),
+    )
+
+    class FakeStrategy:
+        def generate_signal(self, _history, symbol):
+            return Signal(
+                symbol=symbol,
+                strategy_name="near_miss_strategy",
+                action=SignalAction.BUY,
+                confidence=0.92,
+                price=122.03,
+                stop_loss=119.0,
+                take_profit=128.2,
+                rationale="paper near miss fixture",
+                metadata={
+                    "style": "momentum",
+                    "signal_role": "entry_long",
+                    "risk_reward_ratio": 2.0,
+                    "trend_quality": 1.0,
+                    "momentum_quality": 1.0,
+                    "liquidity_quality": 1.0,
+                    "indicator_confluence_score": 0.8,
+                },
+            )
+
+    spec = SimpleNamespace(name="near_miss_strategy", timeframe="1d", style="momentum", default_kwargs={})
+    monkeypatch.setattr(service, "_strategy_specs_for_timeframe", lambda *_args, **_kwargs: [spec])
+    monkeypatch.setattr(service, "_build_strategy", lambda _spec: FakeStrategy())
+
+    response = service.scan_universe(
+        limit=3,
+        scan_task="intraday_scan",
+        strategy_spec_keys=["near_miss_strategy:1d"],
+    )
+
+    assert response.candidates
+    candidate = response.candidates[0]
+    assert candidate.execution_ready is True
+    assert candidate.metadata["alert_eligible"] is True
+    assert candidate.metadata["signal_classification"] == "paper_near_miss"
+    assert candidate.metadata["source"] == "paper_near_miss"
+    assert "relative_volume_too_low" in candidate.metadata["paper_near_miss_reasons"]
+    assert response.coverage["requested_spec_keys"] == ["near_miss_strategy:1d"]
+    assert any(item.status == "candidate" and item.alert_eligible for item in decisions.items)
