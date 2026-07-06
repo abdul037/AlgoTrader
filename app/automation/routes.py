@@ -87,6 +87,50 @@ def _paper_performance_metrics(pnl_values: list[float]) -> dict[str, float | Non
     }
 
 
+def _compact_rl_policy_status(service: Any) -> dict[str, Any]:
+    latest = None
+    counts: dict[str, Any] = {}
+    blockers: list[str] = []
+    try:
+        latest = service.repository.latest_version()
+    except Exception:  # noqa: BLE001 - readiness telemetry must not block operators
+        blockers.append("rl_policy_latest_unavailable")
+    try:
+        counts = dict(service.repository.counts())
+    except Exception:  # noqa: BLE001
+        blockers.append("rl_policy_counts_unavailable")
+    base_blockers = getattr(service, "_base_blockers", None)
+    if callable(base_blockers):
+        try:
+            blockers.extend(str(item) for item in base_blockers(include_policy=False))
+        except Exception:  # noqa: BLE001
+            blockers.append("rl_policy_blockers_unavailable")
+    latest_policy = None
+    if latest is not None:
+        latest_policy = {
+            "id": latest.id,
+            "status": latest.status,
+            "dataset_version": latest.dataset_version,
+            "reward_model_version": latest.reward_model_version,
+            "row_count": latest.row_count,
+            "accepted_rows": latest.accepted_rows,
+            "metrics": latest.metrics,
+            "blockers": latest.blockers,
+            "created_at": latest.created_at,
+        }
+    settings = service.settings
+    return {
+        "enabled": bool(getattr(settings, "rl_policy_enabled", False)),
+        "training_enabled": bool(getattr(settings, "rl_policy_training_enabled", False)),
+        "paper_proposals_enabled": bool(getattr(settings, "rl_policy_paper_proposals_enabled", False)),
+        "max_notional_usd": float(getattr(settings, "rl_policy_max_notional_usd", 500.0)),
+        "max_proposals_per_day": int(getattr(settings, "rl_policy_max_proposals_per_day", 1)),
+        "latest_policy": latest_policy,
+        "counts": counts,
+        "blockers": sorted(set(blockers)),
+    }
+
+
 @router.get("/status", response_model=AutomationStatus)
 def automation_status(request: Request) -> AutomationStatus:
     return _automation(request).status()
@@ -103,7 +147,7 @@ def continuous_readiness(request: Request):
     )
     reconciliation_issues = _json_or_empty(latest_reconciliation.get("issues_json"), [])
     learning_status = request.app.state.learning_service.status()
-    rl_policy_status = request.app.state.rl_policy_service.status()
+    rl_policy_status = _compact_rl_policy_status(request.app.state.rl_policy_service)
     workflow_status = request.app.state.workflow_service.status()
     institutional_readiness = request.app.state.institutional_service.readiness()
     approved_versions = list(institutional_readiness.get("approved_strategy_versions") or [])
