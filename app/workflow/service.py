@@ -340,18 +340,30 @@ class SignalWorkflowService:
         return [self._bucket_status(name) for name in self.SCHEDULER_BUCKETS]
 
     def status(self) -> WorkflowStatusResponse:
+        state_keys = [
+            "workflow:last_premarket_scan_at",
+            "workflow:last_market_open_scan_at",
+            "workflow:last_intelligent_scan_at",
+            "workflow:last_swing_scan_at",
+            "workflow:last_intraday_scan_at",
+            "workflow:last_end_of_day_scan_at",
+            "workflow:last_open_signal_check_at",
+            "workflow:last_ledger_cycle_at",
+            "workflow:last_daily_summary_at",
+        ]
+        state = self._runtime_state_get_many(state_keys)
         return WorkflowStatusResponse(
             scheduler_enabled=bool(self.settings.screener_scheduler_enabled),
             schedule_timezone=self.settings.schedule_timezone,
-            last_premarket_scan_at=self.runtime_state.get("workflow:last_premarket_scan_at"),
-            last_market_open_scan_at=self.runtime_state.get("workflow:last_market_open_scan_at"),
-            last_intelligent_scan_at=self.runtime_state.get("workflow:last_intelligent_scan_at"),
-            last_swing_scan_at=self.runtime_state.get("workflow:last_swing_scan_at"),
-            last_intraday_scan_at=self.runtime_state.get("workflow:last_intraday_scan_at"),
-            last_end_of_day_scan_at=self.runtime_state.get("workflow:last_end_of_day_scan_at"),
-            last_open_signal_check_at=self.runtime_state.get("workflow:last_open_signal_check_at"),
-            last_ledger_cycle_at=self.runtime_state.get("workflow:last_ledger_cycle_at"),
-            last_daily_summary_at=self.runtime_state.get("workflow:last_daily_summary_at"),
+            last_premarket_scan_at=state.get("workflow:last_premarket_scan_at"),
+            last_market_open_scan_at=state.get("workflow:last_market_open_scan_at"),
+            last_intelligent_scan_at=state.get("workflow:last_intelligent_scan_at"),
+            last_swing_scan_at=state.get("workflow:last_swing_scan_at"),
+            last_intraday_scan_at=state.get("workflow:last_intraday_scan_at"),
+            last_end_of_day_scan_at=state.get("workflow:last_end_of_day_scan_at"),
+            last_open_signal_check_at=state.get("workflow:last_open_signal_check_at"),
+            last_ledger_cycle_at=state.get("workflow:last_ledger_cycle_at"),
+            last_daily_summary_at=state.get("workflow:last_daily_summary_at"),
             open_signals=len(self.tracked_signals.list(status="open", limit=500)),
             alert_history_count=self.alert_history.count(),
         )
@@ -401,14 +413,26 @@ class SignalWorkflowService:
         buckets: list[dict[str, Any]] = []
         now = utc_now()
         now_local = self._local_now()
+        state_keys = []
+        for bucket_name in self.SCHEDULER_BUCKETS:
+            prefix = self._bucket_state_prefix(bucket_name)
+            state_keys.extend(
+                [
+                    f"{prefix}:last_success_at",
+                    f"{prefix}:last_run_at",
+                    f"{prefix}:last_status",
+                    f"{prefix}:last_error",
+                ]
+            )
+        state = self._runtime_state_get_many(state_keys)
         for bucket_name in self.SCHEDULER_BUCKETS:
             prefix = self._bucket_state_prefix(bucket_name)
             enabled = self._bucket_enabled(bucket_name)
             paused = self._bucket_paused(bucket_name)
-            last_success_at = self.runtime_state.get(f"{prefix}:last_success_at")
-            last_run_at = self.runtime_state.get(f"{prefix}:last_run_at")
-            last_status = self.runtime_state.get(f"{prefix}:last_status")
-            last_error = self.runtime_state.get(f"{prefix}:last_error") or None
+            last_success_at = state.get(f"{prefix}:last_success_at")
+            last_run_at = state.get(f"{prefix}:last_run_at")
+            last_status = state.get(f"{prefix}:last_status")
+            last_error = state.get(f"{prefix}:last_error") or None
             threshold_seconds = self._bucket_freshness_threshold_seconds(bucket_name)
             expected = self._bucket_expected_for_freshness(bucket_name, now_local=now_local)
             age_seconds = self._age_seconds(last_success_at, now=now)
@@ -682,19 +706,42 @@ class SignalWorkflowService:
             return
 
     def _scan_coverage_summary(self) -> dict[str, Any]:
+        tasks = ("premarket_scan", "market_open_scan", "intraday_scan", "swing_scan", "end_of_day_scan")
+        state_keys = ["workflow:intraday_active_movers"]
+        state_keys.extend(f"workflow:{task}:last_scan_coverage" for task in tasks)
+        state = self._runtime_state_get_many(state_keys)
         coverage: dict[str, Any] = {
-            "active_mover_shortlist": self._load_active_mover_state(),
+            "active_mover_shortlist": self._decode_json_object(
+                state.get("workflow:intraday_active_movers"),
+                error_key="invalid_active_mover_state",
+            ),
             "latest_by_task": {},
         }
-        for task in ("premarket_scan", "market_open_scan", "intraday_scan", "swing_scan", "end_of_day_scan"):
-            raw = self.runtime_state.get(f"workflow:{task}:last_scan_coverage")
+        for task in tasks:
+            raw = state.get(f"workflow:{task}:last_scan_coverage")
             if not raw:
                 continue
-            try:
-                coverage["latest_by_task"][task] = json.loads(raw)
-            except json.JSONDecodeError:
-                coverage["latest_by_task"][task] = {"error": "invalid_scan_coverage_state"}
+            coverage["latest_by_task"][task] = self._decode_json_object(
+                raw,
+                error_key="invalid_scan_coverage_state",
+            )
         return coverage
+
+    def _runtime_state_get_many(self, keys: list[str] | tuple[str, ...]) -> dict[str, str | None]:
+        getter = getattr(self.runtime_state, "get_many", None)
+        if callable(getter):
+            return getter(keys)
+        return {key: self.runtime_state.get(key) for key in keys}
+
+    @staticmethod
+    def _decode_json_object(raw: str | None, *, error_key: str) -> dict[str, Any]:
+        if not raw:
+            return {}
+        try:
+            loaded = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"error": error_key}
+        return loaded if isinstance(loaded, dict) else {"error": error_key}
 
     @staticmethod
     def _normalized_timeframes(timeframes: Any) -> list[str]:

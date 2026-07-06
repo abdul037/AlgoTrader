@@ -27,7 +27,11 @@ from app.models.paper import PaperPerformanceSummary, PaperPositionRecord, Paper
 from app.models.rl_policy import RLPolicyProposal, RLPolicyVersion
 from app.models.screener import ScanDecisionRecord
 from app.models.signal import Signal
-from app.models.strategy_lab import GeneratedStrategyRecord, StrategyLabBacktestRecord, StrategyLabDsl
+from app.models.strategy_lab import (
+    GeneratedStrategyRecord,
+    StrategyLabBacktestRecord,
+    StrategyLabDsl,
+)
 from app.models.workflow import AlertHistoryRecord, TrackedSignalRecord
 from app.storage.db import Database
 from app.utils.time import utc_now
@@ -786,6 +790,23 @@ class RuntimeStateRepository:
                 (state_key,),
             ).fetchone()
         return None if row is None else str(row["state_value"])
+
+    def get_many(self, state_keys: list[str] | tuple[str, ...]) -> dict[str, str | None]:
+        keys = list(dict.fromkeys(str(key) for key in state_keys if str(key)))
+        if not keys:
+            return {}
+        placeholders = ", ".join("?" for _ in keys)
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT state_key, state_value
+                FROM runtime_state
+                WHERE state_key IN ({placeholders})
+                """,
+                tuple(keys),
+            ).fetchall()
+        values = {str(row["state_key"]): str(row["state_value"]) for row in rows}
+        return {key: values.get(key) for key in keys}
 
     def set(self, state_key: str, state_value: str) -> None:
         with self.db.connect() as connection:
