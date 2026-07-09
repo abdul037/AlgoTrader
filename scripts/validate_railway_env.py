@@ -78,8 +78,6 @@ def validate() -> list[str]:
             "PAPER_SCANNER_EXPLORATION_ENABLED",
             "PAPER_SCANNER_BYPASS_PRODUCTION_APPROVAL",
             "AUTO_PROPOSE_ENABLED",
-            "PAPER_AUTO_APPROVE_PROPOSALS",
-            "AUTO_EXECUTION_WORKER_ENABLED",
         }
         required_false = {
             "EXTENDED_HOURS_EXPERIMENT_SUBMIT_ENABLED",
@@ -88,8 +86,18 @@ def validate() -> list[str]:
         }
         errors.extend(f"{name} must be true in paper_exploration mode" for name in required_true if not as_bool(name))
         errors.extend(f"{name} must be false in paper_exploration mode" for name in required_false if as_bool(name))
-        if paper_auto_mode != "unattended":
-            errors.append("PAPER_AUTO_OPERATION_MODE must be unattended in paper_exploration mode")
+        if paper_auto_mode == "unattended":
+            required_unattended_true = {"PAPER_AUTO_APPROVE_PROPOSALS", "AUTO_EXECUTION_WORKER_ENABLED"}
+            errors.extend(
+                f"{name} must be true in unattended paper_exploration mode"
+                for name in required_unattended_true
+                if not as_bool(name)
+            )
+        elif paper_auto_mode == "supervised":
+            if as_bool("PAPER_AUTO_APPROVE_PROPOSALS"):
+                errors.append("PAPER_AUTO_APPROVE_PROPOSALS must be false in supervised paper_exploration mode")
+        else:
+            errors.append("PAPER_AUTO_OPERATION_MODE must be supervised or unattended in paper_exploration mode")
         if os.environ.get("MODEL_DEPLOYMENT_MODE", "").strip().lower() == "gating":
             errors.append("MODEL_DEPLOYMENT_MODE must not be gating in paper_exploration mode")
         if os.environ.get("BROKER_FOR_EQUITIES", "alpaca").strip().lower() != "alpaca":
