@@ -571,6 +571,44 @@ def test_intraday_rotation_includes_active_shortlist_before_batch(tmp_path) -> N
     assert screener.calls[0]["timeframes"] == ["1m", "5m", "10m", "15m"]
 
 
+def test_intraday_rotation_caps_symbols_after_active_and_mover_merge(tmp_path) -> None:
+    screener = FakeMarketScreener([])
+    tracked = FakeTrackedSignals()
+    tracked.upsert_open(_snapshot(), origin="manual")
+    market_data = ActiveMoverMarketData()
+    for symbol, multiplier in [("FAST", 2.5), ("QUICK", 2.0), ("AAPL", 1.2), ("MSFT", 1.1)]:
+        market_data.add(
+            symbol,
+            last_volume_multiplier=multiplier,
+            quote=MarketQuote(symbol=symbol, bid=100.0, ask=100.1, last_execution=100.05, data_age_seconds=1),
+        )
+    workflow = SignalWorkflowService(
+        settings=make_settings(
+            tmp_path,
+            market_universe_symbols=["FAST", "QUICK", "AAPL", "MSFT", "AMD", "META"],
+            market_universe_limit=6,
+            scalp_scan_batch_size=4,
+            intraday_active_shortlist_size=1,
+            intraday_scan_max_symbols=3,
+            intraday_active_mover_shortlist_enabled=True,
+            intraday_active_mover_shortlist_size=2,
+            intraday_active_mover_scan_limit=4,
+            screener_intraday_timeframes=["1m", "5m"],
+        ),
+        market_screener=screener,
+        market_data_engine=market_data,
+        notifier=FakeNotifier(),
+        tracked_signals=tracked,
+        alert_history=FakeAlertHistory(),
+        runtime_state=FakeState(),
+        run_logs=FakeLogs(),
+    )
+
+    workflow.run_intraday_scan(notify=False)
+
+    assert screener.calls[0]["symbols"] == ["NVDA", "FAST", "QUICK"]
+
+
 def test_intraday_rotation_prioritizes_active_movers_and_skips_bad_quotes(tmp_path) -> None:
     screener = FakeMarketScreener([])
     market_data = ActiveMoverMarketData()

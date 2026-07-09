@@ -22,7 +22,17 @@ class FakeScanDecisionRepository:
                 final_score=56.0,
                 rejection_reasons=["relative_volume_too_low"],
                 reason_codes=["relative_volume_too_low"],
-                payload={"measurements": {"relative_volume": 0.78}},
+                payload={
+                    "current_price": 100.0,
+                    "entry_price": 100.0,
+                    "stop_loss": 98.0,
+                    "take_profit": 104.0,
+                    "risk_reward_ratio": 2.0,
+                    "direction_label": "buy",
+                    "signal_role": "entry_long",
+                    "measurements": {"relative_volume": 0.78, "spread_bps": 5.0, "verified": True},
+                    "metadata": {"market_data_verified": True},
+                },
             ),
             SimpleNamespace(
                 created_at="2026-06-29T18:01:00+00:00",
@@ -87,6 +97,8 @@ def test_strategy_enhancement_near_misses_and_tuning_are_read_only(tmp_path) -> 
     assert near_misses["top_reasons"]["relative_volume_too_low"] == 1
     assert near_misses["near_miss_promotable_count"] == 1
     assert "unsupported_reason:indicator_confluence_too_low" in near_misses["near_miss_top_blocked_reasons"]
+    assert near_misses["examples"][0]["near_miss_promotable"] is True
+    assert near_misses["examples"][1]["promotion_blockers"]
     assert tuning["dry_run"] is True
     assert tuning["mutated"] is False
     assert "broker" in tuning["blocked_changes"]

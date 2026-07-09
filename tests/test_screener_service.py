@@ -195,7 +195,7 @@ def test_paper_exploration_profile_applies_only_to_effective_screener_settings(t
     assert settings.screener_min_final_score_to_alert == 65.0
     assert service.effective_settings.screener_min_final_score_to_alert == 60.0
     assert service.effective_settings.screener_min_final_score_to_keep == 50.0
-    assert service.effective_settings.screener_min_relative_volume == 0.80
+    assert service.effective_settings.screener_min_relative_volume == 0.65
     assert service.effective_settings.screener_min_reward_to_risk == 1.20
     assert service.effective_settings.screener_min_indicator_confluence == 0.35
     assert effective_auto_execution_min_score(settings) == 60.0
@@ -599,6 +599,12 @@ def test_paper_near_miss_promotion_creates_execution_ready_candidate(tmp_path, m
     assert candidate.metadata["alert_eligible"] is True
     assert candidate.metadata["signal_classification"] == "paper_near_miss"
     assert candidate.metadata["source"] == "paper_near_miss"
+    assert candidate.metadata["paper_near_miss_promoted_to_candidate"] is True
+    assert candidate.metadata["paper_near_miss_promotion_blockers"] == []
     assert "relative_volume_too_low" in candidate.metadata["paper_near_miss_reasons"]
     assert response.coverage["requested_spec_keys"] == ["near_miss_strategy:1d"]
     assert any(item.status == "candidate" and item.alert_eligible for item in decisions.items)
+    attempts = [payload for event, payload in service.logs.items if event == "paper_near_miss_promotion_attempt"]
+    assert attempts
+    assert attempts[-1]["promoted_to_candidate"] is True
+    assert attempts[-1]["promotion_blockers"] == []

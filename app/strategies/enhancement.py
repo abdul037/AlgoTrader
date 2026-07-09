@@ -44,15 +44,21 @@ class StrategyEnhancementService:
 
     def near_misses(self, *, limit: int = 500) -> dict[str, Any]:
         rows = self._recent_rows(limit=limit)
+        diagnostics = [self._near_miss_diagnostics(row) for row in rows]
         return {
             "rows_analyzed": len(rows),
             "status_counts": dict(Counter(row.status for row in rows)),
             "top_reasons": self._top_reasons(rows),
-            "near_miss_promotable_count": sum(1 for row in rows if self._is_promotable_near_miss(row)),
-            "near_miss_top_blocked_reasons": self._near_miss_blockers(rows),
+            "near_miss_promotable_count": sum(1 for item in diagnostics if item["promotable"]),
+            "near_miss_top_blocked_reasons": self._near_miss_blockers(diagnostics),
             "top_strategy_timeframes": self._top_strategy_timeframes(rows),
             "top_symbols": dict(Counter(row.symbol for row in rows).most_common(20)),
-            "examples": [self._example(row) for row in rows[:25]],
+            "examples": [self._example(row, diagnostic) for row, diagnostic in zip(rows[:25], diagnostics[:25], strict=False)],
+            "near_miss_promotion_examples": [
+                self._example(row, diagnostic)
+                for row, diagnostic in zip(rows, diagnostics, strict=False)
+                if diagnostic["attempted"]
+            ][:25],
         }
 
     def run_paper_tuning(self, *, limit: int = 1000) -> dict[str, Any]:
@@ -175,7 +181,8 @@ class StrategyEnhancementService:
         ]
 
     @staticmethod
-    def _example(row: Any) -> dict[str, Any]:
+    def _example(row: Any, diagnostic: dict[str, Any] | None = None) -> dict[str, Any]:
+        diagnostic = diagnostic or {}
         return {
             "created_at": row.created_at,
             "symbol": row.symbol,
@@ -184,13 +191,36 @@ class StrategyEnhancementService:
             "status": row.status,
             "final_score": row.final_score,
             "rejection_reasons": row.rejection_reasons,
+            "promoted_to_candidate": diagnostic.get("promoted_to_candidate", False),
+            "near_miss_promotable": diagnostic.get("promotable", False),
+            "promotion_blockers": diagnostic.get("promotion_blockers", []),
         }
 
     def _is_promotable_near_miss(self, row: Any) -> bool:
+        return bool(self._near_miss_diagnostics(row)["promotable"])
+
+    def _near_miss_diagnostics(self, row: Any) -> dict[str, Any]:
         payload = dict(getattr(row, "payload", {}) or {})
         metadata = dict(payload.get("metadata") or {})
         if metadata.get("signal_classification") == "paper_near_miss":
-            return True
+            blockers = [
+                str(item)
+                for item in (metadata.get("paper_near_miss_promotion_blockers") or [])
+                if str(item).strip()
+            ]
+            return {
+                "attempted": True,
+                "promoted_to_candidate": bool(metadata.get("paper_near_miss_promoted_to_candidate", True)),
+                "promotable": not blockers,
+                "promotion_blockers": blockers,
+            }
+
+        blockers: list[str] = []
+        if not bool(getattr(self.settings, "paper_near_miss_promotion_enabled", False)):
+            blockers.append("paper_near_miss_disabled")
+        if not paper_exploration_profile_enabled(self.settings):
+            blockers.append("paper_exploration_profile_inactive")
+
         reasons = {
             str(item).strip().lower()
             for item in (getattr(row, "rejection_reasons", []) or getattr(row, "reason_codes", []) or [])
@@ -201,47 +231,82 @@ class StrategyEnhancementService:
             for item in (getattr(self.settings, "paper_near_miss_allowed_reasons", []) or [])
             if str(item).strip()
         }
-        if not reasons or reasons - allowed:
-            return False
+        if not reasons:
+            blockers.append("missing_rejection_reasons")
+        unsupported = reasons - allowed
+        blockers.extend(f"unsupported_reason:{reason}" for reason in sorted(unsupported))
+
         measurements = dict(payload.get("measurements") or {})
-        relative_volume = float(measurements.get("relative_volume") or 0.0)
-        if relative_volume < float(getattr(self.settings, "paper_exploration_near_miss_min_relative_volume", 0.75)):
-            return False
+        indicators = dict(payload.get("indicators") or {})
+        relative_volume = self._safe_float(measurements.get("relative_volume"), indicators.get("relative_volume"))
+        if relative_volume is None:
+            blockers.append("relative_volume_unavailable")
+        elif relative_volume < float(getattr(self.settings, "paper_exploration_near_miss_min_relative_volume", 0.75)):
+            blockers.append("paper_near_miss_relative_volume_too_low")
+
         score = float(getattr(row, "final_score", None) or 0.0)
         minimum = effective_auto_execution_min_score(self.settings) - float(
             getattr(self.settings, "paper_near_miss_max_score_gap", 5.0) or 0.0
         )
-        return score >= minimum
+        if score < minimum:
+            blockers.append("paper_near_miss_score_gap_too_large")
 
-    def _near_miss_blockers(self, rows: list[Any]) -> dict[str, int]:
-        counter: Counter[str] = Counter()
-        allowed = {
-            str(item).strip().lower()
-            for item in (getattr(self.settings, "paper_near_miss_allowed_reasons", []) or [])
-            if str(item).strip()
+        entry = self._safe_float(payload.get("entry_price"), payload.get("current_price"))
+        stop = self._safe_float(payload.get("stop_loss"))
+        target = self._safe_float(payload.get("take_profit"))
+        if entry is None or stop is None or target is None:
+            blockers.append("paper_near_miss_bracket_missing")
+        elif not (stop < entry < target):
+            blockers.append("paper_near_miss_invalid_bracket")
+
+        spread_bps = self._safe_float(measurements.get("spread_bps"), indicators.get("spread_bps"))
+        if spread_bps is None:
+            blockers.append("paper_near_miss_spread_unavailable")
+        elif spread_bps > float(getattr(self.settings, "screener_max_spread_bps", 50.0)):
+            blockers.append("paper_near_miss_spread_too_wide")
+
+        risk_reward = self._safe_float(payload.get("risk_reward_ratio"), metadata.get("risk_reward_ratio"))
+        if risk_reward is None and entry is not None and stop is not None and target is not None and entry > stop:
+            risk_reward = (target - entry) / (entry - stop)
+        if risk_reward is None or risk_reward < float(getattr(self.settings, "paper_exploration_min_reward_to_risk", 1.20)):
+            blockers.append("paper_near_miss_reward_to_risk_too_low")
+
+        verified = bool(metadata.get("market_data_verified") or measurements.get("verified") or payload.get("market_data_verified"))
+        data_blocked = bool(metadata.get("data_gate_blocked"))
+        if not verified or data_blocked:
+            blockers.append("market_data_unverified")
+
+        if str(metadata.get("signal_role") or payload.get("signal_role") or "entry_long").lower() == "entry_short":
+            blockers.append("paper_near_miss_short_blocked")
+        if str(payload.get("direction_label") or "buy").lower() not in {"buy", "long"}:
+            blockers.append("paper_near_miss_long_only")
+
+        unique_blockers = list(dict.fromkeys(blockers))
+        return {
+            "attempted": bool(reasons or metadata),
+            "promoted_to_candidate": False,
+            "promotable": not unique_blockers,
+            "promotion_blockers": unique_blockers,
         }
-        minimum = effective_auto_execution_min_score(self.settings) - float(
-            getattr(self.settings, "paper_near_miss_max_score_gap", 5.0) or 0.0
-        )
-        rvol_floor = float(getattr(self.settings, "paper_exploration_near_miss_min_relative_volume", 0.75))
-        for row in rows:
-            if self._is_promotable_near_miss(row):
+
+    def _near_miss_blockers(self, diagnostics: list[dict[str, Any]]) -> dict[str, int]:
+        counter: Counter[str] = Counter()
+        for diagnostic in diagnostics:
+            if diagnostic["promotable"]:
                 continue
-            payload = dict(getattr(row, "payload", {}) or {})
-            reasons = {
-                str(item).strip().lower()
-                for item in (getattr(row, "rejection_reasons", []) or getattr(row, "reason_codes", []) or [])
-                if str(item).strip()
-            }
-            unsupported = reasons - allowed
-            if unsupported:
-                counter.update([f"unsupported_reason:{reason}" for reason in unsupported])
-            measurements = dict(payload.get("measurements") or {})
-            if float(measurements.get("relative_volume") or 0.0) < rvol_floor:
-                counter["relative_volume_below_near_miss_floor"] += 1
-            if float(getattr(row, "final_score", None) or 0.0) < minimum:
-                counter["score_gap_too_large"] += 1
+            counter.update(diagnostic["promotion_blockers"])
         return dict(counter.most_common(20))
+
+    @staticmethod
+    def _safe_float(*values: Any) -> float | None:
+        for value in values:
+            if value in (None, ""):
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return None
 
     @staticmethod
     def _specs_by_timeframe() -> dict[str, int]:

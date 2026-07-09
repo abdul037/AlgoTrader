@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import time
+from contextlib import suppress
 from typing import Any
 
 from app.broker.etoro_rate_limit import EToroRateLimitError
@@ -151,6 +152,27 @@ def _maybe_promote_paper_near_miss(
         ranking=ranking,
         reasons=reasons,
     )
+    attempt_payload = {
+        "symbol": getattr(signal, "symbol", None),
+        "strategy_name": getattr(signal, "strategy_name", None),
+        "timeframe": timeframe,
+        "promoted_to_candidate": not blockers,
+        "promotion_blockers": list(blockers),
+        "reasons": list(dict.fromkeys(reasons)),
+        "final_score": float(ranking.get("final_score") or 0.0),
+        "relative_volume": float(getattr(context, "relative_volume", 0.0) or 0.0),
+        "min_relative_volume": float(
+            getattr(service.settings, "paper_exploration_near_miss_min_relative_volume", 0.75)
+        ),
+        "score_gap": round(
+            effective_auto_execution_min_score(service.settings) - float(ranking.get("final_score") or 0.0),
+            4,
+        ),
+    }
+    logger = getattr(service, "logs", None)
+    if logger is not None:
+        with suppress(Exception):
+            logger.log("paper_near_miss_promotion_attempt", attempt_payload)
     if blockers:
         return None
     snapshot = service._snapshot_from_signal(
@@ -181,6 +203,8 @@ def _maybe_promote_paper_near_miss(
         "paper_near_miss_min_relative_volume": float(
             getattr(service.settings, "paper_exploration_near_miss_min_relative_volume", 0.75)
         ),
+        "paper_near_miss_promoted_to_candidate": True,
+        "paper_near_miss_promotion_blockers": [],
         "production_qualified": False,
         "signal_classification": "paper_near_miss",
         "source": "paper_near_miss",

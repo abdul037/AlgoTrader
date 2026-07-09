@@ -132,6 +132,7 @@ class AppSettings(BaseSettings):
     intraday_scan_interval_minutes: int = 15
     scalp_scan_batch_size: int = 20
     intraday_active_shortlist_size: int = 20
+    intraday_scan_max_symbols: int = 0
     intraday_active_mover_shortlist_enabled: bool = False
     intraday_active_mover_shortlist_size: int = 30
     intraday_active_mover_refresh_minutes: int = 15

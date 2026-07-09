@@ -581,6 +581,9 @@ class SignalWorkflowService:
         for symbol in [*active, *movers, *rotated]:
             if symbol not in combined:
                 combined.append(symbol)
+        max_symbols = max(0, int(getattr(self.settings, "intraday_scan_max_symbols", 0) or 0))
+        if max_symbols:
+            return combined[:max_symbols]
         return combined
 
     def _active_mover_shortlist(self, universe: list[str]) -> list[str]:
