@@ -45,18 +45,26 @@ class StrategyEnhancementService:
     def near_misses(self, *, limit: int = 500) -> dict[str, Any]:
         rows = self._recent_rows(limit=limit)
         diagnostics = [self._near_miss_diagnostics(row) for row in rows]
+        weak_valid_diagnostics = [self._weak_valid_diagnostics(row) for row in rows]
         return {
             "rows_analyzed": len(rows),
             "status_counts": dict(Counter(row.status for row in rows)),
             "top_reasons": self._top_reasons(rows),
             "near_miss_promotable_count": sum(1 for item in diagnostics if item["promotable"]),
             "near_miss_top_blocked_reasons": self._near_miss_blockers(diagnostics),
+            "weak_valid_eligible_count": sum(1 for item in weak_valid_diagnostics if item["eligible"]),
+            "weak_valid_top_blockers": self._weak_valid_blockers(weak_valid_diagnostics),
             "top_strategy_timeframes": self._top_strategy_timeframes(rows),
             "top_symbols": dict(Counter(row.symbol for row in rows).most_common(20)),
             "examples": [self._example(row, diagnostic) for row, diagnostic in zip(rows[:25], diagnostics[:25], strict=False)],
             "near_miss_promotion_examples": [
                 self._example(row, diagnostic)
                 for row, diagnostic in zip(rows, diagnostics, strict=False)
+                if diagnostic["attempted"]
+            ][:25],
+            "weak_valid_examples": [
+                self._weak_valid_example(row, diagnostic)
+                for row, diagnostic in zip(rows, weak_valid_diagnostics, strict=False)
                 if diagnostic["attempted"]
             ][:25],
         }
@@ -155,6 +163,16 @@ class StrategyEnhancementService:
                 "paper_near_miss_max_score_gap": self.settings.paper_near_miss_max_score_gap,
                 "paper_near_miss_allowed_reasons": self.settings.paper_near_miss_allowed_reasons,
             },
+            "supervised_weak_valid": {
+                "enabled": self.settings.paper_supervised_weak_valid_enabled,
+                "profile": self.settings.paper_supervised_weak_valid_profile,
+                "min_score": self.settings.paper_supervised_weak_valid_min_score,
+                "min_reward_to_risk": self.settings.paper_supervised_weak_valid_min_reward_to_risk,
+                "min_relative_volume": self.settings.paper_supervised_weak_valid_min_relative_volume,
+                "max_proposals_per_scan": self.settings.paper_supervised_weak_valid_max_proposals_per_scan,
+                "max_proposals_per_day": self.settings.paper_supervised_weak_valid_max_proposals_per_day,
+                "allowed_reasons": self.settings.paper_supervised_weak_valid_allowed_reasons,
+            },
         }
 
     @staticmethod
@@ -198,6 +216,21 @@ class StrategyEnhancementService:
 
     def _is_promotable_near_miss(self, row: Any) -> bool:
         return bool(self._near_miss_diagnostics(row)["promotable"])
+
+    @staticmethod
+    def _weak_valid_example(row: Any, diagnostic: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "created_at": row.created_at,
+            "symbol": row.symbol,
+            "strategy_name": row.strategy_name,
+            "timeframe": row.timeframe,
+            "status": row.status,
+            "final_score": row.final_score,
+            "rejection_reasons": row.rejection_reasons,
+            "weak_valid_eligible": diagnostic.get("eligible", False),
+            "promoted_to_candidate": diagnostic.get("promoted_to_candidate", False),
+            "promotion_blockers": diagnostic.get("promotion_blockers", []),
+        }
 
     def _near_miss_diagnostics(self, row: Any) -> dict[str, Any]:
         payload = dict(getattr(row, "payload", {}) or {})
@@ -293,6 +326,118 @@ class StrategyEnhancementService:
         counter: Counter[str] = Counter()
         for diagnostic in diagnostics:
             if diagnostic["promotable"]:
+                continue
+            counter.update(diagnostic["promotion_blockers"])
+        return dict(counter.most_common(20))
+
+    def _weak_valid_diagnostics(self, row: Any) -> dict[str, Any]:
+        payload = dict(getattr(row, "payload", {}) or {})
+        metadata = dict(payload.get("metadata") or {})
+        if metadata.get("signal_classification") == "supervised_weak_valid":
+            blockers = [
+                str(item)
+                for item in (metadata.get("supervised_weak_valid_promotion_blockers") or [])
+                if str(item).strip()
+            ]
+            return {
+                "attempted": True,
+                "promoted_to_candidate": bool(metadata.get("supervised_weak_valid_promoted_to_candidate", True)),
+                "eligible": not blockers,
+                "promotion_blockers": blockers,
+            }
+
+        reasons = {
+            str(item).strip().lower()
+            for item in (getattr(row, "rejection_reasons", []) or getattr(row, "reason_codes", []) or [])
+            if str(item).strip()
+        }
+        blockers: list[str] = []
+        if not bool(getattr(self.settings, "paper_supervised_weak_valid_enabled", False)):
+            blockers.append("supervised_weak_valid_disabled")
+        if str(getattr(self.settings, "paper_supervised_weak_valid_profile", "aggressive")).lower() != "aggressive":
+            blockers.append("supervised_weak_valid_profile_unsupported")
+        if str(getattr(self.settings, "execution_mode", "paper")).lower() != "paper" or bool(
+            getattr(self.settings, "enable_real_trading", False)
+        ):
+            blockers.append("supervised_weak_valid_paper_only")
+        if str(getattr(self.settings, "paper_auto_operation_mode", "shadow")).lower() != "supervised":
+            blockers.append("paper_auto_operation_mode_not_supervised")
+        if bool(getattr(self.settings, "paper_auto_approve_proposals", False)):
+            blockers.append("paper_auto_approve_must_be_disabled")
+        if not bool(getattr(self.settings, "auto_propose_enabled", False)):
+            blockers.append("auto_propose_disabled")
+        if not reasons:
+            blockers.append("missing_rejection_reasons")
+        if str(getattr(row, "status", "")).lower() == "no_signal":
+            blockers.append("no_strategy_signal_not_promotable")
+        if "no_strategy_signal" in reasons:
+            blockers.append("no_strategy_signal_not_promotable")
+
+        allowed = {
+            str(item).strip().lower()
+            for item in (getattr(self.settings, "paper_supervised_weak_valid_allowed_reasons", []) or [])
+            if str(item).strip()
+        }
+        score_reasons = {"final_score_below_auto_threshold", "final_score_below_keep_threshold"}
+        unsupported = reasons - allowed - score_reasons
+        blockers.extend(f"unsupported_reason:{reason}" for reason in sorted(unsupported))
+
+        measurements = dict(payload.get("measurements") or {})
+        indicators = dict(payload.get("indicators") or {})
+        relative_volume = self._safe_float(measurements.get("relative_volume"), indicators.get("relative_volume"))
+        if relative_volume is None:
+            blockers.append("relative_volume_unavailable")
+        elif relative_volume < float(getattr(self.settings, "paper_supervised_weak_valid_min_relative_volume", 0.30)):
+            blockers.append("supervised_weak_valid_relative_volume_too_low")
+
+        score = float(getattr(row, "final_score", None) or 0.0)
+        if score < float(getattr(self.settings, "paper_supervised_weak_valid_min_score", 45.0)):
+            blockers.append("supervised_weak_valid_score_too_low")
+
+        entry = self._safe_float(payload.get("entry_price"), payload.get("current_price"))
+        stop = self._safe_float(payload.get("stop_loss"))
+        target = self._safe_float(payload.get("take_profit"))
+        if entry is None or stop is None or target is None:
+            blockers.append("supervised_weak_valid_bracket_missing")
+        elif not (stop < entry < target):
+            blockers.append("supervised_weak_valid_invalid_bracket")
+
+        spread_bps = self._safe_float(measurements.get("spread_bps"), indicators.get("spread_bps"))
+        if spread_bps is None:
+            blockers.append("supervised_weak_valid_spread_unavailable")
+        elif spread_bps > float(getattr(self.settings, "screener_max_spread_bps", 50.0)):
+            blockers.append("supervised_weak_valid_spread_too_wide")
+
+        risk_reward = self._safe_float(payload.get("risk_reward_ratio"), metadata.get("risk_reward_ratio"))
+        if risk_reward is None and entry is not None and stop is not None and target is not None and entry > stop:
+            risk_reward = (target - entry) / (entry - stop)
+        if risk_reward is None or risk_reward < float(
+            getattr(self.settings, "paper_supervised_weak_valid_min_reward_to_risk", 1.0)
+        ):
+            blockers.append("supervised_weak_valid_reward_to_risk_too_low")
+
+        verified = bool(metadata.get("market_data_verified") or measurements.get("verified") or payload.get("market_data_verified"))
+        data_blocked = bool(metadata.get("data_gate_blocked"))
+        if not verified or data_blocked:
+            blockers.append("market_data_unverified")
+
+        if str(metadata.get("signal_role") or payload.get("signal_role") or "entry_long").lower() == "entry_short":
+            blockers.append("supervised_weak_valid_short_blocked")
+        if str(payload.get("direction_label") or "buy").lower() not in {"buy", "long"}:
+            blockers.append("supervised_weak_valid_long_only")
+
+        unique_blockers = list(dict.fromkeys(blockers))
+        return {
+            "attempted": bool(reasons or metadata or payload),
+            "promoted_to_candidate": False,
+            "eligible": not unique_blockers,
+            "promotion_blockers": unique_blockers,
+        }
+
+    def _weak_valid_blockers(self, diagnostics: list[dict[str, Any]]) -> dict[str, int]:
+        counter: Counter[str] = Counter()
+        for diagnostic in diagnostics:
+            if diagnostic["eligible"]:
                 continue
             counter.update(diagnostic["promotion_blockers"])
         return dict(counter.most_common(20))

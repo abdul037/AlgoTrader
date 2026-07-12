@@ -5,7 +5,10 @@ from __future__ import annotations
 import concurrent.futures
 import time
 from contextlib import suppress
+from datetime import datetime
+from datetime import time as local_time
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.broker.etoro_rate_limit import EToroRateLimitError
 from app.models.screener import ScreenerRunResponse
@@ -67,6 +70,76 @@ def _near_miss_allowed_reasons(settings: Any) -> set[str]:
     }
 
 
+def _weak_valid_allowed_reasons(settings: Any) -> set[str]:
+    return {
+        str(item).strip().lower()
+        for item in (getattr(settings, "paper_supervised_weak_valid_allowed_reasons", []) or [])
+        if str(item).strip()
+    }
+
+
+def _regular_market_hours_open(settings: Any) -> bool:
+    if not bool(getattr(settings, "paper_exploration_require_regular_hours", True)):
+        return True
+    try:
+        zone = ZoneInfo(str(getattr(settings, "schedule_timezone", "America/New_York") or "America/New_York"))
+    except ZoneInfoNotFoundError:
+        zone = ZoneInfo("America/New_York")
+    now = utc_now().astimezone(zone)
+    return now.weekday() < 5 and local_time(9, 30) <= now.time() < local_time(16, 0)
+
+
+def _weak_valid_daily_count(service: Any) -> int:
+    repository = getattr(service, "scan_decisions", None)
+    if repository is None or not hasattr(repository, "list"):
+        return 0
+    today = utc_now().date()
+    count = 0
+    with suppress(Exception):
+        for row in repository.list(limit=5000):
+            payload = dict(getattr(row, "payload", {}) or {})
+            metadata = dict(payload.get("metadata") or {})
+            if str(metadata.get("source") or "").lower() != "supervised_weak_valid":
+                continue
+            created_at = getattr(row, "created_at", None)
+            if created_at is None:
+                count += 1
+                continue
+            if isinstance(created_at, str):
+                created_date = created_at.replace("Z", "+00:00")
+                created_date = datetime.fromisoformat(created_date).date()
+            else:
+                created_date = created_at.date()
+            if created_date == today:
+                count += 1
+    return count
+
+
+def _weak_valid_symbol_blockers(service: Any, symbol: str) -> list[str]:
+    blockers: list[str] = []
+    normalized = str(symbol or "").upper().strip()
+    if not normalized:
+        return ["supervised_weak_valid_missing_symbol"]
+    if normalized in {str(item).upper().strip() for item in getattr(service.settings, "blocked_instruments", []) or []}:
+        blockers.append("symbol_blocked")
+    auto_trading = getattr(service, "auto_trading", None)
+    safety = getattr(auto_trading, "safety", None)
+    if safety is not None and hasattr(safety, "is_blacklisted"):
+        try:
+            if safety.is_blacklisted(normalized):
+                blockers.append("symbol_blacklisted")
+        except Exception:  # noqa: BLE001
+            blockers.append("symbol_blacklist_check_failed")
+    alpaca = getattr(auto_trading, "alpaca", None)
+    if alpaca is not None and hasattr(alpaca, "is_supported_equity"):
+        try:
+            if not bool(alpaca.is_supported_equity(normalized)):
+                blockers.append("unsupported_equity")
+        except Exception:  # noqa: BLE001
+            blockers.append("unsupported_equity_check_failed")
+    return blockers
+
+
 def _paper_near_miss_blockers(
     service: Any,
     *,
@@ -88,7 +161,10 @@ def _paper_near_miss_blockers(
         blockers.append("paper_near_miss_long_only")
     if str(getattr(signal, "metadata", {}).get("signal_role") or "entry_long").lower() == "entry_short":
         blockers.append("paper_near_miss_short_blocked")
-    entry = float(getattr(signal, "price", None) or getattr(context, "current_price", 0.0) or 0.0)
+    try:
+        entry = float(getattr(signal, "price", None) or getattr(context, "current_price", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        entry = 0.0
     stop = getattr(signal, "stop_loss", None)
     target = getattr(signal, "take_profit", None)
     if stop is None or target is None:
@@ -220,6 +296,215 @@ def _maybe_promote_paper_near_miss(
     )
 
 
+def _paper_supervised_weak_valid_blockers(
+    service: Any,
+    *,
+    signal: Any,
+    context: Any,
+    market_data_status: dict[str, Any],
+    filter_outcome: FilterOutcome,
+    ranking: dict[str, Any],
+    reasons: list[str],
+    weak_valid_scan_count: int,
+    weak_valid_daily_count: int,
+) -> list[str]:
+    settings = service.settings
+    blockers: list[str] = []
+    if not bool(getattr(settings, "paper_supervised_weak_valid_enabled", False)):
+        blockers.append("supervised_weak_valid_disabled")
+    if str(getattr(settings, "paper_supervised_weak_valid_profile", "aggressive")).lower() != "aggressive":
+        blockers.append("supervised_weak_valid_profile_unsupported")
+    if str(getattr(settings, "execution_mode", "paper")).lower() != "paper" or bool(
+        getattr(settings, "enable_real_trading", False)
+    ):
+        blockers.append("supervised_weak_valid_paper_only")
+    if not bool(getattr(settings, "paper_scanner_exploration_enabled", False)):
+        blockers.append("paper_scanner_exploration_inactive")
+    if not paper_exploration_profile_enabled(settings):
+        blockers.append("paper_exploration_profile_inactive")
+    if str(getattr(settings, "paper_auto_operation_mode", "shadow")).lower() != "supervised":
+        blockers.append("paper_auto_operation_mode_not_supervised")
+    if bool(getattr(settings, "paper_auto_approve_proposals", False)):
+        blockers.append("paper_auto_approve_must_be_disabled")
+    if not bool(getattr(settings, "auto_propose_enabled", False)):
+        blockers.append("auto_propose_disabled")
+    if not _regular_market_hours_open(settings):
+        blockers.append("regular_market_hours_closed")
+
+    max_scan = int(getattr(settings, "paper_supervised_weak_valid_max_proposals_per_scan", 1) or 0)
+    if max_scan <= 0 or weak_valid_scan_count >= max_scan:
+        blockers.append("supervised_weak_valid_scan_limit_reached")
+    max_day = int(getattr(settings, "paper_supervised_weak_valid_max_proposals_per_day", 4) or 0)
+    if max_day <= 0 or weak_valid_daily_count + weak_valid_scan_count >= max_day:
+        blockers.append("supervised_weak_valid_daily_limit_reached")
+
+    action_value = getattr(getattr(signal, "action", None), "value", getattr(signal, "action", ""))
+    if str(action_value).lower() != "buy":
+        blockers.append("supervised_weak_valid_long_only")
+    signal_metadata = dict(getattr(signal, "metadata", {}) or {})
+    if str(signal_metadata.get("signal_role") or "entry_long").lower() == "entry_short":
+        blockers.append("supervised_weak_valid_short_blocked")
+    blockers.extend(_weak_valid_symbol_blockers(service, getattr(signal, "symbol", "")))
+
+    entry = float(getattr(signal, "price", None) or getattr(context, "current_price", 0.0) or 0.0)
+    stop = getattr(signal, "stop_loss", None)
+    target = getattr(signal, "take_profit", None)
+    if stop is None or target is None or entry <= 0:
+        blockers.append("supervised_weak_valid_bracket_missing")
+    else:
+        try:
+            if not (float(stop) < entry < float(target)):
+                blockers.append("supervised_weak_valid_invalid_bracket")
+        except (TypeError, ValueError):
+            blockers.append("supervised_weak_valid_invalid_bracket")
+
+    if not bool(market_data_status.get("verified", False)):
+        blockers.append(str(market_data_status.get("verification_reason") or "market_data_unverified"))
+    spread_bps = getattr(context, "spread_bps", None)
+    if spread_bps is None:
+        blockers.append("supervised_weak_valid_spread_unavailable")
+    elif float(spread_bps) > float(getattr(settings, "screener_max_spread_bps", 50.0)):
+        blockers.append("supervised_weak_valid_spread_too_wide")
+
+    risk_reward = signal_metadata.get("risk_reward_ratio")
+    if risk_reward is None:
+        risk_reward = service._compute_risk_reward(signal)
+    try:
+        risk_reward_value = float(risk_reward) if risk_reward is not None else None
+    except (TypeError, ValueError):
+        risk_reward_value = None
+    min_rr = float(getattr(settings, "paper_supervised_weak_valid_min_reward_to_risk", 1.0) or 1.0)
+    if risk_reward_value is None or risk_reward_value < min_rr:
+        blockers.append("supervised_weak_valid_reward_to_risk_too_low")
+    min_rvol = float(getattr(settings, "paper_supervised_weak_valid_min_relative_volume", 0.30) or 0.30)
+    if float(getattr(context, "relative_volume", 0.0) or 0.0) < min_rvol:
+        blockers.append("supervised_weak_valid_relative_volume_too_low")
+    min_score = float(getattr(settings, "paper_supervised_weak_valid_min_score", 45.0) or 45.0)
+    score = float(ranking.get("final_score") or 0.0)
+    if score < min_score:
+        blockers.append("supervised_weak_valid_score_too_low")
+
+    allowed = _weak_valid_allowed_reasons(settings)
+    normalized_reasons = {str(reason).strip().lower() for reason in reasons if str(reason).strip()}
+    score_reasons = {"final_score_below_auto_threshold", "final_score_below_keep_threshold"}
+    unsupported_reasons = sorted(normalized_reasons - allowed - score_reasons)
+    if unsupported_reasons:
+        blockers.append("supervised_weak_valid_unsupported_reasons:" + ",".join(unsupported_reasons))
+    if filter_outcome.watchlist_only:
+        blockers.append("supervised_weak_valid_watchlist_filter")
+    return list(dict.fromkeys(blockers))
+
+
+def _maybe_promote_supervised_weak_valid(
+    service: Any,
+    *,
+    signal: Any,
+    quote: Any,
+    timeframe: str,
+    context: Any,
+    intelligence: Any,
+    market_data_status: dict[str, Any],
+    filter_outcome: FilterOutcome,
+    backtest_snapshot: dict[str, Any],
+    ranking: dict[str, Any],
+    freshness: str,
+    reasons: list[str],
+    weak_valid_scan_count: int,
+    weak_valid_daily_count: int,
+) -> Any | None:
+    blockers = _paper_supervised_weak_valid_blockers(
+        service,
+        signal=signal,
+        context=context,
+        market_data_status=market_data_status,
+        filter_outcome=filter_outcome,
+        ranking=ranking,
+        reasons=reasons,
+        weak_valid_scan_count=weak_valid_scan_count,
+        weak_valid_daily_count=weak_valid_daily_count,
+    )
+    signal_metadata = dict(getattr(signal, "metadata", {}) or {})
+    risk_reward = signal_metadata.get("risk_reward_ratio")
+    if risk_reward is None:
+        risk_reward = service._compute_risk_reward(signal)
+    try:
+        risk_reward_value = float(risk_reward) if risk_reward is not None else None
+    except (TypeError, ValueError):
+        risk_reward_value = None
+    attempt_payload = {
+        "symbol": getattr(signal, "symbol", None),
+        "strategy_name": getattr(signal, "strategy_name", None),
+        "timeframe": timeframe,
+        "promoted_to_candidate": not blockers,
+        "promotion_blockers": list(blockers),
+        "reasons": list(dict.fromkeys(reasons)),
+        "final_score": float(ranking.get("final_score") or 0.0),
+        "min_score": float(getattr(service.settings, "paper_supervised_weak_valid_min_score", 45.0) or 45.0),
+        "relative_volume": float(getattr(context, "relative_volume", 0.0) or 0.0),
+        "min_relative_volume": float(
+            getattr(service.settings, "paper_supervised_weak_valid_min_relative_volume", 0.30) or 0.30
+        ),
+        "reward_to_risk": risk_reward_value,
+        "min_reward_to_risk": float(
+            getattr(service.settings, "paper_supervised_weak_valid_min_reward_to_risk", 1.0) or 1.0
+        ),
+        "scan_count": weak_valid_scan_count,
+        "daily_count": weak_valid_daily_count,
+    }
+    logger = getattr(service, "logs", None)
+    if logger is not None:
+        with suppress(Exception):
+            logger.log("paper_supervised_weak_valid_promotion_attempt", attempt_payload)
+    if blockers:
+        return None
+    snapshot = service._snapshot_from_signal(
+        signal,
+        quote=quote,
+        timeframe=timeframe,
+        context=context,
+        intelligence=intelligence,
+        market_data_status=market_data_status,
+        filter_outcome=filter_outcome,
+        backtest_snapshot=backtest_snapshot,
+        ranking=ranking,
+        freshness=freshness,
+    )
+    original_metadata = dict(snapshot.metadata or {})
+    metadata = {
+        **original_metadata,
+        "alert_eligible": True,
+        "execution_ready": True,
+        "execution_blockers": [],
+        "supervised_approval_required": True,
+        "supervised_weak_valid_original_execution_blockers": list(original_metadata.get("execution_blockers") or []),
+        "supervised_weak_valid_original_actionability": ranking.get("actionability"),
+        "supervised_weak_valid_reasons": list(dict.fromkeys(reasons)),
+        "supervised_weak_valid_min_score": float(
+            getattr(service.settings, "paper_supervised_weak_valid_min_score", 45.0) or 45.0
+        ),
+        "supervised_weak_valid_min_relative_volume": float(
+            getattr(service.settings, "paper_supervised_weak_valid_min_relative_volume", 0.30) or 0.30
+        ),
+        "supervised_weak_valid_min_reward_to_risk": float(
+            getattr(service.settings, "paper_supervised_weak_valid_min_reward_to_risk", 1.0) or 1.0
+        ),
+        "supervised_weak_valid_promoted_to_candidate": True,
+        "supervised_weak_valid_promotion_blockers": [],
+        "production_qualified": False,
+        "signal_classification": "supervised_weak_valid",
+        "source": "supervised_weak_valid",
+    }
+    return snapshot.model_copy(
+        update={
+            "execution_ready": True,
+            "tradable": True,
+            "direction_label": "buy",
+            "metadata": metadata,
+            "reject_reasons": list(dict.fromkeys(reasons)),
+        }
+    )
+
+
 def scan_universe(
     service: Any,
     *,
@@ -248,6 +533,8 @@ def scan_universe(
     evaluated_spec_keys: set[str] = set()
     abort_scan = False
     quote_cache: dict[str, Any] = {}
+    weak_valid_scan_promotions = 0
+    weak_valid_daily_promotions = _weak_valid_daily_count(service)
     started_at = time.monotonic()
     deadline_seconds = float(getattr(service.settings, "screener_batch_deadline_seconds", 180.0) or 0.0)
     market_data_timeout = float(getattr(service.settings, "screener_market_data_timeout_seconds", 20.0) or 0.0)
@@ -607,6 +894,56 @@ def scan_universe(
                             payload=near_miss.model_dump(),
                         )
                         continue
+                    weak_valid = None if suppress_repeat else _maybe_promote_supervised_weak_valid(
+                        service,
+                        signal=signal,
+                        quote=quote,
+                        timeframe=timeframe,
+                        context=context,
+                        intelligence=intelligence,
+                        market_data_status=market_data_status,
+                        filter_outcome=filter_outcome,
+                        backtest_snapshot=backtest_snapshot,
+                        ranking=ranking,
+                        freshness=freshness,
+                        reasons=near_miss_reasons,
+                        weak_valid_scan_count=weak_valid_scan_promotions,
+                        weak_valid_daily_count=weak_valid_daily_promotions,
+                    )
+                    if weak_valid is not None:
+                        weak_valid_scan_promotions += 1
+                        service.signal_states.upsert(weak_valid)
+                        candidates.append(weak_valid)
+                        service._add_scan_diagnostic(
+                            rejection_summary,
+                            closest_rejections,
+                            symbol=weak_valid.symbol,
+                            timeframe=timeframe,
+                            strategy_name=weak_valid.strategy_name,
+                            status="supervised_weak_valid",
+                            rejection_reasons=near_miss_reasons,
+                            final_score=weak_valid.score,
+                            measurements=filter_outcome.measurements,
+                        )
+                        service._record_scan_decision(
+                            scan_task=scan_task,
+                            signal=signal,
+                            timeframe=timeframe,
+                            status="candidate",
+                            final_score=weak_valid.score,
+                            alert_eligible=True,
+                            freshness=freshness,
+                            filter_outcome=FilterOutcome(
+                                passed=True,
+                                pass_reasons=[*filter_outcome.pass_reasons, "supervised_weak_valid_promoted"],
+                                rejection_reasons=near_miss_reasons,
+                                reason_codes=[*filter_outcome.reason_codes, "supervised_weak_valid_promoted"],
+                                measurements=filter_outcome.measurements,
+                                watchlist_only=False,
+                            ),
+                            payload=weak_valid.model_dump(),
+                        )
+                        continue
                     suppressed += 1
                     service._add_scan_diagnostic(
                         rejection_summary,
@@ -632,6 +969,13 @@ def scan_universe(
                             "backtest_snapshot": backtest_snapshot,
                             "measurements": filter_outcome.measurements,
                             "rationale": signal.rationale,
+                            "entry_price": getattr(signal, "price", None),
+                            "current_price": getattr(context, "current_price", None),
+                            "stop_loss": getattr(signal, "stop_loss", None),
+                            "take_profit": getattr(signal, "take_profit", None),
+                            "risk_reward_ratio": service._compute_risk_reward(signal),
+                            "direction_label": "buy",
+                            "metadata": dict(getattr(signal, "metadata", {}) or {}),
                         },
                     )
                     continue
@@ -744,6 +1088,46 @@ def scan_universe(
                             payload=near_miss.model_dump(),
                         )
                         continue
+                    weak_valid_reasons = ["final_score_below_auto_threshold"]
+                    weak_valid = _maybe_promote_supervised_weak_valid(
+                        service,
+                        signal=signal,
+                        quote=quote,
+                        timeframe=timeframe,
+                        context=context,
+                        intelligence=intelligence,
+                        market_data_status=market_data_status,
+                        filter_outcome=filter_outcome,
+                        backtest_snapshot=backtest_snapshot,
+                        ranking=ranking,
+                        freshness=freshness,
+                        reasons=weak_valid_reasons,
+                        weak_valid_scan_count=weak_valid_scan_promotions,
+                        weak_valid_daily_count=weak_valid_daily_promotions,
+                    )
+                    if weak_valid is not None:
+                        weak_valid_scan_promotions += 1
+                        service.signal_states.upsert(weak_valid)
+                        candidates.append(weak_valid)
+                        service._record_scan_decision(
+                            scan_task=scan_task,
+                            signal=signal,
+                            timeframe=timeframe,
+                            status="candidate",
+                            final_score=weak_valid.score,
+                            alert_eligible=True,
+                            freshness=freshness,
+                            filter_outcome=FilterOutcome(
+                                passed=True,
+                                pass_reasons=[*filter_outcome.pass_reasons, "supervised_weak_valid_promoted"],
+                                rejection_reasons=weak_valid_reasons,
+                                reason_codes=[*filter_outcome.reason_codes, "supervised_weak_valid_promoted"],
+                                measurements={**filter_outcome.measurements, **intelligence.measurements},
+                                watchlist_only=False,
+                            ),
+                            payload=weak_valid.model_dump(),
+                        )
+                        continue
                     suppressed += 1
                     service._add_scan_diagnostic(
                         rejection_summary,
@@ -777,6 +1161,13 @@ def scan_universe(
                             "measurements": filter_outcome.measurements,
                             "score_breakdown": ranking["score_breakdown"],
                             "market_intelligence": intelligence.measurements,
+                            "entry_price": getattr(signal, "price", None),
+                            "current_price": getattr(context, "current_price", None),
+                            "stop_loss": getattr(signal, "stop_loss", None),
+                            "take_profit": getattr(signal, "take_profit", None),
+                            "risk_reward_ratio": service._compute_risk_reward(signal),
+                            "direction_label": "buy",
+                            "metadata": dict(getattr(signal, "metadata", {}) or {}),
                         },
                     )
                     continue
@@ -810,6 +1201,26 @@ def scan_universe(
                     )
                     if promoted is not None:
                         snapshot = promoted
+                    else:
+                        weak_valid = _maybe_promote_supervised_weak_valid(
+                            service,
+                            signal=signal,
+                            quote=quote,
+                            timeframe=timeframe,
+                            context=context,
+                            intelligence=intelligence,
+                            market_data_status=market_data_status,
+                            filter_outcome=filter_outcome,
+                            backtest_snapshot=backtest_snapshot,
+                            ranking=ranking,
+                            freshness=freshness,
+                            reasons=["final_score_below_auto_threshold"],
+                            weak_valid_scan_count=weak_valid_scan_promotions,
+                            weak_valid_daily_count=weak_valid_daily_promotions,
+                        )
+                        if weak_valid is not None:
+                            weak_valid_scan_promotions += 1
+                            snapshot = weak_valid
                 if validated_only and not bool(snapshot.metadata.get("backtest_validated")):
                     suppressed += 1
                     service._add_scan_diagnostic(

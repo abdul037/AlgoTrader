@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -249,6 +250,39 @@ class FakeRLPolicy:
         return type("Proposal", (), {"status": "queued"})()
 
 
+class FakeProposalService:
+    def __init__(self):
+        self.created = []
+
+    def list_proposals(self, *, status):
+        return []
+
+    def create_proposal(self, request):
+        self.created.append(request)
+        return SimpleNamespace(
+            id="proposal_1",
+            order=SimpleNamespace(
+                symbol=request.symbol,
+                proposed_price=request.proposed_price,
+                stop_loss=request.stop_loss,
+                take_profit=request.take_profit,
+            ),
+        )
+
+
+class FakeSupervisedAutoTrading:
+    def __init__(self):
+        self.approve_calls = 0
+
+    @staticmethod
+    def candidate_proposal_blockers(_candidate):
+        return []
+
+    def approve_enqueue_execute(self, _proposal, _candidate):
+        self.approve_calls += 1
+        return None
+
+
 def _snapshot() -> LiveSignalSnapshot:
     return LiveSignalSnapshot(
         symbol="NVDA",
@@ -266,6 +300,57 @@ def _snapshot() -> LiveSignalSnapshot:
         confidence=0.7,
         metadata={"backtest_validated": True, "data_source": "etoro", "data_source_verified": True},
     )
+
+
+def test_weak_valid_auto_proposal_stays_supervised_and_warns_not_production(tmp_path) -> None:
+    proposal_service = FakeProposalService()
+    auto_trading = FakeSupervisedAutoTrading()
+    candidate = _snapshot().model_copy(
+        update={
+            "execution_ready": True,
+            "metadata": {
+                "alert_eligible": True,
+                "source": "supervised_weak_valid",
+                "signal_classification": "supervised_weak_valid",
+                "production_qualified": False,
+                "supervised_approval_required": True,
+            },
+        }
+    )
+    response = ScreenerRunResponse(
+        generated_at="2026-04-11T00:00:00+00:00",
+        universe_name="top100_us",
+        timeframes=["1d"],
+        evaluated_symbols=1,
+        evaluated_strategy_runs=1,
+        candidates=[candidate],
+        suppressed=0,
+        alerts_sent=0,
+        errors=[],
+    )
+    workflow = SignalWorkflowService(
+        settings=make_settings(
+            tmp_path,
+            auto_propose_enabled=True,
+            paper_auto_approve_proposals=False,
+            paper_auto_operation_mode="supervised",
+        ),
+        market_screener=FakeMarketScreener([]),
+        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="NVDA", last_execution=101.0)),
+        notifier=FakeNotifier(),
+        tracked_signals=FakeTrackedSignals(),
+        alert_history=FakeAlertHistory(),
+        runtime_state=FakeState(),
+        run_logs=FakeLogs(),
+        proposal_service=proposal_service,
+        auto_trading_service=auto_trading,
+    )
+
+    created = workflow._auto_propose_candidates(response, origin="intraday_scan", notify=False)
+
+    assert created == 1
+    assert auto_trading.approve_calls == 1
+    assert proposal_service.created[0].notes.startswith("Supervised weak-valid paper proposal; not production-qualified.")
 
 
 def test_run_swing_scan_tracks_and_records_alert(tmp_path) -> None:

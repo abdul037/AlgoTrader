@@ -510,10 +510,17 @@ class SignalWorkflowService:
             if getattr(candidate, "stop_loss", None) is None:
                 continue
             try:
+                candidate_metadata = dict(getattr(candidate, "metadata", {}) or {})
+                notes = f"Auto-created from {origin}; Telegram approval is required before execution."
+                if str(candidate_metadata.get("source") or "").lower() == "supervised_weak_valid":
+                    notes = (
+                        "Supervised weak-valid paper proposal; not production-qualified. "
+                        f"Auto-created from {origin}; Telegram approval is required before execution."
+                    )
                 request = self._approval_adapter.build_proposal_request(
                     candidate,
                     amount_usd=float(getattr(self.settings, "default_trade_amount_usd", 1000.0)),
-                    notes=f"Auto-created from {origin}; Telegram approval is required before execution.",
+                    notes=notes,
                 )
                 proposal = self.proposal_service.create_proposal(request)
             except Exception as exc:  # noqa: BLE001

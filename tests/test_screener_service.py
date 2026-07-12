@@ -608,3 +608,241 @@ def test_paper_near_miss_promotion_creates_execution_ready_candidate(tmp_path, m
     assert attempts
     assert attempts[-1]["promoted_to_candidate"] is True
     assert attempts[-1]["promotion_blockers"] == []
+
+
+def test_supervised_weak_valid_promotion_creates_execution_ready_candidate(tmp_path, monkeypatch) -> None:
+    frame = _frame([100 + (index * 0.18) for index in range(90)])
+    frame.loc[frame.index[-1], "volume"] = frame["volume"].tail(20).mean() * 0.40
+    quote = MarketQuote(symbol="NVDA", bid=116.0, ask=116.04, last_execution=116.02, timestamp="2026-04-11T10:00:00Z")
+    decisions = FakeScanDecisionRepository()
+    service = MarketScreenerService(
+        settings=make_settings(
+            tmp_path,
+            market_universe_symbols=["NVDA"],
+            screener_default_timeframes=["1d"],
+            execution_mode="paper",
+            enable_real_trading=False,
+            auto_propose_enabled=True,
+            paper_auto_approve_proposals=False,
+            paper_auto_operation_mode="supervised",
+            paper_scanner_exploration_enabled=True,
+            paper_exploration_signal_profile="balanced_loose",
+            paper_exploration_require_regular_hours=False,
+            paper_near_miss_promotion_enabled=False,
+            paper_exploration_min_relative_volume=0.80,
+            paper_supervised_weak_valid_enabled=True,
+            paper_supervised_weak_valid_min_score=45.0,
+            paper_supervised_weak_valid_min_reward_to_risk=1.0,
+            paper_supervised_weak_valid_min_relative_volume=0.30,
+            screener_weak_backtest_action="rank_only",
+            screener_min_confidence=0.1,
+            screener_min_trend_strength_pct=0.0,
+            screener_min_efficiency_ratio=0.0,
+            screener_min_execution_quality=0.0,
+            screener_min_accuracy_score=0.0,
+            screener_min_confirmation_score=0.0,
+            screener_max_false_positive_risk=1.0,
+            screener_min_market_regime_score=0.0,
+            screener_min_timeframe_alignment_score=0.0,
+            screener_min_sector_strength_score=0.0,
+            screener_min_benchmark_strength_score=0.0,
+            screener_min_recent_backtest_consistency=0.0,
+        ),
+        market_data_engine=FakeMarketDataEngine({("NVDA", "1d"): frame}, {"NVDA": quote}),
+        signal_state_repository=FakeSignalStateRepository(),
+        run_log_repository=FakeRunLogRepository(),
+        backtest_repository=FakeBacktestRepository(
+            summary={
+                "strategy_name": "weak_valid_strategy",
+                "completed_at": "2026-04-10T12:00:00Z",
+                "out_of_sample": True,
+                "metrics": {
+                    "number_of_trades": 40,
+                    "profit_factor": 1.3,
+                    "win_rate": 53.0,
+                    "max_drawdown_pct": 12.0,
+                    "out_of_sample": True,
+                },
+                "trades": [{"pnl_pct": 0.7}, {"pnl_pct": -0.4}, {"pnl_pct": 0.5}],
+            }
+        ),
+        scan_decision_repository=decisions,
+        telegram_notifier=FakeTelegramNotifier(),
+    )
+
+    class FakeStrategy:
+        def generate_signal(self, _history, symbol):
+            return Signal(
+                symbol=symbol,
+                strategy_name="weak_valid_strategy",
+                action=SignalAction.BUY,
+                confidence=0.90,
+                price=116.02,
+                stop_loss=114.00,
+                take_profit=118.10,
+                rationale="supervised weak-valid fixture",
+                metadata={
+                    "style": "momentum",
+                    "signal_role": "entry_long",
+                    "risk_reward_ratio": 1.03,
+                    "trend_quality": 1.0,
+                    "momentum_quality": 1.0,
+                    "liquidity_quality": 1.0,
+                    "indicator_confluence_score": 0.8,
+                },
+            )
+
+    spec = SimpleNamespace(name="weak_valid_strategy", timeframe="1d", style="momentum", default_kwargs={})
+    monkeypatch.setattr(service, "_strategy_specs_for_timeframe", lambda *_args, **_kwargs: [spec])
+    monkeypatch.setattr(service, "_build_strategy", lambda _spec: FakeStrategy())
+
+    response = service.scan_universe(
+        limit=3,
+        scan_task="intraday_scan",
+        strategy_spec_keys=["weak_valid_strategy:1d"],
+    )
+
+    assert response.candidates
+    candidate = response.candidates[0]
+    assert candidate.execution_ready is True
+    assert candidate.metadata["alert_eligible"] is True
+    assert candidate.metadata["signal_classification"] == "supervised_weak_valid"
+    assert candidate.metadata["source"] == "supervised_weak_valid"
+    assert candidate.metadata["supervised_approval_required"] is True
+    assert candidate.metadata["production_qualified"] is False
+    assert candidate.metadata["supervised_weak_valid_promotion_blockers"] == []
+    assert "relative_volume_too_low" in candidate.metadata["supervised_weak_valid_reasons"]
+    assert any(item.status == "candidate" and item.alert_eligible for item in decisions.items)
+    attempts = [
+        payload for event, payload in service.logs.items if event == "paper_supervised_weak_valid_promotion_attempt"
+    ]
+    assert attempts
+    assert attempts[-1]["promoted_to_candidate"] is True
+    assert attempts[-1]["promotion_blockers"] == []
+
+
+def test_supervised_weak_valid_does_not_promote_no_strategy_signal(tmp_path, monkeypatch) -> None:
+    frame = _frame([100 + (index * 0.10) for index in range(90)])
+    quote = MarketQuote(symbol="NVDA", bid=109.0, ask=109.03, last_execution=109.02, timestamp="2026-04-11T10:00:00Z")
+    service = MarketScreenerService(
+        settings=make_settings(
+            tmp_path,
+            market_universe_symbols=["NVDA"],
+            screener_default_timeframes=["1d"],
+            execution_mode="paper",
+            enable_real_trading=False,
+            auto_propose_enabled=True,
+            paper_auto_operation_mode="supervised",
+            paper_scanner_exploration_enabled=True,
+            paper_exploration_signal_profile="balanced_loose",
+            paper_exploration_require_regular_hours=False,
+            paper_supervised_weak_valid_enabled=True,
+        ),
+        market_data_engine=FakeMarketDataEngine({("NVDA", "1d"): frame}, {"NVDA": quote}),
+        signal_state_repository=FakeSignalStateRepository(),
+        run_log_repository=FakeRunLogRepository(),
+        scan_decision_repository=FakeScanDecisionRepository(),
+        telegram_notifier=FakeTelegramNotifier(),
+    )
+
+    class FakeStrategy:
+        last_diagnostics = {
+            "side": "long",
+            "score": 99.0,
+            "rejection_reasons": ["relative_volume_too_low"],
+        }
+
+        def generate_signal(self, _history, _symbol):
+            return None
+
+    spec = SimpleNamespace(name="weak_valid_strategy", timeframe="1d", style="momentum", default_kwargs={})
+    monkeypatch.setattr(service, "_strategy_specs_for_timeframe", lambda *_args, **_kwargs: [spec])
+    monkeypatch.setattr(service, "_build_strategy", lambda _spec: FakeStrategy())
+
+    response = service.scan_universe(limit=3, scan_task="intraday_scan", strategy_spec_keys=["weak_valid_strategy:1d"])
+
+    assert response.candidates == []
+    assert not [event for event, _payload in service.logs.items if event == "paper_supervised_weak_valid_promotion_attempt"]
+
+
+def test_supervised_weak_valid_rejects_invalid_bracket(tmp_path, monkeypatch) -> None:
+    frame = _frame([100 + (index * 0.20) for index in range(90)])
+    frame.loc[frame.index[-1], "volume"] = frame["volume"].tail(20).mean() * 0.45
+    quote = MarketQuote(symbol="NVDA", bid=117.0, ask=117.04, last_execution=117.02, timestamp="2026-04-11T10:00:00Z")
+    service = MarketScreenerService(
+        settings=make_settings(
+            tmp_path,
+            market_universe_symbols=["NVDA"],
+            screener_default_timeframes=["1d"],
+            execution_mode="paper",
+            enable_real_trading=False,
+            auto_propose_enabled=True,
+            paper_auto_approve_proposals=False,
+            paper_auto_operation_mode="supervised",
+            paper_scanner_exploration_enabled=True,
+            paper_exploration_signal_profile="balanced_loose",
+            paper_exploration_require_regular_hours=False,
+            paper_near_miss_promotion_enabled=False,
+            paper_supervised_weak_valid_enabled=True,
+            paper_supervised_weak_valid_min_score=45.0,
+            paper_supervised_weak_valid_min_reward_to_risk=1.0,
+            paper_supervised_weak_valid_min_relative_volume=0.30,
+            screener_weak_backtest_action="rank_only",
+            screener_min_confidence=0.1,
+            screener_min_trend_strength_pct=0.0,
+            screener_min_efficiency_ratio=0.0,
+            screener_min_execution_quality=0.0,
+            screener_min_accuracy_score=0.0,
+            screener_min_confirmation_score=0.0,
+            screener_max_false_positive_risk=1.0,
+            screener_min_market_regime_score=0.0,
+            screener_min_timeframe_alignment_score=0.0,
+            screener_min_sector_strength_score=0.0,
+            screener_min_benchmark_strength_score=0.0,
+            screener_min_recent_backtest_consistency=0.0,
+        ),
+        market_data_engine=FakeMarketDataEngine({("NVDA", "1d"): frame}, {"NVDA": quote}),
+        signal_state_repository=FakeSignalStateRepository(),
+        run_log_repository=FakeRunLogRepository(),
+        scan_decision_repository=FakeScanDecisionRepository(),
+        telegram_notifier=FakeTelegramNotifier(),
+    )
+
+    class FakeStrategy:
+        def generate_signal(self, _history, symbol):
+            return Signal(
+                symbol=symbol,
+                strategy_name="weak_valid_strategy",
+                action=SignalAction.BUY,
+                confidence=0.90,
+                price=117.02,
+                stop_loss=118.00,
+                take_profit=119.50,
+                rationale="invalid bracket fixture",
+                metadata={
+                    "style": "momentum",
+                    "signal_role": "entry_long",
+                    "risk_reward_ratio": 1.5,
+                    "trend_quality": 1.0,
+                    "momentum_quality": 1.0,
+                    "liquidity_quality": 1.0,
+                    "indicator_confluence_score": 0.8,
+                },
+            )
+
+    spec = SimpleNamespace(name="weak_valid_strategy", timeframe="1d", style="momentum", default_kwargs={})
+    monkeypatch.setattr(service, "_strategy_specs_for_timeframe", lambda *_args, **_kwargs: [spec])
+    monkeypatch.setattr(service, "_build_strategy", lambda _spec: FakeStrategy())
+
+    response = service.scan_universe(
+        limit=3,
+        scan_task="intraday_scan",
+        strategy_spec_keys=["weak_valid_strategy:1d"],
+    )
+
+    assert response.candidates == []
+    attempts = [
+        payload for event, payload in service.logs.items if event == "paper_supervised_weak_valid_promotion_attempt"
+    ]
+    assert attempts
+    assert "supervised_weak_valid_invalid_bracket" in attempts[-1]["promotion_blockers"]

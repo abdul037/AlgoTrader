@@ -272,6 +272,33 @@ class AppSettings(BaseSettings):
     paper_near_miss_allowed_reasons: list[str] = Field(
         default_factory=lambda: ["relative_volume_too_low", "final_score_below_auto_threshold"]
     )
+    paper_supervised_weak_valid_enabled: bool = False
+    paper_supervised_weak_valid_profile: Literal["aggressive"] = "aggressive"
+    paper_supervised_weak_valid_min_score: float = 45.0
+    paper_supervised_weak_valid_min_reward_to_risk: float = 1.0
+    paper_supervised_weak_valid_min_relative_volume: float = 0.30
+    paper_supervised_weak_valid_max_proposals_per_scan: int = 1
+    paper_supervised_weak_valid_max_proposals_per_day: int = 4
+    paper_supervised_weak_valid_allowed_reasons: list[str] = Field(
+        default_factory=lambda: [
+            "relative_volume_too_low",
+            "indicator_confluence_too_low",
+            "confluence_score_too_low",
+            "candle_body_too_small",
+            "close_location_too_low",
+            "adx_too_low",
+            "trend_strength_too_low",
+            "structure_too_choppy",
+            "recent_backtest_consistency_too_low",
+            "relative_strength_market_too_low",
+            "relative_strength_sector_too_low",
+            "sector_strength_too_low",
+            "regime_alignment_too_low",
+            "confirmation_too_weak",
+            "execution_quality_too_low",
+            "reward_to_risk_too_low",
+        ]
+    )
     auto_execution_min_score: float = 65.0
     auto_execution_regular_hours_only: bool = True
     strategy_health_enabled: bool = True
@@ -434,6 +461,7 @@ class AppSettings(BaseSettings):
         "screener_active_strategy_names",
         "paper_scanner_allowed_strategies",
         "paper_near_miss_allowed_reasons",
+        "paper_supervised_weak_valid_allowed_reasons",
         mode="before",
     )
     @classmethod
@@ -447,6 +475,7 @@ class AppSettings(BaseSettings):
             "screener_active_strategy_names",
             "paper_scanner_allowed_strategies",
             "paper_near_miss_allowed_reasons",
+            "paper_supervised_weak_valid_allowed_reasons",
         }
         normalize = str.lower if info.field_name in lowercase_fields else str.upper
         if value is None:
