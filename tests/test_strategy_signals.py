@@ -4,10 +4,13 @@ import pandas as pd
 import pytest
 
 from app.models.signal import SignalAction
+from app.strategies import ema_trend_stack as ema_trend_stack_module
 from app.strategies import enhanced as enhanced_module
+from app.strategies import vwap_reclaim as vwap_reclaim_module
+from app.strategies.ema_trend_stack import EMATrendStackStrategy
 from app.strategies.enhanced import (
-    ATRDonchianTrendBreakoutStrategy,
     AnchoredVWAPPullbackContinuationStrategy,
+    ATRDonchianTrendBreakoutStrategy,
     ConfluenceRecoveryBreakoutStrategy,
     EarlyBreakoutPullbackContinuationStrategy,
     EtfMegaCapRelativeStrengthRotationStrategy,
@@ -17,17 +20,17 @@ from app.strategies.enhanced import (
     LiquidityExpansionContinuationStrategy,
     MultiTimeframeTrendPullbackStrategy,
     OpeningRangeBreakoutRetestStrategy,
-    RegimeFilteredMeanReversionStrategy,
     RegimeAlignedTrendContinuationStrategy,
-    RelativeVolumeReclaimContinuationStrategy,
+    RegimeFilteredMeanReversionStrategy,
     RelativeStrengthMomentumStrategy,
+    RelativeVolumeReclaimContinuationStrategy,
     VolatilityContractionBreakoutStrategy,
 )
-from app.strategies import ema_trend_stack as ema_trend_stack_module
-from app.strategies.ema_trend_stack import EMATrendStackStrategy
 from app.strategies.gold_momentum import GoldMomentumStrategy
 from app.strategies.ma_crossover import MACrossoverStrategy
+from app.strategies.momentum_breakout import MomentumBreakoutStrategy
 from app.strategies.rsi_vwap_ema_confluence import RSIVWAPEMAConfluenceStrategy
+from app.strategies.vwap_reclaim import VWAPReclaimStrategy
 
 
 def make_frame(prices: list[float]) -> pd.DataFrame:
@@ -174,6 +177,12 @@ def test_ema_trend_stack_suppresses_signal_when_atr_missing(monkeypatch: pytest.
     assert signal is None
     assert strategy.last_diagnostics is not None
     assert "atr_unavailable" in strategy.last_diagnostics["rejection_reasons"]
+
+
+def _enable_weak_signal(strategy, minimum_rr: float = 1.0):
+    strategy._paper_weak_signal_enabled = True
+    strategy._paper_weak_signal_min_reward_to_risk = minimum_rr
+    return strategy
 
 
 def _enhanced_frame(rows: int = 100) -> pd.DataFrame:
@@ -456,3 +465,118 @@ def test_enhanced_research_strategy_records_near_miss_diagnostics(monkeypatch: p
     assert strategy.last_diagnostics["status"] == "no_signal"
     assert "relative_volume_too_low" in strategy.last_diagnostics["rejection_reasons"]
     assert "measurements" in strategy.last_diagnostics
+
+
+def test_enhanced_research_strategy_emits_supervised_weak_valid_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    strategy = _enable_weak_signal(RelativeVolumeReclaimContinuationStrategy(timeframe="15m"))
+    enriched = _enhanced_frame().assign(
+        open=[*_enhanced_frame()["open"].iloc[:-1], 104.0],
+        close=[*_enhanced_frame()["close"].iloc[:-2], 103.0, 105.0],
+        high=[*_enhanced_frame()["high"].iloc[:-1], 105.8],
+        low=[*_enhanced_frame()["low"].iloc[:-1], 102.8],
+        vwap=[*_enhanced_frame()["vwap"].iloc[:-1], 103.2],
+        ema_20=[*_enhanced_frame()["ema_20"].iloc[:-1], 103.0],
+        ema_50=[*_enhanced_frame()["ema_50"].iloc[:-1], 101.0],
+        rsi_14=[*_enhanced_frame()["rsi_14"].iloc[:-1], 54.0],
+        macd_hist=[*_enhanced_frame()["macd_hist"].iloc[:-1], 0.05],
+        relative_volume=[*_enhanced_frame()["relative_volume"].iloc[:-1], 0.35],
+    )
+    monkeypatch.setattr(enhanced_module, "enrich_technical_indicators", lambda data, timeframe: enriched)
+
+    signal = strategy.generate_signal(enriched, "NVDA")
+
+    assert signal is not None
+    assert signal.action == SignalAction.BUY
+    assert signal.stop_loss < signal.price < signal.take_profit
+    assert signal.metadata["signal_classification"] == "supervised_weak_valid"
+    assert signal.metadata["source"] == "supervised_weak_valid"
+    assert signal.metadata["production_qualified"] is False
+    assert "relative_volume_too_low" in signal.metadata["weak_signal_reasons"]
+
+
+def test_enhanced_research_strategy_does_not_emit_weak_signal_without_setup_anchor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    strategy = _enable_weak_signal(RelativeVolumeReclaimContinuationStrategy(timeframe="15m"))
+    base = _enhanced_frame()
+    enriched = base.assign(
+        open=[*base["open"].iloc[:-1], 103.0],
+        close=[*base["close"].iloc[:-2], 103.0, 102.0],
+        low=[*base["low"].iloc[:-1], 101.5],
+        vwap=[*base["vwap"].iloc[:-1], 103.2],
+        ema_20=[*base["ema_20"].iloc[:-1], 103.0],
+        ema_50=[*base["ema_50"].iloc[:-1], 101.0],
+        relative_volume=[*base["relative_volume"].iloc[:-1], 0.35],
+    )
+    monkeypatch.setattr(enhanced_module, "enrich_technical_indicators", lambda data, timeframe: enriched)
+
+    signal = strategy.generate_signal(enriched, "NVDA")
+
+    assert signal is None
+    assert strategy.last_diagnostics["status"] == "no_signal"
+    assert "reclaim_not_confirmed" in strategy.last_diagnostics["rejection_reasons"]
+
+
+def test_momentum_breakout_emits_supervised_weak_valid_signal_on_real_breakout_anchor() -> None:
+    prices = [100.0 + (index * 0.2) for index in range(29)] + [108.0]
+    frame = make_frame(prices)
+    frame["volume"] = [1_000_000 for _ in range(len(frame) - 1)] + [600_000]
+    strategy = _enable_weak_signal(MomentumBreakoutStrategy(breakout_window=20, volume_window=20))
+
+    signal = strategy.generate_signal(frame, "NVDA")
+
+    assert signal is not None
+    assert signal.action == SignalAction.BUY
+    assert signal.stop_loss < signal.price < signal.take_profit
+    assert signal.metadata["signal_classification"] == "supervised_weak_valid"
+    assert signal.metadata["source"] == "supervised_weak_valid"
+    assert "relative_volume_too_low" in signal.metadata["weak_signal_reasons"]
+
+
+def test_vwap_reclaim_emits_supervised_weak_valid_signal_on_real_reclaim_anchor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    strategy = _enable_weak_signal(VWAPReclaimStrategy(timeframe="5m"))
+    base = _enhanced_frame(rows=60)
+    enriched = base.assign(
+        close=[*base["close"].iloc[:-1], 105.0],
+        low=[*base["low"].iloc[:-1], 102.8],
+        vwap=[*base["vwap"].iloc[:-1], 103.8],
+        ema_9=[*base["ema_9"].iloc[:-1], 104.8],
+        ema_20=[*base["ema_20"].iloc[:-1], 104.0],
+        macd_hist=[*base["macd_hist"].iloc[:-1], -0.05],
+        relative_volume=[*base["relative_volume"].iloc[:-1], 0.40],
+    )
+    monkeypatch.setattr(vwap_reclaim_module, "enrich_technical_indicators", lambda data, timeframe="5m": enriched)
+
+    signal = strategy.generate_signal(enriched, "NVDA")
+
+    assert signal is not None
+    assert signal.action == SignalAction.BUY
+    assert signal.stop_loss < signal.price < signal.take_profit
+    assert signal.metadata["signal_classification"] == "supervised_weak_valid"
+    assert signal.metadata["source"] == "supervised_weak_valid"
+    assert set(signal.metadata["weak_signal_reasons"]) == {"relative_volume_too_low", "confirmation_too_weak"}
+
+
+def test_ema_trend_stack_emits_supervised_weak_valid_signal_on_real_pullback_anchor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    strategy = _enable_weak_signal(EMATrendStackStrategy(timeframe="1h"))
+    enriched = _enhanced_frame(rows=140)
+    monkeypatch.setattr(
+        ema_trend_stack_module,
+        "enrich_technical_indicators",
+        lambda data, timeframe="1h": enriched,
+    )
+
+    signal = strategy.generate_signal(enriched, "NVDA")
+
+    assert signal is not None
+    assert signal.action == SignalAction.BUY
+    assert signal.stop_loss < signal.price < signal.take_profit
+    assert signal.metadata["signal_classification"] == "supervised_weak_valid"
+    assert signal.metadata["source"] == "supervised_weak_valid"
+    assert "confirmation_too_weak" in signal.metadata["weak_signal_reasons"]

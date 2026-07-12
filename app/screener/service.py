@@ -49,6 +49,7 @@ from app.screener.service_snapshots import (
     snapshot_from_signal,
 )
 from app.strategies import get_strategy
+from app.strategies.weak_signals import configure_weak_signal_emission
 from app.telegram_notify import TelegramNotifier
 from app.universe import resolve_universe
 
@@ -187,8 +188,8 @@ class MarketScreenerService:
         if self.strategy_lab is not None:
             strategy = self.strategy_lab.build_strategy_for_spec(spec)
             if strategy is not None:
-                return strategy
-        return get_strategy(spec.name, **_strategy_kwargs(self.settings, spec))
+                return configure_weak_signal_emission(strategy, self.settings)
+        return configure_weak_signal_emission(get_strategy(spec.name, **_strategy_kwargs(self.settings, spec)), self.settings)
 
     def _get_latest_backtest_summary(
         self,

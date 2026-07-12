@@ -299,6 +299,22 @@ class AppSettings(BaseSettings):
             "reward_to_risk_too_low",
         ]
     )
+    paper_strategy_weak_signal_emission_enabled: bool = False
+    paper_strategy_weak_signal_allowed_strategies: list[str] = Field(
+        default_factory=lambda: [
+            "opening_range_breakout_retest",
+            "vwap_reclaim",
+            "anchored_vwap_pullback_continuation",
+            "relative_volume_reclaim_continuation",
+            "liquidity_expansion_continuation",
+            "failed_breakdown_reversal",
+            "inside_bar_narrow_range_breakout",
+            "momentum_breakout",
+            "ema_trend_stack",
+            "regime_filtered_mean_reversion",
+            "etf_mega_cap_relative_strength_rotation",
+        ]
+    )
     auto_execution_min_score: float = 65.0
     auto_execution_regular_hours_only: bool = True
     strategy_health_enabled: bool = True
@@ -462,6 +478,7 @@ class AppSettings(BaseSettings):
         "paper_scanner_allowed_strategies",
         "paper_near_miss_allowed_reasons",
         "paper_supervised_weak_valid_allowed_reasons",
+        "paper_strategy_weak_signal_allowed_strategies",
         mode="before",
     )
     @classmethod
@@ -476,6 +493,7 @@ class AppSettings(BaseSettings):
             "paper_scanner_allowed_strategies",
             "paper_near_miss_allowed_reasons",
             "paper_supervised_weak_valid_allowed_reasons",
+            "paper_strategy_weak_signal_allowed_strategies",
         }
         normalize = str.lower if info.field_name in lowercase_fields else str.upper
         if value is None:

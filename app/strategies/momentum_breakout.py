@@ -6,6 +6,7 @@ import pandas as pd
 
 from app.models.signal import Signal, SignalAction
 from app.strategies.base import BaseStrategy
+from app.strategies.weak_signals import build_supervised_weak_long_signal
 
 
 class MomentumBreakoutStrategy(BaseStrategy):
@@ -18,9 +19,12 @@ class MomentumBreakoutStrategy(BaseStrategy):
         self.breakout_window = breakout_window
         self.volume_window = volume_window
         self.required_bars = max(breakout_window, volume_window) + 5
+        self.last_diagnostics: dict[str, object] | None = None
 
     def generate_signal(self, data: pd.DataFrame, symbol: str) -> Signal | None:
+        self.last_diagnostics = None
         if not self._ensure_length(data):
+            self.last_diagnostics = {"status": "no_signal", "rejection_reasons": ["insufficient_data"]}
             return None
 
         frame = data.copy()
@@ -34,12 +38,14 @@ class MomentumBreakoutStrategy(BaseStrategy):
         last = frame.iloc[-1]
 
         if pd.isna(last["breakout_high"]) or pd.isna(last["breakdown_low"]) or pd.isna(last["avg_volume"]):
+            self.last_diagnostics = {"status": "no_signal", "rejection_reasons": ["indicator_unavailable"]}
             return None
 
+        long_anchor = last["close"] > last["breakout_high"] and last["ema_fast"] > last["ema_slow"]
+        long_volume_ok = last["volume"] >= last["avg_volume"] * 1.1
         bullish = (
-            last["close"] > last["breakout_high"]
-            and last["ema_fast"] > last["ema_slow"]
-            and last["volume"] >= last["avg_volume"] * 1.1
+            long_anchor
+            and long_volume_ok
         )
         bearish = (
             last["close"] < last["breakdown_low"]
@@ -71,6 +77,34 @@ class MomentumBreakoutStrategy(BaseStrategy):
                 },
             )
 
+        if long_anchor:
+            entry = float(last["close"])
+            stop = float(entry - max(atr * 1.4, entry * 0.012))
+            risk = max(entry - stop, 0.01)
+            target = entry + (risk * 1.2)
+            reasons = ["relative_volume_too_low"] if not long_volume_ok else ["confirmation_too_weak"]
+            weak = build_supervised_weak_long_signal(
+                self,
+                symbol=symbol,
+                price=entry,
+                stop=stop,
+                risk_multiple=round((target - entry) / risk, 4),
+                rationale="Supervised weak-valid momentum breakout with real range break but incomplete volume confirmation.",
+                confidence=0.50,
+                metadata={
+                    "style": "momentum_breakout",
+                    "signal_role": "entry_long",
+                    "setup_type": "momentum_breakout",
+                    "breakout_high": float(last["breakout_high"]),
+                    "average_volume": float(last["avg_volume"]),
+                    "weak_signal_kind": "range_breakout_anchor",
+                },
+                rejection_reasons=reasons,
+                setup_anchor=True,
+            )
+            if weak is not None:
+                return weak
+
         if bearish:
             entry = float(last["close"])
             stop = float(entry + max(atr * 1.4, entry * 0.012))
@@ -94,4 +128,15 @@ class MomentumBreakoutStrategy(BaseStrategy):
                 },
             )
 
+        self.last_diagnostics = {
+            "status": "no_signal",
+            "rejection_reasons": ["breakout_level_not_cleared"],
+            "reason_codes": ["breakout_level_not_cleared"],
+            "score": 44.0,
+            "measurements": {
+                "breakout_high": float(last["breakout_high"]),
+                "breakdown_low": float(last["breakdown_low"]),
+                "average_volume": float(last["avg_volume"]),
+            },
+        }
         return None

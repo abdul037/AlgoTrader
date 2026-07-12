@@ -15,6 +15,7 @@ import pandas as pd
 from app.indicators import compute_confluence_score, enrich_technical_indicators, indicator_summary
 from app.models.signal import Signal, SignalAction
 from app.strategies.base import BaseStrategy
+from app.strategies.weak_signals import build_supervised_weak_long_signal
 
 
 def _safe_float(value: Any, default: float | None = None) -> float | None:
@@ -176,6 +177,42 @@ def _long_signal(
         stop_loss=_round_price(stop),
         take_profit=_round_price(target),
         metadata=metadata,
+    )
+
+
+def _weak_long_signal(
+    strategy: BaseStrategy,
+    *,
+    symbol: str,
+    row: pd.Series,
+    price: float,
+    stop: float,
+    risk_multiple: float,
+    rationale: str,
+    confidence: float,
+    style: str,
+    setup_type: str,
+    rejection_reasons: list[str],
+    setup_anchor: bool,
+    extra: dict[str, Any] | None = None,
+) -> Signal | None:
+    return build_supervised_weak_long_signal(
+        strategy,
+        symbol=symbol,
+        price=price,
+        stop=stop,
+        risk_multiple=risk_multiple,
+        rationale=rationale,
+        confidence=confidence,
+        metadata=_metadata(
+            row=row,
+            style=style,
+            setup_type=setup_type,
+            risk_reward=risk_multiple,
+            extra=extra,
+        ),
+        rejection_reasons=rejection_reasons,
+        setup_anchor=setup_anchor,
     )
 
 
@@ -459,9 +496,28 @@ class AnchoredVWAPPullbackContinuationStrategy(BaseStrategy):
             "relative_volume_too_low": volume_ok,
         }
         if not all(checks.values()):
+            rejection_reasons = _condition_rejections(checks)
+            weak = _weak_long_signal(
+                self,
+                symbol=symbol,
+                row=last,
+                price=price,
+                stop=min(_recent_low(frame, 8) or price - atr, vwap - (0.6 * atr)),
+                risk_multiple=max(self.risk_multiple, 1.0),
+                rationale="Supervised weak-valid VWAP pullback continuation with real support reclaim but incomplete confirmation.",
+                confidence=0.50,
+                style="pullback_continuation",
+                setup_type="anchored_vwap_pullback_continuation",
+                rejection_reasons=rejection_reasons,
+                setup_anchor=pulled_back and reclaimed,
+                extra={"vwap_anchor": "session_or_cumulative", "weak_signal_kind": "anchored_vwap_reclaim"},
+            )
+            if weak is not None:
+                self.last_diagnostics = {}
+                return weak
             _reject(
                 self,
-                rejection_reasons=_condition_rejections(checks),
+                rejection_reasons=rejection_reasons,
                 row=last,
                 score=55.0 if pulled_back or reclaimed else 43.0,
                 measurements={"vwap": vwap, "ema_20": ema_20, "ema_50": ema_50},
@@ -610,9 +666,33 @@ class RegimeFilteredMeanReversionStrategy(BaseStrategy):
             "adx_too_high_for_mean_reversion": adx <= self.max_adx,
         }
         if not all(checks.values()):
+            rejection_reasons = _condition_rejections(checks)
+            stop = min(_recent_low(frame, 8) or price - atr, price - (1.25 * atr))
+            weak_risk = price - stop
+            weak_multiple = self.risk_multiple
+            if weak_risk > 0 and mean_target > price:
+                weak_multiple = max((mean_target - price) / weak_risk, 1.0)
+            weak = _weak_long_signal(
+                self,
+                symbol=symbol,
+                row=last,
+                price=price,
+                stop=stop,
+                risk_multiple=weak_multiple,
+                rationale="Supervised weak-valid regime-filtered mean reversion with real oversold anchor but incomplete confirmation.",
+                confidence=0.50,
+                style="mean_reversion",
+                setup_type="regime_filtered_mean_reversion",
+                rejection_reasons=rejection_reasons,
+                setup_anchor=oversold,
+                extra={"regime_filter": "ema50_vs_ema200_non_bearish", "weak_signal_kind": "oversold_anchor"},
+            )
+            if weak is not None:
+                self.last_diagnostics = {}
+                return weak
             _reject(
                 self,
-                rejection_reasons=_condition_rejections(checks),
+                rejection_reasons=rejection_reasons,
                 row=last,
                 score=55.0 if oversold or reversal_bar else 42.0,
                 measurements={"lower_band": lower_band, "mean_target": mean_target},
@@ -687,9 +767,32 @@ class OpeningRangeBreakoutRetestStrategy(BaseStrategy):
             "trend_not_aligned": trend_ok,
         }
         if not all(checks.values()):
+            rejection_reasons = _condition_rejections(checks)
+            weak = _weak_long_signal(
+                self,
+                symbol=symbol,
+                row=last,
+                price=price,
+                stop=min(opening_low, price - (1.1 * atr)),
+                risk_multiple=max(self.risk_multiple, 1.0),
+                rationale="Supervised weak-valid opening-range setup with real range break/retest but incomplete confirmation.",
+                confidence=0.50,
+                style="opening_range",
+                setup_type="opening_range_breakout_retest",
+                rejection_reasons=rejection_reasons,
+                setup_anchor=breakout or retest_reclaim,
+                extra={
+                    "opening_range_high": opening_high,
+                    "opening_range_low": opening_low,
+                    "weak_signal_kind": "opening_range_anchor",
+                },
+            )
+            if weak is not None:
+                self.last_diagnostics = {}
+                return weak
             _reject(
                 self,
-                rejection_reasons=_condition_rejections(checks),
+                rejection_reasons=rejection_reasons,
                 row=last,
                 score=56.0 if breakout or retest_reclaim else 43.0,
                 measurements={"opening_range_high": opening_high, "opening_range_low": opening_low},
@@ -760,9 +863,28 @@ class FailedBreakdownReversalStrategy(BaseStrategy):
             "regime_alignment_too_low": regime_ok,
         }
         if not all(checks.values()):
+            rejection_reasons = _condition_rejections(checks)
+            weak = _weak_long_signal(
+                self,
+                symbol=symbol,
+                row=last,
+                price=price,
+                stop=min(low, price - (1.0 * atr)),
+                risk_multiple=max(self.risk_multiple, 1.0),
+                rationale="Supervised weak-valid failed-breakdown reversal with real support break/reclaim but incomplete confirmation.",
+                confidence=0.50,
+                style="reversal",
+                setup_type="failed_breakdown_reversal",
+                rejection_reasons=rejection_reasons,
+                setup_anchor=broke_support and reclaimed,
+                extra={"support": support, "weak_signal_kind": "support_reclaim_anchor"},
+            )
+            if weak is not None:
+                self.last_diagnostics = {}
+                return weak
             _reject(
                 self,
-                rejection_reasons=_condition_rejections(checks),
+                rejection_reasons=rejection_reasons,
                 row=last,
                 score=55.0 if broke_support or reclaimed else 41.0,
                 measurements={"support": support, "low": low},
@@ -905,9 +1027,28 @@ class InsideBarNarrowRangeBreakoutStrategy(BaseStrategy):
             "relative_volume_too_low": volume_ok,
         }
         if not all(checks.values()):
+            rejection_reasons = _condition_rejections(checks)
+            weak = _weak_long_signal(
+                self,
+                symbol=symbol,
+                row=last,
+                price=price,
+                stop=min(prev_low, price - (1.0 * atr)),
+                risk_multiple=max(self.risk_multiple, 1.0),
+                rationale="Supervised weak-valid inside/narrow-range breakout with real compression breakout but incomplete confirmation.",
+                confidence=0.50,
+                style="breakout",
+                setup_type="inside_bar_narrow_range_breakout",
+                rejection_reasons=rejection_reasons,
+                setup_anchor=(narrow or inside) and breakout,
+                extra={"weak_signal_kind": "inside_narrow_breakout_anchor"},
+            )
+            if weak is not None:
+                self.last_diagnostics = {}
+                return weak
             _reject(
                 self,
-                rejection_reasons=_condition_rejections(checks),
+                rejection_reasons=rejection_reasons,
                 row=last,
                 score=55.0 if breakout else 42.0,
                 measurements={"previous_high": prev_high, "previous_low": prev_low, "inside_bar": inside, "narrow_range": narrow},
@@ -977,9 +1118,32 @@ class LiquidityExpansionContinuationStrategy(BaseStrategy):
             "candle_body_too_small": candle_ok,
         }
         if not all(checks.values()):
+            rejection_reasons = _condition_rejections(checks)
+            weak = _weak_long_signal(
+                self,
+                symbol=symbol,
+                row=last,
+                price=price,
+                stop=min(_recent_low(frame, 6) or price - atr, low - (0.25 * atr)),
+                risk_multiple=max(self.risk_multiple, 1.0),
+                rationale="Supervised weak-valid liquidity expansion continuation with real trend candle but incomplete confirmation.",
+                confidence=0.50,
+                style="momentum",
+                setup_type="liquidity_expansion_continuation",
+                rejection_reasons=rejection_reasons,
+                setup_anchor=trend_ok and candle_ok,
+                extra={
+                    "body_to_range": round(body_to_range, 4),
+                    "close_location": round(close_location, 4),
+                    "weak_signal_kind": "liquidity_expansion_anchor",
+                },
+            )
+            if weak is not None:
+                self.last_diagnostics = {}
+                return weak
             _reject(
                 self,
-                rejection_reasons=_condition_rejections(checks),
+                rejection_reasons=rejection_reasons,
                 row=last,
                 score=56.0 if volume_ok and candle_ok else 42.0,
                 measurements={"body_to_range": body_to_range, "close_location": close_location},
@@ -1047,9 +1211,28 @@ class EtfMegaCapRelativeStrengthRotationStrategy(BaseStrategy):
             "relative_volume_too_low": volume_ok,
         }
         if not all(checks.values()):
+            rejection_reasons = _condition_rejections(checks)
+            weak = _weak_long_signal(
+                self,
+                symbol=symbol,
+                row=last,
+                price=price,
+                stop=min(_recent_low(frame, 14) or price - atr, price - (1.8 * atr)),
+                risk_multiple=max(self.risk_multiple, 1.0),
+                rationale="Supervised weak-valid relative-strength rotation with real trend/rotation anchor but incomplete confirmation.",
+                confidence=0.50,
+                style="rotation",
+                setup_type="etf_mega_cap_relative_strength_rotation",
+                rejection_reasons=rejection_reasons,
+                setup_anchor=trend_ok and rotation_ok,
+                extra={"roc": round(roc, 4), "roc_window": self.roc_window, "weak_signal_kind": "rotation_anchor"},
+            )
+            if weak is not None:
+                self.last_diagnostics = {}
+                return weak
             _reject(
                 self,
-                rejection_reasons=_condition_rejections(checks),
+                rejection_reasons=rejection_reasons,
                 row=last,
                 score=55.0 if rotation_ok else 42.0,
                 measurements={"roc": roc, "roc_window": self.roc_window},
@@ -1129,9 +1312,32 @@ class RelativeVolumeReclaimContinuationStrategy(BaseStrategy):
             "average_dollar_volume_below_threshold": liquidity_ok,
         }
         if not all(checks.values()):
+            rejection_reasons = _condition_rejections(checks)
+            weak = _weak_long_signal(
+                self,
+                symbol=symbol,
+                row=last,
+                price=price,
+                stop=min(_recent_low(frame, 8) or price - atr, support - (0.65 * atr), price - atr),
+                risk_multiple=max(self.risk_multiple, 1.0),
+                rationale="Supervised weak-valid relative-volume reclaim continuation with real support reclaim but incomplete confirmation.",
+                confidence=0.50,
+                style="pullback_continuation",
+                setup_type="relative_volume_reclaim_continuation",
+                rejection_reasons=rejection_reasons,
+                setup_anchor=pulled_into_support and reclaimed,
+                extra={
+                    "support": round(support, 4),
+                    "reclaim_level": "max_vwap_ema20",
+                    "weak_signal_kind": "support_reclaim_anchor",
+                },
+            )
+            if weak is not None:
+                self.last_diagnostics = {}
+                return weak
             _reject(
                 self,
-                rejection_reasons=_condition_rejections(checks),
+                rejection_reasons=rejection_reasons,
                 row=last,
                 score=56.0 if reclaimed or volume_ok else 43.0,
                 measurements={"support": support, "vwap": vwap, "ema_20": ema_20, "ema_50": ema_50},
