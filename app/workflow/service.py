@@ -6,6 +6,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.automation.reliability import proposal_quality_label
 from app.execution.interfaces import SignalApprovalAdapter
 from app.models.approval import ApprovalStatus
 from app.models.workflow import WorkflowBucketStatus, WorkflowStatusResponse, WorkflowTaskResponse
@@ -70,6 +71,8 @@ class SignalWorkflowService:
         auto_trading_service: Any | None = None,
         learning_service: Any | None = None,
         rl_policy_service: Any | None = None,
+        paper_trading_service: Any | None = None,
+        execution_queue_repository: Any | None = None,
     ):
         self.settings = settings
         self.market_screener = market_screener
@@ -87,6 +90,8 @@ class SignalWorkflowService:
         self.auto_trading = auto_trading_service
         self.learning = learning_service
         self.rl_policy = rl_policy_service
+        self.paper_trading = paper_trading_service
+        self.execution_queue = execution_queue_repository
         self._approval_adapter = SignalApprovalAdapter()
 
     def run_scheduled_tasks(self) -> dict[str, int]:
@@ -522,6 +527,21 @@ class SignalWorkflowService:
                     amount_usd=float(getattr(self.settings, "default_trade_amount_usd", 1000.0)),
                     notes=notes,
                 )
+                proposal_quality = proposal_quality_label(candidate)
+                request.metadata = {
+                    **dict(getattr(request, "metadata", {}) or {}),
+                    **candidate_metadata,
+                    "proposal_quality": proposal_quality,
+                    "proposal_source": candidate_metadata.get("source") or "scanner_strategy",
+                    "proposal_origin": origin,
+                    "auto_approval_tier": str(
+                        getattr(self.settings, "paper_auto_approval_tier", "tier1_supervised_only")
+                    ),
+                    "supervised_approval_required": (
+                        proposal_quality in {"supervised_weak_valid", "paper_near_miss"}
+                        or str(getattr(self.settings, "paper_auto_operation_mode", "shadow")) != "unattended"
+                    ),
+                }
                 proposal = self.proposal_service.create_proposal(request)
             except Exception as exc:  # noqa: BLE001
                 self.run_logs.log(
@@ -533,7 +553,12 @@ class SignalWorkflowService:
             created += 1
             self.run_logs.log(
                 "auto_proposal_created",
-                {"origin": origin, "proposal_id": proposal.id, "symbol": symbol},
+                {
+                    "origin": origin,
+                    "proposal_id": proposal.id,
+                    "symbol": symbol,
+                    "proposal_quality": proposal_quality,
+                },
             )
             if self.auto_trading is not None:
                 self.auto_trading.approve_enqueue_execute(proposal, candidate)

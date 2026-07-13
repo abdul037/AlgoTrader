@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from hmac import compare_digest
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
 
+from app.automation.reliability import (
+    AUTO_TIER_PENDING_ONLY,
+    AUTO_TIER_SUPERVISED_ONLY,
+    daily_items,
+    lifecycle_stats,
+    proposal_quality_label,
+)
+from app.models.approval import ApprovalStatus
 from app.models.automation import AutomationStateChange, AutomationStatus
 from app.models.execution_queue import ExecutionQueueStatus
 from app.strategies.catalog import build_strategy_catalog_report
@@ -455,6 +464,171 @@ def production_readiness(request: Request):
         "scheduler": workflow_health,
         "learning": learning_status,
     }
+
+
+@router.get("/reliability")
+def automation_reliability(request: Request):
+    _require_control_token(request)
+    settings = request.app.state.settings
+    workflow_health = request.app.state.workflow_service.lightweight_health()
+    latest_reconciliation = (
+        request.app.state.safety_state_repository.latest_reconciliation()
+        or {"status": "never_run", "issues_json": "[]", "positions_seen": 0}
+    )
+    reconciliation_issues = _json_or_empty(latest_reconciliation.get("issues_json"), [])
+    learning_status = request.app.state.learning_service.status()
+    proposals = request.app.state.proposal_service.list_proposals(status=None)
+    today_proposals = daily_items(proposals)
+    scan_decisions = request.app.state.scan_decision_repository.list(limit=2000)
+    today_decisions = daily_items(scan_decisions)
+    lifecycles = request.app.state.paper_trading_service.lifecycles(limit=1000)
+    lifecycle_summary = lifecycle_stats(lifecycles)
+    pending = [item for item in proposals if item.status == ApprovalStatus.PENDING]
+    approved = [item for item in proposals if item.status == ApprovalStatus.APPROVED]
+    queued = request.app.state.execution_queue_repository.list(status=ExecutionQueueStatus.QUEUED, limit=200)
+    processing = request.app.state.execution_queue_repository.list(status=ExecutionQueueStatus.PROCESSING, limit=200)
+    blocked_queue = request.app.state.execution_queue_repository.list(status=ExecutionQueueStatus.BLOCKED, limit=200)
+    proposal_quality_counts = Counter(_proposal_quality_for_report(item) for item in today_proposals)
+    no_signal_reasons = Counter()
+    for decision in today_decisions:
+        if str(decision.status) in {"no_signal", "rejected", "watchlist"}:
+            for reason in decision.rejection_reasons[:5]:
+                no_signal_reasons[str(reason)] += 1
+    weak_valid_count = sum(
+        1
+        for decision in today_decisions
+        if str(decision.status) == "supervised_weak_valid"
+        or str((decision.payload.get("metadata") or {}).get("signal_classification") or "") == "supervised_weak_valid"
+    )
+    target_min = int(getattr(settings, "paper_supervised_daily_proposal_target_min", 1) or 1)
+    target_max = int(getattr(settings, "paper_supervised_daily_proposal_target_max", 5) or 5)
+    proposals_created = len(today_proposals)
+    proposal_flow_blockers = []
+    if proposals_created < target_min:
+        proposal_flow_blockers.append("daily_proposal_target_not_met")
+    if not today_decisions:
+        proposal_flow_blockers.append("no_scan_decisions_today")
+    if not bool(getattr(settings, "auto_propose_enabled", False)):
+        proposal_flow_blockers.append("auto_propose_disabled")
+    if bool(getattr(settings, "paper_auto_approve_proposals", False)):
+        proposal_flow_blockers.append("paper_auto_approve_enabled_during_supervised_phase")
+
+    auto_blockers = _reliability_auto_blockers(
+        request=request,
+        lifecycle_summary=lifecycle_summary,
+        latest_reconciliation=latest_reconciliation,
+        reconciliation_issues=reconciliation_issues,
+        learning_status=learning_status,
+        queued_count=len(queued),
+        processing_count=len(processing),
+    )
+    return {
+        "mode": "paper_reliability",
+        "generated_at": utc_now().isoformat(),
+        "ready_for_supervised_proposals": not proposal_flow_blockers,
+        "ready_for_auto_approval": not auto_blockers,
+        "proposal_flow": {
+            "target_per_session": {"min": target_min, "max": target_max},
+            "target_met": target_min <= proposals_created <= target_max,
+            "scans_run": len({decision.scan_task for decision in today_decisions}),
+            "specs_evaluated": len(today_decisions),
+            "symbols_scanned": len({decision.symbol for decision in today_decisions}),
+            "weak_valid_signals_emitted": weak_valid_count,
+            "proposals_created": proposals_created,
+            "pending_proposals": len(pending),
+            "approved_proposals": len(approved),
+            "proposal_quality_counts": dict(proposal_quality_counts),
+            "proposal_blockers": sorted(set(proposal_flow_blockers)),
+            "top_no_signal_reasons": dict(no_signal_reasons.most_common(10)),
+        },
+        "scheduler": workflow_health,
+        "reconciliation": {
+            "status": latest_reconciliation.get("status"),
+            "account_number": latest_reconciliation.get("account_number"),
+            "orders_seen": latest_reconciliation.get("orders_seen"),
+            "positions_seen": latest_reconciliation.get("positions_seen"),
+            "issues": reconciliation_issues,
+            "created_at": latest_reconciliation.get("created_at"),
+        },
+        "queue": {
+            "queued": len(queued),
+            "processing": len(processing),
+            "blocked": len(blocked_queue),
+        },
+        "lifecycles": lifecycle_summary,
+        "learning": learning_status,
+        "auto_approval": {
+            "tier": str(getattr(settings, "paper_auto_approval_tier", "tier1_supervised_only")),
+            "paper_auto_approve_proposals": bool(getattr(settings, "paper_auto_approve_proposals", False)),
+            "auto_execution_worker_enabled": bool(getattr(settings, "auto_execution_worker_enabled", False)),
+            "operation_mode": str(getattr(settings, "paper_auto_operation_mode", "shadow")),
+            "minimum_clean_supervised_lifecycles": int(
+                getattr(settings, "paper_auto_min_clean_supervised_lifecycles", 10) or 10
+            ),
+            "blockers": auto_blockers,
+        },
+    }
+
+
+def _proposal_quality_for_report(proposal: Any) -> str:
+    metadata = dict(getattr(proposal.order, "metadata", {}) or {})
+    if metadata.get("proposal_quality"):
+        return str(metadata["proposal_quality"])
+    signal_metadata = dict(getattr(getattr(proposal, "signal", None), "metadata", {}) or {})
+    return proposal_quality_label(
+        metadata={**signal_metadata, **metadata},
+        execution_ready=True,
+        alert_eligible=True,
+        signal_role=metadata.get("signal_role") or signal_metadata.get("signal_role") or "entry_long",
+        stop_loss=getattr(proposal.order, "stop_loss", None),
+        take_profit=getattr(proposal.order, "take_profit", None),
+    )
+
+
+def _reliability_auto_blockers(
+    *,
+    request: Request,
+    lifecycle_summary: dict[str, Any],
+    latest_reconciliation: dict[str, Any],
+    reconciliation_issues: list[Any],
+    learning_status: dict[str, Any],
+    queued_count: int,
+    processing_count: int,
+) -> list[str]:
+    settings = request.app.state.settings
+    automation = _automation(request)
+    blockers = list(automation.execution_blockers())
+    tier = str(getattr(settings, "paper_auto_approval_tier", AUTO_TIER_SUPERVISED_ONLY) or "").lower()
+    if tier == AUTO_TIER_PENDING_ONLY:
+        blockers.append("paper_auto_tier_pending_only")
+    if tier == AUTO_TIER_SUPERVISED_ONLY:
+        blockers.append("paper_auto_tier_supervised_only")
+    if not bool(getattr(settings, "paper_auto_approve_proposals", False)):
+        blockers.append("paper_auto_approve_disabled")
+    if not bool(getattr(settings, "auto_execution_worker_enabled", False)):
+        blockers.append("auto_execution_worker_disabled")
+    if str(getattr(settings, "paper_auto_operation_mode", "shadow")) != "unattended":
+        blockers.append("paper_auto_not_unattended")
+    if str(settings.execution_mode) != "paper":
+        blockers.append("execution_mode_not_paper")
+    if bool(settings.enable_real_trading):
+        blockers.append("real_trading_enabled")
+    if latest_reconciliation.get("status") != "ok":
+        blockers.append("reconciliation_not_ok")
+    if reconciliation_issues:
+        blockers.append("reconciliation_issues_present")
+    if int(learning_status.get("failed_jobs") or 0) > 0:
+        blockers.append("learning_failed_jobs_present")
+    minimum = int(getattr(settings, "paper_auto_min_clean_supervised_lifecycles", 10) or 10)
+    if int(lifecycle_summary.get("complete") or 0) < minimum:
+        blockers.append("insufficient_clean_supervised_lifecycles")
+    if lifecycle_summary.get("safety_blockers"):
+        blockers.extend(lifecycle_summary["safety_blockers"])
+    if queued_count:
+        blockers.append("queued_items_present")
+    if processing_count:
+        blockers.append("processing_items_present")
+    return sorted(set(blockers))
 
 
 @router.post("/pause", response_model=AutomationStatus)

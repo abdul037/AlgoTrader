@@ -40,6 +40,8 @@ def _service(
         paper_auto_approve_proposals=True,
         auto_execution_worker_enabled=True,
         paper_auto_operation_mode=operation_mode,
+        paper_auto_approval_tier="tier2_strict_valid",
+        paper_auto_min_clean_supervised_lifecycles=0,
         alpaca_expected_account_number="PAPER-1",
         paper_scanner_exploration_enabled=exploration_enabled,
         paper_scanner_bypass_production_approval=bypass_production_approval,

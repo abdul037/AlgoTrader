@@ -254,6 +254,17 @@ class AppSettings(BaseSettings):
     paper_auto_approve_proposals: bool = False
     auto_execution_worker_enabled: bool = False
     paper_auto_operation_mode: Literal["shadow", "supervised", "unattended"] = "shadow"
+    paper_auto_approval_tier: Literal[
+        "tier0_pending_only",
+        "tier1_supervised_only",
+        "tier2_strict_valid",
+        "tier3_strategy_qualified",
+    ] = "tier1_supervised_only"
+    paper_supervised_daily_proposal_target_min: int = 1
+    paper_supervised_daily_proposal_target_max: int = 5
+    paper_auto_min_clean_supervised_lifecycles: int = 10
+    paper_auto_min_strategy_closed_trades: int = 30
+    paper_auto_min_strategy_profit_factor: float = 1.20
     paper_scanner_exploration_enabled: bool = False
     paper_scanner_bypass_production_approval: bool = False
     paper_scanner_allowed_strategies: list[str] = Field(default_factory=lambda: ["all"])

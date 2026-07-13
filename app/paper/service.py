@@ -7,6 +7,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any
 
+from app.automation.reliability import lifecycle_complete
 from app.models.approval import TradeProposal
 from app.models.paper import (
     BotPerformanceDashboard,
@@ -14,8 +15,8 @@ from app.models.paper import (
     PaperBrokerOrderLeg,
     PaperLifecycleFlags,
     PaperPositionRecord,
-    PaperTradeRecord,
     PaperTradeLifecycleRecord,
+    PaperTradeRecord,
 )
 from app.utils.time import utc_now
 
@@ -190,6 +191,7 @@ class PaperTradingService:
         limit: int = 100,
         source: str | None = None,
         autonomous_only: bool = False,
+        complete_only: bool = False,
     ) -> list[PaperTradeLifecycleRecord]:
         records = [
             self._lifecycle_from_execution(record)
@@ -199,6 +201,8 @@ class PaperTradingService:
             records = [record for record in records if record.source == source]
         if autonomous_only:
             records = [record for record in records if record.autonomous]
+        if complete_only:
+            records = [record for record in records if lifecycle_complete(record, require_autonomous=autonomous_only)]
         return records[: max(limit, 1)]
 
     def lifecycle(self, execution_id: str) -> PaperTradeLifecycleRecord | None:
@@ -584,9 +588,7 @@ class PaperTradingService:
             return False
         payload = dict(item.get("payload") or {})
         item_qty = PaperTradingService._optional_float(item.get("filled_qty") or payload.get("filled_qty"))
-        if item_qty is None or abs(item_qty - filled_qty) > 0.000001:
-            return False
-        return True
+        return not (item_qty is None or abs(item_qty - filled_qty) > 0.000001)
 
     @staticmethod
     def _snapshot_timestamp(item: dict[str, Any]) -> datetime | None:

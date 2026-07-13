@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.automation.reliability import (
+    AUTO_TIER_STRATEGY_QUALIFIED,
+    auto_approval_tier_blockers,
+    proposal_quality_label,
+)
 from app.models.approval import ApprovalDecisionRequest
 from app.models.execution import ExecutionStatus
 from app.screener.profiles import effective_auto_execution_min_score
@@ -28,6 +33,7 @@ class PaperAutoTradingService:
         alpaca_client: Any | None,
         strategy_governance: Any | None = None,
         institutional_governance: Any | None = None,
+        paper_trading_service: Any | None = None,
     ):
         self.settings = settings
         self.proposals = proposal_service
@@ -41,12 +47,14 @@ class PaperAutoTradingService:
         self.alpaca = alpaca_client
         self.strategy_governance = strategy_governance
         self.institutional_governance = institutional_governance
+        self.paper_trading = paper_trading_service
 
     def candidate_blockers(self, candidate: Any) -> list[str]:
         blockers = list(self.automation.execution_blockers())
         metadata = dict(getattr(candidate, "metadata", {}) or {})
         symbol = str(getattr(candidate, "symbol", "") or "").upper()
         strategy = str(getattr(candidate, "strategy_name", "") or "")
+        quality = proposal_quality_label(candidate)
         paper_exploration = self._paper_exploration_strategy_approved(strategy)
         paper_near_miss = (
             paper_exploration
@@ -120,6 +128,23 @@ class PaperAutoTradingService:
             blockers.append("short_entries_disabled")
         if getattr(candidate, "stop_loss", None) is None or getattr(candidate, "take_profit", None) is None:
             blockers.append("bracket_prices_missing")
+        blockers.extend(
+            auto_approval_tier_blockers(
+                settings=self.settings,
+                candidate=candidate,
+                lifecycles=self._paper_lifecycles(),
+            )
+        )
+        if (
+            str(getattr(self.settings, "paper_auto_approval_tier", "") or "").lower()
+            == AUTO_TIER_STRATEGY_QUALIFIED
+            and strategy
+            and self.strategy_governance is not None
+            and not self.strategy_governance.strategy_production_approved(strategy)
+        ):
+            blockers.append("strategy_not_qualified_for_tier3_auto")
+        if quality == "not_tradeable":
+            blockers.append("proposal_quality_not_tradeable")
         return sorted(set(blockers))
 
     def candidate_proposal_blockers(self, candidate: Any) -> list[str]:
@@ -202,6 +227,14 @@ class PaperAutoTradingService:
             )
         )
         return processed
+
+    def _paper_lifecycles(self) -> list[Any] | None:
+        if self.paper_trading is None:
+            return None
+        try:
+            return list(self.paper_trading.lifecycles(limit=1000))
+        except Exception:  # noqa: BLE001 - lack of evidence must block auto, not crash scans
+            return None
 
     def process_ready_queue(self) -> list[Any]:
         if not bool(getattr(self.settings, "auto_execution_worker_enabled", False)):

@@ -9,8 +9,8 @@ from app.models.paper import (
     PaperBrokerExecutionRecord,
     PaperPerformanceSummary,
     PaperPositionRecord,
-    PaperTradeRecord,
     PaperTradeLifecycleRecord,
+    PaperTradeRecord,
 )
 
 router = APIRouter(prefix="/paper", tags=["paper"])
@@ -51,11 +51,13 @@ def paper_lifecycles(
     limit: int = 100,
     source: str | None = None,
     autonomous_only: bool = False,
+    complete_only: bool = False,
 ) -> list[PaperTradeLifecycleRecord]:
     return _paper(request).lifecycles(
         limit=min(max(limit, 1), 500),
         source=source,
         autonomous_only=autonomous_only,
+        complete_only=complete_only,
     )
 
 

@@ -214,6 +214,7 @@ def test_paper_broker_executions_exposes_real_alpaca_lifecycle(tmp_path) -> None
     dashboard = client.get("/paper/dashboard").json()
     lifecycles = client.get("/paper/lifecycles").json()
     autonomous_lifecycles = client.get("/paper/lifecycles?autonomous_only=true").json()
+    complete_lifecycles = client.get("/paper/lifecycles?complete_only=true").json()
 
     assert trades == []
     assert response.status_code == 200
@@ -242,3 +243,4 @@ def test_paper_broker_executions_exposes_real_alpaca_lifecycle(tmp_path) -> None
     assert lifecycle["flags"]["duplicate_order_absent"] is True
     assert "manual_or_unknown_source" in lifecycle["blockers"]
     assert autonomous_lifecycles == []
+    assert complete_lifecycles == []

@@ -459,6 +459,7 @@ def create_app(
         automation=app.state.automation_service,
         broker_governance=broker_governance_repository,
         learning_service=app.state.learning_service,
+        notifier=app.state.telegram_notifier,
     )
     app.state.extended_hours_experiment_service = ExtendedHoursExperimentService(
         settings=app_settings,
@@ -482,6 +483,7 @@ def create_app(
         alpaca_client=alpaca_client,
         strategy_governance=strategy_governance_repository,
         institutional_governance=app.state.institutional_service,
+        paper_trading_service=app.state.paper_trading_service,
     )
     app.state.market_screener_service.auto_trading = app.state.auto_trading_service
     app.state.rl_policy_service = RLPolicyService(
@@ -518,6 +520,8 @@ def create_app(
         auto_trading_service=app.state.auto_trading_service,
         learning_service=app.state.learning_service,
         rl_policy_service=app.state.rl_policy_service,
+        paper_trading_service=app.state.paper_trading_service,
+        execution_queue_repository=execution_queue_repository,
     )
     app.state.telegram_command_service = TelegramBotService(
         settings=app_settings,

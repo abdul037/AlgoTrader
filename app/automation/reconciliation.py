@@ -21,6 +21,7 @@ class AlpacaReconciliationService:
     LAST_RUN_KEY = "reconciliation:last_run_at"
     LAST_STATUS_KEY = "reconciliation:last_status"
     LAST_ISSUES_KEY = "reconciliation:last_issues"
+    LAST_ALERT_SIGNATURE_KEY = "reconciliation:last_alert_signature"
 
     def __init__(
         self,
@@ -36,6 +37,7 @@ class AlpacaReconciliationService:
         automation: Any,
         broker_governance: Any | None = None,
         learning_service: Any | None = None,
+        notifier: Any | None = None,
     ):
         self.settings = settings
         self.alpaca = alpaca_client
@@ -48,6 +50,7 @@ class AlpacaReconciliationService:
         self.automation = automation
         self.broker_governance = broker_governance
         self.learning = learning_service
+        self.notifier = notifier
 
     def reconcile(self) -> dict[str, Any]:
         if self.alpaca is None or not bool(getattr(self.settings, "alpaca_reconciliation_enabled", True)):
@@ -339,7 +342,43 @@ class AlpacaReconciliationService:
                 reason=";".join(issues),
                 emergency_stop=not account_mismatch,
             )
+            self._send_failure_alert(
+                issues=issues,
+                consecutive_failures=count,
+                emergency_stop=not account_mismatch,
+            )
         return {"status": "error", "issues": issues, "consecutive_failures": count, **(result or {})}
+
+    def _send_failure_alert(
+        self,
+        *,
+        issues: list[str],
+        consecutive_failures: int,
+        emergency_stop: bool,
+    ) -> None:
+        if self.notifier is None:
+            return
+        signature = "|".join(sorted(issues))
+        if self.state.get(self.LAST_ALERT_SIGNATURE_KEY) == signature:
+            return
+        self.state.set(self.LAST_ALERT_SIGNATURE_KEY, signature)
+        try:
+            self.notifier.send_text(
+                "\n".join(
+                    [
+                        "Paper automation safety alert",
+                        "Reconciliation failure tripped safety controls.",
+                        f"Issues: {', '.join(issues)}",
+                        f"Consecutive failures: {consecutive_failures}",
+                        f"Emergency stop: {'yes' if emergency_stop else 'no'}",
+                    ]
+                )
+            )
+        except Exception:  # noqa: BLE001 - alert failure must not mask safety state
+            self.logs.log(
+                "alpaca_reconciliation_alert_failed",
+                {"issues": issues, "consecutive_failures": consecutive_failures},
+            )
 
     def _record_governance_reconciliation(
         self,

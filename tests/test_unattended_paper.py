@@ -312,4 +312,6 @@ def test_paper_near_miss_uses_configured_score_gap_without_bypassing_safety(tmp_
     blockers = service.candidate_blockers(candidate)
 
     assert "candidate_score_below_auto_threshold" not in blockers
-    assert blockers == []
+    assert "near_miss_requires_human_approval" in blockers
+    assert "paper_auto_tier_supervised_only" in blockers
+    assert "paper_lifecycle_evidence_unavailable" in blockers

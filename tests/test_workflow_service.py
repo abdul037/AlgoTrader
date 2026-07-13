@@ -351,6 +351,8 @@ def test_weak_valid_auto_proposal_stays_supervised_and_warns_not_production(tmp_
     assert created == 1
     assert auto_trading.approve_calls == 1
     assert proposal_service.created[0].notes.startswith("Supervised weak-valid paper proposal; not production-qualified.")
+    assert proposal_service.created[0].metadata["proposal_quality"] == "supervised_weak_valid"
+    assert proposal_service.created[0].metadata["supervised_approval_required"] is True
 
 
 def test_run_swing_scan_tracks_and_records_alert(tmp_path) -> None:

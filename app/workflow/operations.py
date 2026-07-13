@@ -6,6 +6,8 @@ import inspect
 import json
 from typing import Any
 
+from app.models.approval import ApprovalStatus
+from app.models.execution_queue import ExecutionQueueStatus
 from app.models.workflow import WorkflowTaskResponse
 from app.universe import resolve_universe
 from app.utils.time import utc_now
@@ -264,6 +266,9 @@ def send_daily_summary_impl(service: Any, *, notify: bool) -> WorkflowTaskRespon
         open_signals=open_signals,
         recent_alerts=recent_alerts,
     )
+    reliability_lines = _daily_reliability_lines(service)
+    if reliability_lines:
+        message = f"{message}\n" + "\n".join(reliability_lines)
     alerts_sent = 1 if (notify and service.notifier.send_text(message)) else 0
     service.alert_history.create(
         category="daily_summary",
@@ -286,6 +291,66 @@ def send_daily_summary_impl(service: Any, *, notify: bool) -> WorkflowTaskRespon
         alerts_sent=alerts_sent,
         open_signals=len(open_signals),
     )
+
+
+def _daily_reliability_lines(service: Any) -> list[str]:
+    lines = ["Paper automation reliability:"]
+    proposals = getattr(service, "proposal_service", None)
+    if proposals is not None:
+        pending = _safe_list(lambda: proposals.list_proposals(status=ApprovalStatus.PENDING))
+        approved = _safe_list(lambda: proposals.list_proposals(status=ApprovalStatus.APPROVED))
+        lines.append(f"Pending proposals: {len(pending)}")
+        lines.append(f"Approved proposals awaiting queue/execution: {len(approved)}")
+
+    queue = getattr(service, "execution_queue", None)
+    if queue is not None:
+        queued = _safe_list(lambda: queue.list(status=ExecutionQueueStatus.QUEUED, limit=100))
+        processing = _safe_list(lambda: queue.list(status=ExecutionQueueStatus.PROCESSING, limit=100))
+        lines.append(f"Queue: {len(queued)} queued, {len(processing)} processing")
+
+    paper = getattr(service, "paper_trading", None)
+    if paper is not None:
+        summary = _safe_call(paper.summary)
+        if summary is not None:
+            lines.append(
+                "Paper P&L: "
+                f"realized {float(getattr(summary, 'realized_pnl_usd', 0.0) or 0.0):.2f}, "
+                f"unrealized {float(getattr(summary, 'unrealized_pnl_usd', 0.0) or 0.0):.2f}, "
+                f"open positions {int(getattr(summary, 'open_positions', 0) or 0)}"
+            )
+        executions = _safe_list(lambda: paper.broker_executions(limit=20))
+        submitted = [
+            item for item in executions
+            if str(getattr(item, "source", "") or "") != "manual_smoke"
+        ]
+        lines.append(f"Recent autonomous broker executions: {len(submitted)}")
+
+    blockers: list[str] = []
+    automation = getattr(service, "automation", None)
+    if automation is not None:
+        blockers.extend(_safe_list(automation.execution_blockers))
+    learning = getattr(service, "learning", None)
+    if learning is not None:
+        learning_status = _safe_call(learning.status) or {}
+        if int(learning_status.get("failed_jobs") or 0) > 0:
+            blockers.append("learning_failed_jobs_present")
+    lines.append("Blockers: " + (", ".join(sorted(set(blockers))) if blockers else "none"))
+    return lines
+
+
+def _safe_list(factory: Any) -> list[Any]:
+    try:
+        result = factory()
+    except Exception:  # noqa: BLE001 - summary must not break workflow maintenance
+        return []
+    return list(result or [])
+
+
+def _safe_call(factory: Any) -> Any:
+    try:
+        return factory()
+    except Exception:  # noqa: BLE001 - summary must not break workflow maintenance
+        return None
 
 
 def send_scan_alerts(service: Any, *, task: str, response: Any, notify: bool) -> int:
