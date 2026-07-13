@@ -78,6 +78,11 @@ def _weak_valid_allowed_reasons(settings: Any) -> set[str]:
     }
 
 
+_WEAK_VALID_REASON_ALIASES = {
+    "momentum_not_constructive": "confirmation_too_weak",
+}
+
+
 def _is_strategy_emitted_weak_valid_signal(signal: Any) -> bool:
     metadata = dict(getattr(signal, "metadata", {}) or {})
     classification = str(metadata.get("signal_classification") or "").strip().lower()
@@ -89,18 +94,22 @@ def _effective_weak_valid_reasons(signal: Any, reasons: list[str]) -> list[str]:
     metadata = dict(getattr(signal, "metadata", {}) or {})
     if _is_strategy_emitted_weak_valid_signal(signal):
         weak_reasons = [
-            str(item).strip().lower()
+            _WEAK_VALID_REASON_ALIASES.get(str(item).strip().lower(), str(item).strip().lower())
             for item in (metadata.get("weak_signal_reasons") or metadata.get("supervised_weak_valid_reasons") or [])
             if str(item).strip()
         ]
         if weak_reasons:
             extras = [
-                str(item).strip().lower()
+                _WEAK_VALID_REASON_ALIASES.get(str(item).strip().lower(), str(item).strip().lower())
                 for item in reasons
                 if str(item).strip().lower() in {"final_score_below_auto_threshold", "final_score_below_keep_threshold"}
             ]
             return list(dict.fromkeys([*weak_reasons, *extras]))
-    return [str(item).strip().lower() for item in reasons if str(item).strip()]
+    return [
+        _WEAK_VALID_REASON_ALIASES.get(str(item).strip().lower(), str(item).strip().lower())
+        for item in reasons
+        if str(item).strip()
+    ]
 
 
 def _regular_market_hours_open(settings: Any) -> bool:
@@ -420,8 +429,6 @@ def _paper_supervised_weak_valid_blockers(
     unsupported_reasons = sorted(normalized_reasons - allowed - score_reasons)
     if unsupported_reasons:
         blockers.append("supervised_weak_valid_unsupported_reasons:" + ",".join(unsupported_reasons))
-    if filter_outcome.watchlist_only:
-        blockers.append("supervised_weak_valid_watchlist_filter")
     return list(dict.fromkeys(blockers))
 
 
@@ -512,6 +519,7 @@ def _maybe_promote_supervised_weak_valid(
         "supervised_weak_valid_original_actionability": ranking.get("actionability"),
         "supervised_weak_valid_reasons": list(dict.fromkeys(effective_reasons)),
         "supervised_weak_valid_raw_reasons": list(dict.fromkeys(reasons)),
+        "supervised_weak_valid_watchlist_only": bool(getattr(filter_outcome, "watchlist_only", False)),
         "supervised_weak_valid_min_score": float(
             getattr(service.settings, "paper_supervised_weak_valid_min_score", 45.0) or 45.0
         ),

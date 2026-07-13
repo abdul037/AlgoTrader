@@ -835,7 +835,7 @@ def test_strategy_emitted_weak_valid_uses_weak_reasons_for_promotion(tmp_path, m
                     "risk_reward_ratio": 1.03,
                     "signal_classification": "supervised_weak_valid",
                     "source": "supervised_weak_valid",
-                    "weak_signal_reasons": ["relative_volume_too_low"],
+                    "weak_signal_reasons": ["momentum_not_constructive"],
                     "weak_signal_setup_anchor": True,
                     "trend_quality": 1.0,
                     "momentum_quality": 1.0,
@@ -861,7 +861,7 @@ def test_strategy_emitted_weak_valid_uses_weak_reasons_for_promotion(tmp_path, m
                 "execution_quality": 0.8,
                 "indicator_confluence_score": 0.8,
             },
-            watchlist_only=False,
+            watchlist_only=True,
         )
 
     spec = SimpleNamespace(name="vwap_reclaim", timeframe="5m", style="momentum", default_kwargs={})
@@ -880,16 +880,17 @@ def test_strategy_emitted_weak_valid_uses_weak_reasons_for_promotion(tmp_path, m
     assert candidate.execution_ready is True
     assert candidate.metadata["signal_classification"] == "supervised_weak_valid"
     assert candidate.metadata["supervised_weak_valid_reasons"] == [
-        "relative_volume_too_low",
+        "confirmation_too_weak",
         "final_score_below_auto_threshold",
     ]
+    assert candidate.metadata["supervised_weak_valid_watchlist_only"] is True
     assert "volatility_out_of_range" in candidate.metadata["supervised_weak_valid_raw_reasons"]
     assert any(item.status == "candidate" and item.alert_eligible for item in decisions.items)
     attempts = [
         payload for event, payload in service.logs.items if event == "paper_supervised_weak_valid_promotion_attempt"
     ]
     assert attempts[-1]["promotion_blockers"] == []
-    assert attempts[-1]["reasons"] == ["relative_volume_too_low", "final_score_below_auto_threshold"]
+    assert attempts[-1]["reasons"] == ["confirmation_too_weak", "final_score_below_auto_threshold"]
     assert "volatility_out_of_range" in attempts[-1]["raw_reasons"]
 
 
