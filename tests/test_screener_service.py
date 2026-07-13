@@ -7,9 +7,11 @@ import pandas as pd
 
 from app.live_signal_schema import MarketQuote
 from app.models.signal import Signal, SignalAction
+from app.screener.filters import FilterOutcome
 from app.screener.profiles import effective_auto_execution_min_score
 from app.screener.scoring import build_backtest_snapshot
 from app.screener.service import MarketScreenerService, _strategy_specs
+from app.screener.service_scan import _weak_valid_daily_count
 from tests.conftest import make_settings
 
 
@@ -109,6 +111,16 @@ class FakeScanDecisionRepository:
         record = SimpleNamespace(**kwargs)
         self.items.append(record)
         return record
+
+    def list(self, *, limit: int = 100, status: str | None = None, scan_task: str | None = None, symbol: str | None = None):
+        items = list(reversed(self.items))
+        if status is not None:
+            items = [item for item in items if item.status == status]
+        if scan_task is not None:
+            items = [item for item in items if item.scan_task == scan_task]
+        if symbol is not None:
+            items = [item for item in items if item.symbol == symbol.upper()]
+        return items[:limit]
 
     def get_latest(
         self,
@@ -719,6 +731,166 @@ def test_supervised_weak_valid_promotion_creates_execution_ready_candidate(tmp_p
     assert attempts
     assert attempts[-1]["promoted_to_candidate"] is True
     assert attempts[-1]["promotion_blockers"] == []
+
+
+def test_weak_valid_daily_count_ignores_rejected_strategy_weak_signals(tmp_path) -> None:
+    repository = FakeScanDecisionRepository()
+    repository.create(
+        scan_task="intraday_scan",
+        symbol="NVDA",
+        strategy_name="vwap_reclaim",
+        timeframe="5m",
+        status="rejected",
+        final_score=None,
+        alert_eligible=False,
+        freshness=None,
+        reason_codes=["relative_volume_too_low"],
+        rejection_reasons=["relative_volume_too_low"],
+        payload={"metadata": {"source": "supervised_weak_valid"}},
+        created_at="2026-07-13T14:00:00+00:00",
+    )
+    repository.create(
+        scan_task="intraday_scan",
+        symbol="MSFT",
+        strategy_name="vwap_reclaim",
+        timeframe="5m",
+        status="candidate",
+        final_score=55.0,
+        alert_eligible=True,
+        freshness="fresh",
+        reason_codes=["supervised_weak_valid_promoted"],
+        rejection_reasons=["relative_volume_too_low"],
+        payload={
+            "metadata": {
+                "source": "supervised_weak_valid",
+                "supervised_weak_valid_promoted_to_candidate": True,
+            }
+        },
+        created_at="2026-07-13T14:05:00+00:00",
+    )
+    service = SimpleNamespace(scan_decisions=repository)
+
+    assert _weak_valid_daily_count(service) == 1
+
+
+def test_strategy_emitted_weak_valid_uses_weak_reasons_for_promotion(tmp_path, monkeypatch) -> None:
+    frame = _frame([100 + (index * 0.18) for index in range(90)])
+    frame.loc[frame.index[-1], "volume"] = frame["volume"].tail(20).mean() * 0.55
+    quote = MarketQuote(symbol="NVDA", bid=116.0, ask=116.04, last_execution=116.02, timestamp="2026-04-11T10:00:00Z")
+    decisions = FakeScanDecisionRepository()
+    service = MarketScreenerService(
+        settings=make_settings(
+            tmp_path,
+            market_universe_symbols=["NVDA"],
+            screener_default_timeframes=["5m"],
+            execution_mode="paper",
+            enable_real_trading=False,
+            auto_propose_enabled=True,
+            paper_auto_approve_proposals=False,
+            paper_auto_operation_mode="supervised",
+            paper_scanner_exploration_enabled=True,
+            paper_exploration_signal_profile="balanced_loose",
+            paper_exploration_require_regular_hours=False,
+            paper_near_miss_promotion_enabled=False,
+            paper_supervised_weak_valid_enabled=True,
+            paper_supervised_weak_valid_min_score=45.0,
+            paper_supervised_weak_valid_min_reward_to_risk=1.0,
+            paper_supervised_weak_valid_min_relative_volume=0.30,
+            screener_weak_backtest_action="rank_only",
+            screener_min_confidence=0.1,
+            screener_min_trend_strength_pct=0.0,
+            screener_min_efficiency_ratio=0.0,
+            screener_min_execution_quality=0.0,
+            screener_min_accuracy_score=0.0,
+            screener_min_confirmation_score=0.0,
+            screener_max_false_positive_risk=1.0,
+            screener_min_market_regime_score=0.0,
+            screener_min_timeframe_alignment_score=0.0,
+            screener_min_sector_strength_score=0.0,
+            screener_min_benchmark_strength_score=0.0,
+            screener_min_recent_backtest_consistency=0.0,
+        ),
+        market_data_engine=FakeMarketDataEngine({("NVDA", "5m"): frame}, {"NVDA": quote}),
+        signal_state_repository=FakeSignalStateRepository(),
+        run_log_repository=FakeRunLogRepository(),
+        backtest_repository=FakeBacktestRepository(),
+        scan_decision_repository=decisions,
+        telegram_notifier=FakeTelegramNotifier(),
+    )
+
+    class FakeWeakStrategy:
+        def generate_signal(self, _history, symbol):
+            return Signal(
+                symbol=symbol,
+                strategy_name="vwap_reclaim",
+                action=SignalAction.BUY,
+                confidence=0.80,
+                price=116.02,
+                stop_loss=114.00,
+                take_profit=118.10,
+                rationale="strategy-emitted supervised weak-valid fixture",
+                metadata={
+                    "style": "momentum",
+                    "signal_role": "entry_long",
+                    "risk_reward_ratio": 1.03,
+                    "signal_classification": "supervised_weak_valid",
+                    "source": "supervised_weak_valid",
+                    "weak_signal_reasons": ["relative_volume_too_low"],
+                    "weak_signal_setup_anchor": True,
+                    "trend_quality": 1.0,
+                    "momentum_quality": 1.0,
+                    "liquidity_quality": 1.0,
+                    "indicator_confluence_score": 0.8,
+                },
+            )
+
+    def noisy_filter(*_args, **_kwargs):
+        return FilterOutcome(
+            passed=False,
+            pass_reasons=[],
+            rejection_reasons=[
+                "relative_volume_too_low",
+                "volatility_out_of_range",
+                "sector_strength_too_low",
+                "recent_backtest_consistency_too_low",
+            ],
+            reason_codes=["relative_volume_too_low"],
+            measurements={
+                "relative_volume": 0.55,
+                "spread_bps": 3.0,
+                "execution_quality": 0.8,
+                "indicator_confluence_score": 0.8,
+            },
+            watchlist_only=False,
+        )
+
+    spec = SimpleNamespace(name="vwap_reclaim", timeframe="5m", style="momentum", default_kwargs={})
+    monkeypatch.setattr(service, "_strategy_specs_for_timeframe", lambda *_args, **_kwargs: [spec])
+    monkeypatch.setattr(service, "_build_strategy", lambda _spec: FakeWeakStrategy())
+    monkeypatch.setattr(service.filters, "evaluate", noisy_filter)
+
+    response = service.scan_universe(
+        limit=3,
+        scan_task="intraday_scan",
+        strategy_spec_keys=["vwap_reclaim:5m"],
+    )
+
+    assert response.candidates
+    candidate = response.candidates[0]
+    assert candidate.execution_ready is True
+    assert candidate.metadata["signal_classification"] == "supervised_weak_valid"
+    assert candidate.metadata["supervised_weak_valid_reasons"] == [
+        "relative_volume_too_low",
+        "final_score_below_auto_threshold",
+    ]
+    assert "volatility_out_of_range" in candidate.metadata["supervised_weak_valid_raw_reasons"]
+    assert any(item.status == "candidate" and item.alert_eligible for item in decisions.items)
+    attempts = [
+        payload for event, payload in service.logs.items if event == "paper_supervised_weak_valid_promotion_attempt"
+    ]
+    assert attempts[-1]["promotion_blockers"] == []
+    assert attempts[-1]["reasons"] == ["relative_volume_too_low", "final_score_below_auto_threshold"]
+    assert "volatility_out_of_range" in attempts[-1]["raw_reasons"]
 
 
 def test_supervised_weak_valid_does_not_promote_no_strategy_signal(tmp_path, monkeypatch) -> None:

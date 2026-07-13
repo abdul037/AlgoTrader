@@ -78,6 +78,31 @@ def _weak_valid_allowed_reasons(settings: Any) -> set[str]:
     }
 
 
+def _is_strategy_emitted_weak_valid_signal(signal: Any) -> bool:
+    metadata = dict(getattr(signal, "metadata", {}) or {})
+    classification = str(metadata.get("signal_classification") or "").strip().lower()
+    source = str(metadata.get("source") or "").strip().lower()
+    return classification == "supervised_weak_valid" or source == "supervised_weak_valid"
+
+
+def _effective_weak_valid_reasons(signal: Any, reasons: list[str]) -> list[str]:
+    metadata = dict(getattr(signal, "metadata", {}) or {})
+    if _is_strategy_emitted_weak_valid_signal(signal):
+        weak_reasons = [
+            str(item).strip().lower()
+            for item in (metadata.get("weak_signal_reasons") or metadata.get("supervised_weak_valid_reasons") or [])
+            if str(item).strip()
+        ]
+        if weak_reasons:
+            extras = [
+                str(item).strip().lower()
+                for item in reasons
+                if str(item).strip().lower() in {"final_score_below_auto_threshold", "final_score_below_keep_threshold"}
+            ]
+            return list(dict.fromkeys([*weak_reasons, *extras]))
+    return [str(item).strip().lower() for item in reasons if str(item).strip()]
+
+
 def _regular_market_hours_open(settings: Any) -> bool:
     if not bool(getattr(settings, "paper_exploration_require_regular_hours", True)):
         return True
@@ -97,9 +122,13 @@ def _weak_valid_daily_count(service: Any) -> int:
     count = 0
     with suppress(Exception):
         for row in repository.list(limit=5000):
+            if str(getattr(row, "status", "") or "").lower() != "candidate":
+                continue
             payload = dict(getattr(row, "payload", {}) or {})
             metadata = dict(payload.get("metadata") or {})
             if str(metadata.get("source") or "").lower() != "supervised_weak_valid":
+                continue
+            if not bool(metadata.get("supervised_weak_valid_promoted_to_candidate")):
                 continue
             created_at = getattr(row, "created_at", None)
             if created_at is None:
@@ -385,7 +414,8 @@ def _paper_supervised_weak_valid_blockers(
         blockers.append("supervised_weak_valid_score_too_low")
 
     allowed = _weak_valid_allowed_reasons(settings)
-    normalized_reasons = {str(reason).strip().lower() for reason in reasons if str(reason).strip()}
+    effective_reasons = _effective_weak_valid_reasons(signal, reasons)
+    normalized_reasons = {str(reason).strip().lower() for reason in effective_reasons if str(reason).strip()}
     score_reasons = {"final_score_below_auto_threshold", "final_score_below_keep_threshold"}
     unsupported_reasons = sorted(normalized_reasons - allowed - score_reasons)
     if unsupported_reasons:
@@ -431,13 +461,15 @@ def _maybe_promote_supervised_weak_valid(
         risk_reward_value = float(risk_reward) if risk_reward is not None else None
     except (TypeError, ValueError):
         risk_reward_value = None
+    effective_reasons = _effective_weak_valid_reasons(signal, reasons)
     attempt_payload = {
         "symbol": getattr(signal, "symbol", None),
         "strategy_name": getattr(signal, "strategy_name", None),
         "timeframe": timeframe,
         "promoted_to_candidate": not blockers,
         "promotion_blockers": list(blockers),
-        "reasons": list(dict.fromkeys(reasons)),
+        "reasons": list(dict.fromkeys(effective_reasons)),
+        "raw_reasons": list(dict.fromkeys(reasons)),
         "final_score": float(ranking.get("final_score") or 0.0),
         "min_score": float(getattr(service.settings, "paper_supervised_weak_valid_min_score", 45.0) or 45.0),
         "relative_volume": float(getattr(context, "relative_volume", 0.0) or 0.0),
@@ -478,7 +510,8 @@ def _maybe_promote_supervised_weak_valid(
         "supervised_approval_required": True,
         "supervised_weak_valid_original_execution_blockers": list(original_metadata.get("execution_blockers") or []),
         "supervised_weak_valid_original_actionability": ranking.get("actionability"),
-        "supervised_weak_valid_reasons": list(dict.fromkeys(reasons)),
+        "supervised_weak_valid_reasons": list(dict.fromkeys(effective_reasons)),
+        "supervised_weak_valid_raw_reasons": list(dict.fromkeys(reasons)),
         "supervised_weak_valid_min_score": float(
             getattr(service.settings, "paper_supervised_weak_valid_min_score", 45.0) or 45.0
         ),
