@@ -12,6 +12,7 @@ from app.screener.profiles import effective_auto_execution_min_score
 from app.screener.scoring import build_backtest_snapshot
 from app.screener.service import MarketScreenerService, _strategy_specs
 from app.screener.service_scan import _weak_valid_daily_count
+from app.utils.time import utc_now
 from tests.conftest import make_settings
 
 
@@ -735,6 +736,7 @@ def test_supervised_weak_valid_promotion_creates_execution_ready_candidate(tmp_p
 
 def test_weak_valid_daily_count_ignores_rejected_strategy_weak_signals(tmp_path) -> None:
     repository = FakeScanDecisionRepository()
+    now = utc_now().isoformat()
     repository.create(
         scan_task="intraday_scan",
         symbol="NVDA",
@@ -747,7 +749,7 @@ def test_weak_valid_daily_count_ignores_rejected_strategy_weak_signals(tmp_path)
         reason_codes=["relative_volume_too_low"],
         rejection_reasons=["relative_volume_too_low"],
         payload={"metadata": {"source": "supervised_weak_valid"}},
-        created_at="2026-07-13T14:00:00+00:00",
+        created_at=now,
     )
     repository.create(
         scan_task="intraday_scan",
@@ -766,7 +768,7 @@ def test_weak_valid_daily_count_ignores_rejected_strategy_weak_signals(tmp_path)
                 "supervised_weak_valid_promoted_to_candidate": True,
             }
         },
-        created_at="2026-07-13T14:05:00+00:00",
+        created_at=now,
     )
     service = SimpleNamespace(scan_decisions=repository)
 
@@ -892,6 +894,98 @@ def test_strategy_emitted_weak_valid_uses_weak_reasons_for_promotion(tmp_path, m
     assert attempts[-1]["promotion_blockers"] == []
     assert attempts[-1]["reasons"] == ["confirmation_too_weak", "final_score_below_auto_threshold"]
     assert "volatility_out_of_range" in attempts[-1]["raw_reasons"]
+
+
+def test_diagnostic_weak_valid_no_signal_creates_supervised_candidate(tmp_path, monkeypatch) -> None:
+    frame = _frame([100 + (index * 0.12) for index in range(90)])
+    frame.loc[frame.index[-1], "volume"] = frame["volume"].tail(20).mean() * 0.50
+    quote = MarketQuote(symbol="MU", bid=110.0, ask=110.04, last_execution=110.02, timestamp="2026-04-11T10:00:00Z")
+    decisions = FakeScanDecisionRepository()
+    service = MarketScreenerService(
+        settings=make_settings(
+            tmp_path,
+            market_universe_symbols=["MU"],
+            screener_default_timeframes=["10m"],
+            execution_mode="paper",
+            enable_real_trading=False,
+            auto_propose_enabled=True,
+            paper_auto_approve_proposals=False,
+            paper_auto_operation_mode="supervised",
+            paper_scanner_exploration_enabled=True,
+            paper_exploration_signal_profile="balanced_loose",
+            paper_exploration_require_regular_hours=False,
+            paper_supervised_weak_valid_enabled=True,
+            paper_supervised_weak_valid_min_score=45.0,
+            paper_supervised_weak_valid_min_reward_to_risk=1.0,
+            paper_supervised_weak_valid_min_relative_volume=0.30,
+            paper_supervised_weak_valid_allowed_reasons=[
+                "relative_volume_too_low",
+                "structure_too_choppy",
+                "recent_backtest_consistency_too_low",
+                "last_volume_below_threshold",
+                "average_volume_below_threshold",
+            ],
+        ),
+        market_data_engine=FakeMarketDataEngine({("MU", "10m"): frame}, {"MU": quote}),
+        signal_state_repository=FakeSignalStateRepository(),
+        run_log_repository=FakeRunLogRepository(),
+        backtest_repository=FakeBacktestRepository(),
+        scan_decision_repository=decisions,
+        telegram_notifier=FakeTelegramNotifier(),
+    )
+
+    class DiagnosticStrategy:
+        last_diagnostics = {
+            "status": "no_signal",
+            "score": 48.5,
+            "rejection_reasons": [
+                "last_volume_below_threshold",
+                "average_volume_below_threshold",
+                "relative_volume_too_low",
+                "structure_too_choppy",
+                "recent_backtest_consistency_too_low",
+            ],
+            "reason_codes": ["relative_volume_too_low"],
+            "measurements": {
+                "side": "long",
+                "current_price": 110.02,
+                "indicative_entry": 110.02,
+                "indicative_stop": 108.50,
+                "indicative_target": 113.10,
+                "indicative_rr": 2.03,
+                "relative_volume": 0.50,
+                "indicator_confluence_score": 0.55,
+            },
+        }
+
+        def generate_signal(self, _history, _symbol):
+            return None
+
+    spec = SimpleNamespace(name="ema_trend_stack", timeframe="10m", style="trend", default_kwargs={})
+    monkeypatch.setattr(service, "_strategy_specs_for_timeframe", lambda *_args, **_kwargs: [spec])
+    monkeypatch.setattr(service, "_build_strategy", lambda _spec: DiagnosticStrategy())
+
+    response = service.scan_universe(
+        limit=3,
+        scan_task="intraday_scan",
+        strategy_spec_keys=["ema_trend_stack:10m"],
+    )
+
+    assert response.candidates
+    candidate = response.candidates[0]
+    assert candidate.symbol == "MU"
+    assert candidate.execution_ready is True
+    assert candidate.metadata["signal_classification"] == "supervised_weak_valid"
+    assert candidate.metadata["diagnostic_supervised_weak_valid"] is True
+    assert candidate.metadata["supervised_approval_required"] is True
+    assert candidate.entry_price == 110.02
+    assert candidate.stop_loss == 108.50
+    assert any(item.status == "candidate" and item.alert_eligible for item in decisions.items)
+    attempts = [
+        payload for event, payload in service.logs.items if event == "paper_supervised_weak_valid_promotion_attempt"
+    ]
+    assert attempts[-1]["promoted_to_candidate"] is True
+    assert attempts[-1]["promotion_blockers"] == []
 
 
 def test_supervised_weak_valid_does_not_promote_no_strategy_signal(tmp_path, monkeypatch) -> None:

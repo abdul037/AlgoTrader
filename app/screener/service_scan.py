@@ -7,11 +7,13 @@ import time
 from contextlib import suppress
 from datetime import datetime
 from datetime import time as local_time
+from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.broker.etoro_rate_limit import EToroRateLimitError
 from app.models.screener import ScreenerRunResponse
+from app.models.signal import Signal, SignalAction
 from app.screener.accuracy import build_accuracy_profile
 from app.screener.filters import FilterOutcome, build_market_context
 from app.screener.profiles import (
@@ -110,6 +112,100 @@ def _effective_weak_valid_reasons(signal: Any, reasons: list[str]) -> list[str]:
         for item in reasons
         if str(item).strip()
     ]
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _diagnostic_weak_valid_signal(
+    *,
+    symbol: str,
+    strategy_name: str,
+    timeframe: str,
+    diagnostics: dict[str, Any],
+    quote: Any,
+    context: Any,
+    rejection_reasons: list[str],
+) -> Signal | None:
+    measurements = dict(diagnostics.get("measurements") or {})
+    side = str(measurements.get("side") or diagnostics.get("side") or "long").strip().lower()
+    if side not in {"long", "buy"}:
+        return None
+    entry = _float_or_none(measurements.get("indicative_entry"))
+    if entry is None:
+        entry = _float_or_none(measurements.get("current_price"))
+    if entry is None:
+        entry = _float_or_none(getattr(quote, "last_execution", None) or getattr(quote, "ask", None) or getattr(quote, "bid", None))
+    stop = _float_or_none(measurements.get("indicative_stop"))
+    target = _float_or_none(measurements.get("indicative_target"))
+    if entry is None or stop is None or target is None or not (stop < entry < target):
+        return None
+    rr = _float_or_none(measurements.get("indicative_rr"))
+    if rr is None and entry > stop:
+        rr = (target - entry) / (entry - stop)
+    if rr is None or rr < 1.0:
+        return None
+    score = _float_or_none(diagnostics.get("score"))
+    confidence = None if score is None else max(0.0, min(score / 100.0, 1.0))
+    weak_reasons = [
+        _WEAK_VALID_REASON_ALIASES.get(str(reason).strip().lower(), str(reason).strip().lower())
+        for reason in rejection_reasons
+        if str(reason).strip()
+    ]
+    return Signal(
+        symbol=symbol,
+        strategy_name=strategy_name,
+        action=SignalAction.BUY,
+        confidence=confidence,
+        price=entry,
+        stop_loss=stop,
+        take_profit=target,
+        rationale=(
+            f"Supervised diagnostic weak-valid {strategy_name} setup on {timeframe}; "
+            "strategy diagnostics supplied a real long entry, stop, and target."
+        ),
+        metadata={
+            "signal_role": "entry_long",
+            "signal_classification": "supervised_weak_valid",
+            "source": "supervised_weak_valid",
+            "diagnostic_supervised_weak_valid": True,
+            "supervised_approval_required": True,
+            "production_qualified": False,
+            "weak_signal_reasons": weak_reasons or ["confirmation_too_weak"],
+            "weak_signal_setup_anchor": True,
+            "risk_reward_ratio": rr,
+            "indicator_confluence_score": measurements.get("indicator_confluence_score"),
+            "style": measurements.get("style") or "diagnostic",
+            "timeframe": timeframe,
+        },
+    )
+
+
+def _diagnostic_intelligence(context: Any, diagnostics: dict[str, Any]) -> Any:
+    measurements = dict(diagnostics.get("measurements") or {})
+    return SimpleNamespace(
+        summary="Diagnostic supervised weak-valid setup.",
+        market_regime_label=measurements.get("market_regime_label") or "unknown",
+        risk_mode=measurements.get("risk_mode") or "paper_exploration",
+        volatility_environment=measurements.get("volatility_environment") or "unknown",
+        market_regime_score=_float_or_none(measurements.get("market_regime_score")) or getattr(context, "regime_alignment_score", 0.5),
+        higher_timeframe_alignment_score=_float_or_none(measurements.get("higher_timeframe_alignment_score")) or 0.5,
+        lower_timeframe_alignment_score=_float_or_none(measurements.get("lower_timeframe_alignment_score")) or 0.5,
+        timeframe_alignment_score=_float_or_none(measurements.get("timeframe_alignment_score")) or 0.5,
+        relative_strength_vs_market=_float_or_none(measurements.get("relative_strength_vs_market")) or 0.0,
+        relative_strength_vs_sector=_float_or_none(measurements.get("relative_strength_vs_sector")) or 0.0,
+        sector_strength_score=_float_or_none(measurements.get("sector_strength_score")) or 0.5,
+        benchmark_strength_score=_float_or_none(measurements.get("benchmark_strength_score")) or 0.5,
+        time_of_day_score=_float_or_none(measurements.get("time_of_day_score")) or 0.75,
+        momentum_state=measurements.get("momentum_state") or "diagnostic",
+        measurements=measurements,
+    )
 
 
 def _regular_market_hours_open(settings: Any) -> bool:
@@ -717,6 +813,94 @@ def scan_universe(
                             final_score=strategy_diagnostics.get("score"),
                             measurements=measurements,
                         )
+                        diagnostic_signal = _diagnostic_weak_valid_signal(
+                            symbol=symbol,
+                            strategy_name=spec.name,
+                            timeframe=timeframe,
+                            diagnostics=strategy_diagnostics,
+                            quote=quote,
+                            context=None,
+                            rejection_reasons=rejection_reasons,
+                        )
+                        if diagnostic_signal is not None:
+                            diagnostic_signal.metadata.setdefault("timeframe", timeframe)
+                            diagnostic_signal.metadata.setdefault("strategy_style", getattr(spec, "style", "diagnostic"))
+                            backtest = service._backtest_validation(
+                                diagnostic_signal.symbol,
+                                diagnostic_signal.strategy_name,
+                                timeframe,
+                            )
+                            backtest_snapshot = build_backtest_snapshot(
+                                backtest["summary"],
+                                validated=backtest["passes"],
+                                validation_reason=backtest["reason"],
+                            )
+                            diagnostic_context = build_market_context(history, quote=quote, signal=diagnostic_signal)
+                            diagnostic_intelligence = _diagnostic_intelligence(diagnostic_context, strategy_diagnostics)
+                            final_score = float(strategy_diagnostics.get("score") or 0.0)
+                            weak_valid_reasons = list(rejection_reasons)
+                            if final_score < effective_auto_execution_min_score(service.settings):
+                                weak_valid_reasons.append("final_score_below_auto_threshold")
+                            filter_outcome = FilterOutcome(
+                                passed=False,
+                                pass_reasons=["market_data_verified"] if market_data_status["verified"] else [],
+                                rejection_reasons=list(rejection_reasons),
+                                reason_codes=[
+                                    *list(strategy_diagnostics.get("reason_codes") or rejection_reasons),
+                                    *([] if market_data_status["verified"] else ["market_data_unverified"]),
+                                ],
+                                measurements=measurements,
+                                watchlist_only=True,
+                            )
+                            ranking = {
+                                "final_score": final_score,
+                                "score_breakdown": {},
+                                "confidence_label": "weak",
+                                "direction_label": "watchlist",
+                                "actionability": "watchlist",
+                            }
+                            diagnostic_weak_valid = _maybe_promote_supervised_weak_valid(
+                                service,
+                                signal=diagnostic_signal,
+                                quote=quote,
+                                timeframe=timeframe,
+                                context=diagnostic_context,
+                                intelligence=diagnostic_intelligence,
+                                market_data_status=market_data_status,
+                                filter_outcome=filter_outcome,
+                                backtest_snapshot=backtest_snapshot,
+                                ranking=ranking,
+                                freshness="fresh",
+                                reasons=weak_valid_reasons,
+                                weak_valid_scan_count=weak_valid_scan_promotions,
+                                weak_valid_daily_count=weak_valid_daily_promotions,
+                            )
+                            if diagnostic_weak_valid is not None:
+                                weak_valid_scan_promotions += 1
+                                service.signal_states.upsert(diagnostic_weak_valid)
+                                candidates.append(diagnostic_weak_valid)
+                                service._record_scan_decision(
+                                    scan_task=scan_task,
+                                    signal=diagnostic_signal,
+                                    timeframe=timeframe,
+                                    status="candidate",
+                                    final_score=diagnostic_weak_valid.score,
+                                    alert_eligible=True,
+                                    freshness="fresh",
+                                    filter_outcome=FilterOutcome(
+                                        passed=True,
+                                        pass_reasons=["diagnostic_supervised_weak_valid_promoted"],
+                                        rejection_reasons=weak_valid_reasons,
+                                        reason_codes=[
+                                            *list(strategy_diagnostics.get("reason_codes") or rejection_reasons),
+                                            "diagnostic_supervised_weak_valid_promoted",
+                                        ],
+                                        measurements=measurements,
+                                        watchlist_only=False,
+                                    ),
+                                    payload=diagnostic_weak_valid.model_dump(),
+                                )
+                                continue
                         if service.scan_decisions is not None:
                             service.scan_decisions.create(
                                 scan_task=scan_task,
