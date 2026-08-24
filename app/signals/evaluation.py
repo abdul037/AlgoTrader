@@ -63,6 +63,53 @@ def resolve_live_strategy_names(service: Any) -> list[str]:
     return resolved or ["pullback_trend"]
 
 
+def score_with_screener_ranker(
+    service: Any,
+    symbol: str,
+    candles: pd.DataFrame,
+    quote: MarketQuote,
+    signal: Signal,
+) -> float:
+    """Score one candidate with the screener's 21-component ranker.
+
+    Builds the same measured market context the screener uses (no network), folds
+    those measurements into the signal metadata so the ranker sees real
+    confluence/execution values, pulls the latest backtest summary, and returns
+    the blended 0-100 ``final_score``. Lets the live path rank candidates by the
+    full ranker instead of a strategy's self-reported confidence.
+    """
+
+    from app.screener.filters import build_market_context
+    from app.screener.scoring import build_backtest_snapshot, rank_live_signal
+
+    context = build_market_context(candles, quote=quote, signal=signal)
+    ranked_signal = signal.model_copy(
+        update={"metadata": {**(signal.metadata or {}), **context.measurements}}
+    )
+    summary = None
+    backtests = getattr(service, "backtests", None)
+    if backtests is not None:
+        try:
+            summary = backtests.get_latest_summary(symbol, signal.strategy_name)
+        except Exception:  # noqa: BLE001 - a missing summary must not break ranking
+            summary = None
+    backtest_snapshot = build_backtest_snapshot(
+        summary,
+        validated=bool(summary),
+        validation_reason="live_ranker",
+    )
+    ranked = rank_live_signal(
+        settings=service.settings,
+        signal=ranked_signal,
+        context=context,
+        backtest_snapshot=backtest_snapshot,
+        intelligence=None,
+        watchlist_only=False,
+        freshness="fresh",
+    )
+    return float(ranked.get("final_score") or 0.0)
+
+
 def evaluate_equity_catalog(
     service: Any,
     symbol: str,
@@ -70,6 +117,7 @@ def evaluate_equity_catalog(
     quote: MarketQuote,
     *,
     strategy_factory: Callable[[str], Any] | None = None,
+    ranker: Callable[[Any, str, pd.DataFrame, MarketQuote, Signal], float] | None = None,
 ) -> LiveSignalSnapshot:
     """Run the configured strategy catalog and pick the best long setup.
 
@@ -86,9 +134,13 @@ def evaluate_equity_catalog(
 
         strategy_factory = get_strategy
 
+    use_ranker = bool(getattr(service.settings, "live_signal_use_screener_ranker", False))
+    if use_ranker and ranker is None:
+        ranker = score_with_screener_ranker
+
     names = resolve_live_strategy_names(service)
     evaluated: list[dict[str, Any]] = []
-    best: tuple[tuple[float, float], str, Signal] | None = None
+    best: tuple[tuple[float, ...], str, Signal, float | None] | None = None
 
     for name in names:
         try:
@@ -107,17 +159,28 @@ def evaluate_equity_catalog(
             continue
         confidence = float(signal.confidence or 0.0)
         reward_to_risk = float((signal.metadata or {}).get("risk_reward_ratio") or 0.0)
-        evaluated.append(
-            {
-                "strategy": name,
-                "status": "buy",
-                "confidence": confidence,
-                "risk_reward_ratio": reward_to_risk,
-            }
-        )
-        key = (confidence, reward_to_risk)
+        record: dict[str, Any] = {
+            "strategy": name,
+            "status": "buy",
+            "confidence": confidence,
+            "risk_reward_ratio": reward_to_risk,
+        }
+        # Rank by the screener's full 21-component score when enabled, else by
+        # the strategy's own confidence then reward-to-risk.
+        final_score: float | None = None
+        if ranker is not None:
+            try:
+                final_score = float(ranker(service, symbol, candles, quote, signal))
+            except Exception as exc:  # noqa: BLE001 - ranking failure keeps the candidate
+                record["ranker_error"] = f"{type(exc).__name__}: {exc}"
+                final_score = 0.0
+            record["screener_final_score"] = final_score
+            key: tuple[float, ...] = (final_score,)
+        else:
+            key = (confidence, reward_to_risk)
+        evaluated.append(record)
         if best is None or key > best[0]:
-            best = (key, name, signal)
+            best = (key, name, signal, final_score)
 
     if best is None:
         snapshot = evaluate_equity(service, symbol, candles, quote)
@@ -126,8 +189,10 @@ def evaluate_equity_catalog(
         metadata["strategy_selection"] = "catalog_no_buy_fallback"
         return snapshot.model_copy(update={"metadata": metadata})
 
-    _, winner, signal = best
-    return _snapshot_from_signal(service, symbol, candles, quote, winner, signal, evaluated)
+    _, winner, signal, winner_score = best
+    return _snapshot_from_signal(
+        service, symbol, candles, quote, winner, signal, evaluated, score_override=winner_score
+    )
 
 
 def _snapshot_from_signal(
@@ -138,6 +203,8 @@ def _snapshot_from_signal(
     strategy_name: str,
     signal: Signal,
     evaluated: list[dict[str, Any]],
+    *,
+    score_override: float | None = None,
 ) -> LiveSignalSnapshot:
     last = candles.iloc[-1]
     current_price = quote.last_execution or quote.ask or quote.bid or float(last["close"])
@@ -177,7 +244,7 @@ def _snapshot_from_signal(
         take_profit=take_profit,
         risk_reward_ratio=float(reward_to_risk) if reward_to_risk is not None else None,
         confidence=confidence,
-        score=round(confidence * 100.0, 2),
+        score=round(score_override if score_override is not None else confidence * 100.0, 2),
         tradable=trade_supported,
         supported=trade_supported,
         asset_class="equity",
@@ -189,6 +256,8 @@ def _snapshot_from_signal(
             "support_note": support_note,
             "strategy_selection": "catalog_best_buy",
             "selected_strategy": strategy_name,
+            "selection_ranker": "screener_final_score" if score_override is not None else "confidence_rr",
+            "screener_final_score": score_override,
             "evaluated_strategies": evaluated,
             **indicators,
         },

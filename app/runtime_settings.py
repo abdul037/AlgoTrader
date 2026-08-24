@@ -465,6 +465,9 @@ class AppSettings(BaseSettings):
     # empty, screener_active_strategy_names is used ("all" -> the core pack).
     live_signal_use_strategy_catalog: bool = False
     live_signal_strategy_names: list[str] = Field(default_factory=list)
+    # When the catalog is on, rank candidates with the screener's full
+    # 21-component ranker instead of the strategy's own confidence/reward-to-risk.
+    live_signal_use_screener_ranker: bool = False
     signal_scan_limit: int = 20
     notify_on_none_signal_change: bool = True
     signal_scan_universe: list[str] = Field(

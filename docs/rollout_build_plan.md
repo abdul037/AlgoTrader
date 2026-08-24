@@ -159,9 +159,14 @@ The plumbing to trade is done; the edge is not demonstrated.
      `evaluated_strategies` audit trail. Gated by
      `live_signal_use_strategy_catalog` (off by default; falls back to the
      legacy single-strategy narrative when no strategy fires).
-   - [ ] Next: feed the screener's full 21-component ranker (not just the
-     strategy's own confidence) into the live selection, and share one universe
-     scan between the screener and the live/alert path.
+   - [x] Ranker wired in: with `live_signal_use_screener_ranker` on, the live
+     catalog scores each qualifying candidate with the screener's full
+     21-component `rank_live_signal` (reusing `build_market_context` — no
+     network — and the latest backtest summary) and selects by that
+     `final_score` instead of the strategy's self-reported confidence. Off by
+     default; covered by `tests/test_live_signal_ranker.py`.
+   - [ ] Still open: share one universe scan between the screener and the
+     live/alert path (today they still scan independently).
 2. Stop trusting hardcoded quality scores — many `execution_quality` /
    `trend_quality` / `confidence` values are literal constants fed to the ranker
    as if measured, inflating scores circularly.
