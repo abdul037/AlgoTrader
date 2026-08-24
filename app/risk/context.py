@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.risk.guardrails import RiskContext
+from app.risk.sectors import correlation_bucket_for_symbol, sector_for_symbol
 from app.utils.time import utc_now
 
 
@@ -38,6 +39,8 @@ def build_risk_context(settings: Any, broker: Any, executions_repo: Any) -> Risk
     account_balance = max(portfolio.account.equity, portfolio.account.cash_balance, 1.0)
     positions_by_symbol: dict[str, int] = {}
     exposure_by_symbol_pct: dict[str, float] = {}
+    exposure_by_sector_pct: dict[str, float] = {}
+    exposure_by_correlation_bucket_pct: dict[str, float] = {}
     gross_market_value = 0.0
     for position in portfolio.positions:
         symbol = str(position.symbol or "").upper()
@@ -46,8 +49,16 @@ def build_risk_context(settings: Any, broker: Any, executions_repo: Any) -> Risk
         positions_by_symbol[symbol] = positions_by_symbol.get(symbol, 0) + 1
         market_value = abs(float(position.market_value or 0.0))
         gross_market_value += market_value
-        exposure_by_symbol_pct[symbol] = exposure_by_symbol_pct.get(symbol, 0.0) + (
-            market_value / account_balance * 100.0
+        exposure_pct = market_value / account_balance * 100.0
+        exposure_by_symbol_pct[symbol] = exposure_by_symbol_pct.get(symbol, 0.0) + exposure_pct
+        # Accumulate exposure by sector and by broad correlation bucket so the
+        # sector/correlation caps measure concentration against existing
+        # positions, not just the single new order.
+        sector = sector_for_symbol(symbol)
+        bucket = correlation_bucket_for_symbol(symbol)
+        exposure_by_sector_pct[sector] = exposure_by_sector_pct.get(sector, 0.0) + exposure_pct
+        exposure_by_correlation_bucket_pct[bucket] = (
+            exposure_by_correlation_bucket_pct.get(bucket, 0.0) + exposure_pct
         )
 
     return RiskContext(
@@ -57,7 +68,10 @@ def build_risk_context(settings: Any, broker: Any, executions_repo: Any) -> Risk
         open_positions=len(portfolio.positions),
         positions_by_symbol=positions_by_symbol,
         exposure_by_symbol_pct=exposure_by_symbol_pct,
+        exposure_by_sector_pct=exposure_by_sector_pct,
+        exposure_by_correlation_bucket_pct=exposure_by_correlation_bucket_pct,
         gross_exposure_pct=gross_market_value / account_balance * 100.0,
+        correlated_exposure_pct=max(exposure_by_correlation_bucket_pct.values(), default=0.0),
         consecutive_losses_today=consecutive_losses,
         trades_today=trades_today,
         mode="paper" if settings.execution_mode == "paper" else settings.etoro_account_mode,

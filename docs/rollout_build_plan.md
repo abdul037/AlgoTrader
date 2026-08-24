@@ -119,10 +119,15 @@ worker is detected and restarted.
 
 ### Phase D2 — Self-monitoring & risk correctness
 
-- [ ] Fix live exposure accounting: `risk/context.py` never populates
-      `exposure_by_sector_pct` / `correlated_exposure_pct`, so sector and
-      correlation caps only see the new order — accumulated concentration is not
-      enforced (material for a tech-heavy universe).
+- [x] Fix live exposure accounting: `risk/context.py` now accumulates
+      `exposure_by_sector_pct` and a new `exposure_by_correlation_bucket_pct`
+      from live positions (via `app/risk/sectors.py`, which reuses the canonical
+      sector-ETF map and groups related sectors into broad correlation buckets
+      such as the tech complex). The guardrail derives the order's sector/bucket
+      instead of relying on an order metadata field that was never populated, so
+      the sector and correlation caps finally enforce against existing
+      positions — while a diversifying trade into an empty bucket is not
+      over-blocked. Covered by `tests/test_risk_exposure_accounting.py`.
 - [ ] Make loss limits consider unrealized drawdown, not just realized.
 - [ ] Enable `institutional_portfolio_controls_enabled` and either wire the dead
       `allocate_candidates` allocator or remove it.

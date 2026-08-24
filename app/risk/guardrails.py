@@ -8,6 +8,7 @@ from app.broker.instrument_resolver import InstrumentResolver
 from app.config import AppSettings
 from app.models.trade import TradeOrder
 from app.risk.rules import RiskValidationResult, estimate_risk_amount, leverage_cap_for_asset
+from app.risk.sectors import correlation_bucket_for_symbol, sector_for_symbol
 from app.risk.shorting import ShortTradePolicy
 
 
@@ -21,6 +22,7 @@ class RiskContext(BaseModel):
     positions_by_symbol: dict[str, int] = Field(default_factory=dict)
     exposure_by_symbol_pct: dict[str, float] = Field(default_factory=dict)
     exposure_by_sector_pct: dict[str, float] = Field(default_factory=dict)
+    exposure_by_correlation_bucket_pct: dict[str, float] = Field(default_factory=dict)
     gross_exposure_pct: float = 0.0
     correlated_exposure_pct: float = 0.0
     portfolio_drawdown_pct: float = 0.0
@@ -104,15 +106,32 @@ class RiskManager:
                 > self.settings.portfolio_max_symbol_exposure_pct
             ):
                 reasons.append("Projected symbol exposure exceeds the portfolio limit")
-            sector = str(order.metadata.get("sector") or "unknown")
-            current_sector_exposure = float(context.exposure_by_sector_pct.get(sector, 0.0))
+            # Prefer an explicit metadata sector, but fall back to the symbol's
+            # derived sector so the key matches the accumulated exposure map that
+            # build_risk_context populates (order metadata rarely carries one).
+            metadata_sector = str(order.metadata.get("sector") or "").strip()
+            order_sector = metadata_sector or sector_for_symbol(order.symbol)
+            current_sector_exposure = float(context.exposure_by_sector_pct.get(order_sector, 0.0))
             if (
                 current_sector_exposure + proposed_exposure_pct
                 > self.settings.portfolio_max_sector_exposure_pct
             ):
                 reasons.append("Projected sector exposure exceeds the portfolio limit")
+            # Correlated exposure accumulates across the order's whole correlation
+            # bucket (e.g. the tech complex). When the per-bucket map is populated
+            # (a real risk context) read the order's own bucket -- an absent
+            # bucket means zero exposure there, so a diversifying trade is not
+            # over-blocked. Fall back to the legacy scalar only when no per-bucket
+            # data was provided at all.
+            order_bucket = correlation_bucket_for_symbol(order.symbol)
+            if context.exposure_by_correlation_bucket_pct:
+                current_correlated_exposure = float(
+                    context.exposure_by_correlation_bucket_pct.get(order_bucket, 0.0)
+                )
+            else:
+                current_correlated_exposure = float(context.correlated_exposure_pct)
             if (
-                context.correlated_exposure_pct + proposed_exposure_pct
+                current_correlated_exposure + proposed_exposure_pct
                 > self.settings.portfolio_max_correlated_exposure_pct
             ):
                 reasons.append("Projected correlated exposure exceeds the portfolio limit")
