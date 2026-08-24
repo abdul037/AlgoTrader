@@ -52,6 +52,10 @@ class AppSettings(BaseSettings):
     alpaca_live_expected_account_number: str = ""
     alpaca_reconciliation_enabled: bool = True
     alpaca_reconciliation_interval_seconds: int = 60
+    # Real-time order fill/exit stream (Alpaca trade_updates websocket). Off by
+    # default; the periodic reconciliation sweep is the backstop when disabled.
+    alpaca_trade_stream_enabled: bool = False
+    alpaca_trade_stream_reconnect_seconds: int = 5
     alpaca_reconciliation_max_attempts: int = 3
     alpaca_reconciliation_retry_backoff_seconds: float = 1.0
     alpaca_require_bracket_orders: bool = True
@@ -111,6 +115,23 @@ class AppSettings(BaseSettings):
     screener_top_k: int = 20
     screener_min_confidence: float = 0.45
     screener_scheduler_enabled: bool = True
+    # Dedicated background scheduler worker (decoupled from the Telegram loop).
+    background_scheduler_enabled: bool = True
+    background_scheduler_interval_seconds: int = 60
+    background_scheduler_tick_seconds: int = 5
+    # Readiness turns "warning" once the worker heartbeat is older than this.
+    scheduler_heartbeat_max_age_seconds: int = 180
+    # Scheduled refresh of the internal (self-simulated) paper position ledger.
+    paper_position_refresh_enabled: bool = True
+    paper_position_refresh_interval_seconds: int = 60
+    # Scheduled walk-forward backtests that keep the alert validation gate
+    # populated. Off by default (heavy: network + compute across the universe);
+    # when on, unvalidated signals stop defaulting to "watchlist" because a fresh
+    # out-of-sample summary exists to validate against.
+    backtest_scheduler_enabled: bool = False
+    backtest_scheduler_interval_seconds: int = 21600
+    backtest_scheduler_timeframes: list[str] = Field(default_factory=lambda: ["1d"])
+    backtest_scheduler_symbol_limit: int = 0
     workflow_scan_default_universe_limit: int = 10
     schedule_timezone: str = "America/New_York"
     premarket_scan_enabled: bool = True
@@ -222,6 +243,9 @@ class AppSettings(BaseSettings):
     max_risk_per_trade_pct: float = 1.0
     max_daily_loss_usd: float = 50.0
     max_weekly_loss_usd: float = 125.0
+    # Count current open (unrealized) losses toward the daily/weekly loss caps so
+    # an unattended bot halts on a large open drawdown, not only realized losses.
+    loss_limit_includes_unrealized: bool = True
     max_open_positions: int = 3
     max_trades_per_day: int = 6
     per_symbol_position_limit: int = 1
@@ -437,6 +461,23 @@ class AppSettings(BaseSettings):
     live_signal_candles_count: int = 250
     live_signal_trend_window: int = 100
     live_signal_pullback_window: int = 10
+    # Live-path strategy unification. When enabled, the live signal path runs the
+    # configured strategy catalog and selects the best qualifying long setup per
+    # symbol, instead of a single hardcoded strategy. Off by default preserves
+    # the legacy pullback_trend behavior. When live_signal_strategy_names is
+    # empty, screener_active_strategy_names is used ("all" -> the core pack).
+    live_signal_use_strategy_catalog: bool = False
+    live_signal_strategy_names: list[str] = Field(default_factory=list)
+    # When the catalog is on, rank candidates with the screener's full
+    # 21-component ranker instead of the strategy's own confidence/reward-to-risk.
+    live_signal_use_screener_ranker: bool = False
+    # Volatility-aware risk floor on the live path: use ATR instead of a fixed
+    # percentage as the minimum stop distance, so reward-to-risk is not blind to
+    # instrument volatility. Falls back to the percentage floor when ATR is
+    # unavailable (too few bars).
+    live_signal_atr_stop_enabled: bool = True
+    live_signal_atr_period: int = 14
+    live_signal_atr_stop_mult: float = 1.5
     signal_scan_limit: int = 20
     notify_on_none_signal_change: bool = True
     signal_scan_universe: list[str] = Field(
@@ -486,6 +527,8 @@ class AppSettings(BaseSettings):
         "single_symbol_analysis_timeframes",
         "swing_scan_timeframes",
         "screener_active_strategy_names",
+        "live_signal_strategy_names",
+        "backtest_scheduler_timeframes",
         "paper_scanner_allowed_strategies",
         "paper_near_miss_allowed_reasons",
         "paper_supervised_weak_valid_allowed_reasons",
@@ -501,6 +544,8 @@ class AppSettings(BaseSettings):
             "single_symbol_analysis_timeframes",
             "swing_scan_timeframes",
             "screener_active_strategy_names",
+            "live_signal_strategy_names",
+            "backtest_scheduler_timeframes",
             "paper_scanner_allowed_strategies",
             "paper_near_miss_allowed_reasons",
             "paper_supervised_weak_valid_allowed_reasons",

@@ -18,7 +18,7 @@ def test_railway_deployment_keeps_single_non_overlapping_service() -> None:
     )
     assert config["deploy"]["startCommand"] == "sh scripts/start_railway.sh"
     assert config["deploy"]["numReplicas"] == 1
-    assert config["deploy"]["healthcheckPath"] == "/health"
+    assert config["deploy"]["healthcheckPath"] == "/health/ready"
     assert config["deploy"]["sleepApplication"] is False
     assert config["deploy"]["restartPolicyType"] == "ALWAYS"
     assert config["deploy"]["overlapSeconds"] == 0

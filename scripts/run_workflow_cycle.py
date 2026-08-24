@@ -1,4 +1,13 @@
-"""Run one workflow cycle manually from the command line."""
+"""Run one workflow cycle manually or from an external cron scheduler.
+
+This builds the FULL application wiring via ``create_app`` (with background jobs
+disabled) so a single cron-driven cycle has the same proposal, automation, and
+auto-trading services the long-running process has. A previous version wired a
+partial ``SignalWorkflowService`` by hand, without those services, so the
+``scheduled`` task could scan and alert but could never propose or execute --
+an "autonomy-blind" cron path. Driving the real wiring keeps cron behaviour in
+lockstep with the in-process scheduler worker.
+"""
 
 from __future__ import annotations
 
@@ -11,49 +20,32 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.data.engine import MarketDataEngine
-from app.runtime_settings import get_settings
-from app.screener.service import MarketScreenerService
-from app.storage.db import Database
-from app.storage.repositories import AlertHistoryRepository, BacktestRepository, RunLogRepository, RuntimeStateRepository, SignalStateRepository, TrackedSignalRepository
-from app.telegram_notify import TelegramNotifier
-from app.workflow.service import SignalWorkflowService
+from app.main import create_app  # noqa: E402 - import after sys.path bootstrap
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run one workflow cycle.")
-    parser.add_argument("--task", choices=["scheduled", "swing", "intraday", "open-check", "daily-summary"], default="scheduled")
+    parser.add_argument(
+        "--task",
+        choices=["scheduled", "swing", "intraday", "open-check", "daily-summary"],
+        default="scheduled",
+    )
     parser.add_argument("--no-notify", action="store_true", help="Do not send Telegram messages.")
     args = parser.parse_args()
 
-    settings = get_settings()
-    db = Database(settings)
-    db.initialize()
-
-    notifier = TelegramNotifier(settings)
-    market_data_engine = MarketDataEngine(settings)
-    screener = MarketScreenerService(
-        settings=settings,
-        market_data_engine=market_data_engine,
-        signal_state_repository=SignalStateRepository(db),
-        run_log_repository=RunLogRepository(db),
-        backtest_repository=BacktestRepository(db),
-        telegram_notifier=notifier,
-    )
-    workflow = SignalWorkflowService(
-        settings=settings,
-        market_screener=screener,
-        market_data_engine=market_data_engine,
-        notifier=notifier,
-        tracked_signals=TrackedSignalRepository(db),
-        alert_history=AlertHistoryRepository(db),
-        runtime_state=RuntimeStateRepository(db),
-        run_logs=RunLogRepository(db),
-    )
+    # Full production wiring, but do not spawn the background scheduler thread --
+    # this is a single-shot cycle.
+    app = create_app(enable_background_jobs=False)
+    workflow = app.state.workflow_service
 
     notify = not args.no_notify
     if args.task == "scheduled":
-        result = workflow.run_scheduled_tasks()
+        # Drive the exact same jobs the in-process worker runs, once. This
+        # covers scans, proposals, queue processing, reconciliation, and paper
+        # position refresh -- the real autonomous cadence, not scans only.
+        worker = app.state.build_scheduler_worker()
+        ran = worker.run_due_jobs()
+        result = {"ran_jobs": ran, "worker": worker.status()}
     elif args.task == "swing":
         result = workflow.run_swing_scan(notify=notify, force_refresh=True).model_dump()
     elif args.task == "intraday":
@@ -62,7 +54,7 @@ def main() -> None:
         result = workflow.check_open_signals(notify=notify, force_refresh=True).model_dump()
     else:
         result = workflow.send_daily_summary(notify=notify).model_dump()
-    print(json.dumps(result, indent=2))
+    print(json.dumps(result, indent=2, default=str))
 
 
 if __name__ == "__main__":

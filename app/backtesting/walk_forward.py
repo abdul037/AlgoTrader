@@ -39,9 +39,16 @@ class WalkForwardWindow:
     test_df: pd.DataFrame
 
     def __post_init__(self) -> None:
-        if self.train_end >= self.test_start:
+        # The train interval is half-open ``[train_start, train_end)`` while the
+        # test interval is closed ``[test_start, test_end]`` (see
+        # ``WalkForwardSplitter._slice``). Equal boundaries (``train_end ==
+        # test_start``, i.e. a zero-day embargo) therefore share no bar, so the
+        # correct no-leakage invariant is ``train_end <= test_start``. A strict
+        # ``<`` would wrongly reject the legitimate zero-embargo configuration
+        # that ``split`` explicitly permits (``embargo_days >= 0``).
+        if self.train_end > self.test_start:
             raise ValueError(
-                f"train_end ({self.train_end}) must be strictly < test_start ({self.test_start})"
+                f"train_end ({self.train_end}) must be <= test_start ({self.test_start})"
             )
         if self.test_end < self.test_start:
             raise ValueError("test_end must be >= test_start")
@@ -158,15 +165,27 @@ class WalkForwardSplitter:
 def aggregate_out_of_sample(
     per_fold_trades: list[list[dict]],
     per_fold_metrics: list[dict],
+    *,
+    test_days: int = 14,
 ) -> dict:
     """Aggregate per-fold test-set trades and metrics into a single summary.
 
     Called by :class:`BatchBacktestService` to produce the out-of-sample
     summary that feeds :mod:`app.screener.scoring`. Do not feed this function
     training-set trades by accident.
+
+    Return and drawdown are computed over the *concatenated* out-of-sample
+    window, not per fold. Folds are chained into a single equity curve by
+    compounding each fold's return, so:
+      * ``total_return_pct`` compounds folds instead of averaging them, and
+      * ``max_drawdown_pct`` is the worst peak-to-trough over the whole run,
+        which captures a multi-fold (multi-month) drawdown that a per-fold
+        maximum structurally cannot express.
+    ``annualized_return_pct`` annualizes the compounded return over the true
+    out-of-sample duration (``fold_count * test_days``).
     """
 
-    from app.backtesting.metrics import summarize_trades
+    from app.backtesting.metrics import compute_max_drawdown, summarize_trades
 
     merged_trades: list[dict] = []
     for fold in per_fold_trades:
@@ -174,6 +193,21 @@ def aggregate_out_of_sample(
     fold_count = len(per_fold_metrics)
     combined_metrics = summarize_trades(merged_trades)
     combined_metrics["fold_count"] = fold_count
+
+    fold_returns = [float(item.get("total_return_pct", 0.0) or 0.0) / 100.0 for item in per_fold_metrics]
+    equity_curve = [1.0]
+    for fold_return in fold_returns:
+        equity_curve.append(equity_curve[-1] * (1.0 + fold_return))
+    compounded = equity_curve[-1]
+
+    combined_metrics["total_return_pct"] = round((compounded - 1.0) * 100.0, 4)
+    combined_metrics["max_drawdown_pct"] = round(compute_max_drawdown(equity_curve), 4)
+    oos_days = max(fold_count * max(int(test_days), 1), 1)
+    annualized = (
+        (compounded ** (365.0 / oos_days) - 1.0) * 100.0 if compounded > 0.0 else -100.0
+    )
+    combined_metrics["annualized_return_pct"] = round(annualized, 4)
+
     return {
         "merged_trades": merged_trades,
         "metrics": combined_metrics,

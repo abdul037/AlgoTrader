@@ -1,0 +1,53 @@
+name: CI
+
+# Run once per commit: on pushes to main, and on pull requests. A branch with an
+# open PR is covered by the pull_request event, so this avoids the duplicate
+# push+pull_request runs (and duplicate notifications) on PR branches.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e ".[dev,ml]"
+
+      # Lint/type checks are currently advisory (continue-on-error) because the
+      # existing codebase predates enforcement. Flip these to hard gates in a
+      # follow-up once a dedicated `ruff --fix` + `black .` sweep has landed.
+      - name: Ruff (lint)
+        run: ruff check .
+        continue-on-error: true
+
+      - name: Black (format check)
+        run: black --check .
+        continue-on-error: true
+
+      - name: Mypy (type check)
+        run: mypy app
+        continue-on-error: true
+
+      # Hard gate: the test suite must pass.
+      - name: Pytest
+        run: pytest -q

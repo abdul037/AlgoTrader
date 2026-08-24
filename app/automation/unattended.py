@@ -13,6 +13,9 @@ from app.models.approval import ApprovalDecisionRequest
 from app.models.execution import ExecutionStatus
 from app.screener.profiles import effective_auto_execution_min_score
 from app.universe import resolve_universe
+from app.utils.time import utc_now
+
+AUTO_TRADING_ANNOUNCED_KEY = "paper_auto:auto_trading_started_at"
 
 
 class PaperAutoTradingService:
@@ -34,8 +37,10 @@ class PaperAutoTradingService:
         strategy_governance: Any | None = None,
         institutional_governance: Any | None = None,
         paper_trading_service: Any | None = None,
+        runtime_state: Any | None = None,
     ):
         self.settings = settings
+        self.runtime_state = runtime_state
         self.proposals = proposal_service
         self.execution = execution_coordinator
         self.automation = automation
@@ -214,6 +219,7 @@ class PaperAutoTradingService:
                 "reason": processed.validation_reason,
             },
         )
+        self._announce_auto_trading_started(processed)
         self.notifier.send_text(
             "\n".join(
                 [
@@ -227,6 +233,38 @@ class PaperAutoTradingService:
             )
         )
         return processed
+
+    def _announce_auto_trading_started(self, processed: Any) -> bool:
+        """Send a distinct one-time alert the first time an unattended auto order
+        is placed, so the operator knows exactly when hands-off trading begins.
+
+        Persisted via runtime_state so it fires once, not on every order or
+        restart. Returns True if the announcement was sent.
+        """
+
+        if self.runtime_state is None:
+            return False
+        if str(getattr(self.settings, "paper_auto_operation_mode", "shadow")) != "unattended":
+            return False
+        try:
+            if self.runtime_state.get(AUTO_TRADING_ANNOUNCED_KEY):
+                return False
+            self.runtime_state.set(AUTO_TRADING_ANNOUNCED_KEY, utc_now().isoformat())
+        except Exception:  # noqa: BLE001 - a state hiccup must not break execution
+            return False
+        self.logs.log("paper_auto_trading_started", {"symbol": processed.symbol, "queue_id": processed.id})
+        self.notifier.send_text(
+            "\n".join(
+                [
+                    "\U0001f7e2 Unattended auto-trading is now ACTIVE",
+                    "The bot just placed its first automatic order on Alpaca paper.",
+                    f"Symbol: {processed.symbol}",
+                    f"Queue: {processed.id}",
+                    f"Status: {processed.status}",
+                ]
+            )
+        )
+        return True
 
     def _paper_lifecycles(self) -> list[Any] | None:
         if self.paper_trading is None:

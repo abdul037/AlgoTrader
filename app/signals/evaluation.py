@@ -2,12 +2,40 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import pandas as pd
 
 from app.live_signal_schema import LiveSignalSnapshot, MarketQuote, SignalState
+from app.models.signal import Signal, SignalAction
 from app.utils.time import utc_now
+
+
+def atr_from_candles(candles: pd.DataFrame, period: int = 14) -> float:
+    """Return the latest Average True Range from OHLC candles (0.0 if unavailable)."""
+
+    if len(candles) < period + 1:
+        return 0.0
+    high = candles["high"].astype("float64")
+    low = candles["low"].astype("float64")
+    prev_close = candles["close"].astype("float64").shift(1)
+    true_range = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+    ).max(axis=1)
+    atr = float(true_range.rolling(period).mean().iloc[-1])
+    return atr if atr == atr and atr > 0 else 0.0  # NaN/degenerate guard
+
+
+def _risk_floor(service: Any, candles: pd.DataFrame, entry_price: float, pct_floor: float) -> float:
+    """Minimum stop distance: ATR-based when enabled/available, else percentage."""
+
+    settings = service.settings
+    if getattr(settings, "live_signal_atr_stop_enabled", True):
+        atr = atr_from_candles(candles, period=int(getattr(settings, "live_signal_atr_period", 14)))
+        if atr > 0:
+            return float(getattr(settings, "live_signal_atr_stop_mult", 1.5)) * atr
+    return entry_price * pct_floor
 
 
 def evaluate_symbol(service: Any, symbol: str) -> LiveSignalSnapshot:
@@ -22,9 +50,244 @@ def evaluate_symbol(service: Any, symbol: str) -> LiveSignalSnapshot:
 
     if symbol.upper() == "GOLD":
         snapshot = evaluate_gold(service, symbol.upper(), candles, quote)
+    elif getattr(service.settings, "live_signal_use_strategy_catalog", False):
+        snapshot = evaluate_equity_catalog(service, symbol.upper(), candles, quote)
     else:
         snapshot = evaluate_equity(service, symbol.upper(), candles, quote)
     return service._attach_backtest_context(snapshot)
+
+
+def resolve_live_strategy_names(service: Any) -> list[str]:
+    """Resolve the strategy names the live path should evaluate.
+
+    Uses ``live_signal_strategy_names`` when set, otherwise falls back to
+    ``screener_active_strategy_names``; the alias ``"all"`` expands to the core
+    strategy pack. The gold-only strategy is never run on equities.
+    """
+
+    from app.strategies import CORE_STRATEGY_NAMES, STRATEGY_REGISTRY
+
+    configured = list(getattr(service.settings, "live_signal_strategy_names", []) or [])
+    if not configured:
+        configured = list(getattr(service.settings, "screener_active_strategy_names", []) or [])
+
+    names: list[str] = []
+    for raw in configured:
+        name = str(raw).strip().lower()
+        if name == "all":
+            names.extend(sorted(CORE_STRATEGY_NAMES))
+        elif name in STRATEGY_REGISTRY:
+            names.append(name)
+
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        if name in seen or name == "gold_momentum":
+            continue
+        seen.add(name)
+        resolved.append(name)
+    return resolved or ["pullback_trend"]
+
+
+def score_with_screener_ranker(
+    service: Any,
+    symbol: str,
+    candles: pd.DataFrame,
+    quote: MarketQuote,
+    signal: Signal,
+) -> float:
+    """Score one candidate with the screener's 21-component ranker.
+
+    Builds the same measured market context the screener uses (no network), folds
+    those measurements into the signal metadata so the ranker sees real
+    confluence/execution values, pulls the latest backtest summary, and returns
+    the blended 0-100 ``final_score``. Lets the live path rank candidates by the
+    full ranker instead of a strategy's self-reported confidence.
+    """
+
+    from app.screener.filters import build_market_context
+    from app.screener.scoring import build_backtest_snapshot, rank_live_signal
+
+    context = build_market_context(candles, quote=quote, signal=signal)
+    ranked_signal = signal.model_copy(
+        update={"metadata": {**(signal.metadata or {}), **context.measurements}}
+    )
+    summary = None
+    backtests = getattr(service, "backtests", None)
+    if backtests is not None:
+        try:
+            summary = backtests.get_latest_summary(symbol, signal.strategy_name)
+        except Exception:  # noqa: BLE001 - a missing summary must not break ranking
+            summary = None
+    backtest_snapshot = build_backtest_snapshot(
+        summary,
+        validated=bool(summary),
+        validation_reason="live_ranker",
+    )
+    ranked = rank_live_signal(
+        settings=service.settings,
+        signal=ranked_signal,
+        context=context,
+        backtest_snapshot=backtest_snapshot,
+        intelligence=None,
+        watchlist_only=False,
+        freshness="fresh",
+    )
+    return float(ranked.get("final_score") or 0.0)
+
+
+def evaluate_equity_catalog(
+    service: Any,
+    symbol: str,
+    candles: pd.DataFrame,
+    quote: MarketQuote,
+    *,
+    strategy_factory: Callable[[str], Any] | None = None,
+    ranker: Callable[[Any, str, pd.DataFrame, MarketQuote, Signal], float] | None = None,
+) -> LiveSignalSnapshot:
+    """Run the configured strategy catalog and pick the best long setup.
+
+    This unifies the live path with the strategy library: instead of a single
+    hardcoded strategy, every configured strategy is evaluated on the symbol's
+    candles and the highest-conviction qualifying BUY (ranked by confidence then
+    reward-to-risk) is selected. When no strategy produces a long setup, the
+    legacy single-strategy snapshot is returned so operators keep the familiar
+    "watch / no signal" narrative.
+    """
+
+    if strategy_factory is None:
+        from app.strategies import get_strategy
+
+        strategy_factory = get_strategy
+
+    use_ranker = bool(getattr(service.settings, "live_signal_use_screener_ranker", False))
+    if use_ranker and ranker is None:
+        ranker = score_with_screener_ranker
+
+    names = resolve_live_strategy_names(service)
+    evaluated: list[dict[str, Any]] = []
+    best: tuple[tuple[float, ...], str, Signal, float | None] | None = None
+
+    for name in names:
+        try:
+            strategy = strategy_factory(name)
+            signal = strategy.generate_signal(candles.copy(), symbol)
+        except Exception as exc:  # noqa: BLE001 - a strategy must not break the scan
+            evaluated.append({"strategy": name, "status": f"error:{type(exc).__name__}"})
+            continue
+        if signal is None:
+            evaluated.append({"strategy": name, "status": "no_signal"})
+            continue
+        action = signal.action.value if isinstance(signal.action, SignalAction) else str(signal.action)
+        if action != SignalAction.BUY.value:
+            # The live path is long-only; a SELL is not an actionable entry.
+            evaluated.append({"strategy": name, "status": f"non_buy:{action}"})
+            continue
+        confidence = float(signal.confidence or 0.0)
+        reward_to_risk = float((signal.metadata or {}).get("risk_reward_ratio") or 0.0)
+        record: dict[str, Any] = {
+            "strategy": name,
+            "status": "buy",
+            "confidence": confidence,
+            "risk_reward_ratio": reward_to_risk,
+        }
+        # Rank by the screener's full 21-component score when enabled, else by
+        # the strategy's own confidence then reward-to-risk.
+        final_score: float | None = None
+        if ranker is not None:
+            try:
+                final_score = float(ranker(service, symbol, candles, quote, signal))
+            except Exception as exc:  # noqa: BLE001 - ranking failure keeps the candidate
+                record["ranker_error"] = f"{type(exc).__name__}: {exc}"
+                final_score = 0.0
+            record["screener_final_score"] = final_score
+            key: tuple[float, ...] = (final_score,)
+        else:
+            key = (confidence, reward_to_risk)
+        evaluated.append(record)
+        if best is None or key > best[0]:
+            best = (key, name, signal, final_score)
+
+    if best is None:
+        snapshot = evaluate_equity(service, symbol, candles, quote)
+        metadata = dict(snapshot.metadata or {})
+        metadata["evaluated_strategies"] = evaluated
+        metadata["strategy_selection"] = "catalog_no_buy_fallback"
+        return snapshot.model_copy(update={"metadata": metadata})
+
+    _, winner, signal, winner_score = best
+    return _snapshot_from_signal(
+        service, symbol, candles, quote, winner, signal, evaluated, score_override=winner_score
+    )
+
+
+def _snapshot_from_signal(
+    service: Any,
+    symbol: str,
+    candles: pd.DataFrame,
+    quote: MarketQuote,
+    strategy_name: str,
+    signal: Signal,
+    evaluated: list[dict[str, Any]],
+    *,
+    score_override: float | None = None,
+) -> LiveSignalSnapshot:
+    last = candles.iloc[-1]
+    current_price = quote.last_execution or quote.ask or quote.bid or float(last["close"])
+    entry_price = float(signal.price or quote.ask or current_price)
+    stop_loss = float(signal.stop_loss) if signal.stop_loss else None
+    take_profit = float(signal.take_profit) if signal.take_profit else None
+
+    reward_to_risk = (signal.metadata or {}).get("risk_reward_ratio")
+    if reward_to_risk is None and stop_loss and take_profit and entry_price:
+        risk = entry_price - stop_loss
+        reward_to_risk = round((take_profit - entry_price) / risk, 2) if risk > 0 else None
+
+    confidence = float(signal.confidence or 0.0)
+    trade_supported, support_note = trade_support(service, symbol)
+    candle_ts = last["timestamp"]
+    candle_ts = candle_ts.isoformat() if hasattr(candle_ts, "isoformat") else str(candle_ts)
+
+    indicators = {
+        key: value
+        for key, value in (signal.metadata or {}).items()
+        if key not in {"risk_reward_ratio"}
+    }
+    return LiveSignalSnapshot(
+        symbol=symbol,
+        strategy_name=strategy_name,
+        timeframe=service.settings.live_signal_interval,
+        state=SignalState.BUY,
+        generated_at=utc_now().isoformat(),
+        candle_timestamp=candle_ts,
+        rate_timestamp=quote.timestamp,
+        current_bid=quote.bid,
+        current_ask=quote.ask,
+        current_price=current_price,
+        entry_price=entry_price,
+        exit_price=take_profit,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        risk_reward_ratio=float(reward_to_risk) if reward_to_risk is not None else None,
+        confidence=confidence,
+        score=round(score_override if score_override is not None else confidence * 100.0, 2),
+        tradable=trade_supported,
+        supported=trade_supported,
+        asset_class="equity",
+        rationale=signal.rationale,
+        indicators=indicators,
+        metadata={
+            "data_source": "eToro",
+            "data_source_verified": True,
+            "support_note": support_note,
+            "strategy_selection": "catalog_best_buy",
+            "selected_strategy": strategy_name,
+            "selection_ranker": "screener_final_score" if score_override is not None else "confidence_rr",
+            "screener_final_score": score_override,
+            "evaluated_strategies": evaluated,
+            **indicators,
+        },
+    )
 
 
 def evaluate_equity(
@@ -66,7 +329,7 @@ def evaluate_equity(
     if signal is not None:
         stop_loss = float(signal.stop_loss or stop_loss)
         entry_price = float(signal.price or entry_price)
-    risk_per_share = max(entry_price - stop_loss, entry_price * 0.02, 0.01)
+    risk_per_share = max(entry_price - stop_loss, _risk_floor(service, frame, entry_price, 0.02), 0.01)
     take_profit = float((entry_price if signal is not None else entry_watch) + (risk_per_share * 2.0))
     state = SignalState(signal.action.value) if signal is not None else SignalState.NONE
     if signal is not None:
@@ -156,7 +419,7 @@ def evaluate_gold(
     confidence = signal.confidence if signal is not None else 0.35
     entry_price = float(signal.price or current_price) if signal is not None else float(last["breakout_high"])
     stop_loss = float(signal.stop_loss or last["trend_ma"] * 0.985) if signal is not None else float(last["trend_ma"] * 0.985)
-    risk_per_share = max(entry_price - stop_loss, entry_price * 0.015, 0.01)
+    risk_per_share = max(entry_price - stop_loss, _risk_floor(service, frame, entry_price, 0.015), 0.01)
     take_profit = float(signal.take_profit or (entry_price + risk_per_share * 2.0)) if signal is not None else float(entry_price + risk_per_share * 2.0)
     trade_supported, support_note = trade_support(service, symbol)
     score = 100.0 if state == SignalState.BUY else 20.0

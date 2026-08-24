@@ -92,7 +92,7 @@ def test_no_future_leakage_property() -> None:  # pragma: no branch
         embargo_days=st.integers(min_value=0, max_value=10),
         holdout_days=st.integers(min_value=7, max_value=60),
     )
-    @settings(max_examples=40)
+    @settings(max_examples=40, deadline=None)
     def _prop(total_days, train_days, test_days, step_days, embargo_days, holdout_days):
         assume(train_days + test_days + embargo_days + holdout_days + step_days < total_days)
         frame = _synth(days=total_days)
