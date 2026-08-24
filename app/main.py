@@ -592,6 +592,28 @@ def create_app(
                     func=_refresh_paper_positions,
                 )
             )
+        # Scheduled walk-forward backtests that keep the alert validation gate
+        # populated with fresh out-of-sample summaries.
+        if (
+            app_settings.backtest_scheduler_enabled
+            and app.state.batch_backtest_service is not None
+        ):
+            def _refresh_backtest_gate() -> None:
+                app.state.batch_backtest_service.run(
+                    timeframes=list(app_settings.backtest_scheduler_timeframes) or ["1d"],
+                    limit=(app_settings.backtest_scheduler_symbol_limit or None),
+                    walk_forward=True,
+                )
+
+            jobs.append(
+                ScheduledJob(
+                    name="backtest_gate_refresh",
+                    interval_seconds=max(
+                        int(app_settings.backtest_scheduler_interval_seconds), 60
+                    ),
+                    func=_refresh_backtest_gate,
+                )
+            )
         return SchedulerWorker(
             jobs,
             runtime_state=runtime_state_repository,
@@ -663,6 +685,7 @@ def create_app(
             or app_settings.auto_execution_worker_enabled
             or app_settings.learning_worker_enabled
             or app_settings.paper_position_refresh_enabled
+            or app_settings.backtest_scheduler_enabled
         ):
             return
         worker = app.state.build_scheduler_worker()

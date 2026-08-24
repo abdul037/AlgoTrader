@@ -124,6 +124,14 @@ class AppSettings(BaseSettings):
     # Scheduled refresh of the internal (self-simulated) paper position ledger.
     paper_position_refresh_enabled: bool = True
     paper_position_refresh_interval_seconds: int = 60
+    # Scheduled walk-forward backtests that keep the alert validation gate
+    # populated. Off by default (heavy: network + compute across the universe);
+    # when on, unvalidated signals stop defaulting to "watchlist" because a fresh
+    # out-of-sample summary exists to validate against.
+    backtest_scheduler_enabled: bool = False
+    backtest_scheduler_interval_seconds: int = 21600
+    backtest_scheduler_timeframes: list[str] = Field(default_factory=lambda: ["1d"])
+    backtest_scheduler_symbol_limit: int = 0
     workflow_scan_default_universe_limit: int = 10
     schedule_timezone: str = "America/New_York"
     premarket_scan_enabled: bool = True
@@ -507,6 +515,7 @@ class AppSettings(BaseSettings):
         "swing_scan_timeframes",
         "screener_active_strategy_names",
         "live_signal_strategy_names",
+        "backtest_scheduler_timeframes",
         "paper_scanner_allowed_strategies",
         "paper_near_miss_allowed_reasons",
         "paper_supervised_weak_valid_allowed_reasons",
@@ -523,6 +532,7 @@ class AppSettings(BaseSettings):
             "swing_scan_timeframes",
             "screener_active_strategy_names",
             "live_signal_strategy_names",
+            "backtest_scheduler_timeframes",
             "paper_scanner_allowed_strategies",
             "paper_near_miss_allowed_reasons",
             "paper_supervised_weak_valid_allowed_reasons",

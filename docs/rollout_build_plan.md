@@ -166,8 +166,15 @@ The plumbing to trade is done; the edge is not demonstrated.
    `trend_quality` / `confidence` values are literal constants fed to the ranker
    as if measured, inflating scores circularly.
 3. Fix the validation gate — permissive thresholds (PF >= 1.2, 10 trades) and,
-   crucially, a default of "watchlist" (not "block") when no backtest exists,
-   with nothing scheduling the batch backtester to populate summaries.
+   crucially, a default of "watchlist" (not "block") when no backtest exists.
+   - [x] The batch backtester is now schedulable: a `backtest_gate_refresh`
+     job on the `SchedulerWorker` runs walk-forward backtests across the
+     universe on a cadence to keep fresh out-of-sample summaries populated, so
+     the gate has something to validate against instead of defaulting every
+     signal to watchlist. Gated by `backtest_scheduler_enabled` (off by
+     default; heavy). Covered by `tests/test_backtest_scheduler.py`.
+   - [ ] Still to tighten: the permissive PF/trade-count thresholds and the
+     "watchlist not block" default action once summaries are reliably present.
 4. Add real regime + correlation filters — today "regime" is price-vs-EMA
    geometry and "relative strength" compares a symbol to itself.
 5. Volatility-based (ATR) stops on the live path, replacing fixed-% stops.
