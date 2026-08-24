@@ -171,8 +171,12 @@ The plumbing to trade is done; the edge is not demonstrated.
 4. Add real regime + correlation filters — today "regime" is price-vs-EMA
    geometry and "relative strength" compares a symbol to itself.
 5. Volatility-based (ATR) stops on the live path, replacing fixed-% stops.
-6. Fix understated drawdown — aggregation takes `max` over 2-week folds, hiding
-   multi-month drawdowns; compute over the full concatenated OOS equity curve.
+6. Fix understated drawdown — **done.** `aggregate_out_of_sample` now chains the
+   folds into one compounded equity curve and takes drawdown over the whole run,
+   so a multi-fold (multi-month) decline is captured instead of hidden by a
+   per-fold maximum; `total_return_pct` compounds folds instead of averaging and
+   `annualized_return_pct` uses the true OOS duration. `batch.py`'s per-fold-max
+   overwrite is removed. Covered by `tests/test_oos_aggregation.py`.
 
 Recommendation: graduate to unattended paper-auto on **one proven strategy**
 (strict OOS gate: deflated Sharpe, honest drawdown, cost-adjusted positive

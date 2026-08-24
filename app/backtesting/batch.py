@@ -186,24 +186,18 @@ class BatchBacktestService:
             per_fold_trades.append(fold_result.trades)
             per_fold_metrics.append(fold_result.metrics)
 
-        aggregated = aggregate_out_of_sample(per_fold_trades, per_fold_metrics)
+        # Return and drawdown are aggregated over the concatenated OOS window
+        # (compounded fold equity curve), not per fold -- see
+        # aggregate_out_of_sample. This makes max_drawdown_pct reflect a
+        # multi-fold drawdown that a per-fold maximum would hide.
+        aggregated = aggregate_out_of_sample(
+            per_fold_trades,
+            per_fold_metrics,
+            test_days=int(getattr(self.settings, "walk_forward_test_days", 14)),
+        )
         metrics = aggregated["metrics"]
         metrics["out_of_sample"] = True
         metrics["fold_count"] = int(metrics.get("fold_count", 0) or 0)
-        # Fold-weighted return / DD aggregates. Fine-grained equity curves are
-        # not persisted here; callers who want them should use the engine
-        # directly and store results themselves.
-        avg = lambda key: (
-            sum(float(item.get(key, 0.0) or 0.0) for item in per_fold_metrics) / len(per_fold_metrics)
-            if per_fold_metrics
-            else 0.0
-        )
-        metrics["total_return_pct"] = avg("total_return_pct")
-        metrics["annualized_return_pct"] = avg("annualized_return_pct")
-        metrics["max_drawdown_pct"] = max(
-            (float(item.get("max_drawdown_pct", 0.0) or 0.0) for item in per_fold_metrics),
-            default=0.0,
-        )
         completed_at = utc_now().isoformat()
         if self.backtests is not None:
             self.backtests.create(
