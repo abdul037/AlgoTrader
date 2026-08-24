@@ -12,3 +12,8 @@ __pycache__/
 *.pyc
 .coverage
 htmlcov/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/

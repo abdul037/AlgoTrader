@@ -237,7 +237,7 @@ def test_paper_exploration_profile_is_disabled_for_live_mode(tmp_path) -> None:
 def test_screener_scan_returns_ranked_candidates(tmp_path) -> None:
     daily = _frame([100 + (index * 0.8) for index in range(120)] + [198, 202, 206, 211, 218])
     daily.loc[daily.index[-1], "volume"] = daily["volume"].tail(20).mean() * 2.0
-    hourly = _frame([50 + (index * 0.4) for index in range(80)], step="1H")
+    hourly = _frame([50 + (index * 0.4) for index in range(80)], step="1h")
     quote = MarketQuote(symbol="NVDA", bid=218.0, ask=218.2, last_execution=218.1, timestamp="2026-04-11T10:00:00Z")
     backtest_summary = {
         "strategy_name": "momentum_breakout",

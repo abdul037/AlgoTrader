@@ -39,9 +39,16 @@ class WalkForwardWindow:
     test_df: pd.DataFrame
 
     def __post_init__(self) -> None:
-        if self.train_end >= self.test_start:
+        # The train interval is half-open ``[train_start, train_end)`` while the
+        # test interval is closed ``[test_start, test_end]`` (see
+        # ``WalkForwardSplitter._slice``). Equal boundaries (``train_end ==
+        # test_start``, i.e. a zero-day embargo) therefore share no bar, so the
+        # correct no-leakage invariant is ``train_end <= test_start``. A strict
+        # ``<`` would wrongly reject the legitimate zero-embargo configuration
+        # that ``split`` explicitly permits (``embargo_days >= 0``).
+        if self.train_end > self.test_start:
             raise ValueError(
-                f"train_end ({self.train_end}) must be strictly < test_start ({self.test_start})"
+                f"train_end ({self.train_end}) must be <= test_start ({self.test_start})"
             )
         if self.test_end < self.test_start:
             raise ValueError("test_end must be >= test_start")
