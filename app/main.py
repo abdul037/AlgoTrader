@@ -493,6 +493,7 @@ def create_app(
         strategy_governance=strategy_governance_repository,
         institutional_governance=app.state.institutional_service,
         paper_trading_service=app.state.paper_trading_service,
+        runtime_state=runtime_state_repository,
     )
     app.state.market_screener_service.auto_trading = app.state.auto_trading_service
     app.state.rl_policy_service = RLPolicyService(
