@@ -471,6 +471,13 @@ class AppSettings(BaseSettings):
     # When the catalog is on, rank candidates with the screener's full
     # 21-component ranker instead of the strategy's own confidence/reward-to-risk.
     live_signal_use_screener_ranker: bool = False
+    # Volatility-aware risk floor on the live path: use ATR instead of a fixed
+    # percentage as the minimum stop distance, so reward-to-risk is not blind to
+    # instrument volatility. Falls back to the percentage floor when ATR is
+    # unavailable (too few bars).
+    live_signal_atr_stop_enabled: bool = True
+    live_signal_atr_period: int = 14
+    live_signal_atr_stop_mult: float = 1.5
     signal_scan_limit: int = 20
     notify_on_none_signal_change: bool = True
     signal_scan_universe: list[str] = Field(

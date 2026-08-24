@@ -12,6 +12,32 @@ from app.models.signal import Signal, SignalAction
 from app.utils.time import utc_now
 
 
+def atr_from_candles(candles: pd.DataFrame, period: int = 14) -> float:
+    """Return the latest Average True Range from OHLC candles (0.0 if unavailable)."""
+
+    if len(candles) < period + 1:
+        return 0.0
+    high = candles["high"].astype("float64")
+    low = candles["low"].astype("float64")
+    prev_close = candles["close"].astype("float64").shift(1)
+    true_range = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+    ).max(axis=1)
+    atr = float(true_range.rolling(period).mean().iloc[-1])
+    return atr if atr == atr and atr > 0 else 0.0  # NaN/degenerate guard
+
+
+def _risk_floor(service: Any, candles: pd.DataFrame, entry_price: float, pct_floor: float) -> float:
+    """Minimum stop distance: ATR-based when enabled/available, else percentage."""
+
+    settings = service.settings
+    if getattr(settings, "live_signal_atr_stop_enabled", True):
+        atr = atr_from_candles(candles, period=int(getattr(settings, "live_signal_atr_period", 14)))
+        if atr > 0:
+            return float(getattr(settings, "live_signal_atr_stop_mult", 1.5)) * atr
+    return entry_price * pct_floor
+
+
 def evaluate_symbol(service: Any, symbol: str) -> LiveSignalSnapshot:
     candles = service.market_data.get_daily_candles(
         symbol,
@@ -303,7 +329,7 @@ def evaluate_equity(
     if signal is not None:
         stop_loss = float(signal.stop_loss or stop_loss)
         entry_price = float(signal.price or entry_price)
-    risk_per_share = max(entry_price - stop_loss, entry_price * 0.02, 0.01)
+    risk_per_share = max(entry_price - stop_loss, _risk_floor(service, frame, entry_price, 0.02), 0.01)
     take_profit = float((entry_price if signal is not None else entry_watch) + (risk_per_share * 2.0))
     state = SignalState(signal.action.value) if signal is not None else SignalState.NONE
     if signal is not None:
@@ -393,7 +419,7 @@ def evaluate_gold(
     confidence = signal.confidence if signal is not None else 0.35
     entry_price = float(signal.price or current_price) if signal is not None else float(last["breakout_high"])
     stop_loss = float(signal.stop_loss or last["trend_ma"] * 0.985) if signal is not None else float(last["trend_ma"] * 0.985)
-    risk_per_share = max(entry_price - stop_loss, entry_price * 0.015, 0.01)
+    risk_per_share = max(entry_price - stop_loss, _risk_floor(service, frame, entry_price, 0.015), 0.01)
     take_profit = float(signal.take_profit or (entry_price + risk_per_share * 2.0)) if signal is not None else float(entry_price + risk_per_share * 2.0)
     trade_supported, support_note = trade_support(service, symbol)
     score = 100.0 if state == SignalState.BUY else 20.0
