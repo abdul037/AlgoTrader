@@ -4,7 +4,9 @@ Status of this document: living plan produced from a full-codebase audit
 (execution/broker, autonomous run-loop, strategies/signals, risk/data/testing/
 deployment). It complements — and does not replace —
 [`alpaca_paper_to_live_roadmap.md`](alpaca_paper_to_live_roadmap.md) and
-[`institutional_roadmap_status.md`](institutional_roadmap_status.md). Where the
+[`institutional_roadmap_status.md`](institutional_roadmap_status.md). For the
+concrete config + evidence sequence to run hands-off, see
+[`self_sustaining_checklist.md`](self_sustaining_checklist.md). Where the
 paper-to-live roadmap defines the *phases*, this document records *what is
 actually built vs. missing* and the concrete build work per phase.
 
