@@ -243,6 +243,9 @@ class AppSettings(BaseSettings):
     max_risk_per_trade_pct: float = 1.0
     max_daily_loss_usd: float = 50.0
     max_weekly_loss_usd: float = 125.0
+    # Count current open (unrealized) losses toward the daily/weekly loss caps so
+    # an unattended bot halts on a large open drawdown, not only realized losses.
+    loss_limit_includes_unrealized: bool = True
     max_open_positions: int = 3
     max_trades_per_day: int = 6
     per_symbol_position_limit: int = 1

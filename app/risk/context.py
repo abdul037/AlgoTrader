@@ -42,6 +42,7 @@ def build_risk_context(settings: Any, broker: Any, executions_repo: Any) -> Risk
     exposure_by_sector_pct: dict[str, float] = {}
     exposure_by_correlation_bucket_pct: dict[str, float] = {}
     gross_market_value = 0.0
+    open_unrealized_pnl = 0.0
     for position in portfolio.positions:
         symbol = str(position.symbol or "").upper()
         if not symbol:
@@ -49,6 +50,7 @@ def build_risk_context(settings: Any, broker: Any, executions_repo: Any) -> Risk
         positions_by_symbol[symbol] = positions_by_symbol.get(symbol, 0) + 1
         market_value = abs(float(position.market_value or 0.0))
         gross_market_value += market_value
+        open_unrealized_pnl += float(getattr(position, "unrealized_pnl", 0.0) or 0.0)
         exposure_pct = market_value / account_balance * 100.0
         exposure_by_symbol_pct[symbol] = exposure_by_symbol_pct.get(symbol, 0.0) + exposure_pct
         # Accumulate exposure by sector and by broad correlation bucket so the
@@ -70,6 +72,7 @@ def build_risk_context(settings: Any, broker: Any, executions_repo: Any) -> Risk
         exposure_by_symbol_pct=exposure_by_symbol_pct,
         exposure_by_sector_pct=exposure_by_sector_pct,
         exposure_by_correlation_bucket_pct=exposure_by_correlation_bucket_pct,
+        open_unrealized_pnl_usd=round(open_unrealized_pnl, 2),
         gross_exposure_pct=gross_market_value / account_balance * 100.0,
         correlated_exposure_pct=max(exposure_by_correlation_bucket_pct.values(), default=0.0),
         consecutive_losses_today=consecutive_losses,

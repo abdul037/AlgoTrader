@@ -18,6 +18,7 @@ class RiskContext(BaseModel):
     account_balance: float = Field(gt=0)
     daily_realized_pnl_usd: float = 0.0
     weekly_realized_pnl_usd: float = 0.0
+    open_unrealized_pnl_usd: float = 0.0
     open_positions: int = 0
     positions_by_symbol: dict[str, int] = Field(default_factory=dict)
     exposure_by_symbol_pct: dict[str, float] = Field(default_factory=dict)
@@ -71,10 +72,18 @@ class RiskManager:
         if symbol_positions >= self.settings.per_symbol_position_limit:
             reasons.append("Per-symbol position limit reached")
 
-        if context.daily_realized_pnl_usd <= -abs(self.settings.max_daily_loss_usd):
+        # An unattended bot must react to a large OPEN loss, not just realized
+        # PnL. Count current open losses toward the caps (open gains never mask a
+        # realized loss). Toggle off with loss_limit_includes_unrealized=false.
+        open_loss = (
+            min(0.0, float(context.open_unrealized_pnl_usd))
+            if bool(getattr(self.settings, "loss_limit_includes_unrealized", True))
+            else 0.0
+        )
+        if context.daily_realized_pnl_usd + open_loss <= -abs(self.settings.max_daily_loss_usd):
             reasons.append("Daily loss limit has already been reached")
 
-        if context.weekly_realized_pnl_usd <= -abs(self.settings.max_weekly_loss_usd):
+        if context.weekly_realized_pnl_usd + open_loss <= -abs(self.settings.max_weekly_loss_usd):
             reasons.append("Weekly loss limit has already been reached")
 
         if context.consecutive_losses_today >= self.settings.max_consecutive_losses_before_cooldown:
