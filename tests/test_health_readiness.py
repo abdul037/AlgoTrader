@@ -71,6 +71,20 @@ def test_readiness_ok_with_fresh_heartbeat(tmp_path: Path) -> None:
     assert body["checks"]["scheduler"].startswith("ok")
 
 
+def test_readiness_includes_trade_stream_status_when_present(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    app = create_app(settings=_no_worker_settings(tmp_path), enable_background_jobs=False)
+    app.state.alpaca_trade_stream = SimpleNamespace(
+        status=lambda: {"running": True, "connected": True, "ingested": 3}
+    )
+    client = TestClient(app)
+
+    body = client.get("/health/ready").json()
+
+    assert body["checks"]["trade_stream"] == {"running": True, "connected": True, "ingested": 3}
+
+
 def test_readiness_not_ready_with_stale_heartbeat(tmp_path: Path) -> None:
     app = create_app(
         settings=_no_worker_settings(tmp_path, scheduler_heartbeat_max_age_seconds=60),

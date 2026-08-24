@@ -811,6 +811,13 @@ def create_app(
                 else:
                     checks["scheduler"] = f"ok ({int(age)}s)"
 
+        # Trade stream is informational: a disconnected stream degrades fill
+        # latency but the reconciliation sweep backstops it, so it never gates
+        # readiness.
+        stream = getattr(app.state, "alpaca_trade_stream", None)
+        if stream is not None:
+            checks["trade_stream"] = stream.status()
+
         report: dict[str, Any] = {
             "status": "ready" if ready else "not_ready",
             "checks": checks,

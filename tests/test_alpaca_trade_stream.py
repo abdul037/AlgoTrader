@@ -155,6 +155,22 @@ def test_handle_update_calls_back_only_for_relevant_events() -> None:
     assert seen == ["o1"]
 
 
+def test_status_reports_liveness_and_ingest_count() -> None:
+    seen: list[str] = []
+    stream = AlpacaTradeStream(
+        api_key="k",
+        secret_key="s",
+        paper=True,
+        on_order_update=seen.append,
+    )
+    status = stream.status()
+    assert status == {"running": False, "connected": False, "ingested": 0}
+
+    stream.handle_update({"event": "fill", "order": {"id": "o1", "status": "filled"}})
+    stream.handle_update({"event": "new", "order": {"id": "o2", "status": "new"}})  # not relevant
+    assert stream.status()["ingested"] == 1
+
+
 def test_handle_update_swallows_callback_errors() -> None:
     def boom(_order_id: str) -> None:
         raise RuntimeError("nope")

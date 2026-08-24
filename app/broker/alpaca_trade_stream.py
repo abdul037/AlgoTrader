@@ -103,6 +103,16 @@ class AlpacaTradeStream:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._stream: Any = None
+        self._ingested = 0
+
+    def status(self) -> dict[str, Any]:
+        """Lightweight liveness snapshot for the readiness probe."""
+
+        return {
+            "running": bool(self._thread and self._thread.is_alive()),
+            "connected": self._stream is not None,
+            "ingested": self._ingested,
+        }
 
     # -- event handling (pure-ish, unit tested) ------------------------------
 
@@ -114,6 +124,7 @@ class AlpacaTradeStream:
             return False
         try:
             self._on_order_update(info.order_id)
+            self._ingested += 1
             return True
         except Exception as exc:  # noqa: BLE001 - a bad event must not kill the socket
             logger.exception("trade stream ingest failed for %s: %s", info.order_id, exc)
