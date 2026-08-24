@@ -147,6 +147,16 @@ The plumbing to trade is done; the edge is not demonstrated.
 
 1. Unify the pipelines — make the live path consume the ranked screener output
    instead of one hardcoded strategy per asset.
+   - [x] First step landed: `evaluate_equity_catalog` (in `app/signals/
+     evaluation.py`) runs the configured strategy catalog on the live path and
+     selects the best qualifying long setup (ranked by confidence then
+     reward-to-risk), recording every strategy's outcome in the snapshot's
+     `evaluated_strategies` audit trail. Gated by
+     `live_signal_use_strategy_catalog` (off by default; falls back to the
+     legacy single-strategy narrative when no strategy fires).
+   - [ ] Next: feed the screener's full 21-component ranker (not just the
+     strategy's own confidence) into the live selection, and share one universe
+     scan between the screener and the live/alert path.
 2. Stop trusting hardcoded quality scores — many `execution_quality` /
    `trend_quality` / `confidence` values are literal constants fed to the ranker
    as if measured, inflating scores circularly.

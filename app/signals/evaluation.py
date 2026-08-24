@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import pandas as pd
 
 from app.live_signal_schema import LiveSignalSnapshot, MarketQuote, SignalState
+from app.models.signal import Signal, SignalAction
 from app.utils.time import utc_now
 
 
@@ -22,9 +24,175 @@ def evaluate_symbol(service: Any, symbol: str) -> LiveSignalSnapshot:
 
     if symbol.upper() == "GOLD":
         snapshot = evaluate_gold(service, symbol.upper(), candles, quote)
+    elif getattr(service.settings, "live_signal_use_strategy_catalog", False):
+        snapshot = evaluate_equity_catalog(service, symbol.upper(), candles, quote)
     else:
         snapshot = evaluate_equity(service, symbol.upper(), candles, quote)
     return service._attach_backtest_context(snapshot)
+
+
+def resolve_live_strategy_names(service: Any) -> list[str]:
+    """Resolve the strategy names the live path should evaluate.
+
+    Uses ``live_signal_strategy_names`` when set, otherwise falls back to
+    ``screener_active_strategy_names``; the alias ``"all"`` expands to the core
+    strategy pack. The gold-only strategy is never run on equities.
+    """
+
+    from app.strategies import CORE_STRATEGY_NAMES, STRATEGY_REGISTRY
+
+    configured = list(getattr(service.settings, "live_signal_strategy_names", []) or [])
+    if not configured:
+        configured = list(getattr(service.settings, "screener_active_strategy_names", []) or [])
+
+    names: list[str] = []
+    for raw in configured:
+        name = str(raw).strip().lower()
+        if name == "all":
+            names.extend(sorted(CORE_STRATEGY_NAMES))
+        elif name in STRATEGY_REGISTRY:
+            names.append(name)
+
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        if name in seen or name == "gold_momentum":
+            continue
+        seen.add(name)
+        resolved.append(name)
+    return resolved or ["pullback_trend"]
+
+
+def evaluate_equity_catalog(
+    service: Any,
+    symbol: str,
+    candles: pd.DataFrame,
+    quote: MarketQuote,
+    *,
+    strategy_factory: Callable[[str], Any] | None = None,
+) -> LiveSignalSnapshot:
+    """Run the configured strategy catalog and pick the best long setup.
+
+    This unifies the live path with the strategy library: instead of a single
+    hardcoded strategy, every configured strategy is evaluated on the symbol's
+    candles and the highest-conviction qualifying BUY (ranked by confidence then
+    reward-to-risk) is selected. When no strategy produces a long setup, the
+    legacy single-strategy snapshot is returned so operators keep the familiar
+    "watch / no signal" narrative.
+    """
+
+    if strategy_factory is None:
+        from app.strategies import get_strategy
+
+        strategy_factory = get_strategy
+
+    names = resolve_live_strategy_names(service)
+    evaluated: list[dict[str, Any]] = []
+    best: tuple[tuple[float, float], str, Signal] | None = None
+
+    for name in names:
+        try:
+            strategy = strategy_factory(name)
+            signal = strategy.generate_signal(candles.copy(), symbol)
+        except Exception as exc:  # noqa: BLE001 - a strategy must not break the scan
+            evaluated.append({"strategy": name, "status": f"error:{type(exc).__name__}"})
+            continue
+        if signal is None:
+            evaluated.append({"strategy": name, "status": "no_signal"})
+            continue
+        action = signal.action.value if isinstance(signal.action, SignalAction) else str(signal.action)
+        if action != SignalAction.BUY.value:
+            # The live path is long-only; a SELL is not an actionable entry.
+            evaluated.append({"strategy": name, "status": f"non_buy:{action}"})
+            continue
+        confidence = float(signal.confidence or 0.0)
+        reward_to_risk = float((signal.metadata or {}).get("risk_reward_ratio") or 0.0)
+        evaluated.append(
+            {
+                "strategy": name,
+                "status": "buy",
+                "confidence": confidence,
+                "risk_reward_ratio": reward_to_risk,
+            }
+        )
+        key = (confidence, reward_to_risk)
+        if best is None or key > best[0]:
+            best = (key, name, signal)
+
+    if best is None:
+        snapshot = evaluate_equity(service, symbol, candles, quote)
+        metadata = dict(snapshot.metadata or {})
+        metadata["evaluated_strategies"] = evaluated
+        metadata["strategy_selection"] = "catalog_no_buy_fallback"
+        return snapshot.model_copy(update={"metadata": metadata})
+
+    _, winner, signal = best
+    return _snapshot_from_signal(service, symbol, candles, quote, winner, signal, evaluated)
+
+
+def _snapshot_from_signal(
+    service: Any,
+    symbol: str,
+    candles: pd.DataFrame,
+    quote: MarketQuote,
+    strategy_name: str,
+    signal: Signal,
+    evaluated: list[dict[str, Any]],
+) -> LiveSignalSnapshot:
+    last = candles.iloc[-1]
+    current_price = quote.last_execution or quote.ask or quote.bid or float(last["close"])
+    entry_price = float(signal.price or quote.ask or current_price)
+    stop_loss = float(signal.stop_loss) if signal.stop_loss else None
+    take_profit = float(signal.take_profit) if signal.take_profit else None
+
+    reward_to_risk = (signal.metadata or {}).get("risk_reward_ratio")
+    if reward_to_risk is None and stop_loss and take_profit and entry_price:
+        risk = entry_price - stop_loss
+        reward_to_risk = round((take_profit - entry_price) / risk, 2) if risk > 0 else None
+
+    confidence = float(signal.confidence or 0.0)
+    trade_supported, support_note = trade_support(service, symbol)
+    candle_ts = last["timestamp"]
+    candle_ts = candle_ts.isoformat() if hasattr(candle_ts, "isoformat") else str(candle_ts)
+
+    indicators = {
+        key: value
+        for key, value in (signal.metadata or {}).items()
+        if key not in {"risk_reward_ratio"}
+    }
+    return LiveSignalSnapshot(
+        symbol=symbol,
+        strategy_name=strategy_name,
+        timeframe=service.settings.live_signal_interval,
+        state=SignalState.BUY,
+        generated_at=utc_now().isoformat(),
+        candle_timestamp=candle_ts,
+        rate_timestamp=quote.timestamp,
+        current_bid=quote.bid,
+        current_ask=quote.ask,
+        current_price=current_price,
+        entry_price=entry_price,
+        exit_price=take_profit,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        risk_reward_ratio=float(reward_to_risk) if reward_to_risk is not None else None,
+        confidence=confidence,
+        score=round(confidence * 100.0, 2),
+        tradable=trade_supported,
+        supported=trade_supported,
+        asset_class="equity",
+        rationale=signal.rationale,
+        indicators=indicators,
+        metadata={
+            "data_source": "eToro",
+            "data_source_verified": True,
+            "support_note": support_note,
+            "strategy_selection": "catalog_best_buy",
+            "selected_strategy": strategy_name,
+            "evaluated_strategies": evaluated,
+            **indicators,
+        },
+    )
 
 
 def evaluate_equity(

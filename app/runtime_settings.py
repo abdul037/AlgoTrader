@@ -450,6 +450,13 @@ class AppSettings(BaseSettings):
     live_signal_candles_count: int = 250
     live_signal_trend_window: int = 100
     live_signal_pullback_window: int = 10
+    # Live-path strategy unification. When enabled, the live signal path runs the
+    # configured strategy catalog and selects the best qualifying long setup per
+    # symbol, instead of a single hardcoded strategy. Off by default preserves
+    # the legacy pullback_trend behavior. When live_signal_strategy_names is
+    # empty, screener_active_strategy_names is used ("all" -> the core pack).
+    live_signal_use_strategy_catalog: bool = False
+    live_signal_strategy_names: list[str] = Field(default_factory=list)
     signal_scan_limit: int = 20
     notify_on_none_signal_change: bool = True
     signal_scan_universe: list[str] = Field(
