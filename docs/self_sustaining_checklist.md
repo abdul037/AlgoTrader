@@ -58,6 +58,13 @@ BACKTEST_SCHEDULER_ENABLED=true         # populates the validation gate
 ALPACA_TRADE_STREAM_ENABLED=true        # real-time fills
 ```
 
+Before deploying, verify connectivity from the host with the read-only preflight
+(no orders placed):
+
+```bash
+python scripts/verify_alpaca.py   # prints GO / NO-GO; checks account match + clock
+```
+
 **Evidence gate (operational — only live sessions produce it):**
 - One Alpaca paper order during market hours through a real strategy proposal.
 - Re-process the same queue item → no duplicate order (idempotency verified).
