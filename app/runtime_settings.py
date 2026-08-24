@@ -111,6 +111,15 @@ class AppSettings(BaseSettings):
     screener_top_k: int = 20
     screener_min_confidence: float = 0.45
     screener_scheduler_enabled: bool = True
+    # Dedicated background scheduler worker (decoupled from the Telegram loop).
+    background_scheduler_enabled: bool = True
+    background_scheduler_interval_seconds: int = 60
+    background_scheduler_tick_seconds: int = 5
+    # Readiness turns "warning" once the worker heartbeat is older than this.
+    scheduler_heartbeat_max_age_seconds: int = 180
+    # Scheduled refresh of the internal (self-simulated) paper position ledger.
+    paper_position_refresh_enabled: bool = True
+    paper_position_refresh_interval_seconds: int = 60
     workflow_scan_default_universe_limit: int = 10
     schedule_timezone: str = "America/New_York"
     premarket_scan_enabled: bool = True

@@ -78,17 +78,28 @@ meaningful unattended run.
 
 ### Phase C.5 — Make autonomy actually run unattended (real build work)
 
-- [ ] Own the scheduler: replace the Telegram-piggyback thread with a dedicated,
-      supervised worker (APScheduler or a worker container) that runs scans,
-      `process_ready_queue`, and reconciliation on independent cadences,
-      decoupled from Telegram mode. Add a watchdog + liveness heartbeat.
+- [x] Own the scheduler: `app/automation/scheduler_worker.py` `SchedulerWorker`
+      replaces the Telegram-piggyback thread. Each job (`workflow_cadence`,
+      `telegram_hourly_alerts`, `paper_position_refresh`) runs on its own
+      independent cadence; a failing job never stops the loop; a liveness
+      heartbeat is persisted to `runtime_state` every tick. Wired into
+      `main.py` startup, decoupled from the Telegram command service.
+- [x] Schedule sim-ledger `refresh_open_positions` as the
+      `paper_position_refresh` job (was previously reachable only via
+      `POST /paper/refresh`).
+- [x] Real health probe: `GET /health/ready` returns 503 when the worker
+      heartbeat is missing/stale or the DB is unreachable, 200 otherwise (and
+      "not managed here" when a separate polling process owns the cadence).
+      Railway `healthcheckPath` now points at it.
+- [x] Fix the autonomy-blind cron path: `scripts/run_workflow_cycle.py` now
+      builds the full `create_app` wiring and drives the same worker jobs, so a
+      cron-run `scheduled` cycle can actually propose and execute (previously
+      scan/alert only).
 - [ ] Real fill handling: subscribe to Alpaca `trade_updates` so fills/exits
-      post immediately, with the reconciliation sweep as backstop. Schedule
-      sim-ledger `refresh_open_positions`.
-- [ ] Real health probe: point the orchestrator healthcheck at readiness
-      (last-scan age, worker heartbeat, broker + DB reachable). Alert on stall.
-- [ ] Fix or remove `scripts/run_workflow_cycle.py` so there is no autonomy-blind
-      "cron" path.
+      post immediately, with the reconciliation sweep as backstop. (Next.)
+- [ ] Watchdog/auto-restart of the worker process (currently `restartPolicyType:
+      ALWAYS` restarts the container; readiness now makes a stalled worker
+      visible to the orchestrator).
 
 Definition of done: a full scan -> propose -> execute -> fill -> exit cycle
 completes with the web process down and Telegram in webhook mode, and a killed

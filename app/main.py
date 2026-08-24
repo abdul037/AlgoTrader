@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from hmac import compare_digest
 from typing import Any
 
@@ -14,6 +15,13 @@ from app.approvals.service import ProposalService
 from app.automation.etoro_reconciliation import EToroDemoReconciliationService
 from app.automation.reconciliation import AlpacaReconciliationService
 from app.automation.routes import router as automation_router
+from app.automation.scheduler_worker import (
+    HEARTBEAT_KEY as SCHEDULER_HEARTBEAT_KEY,
+)
+from app.automation.scheduler_worker import (
+    ScheduledJob,
+    SchedulerWorker,
+)
 from app.automation.service import AutomationService
 from app.automation.unattended import PaperAutoTradingService
 from app.broker.comparison import ParallelBrokerComparisonService
@@ -35,7 +43,6 @@ from app.ledger.service import LedgerService
 from app.logging_config import configure_logging
 from app.metrics import router as metrics_router
 from app.notifications.routes import router as telegram_router
-from app.notifications.scheduler import TelegramAlertScheduler
 from app.notifications.telegram_bot import TelegramBotService
 from app.paper.routes import router as paper_router
 from app.paper.service import PaperTradingService
@@ -81,6 +88,7 @@ from app.strategies.routes import router as strategy_enhancement_router
 from app.strategy_lab.routes import router as strategy_lab_router
 from app.strategy_lab.service import StrategyLabService
 from app.telegram_notify import TelegramNotifier
+from app.utils.time import utc_now
 from app.workflow.routes import router as workflow_router
 from app.workflow.service import SignalWorkflowService
 
@@ -539,6 +547,57 @@ def create_app(
         learning_service=app.state.learning_service,
     )
     app.state.telegram_alert_scheduler = None
+    app.state.scheduler_worker = None
+
+    def _build_scheduler_worker() -> SchedulerWorker:
+        """Assemble the dedicated cadence worker from configured jobs."""
+
+        interval = max(int(app_settings.background_scheduler_interval_seconds), 1)
+        jobs: list[ScheduledJob] = [
+            ScheduledJob(
+                name="workflow_cadence",
+                interval_seconds=interval,
+                func=app.state.workflow_service.run_scheduled_tasks,
+            ),
+        ]
+        # Preserve the hourly Telegram compatibility alerts on their own cadence
+        # (the call is internally gated by telegram_hourly_alerts_enabled).
+        if app.state.telegram_command_service is not None:
+            jobs.append(
+                ScheduledJob(
+                    name="telegram_hourly_alerts",
+                    interval_seconds=interval,
+                    func=app.state.telegram_command_service.send_due_alerts,
+                )
+            )
+        # Scheduled exit monitoring for the internal simulated paper ledger.
+        if (
+            app_settings.paper_position_refresh_enabled
+            and app.state.paper_trading_service is not None
+        ):
+            def _refresh_paper_positions() -> None:
+                app.state.paper_trading_service.refresh_open_positions(
+                    market_data_engine=app.state.market_data_engine,
+                    force_refresh=False,
+                )
+
+            jobs.append(
+                ScheduledJob(
+                    name="paper_position_refresh",
+                    interval_seconds=max(
+                        int(app_settings.paper_position_refresh_interval_seconds), 1
+                    ),
+                    func=_refresh_paper_positions,
+                )
+            )
+        return SchedulerWorker(
+            jobs,
+            runtime_state=runtime_state_repository,
+            run_logs=run_log_repository,
+            tick_interval_seconds=max(int(app_settings.background_scheduler_tick_seconds), 1),
+        )
+
+    app.state.build_scheduler_worker = _build_scheduler_worker
 
     try:
         from app.approvals.routes import router as proposal_router
@@ -587,6 +646,11 @@ def create_app(
             except Exception as exc:
                 logger.exception("Telegram webhook registration failed: %s", exc)
         if app_settings.telegram_polling_enabled:
+            # In polling mode a separate bot process (scripts/run_telegram_bot.py)
+            # owns the cadence via run_forever(); starting the in-process worker
+            # here would double-run scans against the same database.
+            return
+        if not app_settings.background_scheduler_enabled:
             return
         if not (
             app_settings.telegram_hourly_alerts_enabled
@@ -596,17 +660,21 @@ def create_app(
             or app_settings.etoro_demo_v2_enabled
             or app_settings.auto_execution_worker_enabled
             or app_settings.learning_worker_enabled
+            or app_settings.paper_position_refresh_enabled
         ):
             return
-        scheduler = TelegramAlertScheduler(app.state.telegram_command_service)
-        scheduler.start()
-        app.state.telegram_alert_scheduler = scheduler
+        worker = app.state.build_scheduler_worker()
+        worker.start()
+        app.state.scheduler_worker = worker
+        logger.info(
+            "Scheduler worker started with %d jobs", len(worker.jobs)
+        )
 
     @app.on_event("shutdown")
     def shutdown_tasks() -> None:
-        scheduler = getattr(app.state, "telegram_alert_scheduler", None)
-        if scheduler is not None:
-            scheduler.stop()
+        worker = getattr(app.state, "scheduler_worker", None)
+        if worker is not None:
+            worker.stop()
 
     @app.get("/health", response_model=HealthResponse, tags=["system"])
     def health() -> HealthResponse:
@@ -637,6 +705,68 @@ def create_app(
             current_regime_label=workflow_health.get("current_regime_label"),
             last_etoro_api_error=workflow_health.get("last_etoro_api_error"),
             last_etoro_api_error_at=workflow_health.get("last_etoro_api_error_at"),
+        )
+
+    def _readiness_report() -> tuple[dict[str, Any], bool]:
+        """Compute real readiness: DB reachable + scheduler worker liveness.
+
+        Returns the report and whether the process is ready to serve as an
+        autonomous trading node. Unlike ``/health`` (a static liveness stub),
+        this reflects whether the background cadence is actually advancing.
+        """
+
+        checks: dict[str, Any] = {}
+        ready = True
+
+        # Database reachability (also the store behind the heartbeat).
+        heartbeat_raw: str | None = None
+        try:
+            heartbeat_raw = runtime_state_repository.get(SCHEDULER_HEARTBEAT_KEY)
+            checks["database"] = "ok"
+        except Exception as exc:  # noqa: BLE001 - surface as not-ready, don't raise
+            checks["database"] = f"error: {exc}"
+            ready = False
+
+        # Scheduler worker liveness. When Telegram runs in polling mode the
+        # cadence is owned by a separate process, so the web node is still
+        # ready even though it manages no worker here.
+        expect_worker = (
+            app_settings.background_scheduler_enabled
+            and not app_settings.telegram_polling_enabled
+            and enable_background_jobs
+        )
+        if not expect_worker:
+            checks["scheduler"] = "not_managed_here"
+        elif not heartbeat_raw:
+            checks["scheduler"] = "no_heartbeat"
+            ready = False
+        else:
+            max_age = max(int(app_settings.scheduler_heartbeat_max_age_seconds), 1)
+            try:
+                age = (utc_now() - datetime.fromisoformat(heartbeat_raw)).total_seconds()
+            except ValueError:
+                checks["scheduler"] = "unparseable_heartbeat"
+                ready = False
+            else:
+                if age > max_age:
+                    checks["scheduler"] = f"stale ({int(age)}s > {max_age}s)"
+                    ready = False
+                else:
+                    checks["scheduler"] = f"ok ({int(age)}s)"
+
+        worker = getattr(app.state, "scheduler_worker", None)
+        report: dict[str, Any] = {
+            "status": "ready" if ready else "not_ready",
+            "checks": checks,
+            "scheduler_worker": worker.status() if worker is not None else None,
+        }
+        return report, ready
+
+    @app.get("/health/ready", tags=["system"])
+    def readiness() -> JSONResponse:
+        report, ready = _readiness_report()
+        return JSONResponse(
+            content=report, status_code=status.HTTP_200_OK if ready else status.HTTP_503_SERVICE_UNAVAILABLE
         )
 
     @app.post("/backtests/run", tags=["backtests"])
