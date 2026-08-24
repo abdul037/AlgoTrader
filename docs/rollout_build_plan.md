@@ -95,8 +95,12 @@ meaningful unattended run.
       builds the full `create_app` wiring and drives the same worker jobs, so a
       cron-run `scheduled` cycle can actually propose and execute (previously
       scan/alert only).
-- [ ] Real fill handling: subscribe to Alpaca `trade_updates` so fills/exits
-      post immediately, with the reconciliation sweep as backstop. (Next.)
+- [x] Real fill handling: `app/broker/alpaca_trade_stream.py` `AlpacaTradeStream`
+      subscribes to Alpaca `trade_updates` and, on each terminal/fill event for
+      an order we placed, calls `AlpacaReconciliationService.ingest_order_update`
+      -- the same fill-ingestion path the sweep uses, so they can't diverge. Runs
+      on a supervised reconnecting thread, gated by `alpaca_trade_stream_enabled`
+      (off by default); the reconciliation sweep stays the backstop.
 - [ ] Watchdog/auto-restart of the worker process (currently `restartPolicyType:
       ALWAYS` restarts the container; readiness now makes a stalled worker
       visible to the orchestrator).

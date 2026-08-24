@@ -24,6 +24,7 @@ from app.automation.scheduler_worker import (
 )
 from app.automation.service import AutomationService
 from app.automation.unattended import PaperAutoTradingService
+from app.broker.alpaca_trade_stream import AlpacaTradeStream
 from app.broker.comparison import ParallelBrokerComparisonService
 from app.execution.coordinator import ExecutionCoordinator
 from app.execution.routes import router as execution_router
@@ -548,6 +549,7 @@ def create_app(
     )
     app.state.telegram_alert_scheduler = None
     app.state.scheduler_worker = None
+    app.state.alpaca_trade_stream = None
 
     def _build_scheduler_worker() -> SchedulerWorker:
         """Assemble the dedicated cadence worker from configured jobs."""
@@ -670,11 +672,34 @@ def create_app(
             "Scheduler worker started with %d jobs", len(worker.jobs)
         )
 
+        # Real-time order fill/exit stream (optional; sweep is the backstop).
+        if (
+            app_settings.alpaca_trade_stream_enabled
+            and app.state.alpaca_client is not None
+            and app_settings.alpaca_api_key
+            and app_settings.alpaca_secret_key
+            and app.state.reconciliation_service is not None
+        ):
+            stream = AlpacaTradeStream(
+                api_key=app_settings.alpaca_api_key,
+                secret_key=app_settings.alpaca_secret_key,
+                paper=bool(getattr(app.state.alpaca_client, "paper", True)),
+                on_order_update=app.state.reconciliation_service.ingest_order_update,
+                run_logs=run_log_repository,
+                reconnect_seconds=app_settings.alpaca_trade_stream_reconnect_seconds,
+            )
+            stream.start()
+            app.state.alpaca_trade_stream = stream
+            logger.info("Alpaca trade-update stream started")
+
     @app.on_event("shutdown")
     def shutdown_tasks() -> None:
         worker = getattr(app.state, "scheduler_worker", None)
         if worker is not None:
             worker.stop()
+        stream = getattr(app.state, "alpaca_trade_stream", None)
+        if stream is not None:
+            stream.stop()
 
     @app.get("/health", response_model=HealthResponse, tags=["system"])
     def health() -> HealthResponse:

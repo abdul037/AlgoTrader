@@ -52,6 +52,10 @@ class AppSettings(BaseSettings):
     alpaca_live_expected_account_number: str = ""
     alpaca_reconciliation_enabled: bool = True
     alpaca_reconciliation_interval_seconds: int = 60
+    # Real-time order fill/exit stream (Alpaca trade_updates websocket). Off by
+    # default; the periodic reconciliation sweep is the backstop when disabled.
+    alpaca_trade_stream_enabled: bool = False
+    alpaca_trade_stream_reconnect_seconds: int = 5
     alpaca_reconciliation_max_attempts: int = 3
     alpaca_reconciliation_retry_backoff_seconds: float = 1.0
     alpaca_require_bracket_orders: bool = True

@@ -98,6 +98,42 @@ class AlpacaReconciliationService:
         self.logs.log("alpaca_reconciliation_ok", result)
         return {"status": "ok", **result}
 
+    def ingest_order_update(self, broker_order_id: str) -> dict[str, Any]:
+        """Ingest one order's current broker state on demand.
+
+        Used by the real-time trade-update stream so a fill or bracket exit is
+        recorded immediately, rather than waiting for the next reconciliation
+        sweep. It reuses the exact same fill-ingestion path (``get_order`` ->
+        ``_update_execution`` -> order snapshot upsert) as ``reconcile``, so the
+        stream and the periodic sweep can never diverge; the sweep remains the
+        backstop for anything the stream drops.
+        """
+
+        if self.alpaca is None:
+            return {"status": "disabled"}
+        order_id = str(broker_order_id or "").strip()
+        if not order_id:
+            return {"status": "skipped", "reason": "no_order_id"}
+        execution = self.executions.get_by_broker_order_id(order_id)
+        if execution is None:
+            # The stream fans out every account order; ignore ones we didn't place.
+            return {"status": "unknown_order", "broker_order_id": order_id}
+        order = self.alpaca.get_order(order_id)
+        if order is None:
+            return {"status": "not_found", "broker_order_id": order_id}
+        payload = dict(getattr(order, "response_payload", None) or {})
+        self._update_execution(execution, payload)
+        legs = list(payload.get("legs") or [])
+        self._upsert_order(payload, execution_id=execution.id, parent_order_id=None)
+        for leg in legs:
+            self._upsert_order(leg, execution_id=execution.id, parent_order_id=order_id)
+        self.state.set("trade_stream:last_update_at", utc_now().isoformat())
+        self.logs.log(
+            "alpaca_trade_stream_ingested",
+            {"broker_order_id": order_id, "status": payload.get("status")},
+        )
+        return {"status": "updated", "broker_order_id": order_id, "execution_id": execution.id}
+
     def account_verified(self) -> bool:
         expected = str(
             getattr(
