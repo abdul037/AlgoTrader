@@ -766,6 +766,15 @@ def create_app(
         checks: dict[str, Any] = {}
         ready = True
 
+        # Watchdog: revive the scheduler worker if its thread died unexpectedly.
+        worker = getattr(app.state, "scheduler_worker", None)
+        if worker is not None:
+            try:
+                if worker.ensure_alive():
+                    checks["scheduler_restarted"] = True
+            except Exception:  # noqa: BLE001 - watchdog must not break the probe
+                logger.exception("scheduler worker watchdog failed")
+
         # Database reachability (also the store behind the heartbeat).
         heartbeat_raw: str | None = None
         try:
@@ -802,7 +811,6 @@ def create_app(
                 else:
                     checks["scheduler"] = f"ok ({int(age)}s)"
 
-        worker = getattr(app.state, "scheduler_worker", None)
         report: dict[str, Any] = {
             "status": "ready" if ready else "not_ready",
             "checks": checks,

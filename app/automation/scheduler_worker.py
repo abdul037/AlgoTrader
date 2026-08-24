@@ -32,6 +32,7 @@ STARTED_KEY = "scheduler_worker:started_at"
 TICK_COUNT_KEY = "scheduler_worker:tick_count"
 LAST_ERROR_KEY = "scheduler_worker:last_error"
 LAST_ERROR_AT_KEY = "scheduler_worker:last_error_at"
+RESTART_COUNT_KEY = "scheduler_worker:restart_count"
 
 
 @dataclass
@@ -74,6 +75,7 @@ class SchedulerWorker:
         self._last_heartbeat_at: datetime | None = None
         self._last_error: str | None = None
         self._last_error_at: datetime | None = None
+        self._restart_count = 0
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -94,6 +96,34 @@ class SchedulerWorker:
         self._stop_event.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=self.tick_interval_seconds + 2)
+
+    def ensure_alive(self) -> bool:
+        """Restart the loop if its thread died unexpectedly. Returns True if restarted.
+
+        A watchdog for unattended operation: called on each readiness probe, it
+        revives a worker whose thread crashed out of the loop. It does not start
+        a worker that was never started or one intentionally stopped -- a hung
+        (alive but not heart-beating) thread is left for the readiness probe to
+        surface as not-ready so the orchestrator can restart the process.
+        """
+
+        if self._stop_event.is_set() or self._thread is None:
+            return False
+        if self._thread.is_alive():
+            return False
+        self._restart_count += 1
+        self._persist(RESTART_COUNT_KEY, str(self._restart_count))
+        if self.run_logs is not None:
+            try:
+                self.run_logs.log(
+                    "scheduler_worker_restarted", {"restart_count": self._restart_count}
+                )
+            except Exception:  # noqa: BLE001 - logging must never block the restart
+                logger.debug("scheduler worker could not log restart", exc_info=True)
+        logger.warning("scheduler worker thread died; restarting (#%d)", self._restart_count)
+        self._thread = Thread(target=self._run, name="scheduler-worker", daemon=True)
+        self._thread.start()
+        return True
 
     # -- execution -----------------------------------------------------------
 
@@ -174,6 +204,7 @@ class SchedulerWorker:
         return {
             "running": bool(self._thread and self._thread.is_alive()),
             "tick_count": self._tick_count,
+            "restart_count": self._restart_count,
             "last_heartbeat_at": last.isoformat() if last else None,
             "heartbeat_age_seconds": age,
             "last_error": self._last_error,

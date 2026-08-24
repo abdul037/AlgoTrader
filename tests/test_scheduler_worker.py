@@ -114,3 +114,33 @@ def test_status_reports_heartbeat_age() -> None:
     assert status["heartbeat_age_seconds"] == 45
     assert status["running"] is False  # thread never started
     assert status["tick_count"] == 1
+
+
+def test_ensure_alive_noop_when_never_started() -> None:
+    worker = _worker([ScheduledJob("a", 60, lambda: None)], Clock(datetime(2026, 1, 1, tzinfo=UTC)))
+    assert worker.ensure_alive() is False  # no thread to revive
+
+
+def test_ensure_alive_noop_when_stopped() -> None:
+    worker = SchedulerWorker([ScheduledJob("a", 0.05, lambda: None)], tick_interval_seconds=1)
+    worker.start()
+    worker.stop()
+    assert worker.ensure_alive() is False  # intentionally stopped, do not revive
+
+
+def test_ensure_alive_restarts_dead_thread() -> None:
+    import threading
+
+    worker = SchedulerWorker([ScheduledJob("a", 0.05, lambda: None)], tick_interval_seconds=1)
+    worker.start()
+    # Simulate the loop thread having died without an intentional stop.
+    dead = threading.Thread(target=lambda: None)
+    dead.start()
+    dead.join()
+    worker._thread = dead
+    worker._stop_event.clear()
+
+    assert worker.ensure_alive() is True
+    assert worker._thread is not dead
+    assert worker.status()["restart_count"] == 1
+    worker.stop()
