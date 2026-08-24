@@ -1,12 +1,15 @@
 name: CI
 
+# Run once per commit: on pushes to main, and on pull requests. A branch with an
+# open PR is covered by the pull_request event, so this avoids the duplicate
+# push+pull_request runs (and duplicate notifications) on PR branches.
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
