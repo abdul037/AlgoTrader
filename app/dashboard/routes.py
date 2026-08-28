@@ -7,6 +7,7 @@ read-only (no control-token needed, no mutations) so it is safe to leave open.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -16,6 +17,24 @@ from app.storage.repositories import ExecutionRepository, RuntimeStateRepository
 from app.utils.time import utc_now
 
 router = APIRouter(tags=["dashboard"])
+
+
+def _build_info() -> dict[str, Any]:
+    """Which commit/build is actually running (Railway injects these env vars)."""
+
+    return {
+        "commit": os.environ.get("RAILWAY_GIT_COMMIT_SHA", "unknown"),
+        "branch": os.environ.get("RAILWAY_GIT_BRANCH", "unknown"),
+        "deployment_id": os.environ.get("RAILWAY_DEPLOYMENT_ID", "unknown"),
+        "served_at": utc_now().isoformat(),
+    }
+
+
+@router.get("/version")
+def version() -> JSONResponse:
+    """Public build marker so the deployed commit can be verified at a glance."""
+
+    return JSONResponse(_build_info())
 
 
 def _safe(fn: Any, default: Any) -> Any:
@@ -87,6 +106,7 @@ def dashboard_data(request: Request) -> JSONResponse:
 
     payload = {
         "generated_at": utc_now().isoformat(),
+        "build": _build_info(),
         "config": {
             "deployment_stage": getattr(settings, "deployment_stage", None),
             "execution_mode": getattr(settings, "execution_mode", None),
@@ -159,6 +179,7 @@ _DASHBOARD_HTML = """<!doctype html>
   <span id="stage" class="pill">stage …</span>
   <span id="mode" class="pill">—</span>
   <span class="foot" id="updated"></span>
+  <span class="foot" id="build"></span>
 </header>
 <main>
   <div class="grid" id="tiles"></div>
@@ -223,6 +244,8 @@ async function tick(){
   const real = c.enable_real_trading===true || String(c.enable_real_trading).toLowerCase()==='true';
   pill($('#mode'), (c.execution_mode||'?')+(real?' ⚠ REAL':' · paper'), real?'bad':'ok');
   $('#updated').textContent = 'updated '+t(d.generated_at);
+  const b = d.build || {};
+  $('#build').textContent = b.commit ? ('build '+String(b.commit).slice(0,7)) : '';
 
   const rec = d.reconciliation || {};
   $('#tiles').innerHTML = [

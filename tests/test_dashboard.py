@@ -46,3 +46,15 @@ def test_dashboard_data_snapshot_shape(tmp_path: Path) -> None:
     assert data["config"]["alpaca_account"] == "PA3B287XBZYU"
     assert isinstance(data["trades"], list)
     assert isinstance(data["scans"], list)
+    assert "commit" in data["build"]
+
+
+def test_version_endpoint(tmp_path: Path) -> None:
+    app = create_app(settings=_settings(tmp_path), enable_background_jobs=False)
+    client = TestClient(app)
+
+    response = client.get("/version")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "commit" in body and "branch" in body
