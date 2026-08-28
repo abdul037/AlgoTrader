@@ -273,6 +273,10 @@ class AppSettings(BaseSettings):
     portfolio_max_symbol_exposure_pct: float = 15.0
     portfolio_max_sector_exposure_pct: float = 25.0
     portfolio_max_correlated_exposure_pct: float = 30.0
+    # Portfolio heat: the sum of open per-trade risk (each position's entry->stop
+    # dollar risk) as a percent of equity. A book can pass every single-trade risk
+    # check and still bet the account; this caps the aggregate. 0 disables.
+    portfolio_max_heat_pct: float = 6.0
     portfolio_future_max_risk_per_trade_pct: float = 0.5
     portfolio_micro_live_max_risk_per_trade_pct: float = 0.1
     institutional_portfolio_controls_enabled: bool = False
