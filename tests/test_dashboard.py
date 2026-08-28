@@ -1,0 +1,48 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from app.main import create_app
+from tests.conftest import make_settings
+
+
+def _settings(tmp_path: Path, **overrides):
+    base = dict(
+        screener_scheduler_enabled=False,
+        telegram_hourly_alerts_enabled=False,
+        ledger_cycle_enabled=False,
+        etoro_demo_v2_enabled=False,
+        learning_worker_enabled=False,
+        paper_position_refresh_enabled=False,
+        alpaca_expected_account_number="PA3B287XBZYU",
+    )
+    base.update(overrides)
+    return make_settings(tmp_path, **base)
+
+
+def test_dashboard_page_served(tmp_path: Path) -> None:
+    app = create_app(settings=_settings(tmp_path), enable_background_jobs=False)
+    client = TestClient(app)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "AlgoTrader" in response.text
+    assert "/dashboard/data" in response.text  # the page polls the data endpoint
+
+
+def test_dashboard_data_snapshot_shape(tmp_path: Path) -> None:
+    app = create_app(settings=_settings(tmp_path), enable_background_jobs=False)
+    client = TestClient(app)
+
+    data = client.get("/dashboard/data").json()
+
+    # All sections present and JSON-serialisable even on a fresh, empty database.
+    for key in ("config", "automation", "flags", "trades", "proposals", "scans", "positions"):
+        assert key in data
+    assert data["config"]["alpaca_account"] == "PA3B287XBZYU"
+    assert isinstance(data["trades"], list)
+    assert isinstance(data["scans"], list)

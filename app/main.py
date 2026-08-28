@@ -636,6 +636,9 @@ def create_app(
         pass
     app.include_router(signal_router)
     app.include_router(screener_router)
+    from app.dashboard.routes import router as dashboard_router
+
+    app.include_router(dashboard_router)
     app.include_router(telegram_router)
     app.include_router(workflow_router)
     app.include_router(automation_router)
