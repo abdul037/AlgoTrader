@@ -334,6 +334,11 @@ class MarketDataEngine:
         if requested == "auto":
             if self.etoro_client is not None:
                 return "etoro"
+            # Prefer the broker's own data API when configured: Yahoo (yfinance)
+            # rate-limits / stalls from cloud IPs, so it must not be the default
+            # scan path whenever a reliable provider is available.
+            if self.settings.alpaca_api_key and self.settings.alpaca_secret_key:
+                return "alpaca"
             fallback = (self.settings.fallback_market_data_provider or "yfinance").strip().lower()
             return "yfinance" if fallback in {"", "none"} else fallback
         return requested

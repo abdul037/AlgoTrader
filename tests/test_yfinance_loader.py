@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import time
+
 import pandas as pd
+import pytest
 
 from app.data.yfinance_loader import load_yfinance_history
 
@@ -23,6 +26,15 @@ class _FakeTicker:
         )
 
 
+class _HangingTicker:
+    def __init__(self, symbol: str):
+        self.symbol = symbol
+
+    def history(self, period: str, interval: str, auto_adjust: bool) -> pd.DataFrame:
+        time.sleep(5)  # simulate Yahoo stalling; abandoned once the caller times out
+        return pd.DataFrame()
+
+
 def test_load_yfinance_history_normalizes_columns(monkeypatch):
     monkeypatch.setattr("app.data.yfinance_loader.yf.Ticker", _FakeTicker)
     frame = load_yfinance_history("NVDA", period="1mo", interval="1d")
@@ -31,3 +43,12 @@ def test_load_yfinance_history_normalizes_columns(monkeypatch):
     assert len(frame) == 2
     assert frame["timestamp"].dt.tz is not None
     assert frame.iloc[0]["close"] == 183.0
+
+
+def test_load_yfinance_history_times_out_instead_of_hanging(monkeypatch):
+    monkeypatch.setattr("app.data.yfinance_loader.yf.Ticker", _HangingTicker)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        load_yfinance_history("NVDA", period="1mo", interval="1d", timeout=0.5)
+    # It returns promptly on timeout rather than blocking for the full stall.
+    assert time.monotonic() - started < 3.0
