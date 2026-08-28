@@ -43,6 +43,9 @@ class ScheduledJob:
     name: str
     interval_seconds: float
     func: Callable[[], Any]
+    # Per-job wall-clock cap; falls back to the worker default when None. A job
+    # that overruns is abandoned so it can never wedge the shared tick.
+    timeout_seconds: float | None = None
     last_run_at: datetime | None = field(default=None, init=False)
     last_error: str | None = field(default=None, init=False)
     run_count: int = field(default=0, init=False)
@@ -67,12 +70,20 @@ class SchedulerWorker:
         self_heal_enabled: bool = True,
         stale_restart_seconds: float = 300.0,
         monitor_interval_seconds: float = 30.0,
+        default_job_timeout_seconds: float | None = None,
     ) -> None:
         self.jobs: list[ScheduledJob] = list(jobs)
         self.runtime_state = runtime_state
         self.run_logs = run_logs
         self.tick_interval_seconds = max(float(tick_interval_seconds), 1.0)
         self._clock = clock
+        # A per-job wall-clock cap: a blocking job (e.g. a market-data call with
+        # no timeout) is abandoned so it can never wedge the whole tick. Kept
+        # below stale_restart_seconds so a bounded job finishes before the
+        # self-heal watchdog would force a full restart.
+        self.default_job_timeout_seconds = (
+            float(default_job_timeout_seconds) if default_job_timeout_seconds else None
+        )
         self.self_heal_enabled = bool(self_heal_enabled)
         # A hung tick (a job blocking with no timeout) leaves the thread alive
         # but never heart-beating; force a restart once the beat is this stale.
@@ -217,8 +228,9 @@ class SchedulerWorker:
             if not job.is_due(now):
                 continue
             ran.append(job.name)
+            timeout = job.timeout_seconds or self.default_job_timeout_seconds
             try:
-                job.func()
+                self._invoke_job(job.func, timeout)
                 job.last_error = None
             except Exception as exc:  # noqa: BLE001 - isolation is the whole point
                 job.last_error = f"{type(exc).__name__}: {exc}"
@@ -229,6 +241,35 @@ class SchedulerWorker:
                 job.run_count += 1
         self._heartbeat(now)
         return ran
+
+    def _invoke_job(self, func: Callable[[], Any], timeout: float | None) -> None:
+        """Run ``func``, enforcing a wall-clock ``timeout`` when one is set.
+
+        Runs on the calling thread when no timeout applies (cheap, and what tests
+        rely on). With a timeout, it runs on a daemon thread that is abandoned if
+        it overruns -- a blocked job then raises ``TimeoutError`` here instead of
+        freezing the shared tick and starving every other job of its cadence.
+        """
+
+        if not timeout or timeout <= 0:
+            func()
+            return
+        box: dict[str, BaseException] = {}
+
+        def _target() -> None:
+            try:
+                func()
+            except BaseException as exc:  # noqa: BLE001 - surfaced on the caller thread
+                box["error"] = exc
+
+        worker = Thread(target=_target, name="scheduler-job", daemon=True)
+        worker.start()
+        worker.join(float(timeout))
+        if worker.is_alive():
+            raise TimeoutError(f"job exceeded {timeout:.0f}s wall-clock timeout")
+        error = box.get("error")
+        if error is not None:
+            raise error
 
     def _run(self, generation: int = 0) -> None:
         # Emit an immediate heartbeat so readiness reflects a live worker at once.

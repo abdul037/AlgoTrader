@@ -105,6 +105,34 @@ def test_one_failing_job_does_not_stop_others_or_heartbeat() -> None:
     assert good["last_error"] is None
 
 
+def test_job_timeout_abandons_blocking_job_and_keeps_ticking() -> None:
+    import threading
+
+    clock = Clock(datetime(2026, 1, 1, tzinfo=UTC))
+    state = FakeRuntimeState()
+    release = threading.Event()
+    calls: list[str] = []
+
+    def hang() -> None:
+        release.wait(2)  # bounded so the abandoned thread cannot wedge the test
+
+    jobs = [
+        ScheduledJob("slow", 60, hang, timeout_seconds=0.3),
+        ScheduledJob("fast", 60, lambda: calls.append("fast")),
+    ]
+    worker = SchedulerWorker(jobs, runtime_state=state, clock=clock)
+
+    ran = worker.run_due_jobs()
+
+    assert ran == ["slow", "fast"]  # both attempted despite the slow one blocking
+    assert calls == ["fast"]  # the fast job still ran after the slow one timed out
+    assert state.get(HEARTBEAT_KEY) == clock.now.isoformat()  # heartbeat still advanced
+    status = worker.status()
+    slow = next(j for j in status["jobs"] if j["name"] == "slow")
+    assert "timeout" in (slow["last_error"] or "").lower()
+    release.set()
+
+
 def test_status_reports_heartbeat_age() -> None:
     clock = Clock(datetime(2026, 1, 1, tzinfo=UTC))
     worker = _worker([ScheduledJob("a", 60, lambda: None)], clock)

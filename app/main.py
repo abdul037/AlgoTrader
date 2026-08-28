@@ -623,6 +623,7 @@ def create_app(
             self_heal_enabled=bool(app_settings.scheduler_self_heal_enabled),
             stale_restart_seconds=max(int(app_settings.scheduler_self_heal_stale_seconds), 1),
             monitor_interval_seconds=max(int(app_settings.scheduler_self_heal_check_seconds), 1),
+            default_job_timeout_seconds=max(int(app_settings.scheduler_job_timeout_seconds), 1),
         )
 
     app.state.build_scheduler_worker = _build_scheduler_worker

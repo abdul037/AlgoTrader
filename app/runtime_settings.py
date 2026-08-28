@@ -127,6 +127,10 @@ class AppSettings(BaseSettings):
     scheduler_self_heal_enabled: bool = True
     scheduler_self_heal_stale_seconds: int = 300
     scheduler_self_heal_check_seconds: int = 30
+    # Per-job wall-clock cap so one blocking job (e.g. a stalled market-data
+    # call) can never wedge the shared tick. Kept below the self-heal stale
+    # threshold so a bounded job finishes before a full worker restart.
+    scheduler_job_timeout_seconds: int = 180
     # Scheduled refresh of the internal (self-simulated) paper position ledger.
     paper_position_refresh_enabled: bool = True
     paper_position_refresh_interval_seconds: int = 60
