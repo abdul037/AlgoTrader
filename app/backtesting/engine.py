@@ -225,6 +225,14 @@ class BacktestEngine:
 
         cost_breakdown = summarize_costs(cost_events)
 
+        # Surface cost drag inside ``metrics`` so the validation/graduation gates,
+        # which read only the persisted ``metrics_json``, cannot ignore friction.
+        total_cost_usd = float(cost_breakdown.get("total_cost_usd", 0.0) or 0.0)
+        metrics["total_cost_usd"] = round(total_cost_usd, 4)
+        metrics["cost_drag_pct"] = round(
+            (total_cost_usd / run_config.initial_cash) * 100.0, 6
+        ) if run_config.initial_cash > 0 else 0.0
+
         result = BacktestResult(
             id=generate_id("bt"),
             symbol=symbol.upper(),
@@ -462,7 +470,16 @@ def _close_trade(
         exit_time=exit_time,
     )
     fx_usd = cost_model.fx_round_trip_cost_usd(notional_usd=open_trade.entry_notional)
-    realized = proceeds - financing_usd - fx_usd
+    # Commission is charged on both legs; slippage drags both notionals; US equity
+    # regulatory fees apply to the sell leg only (the exit of a long).
+    commission_usd = 2.0 * cost_model.commission_usd(quantity=open_trade.quantity)
+    slippage_usd = cost_model.slippage_usd(
+        notional_usd=open_trade.entry_notional
+    ) + cost_model.slippage_usd(notional_usd=proceeds)
+    regulatory_usd = cost_model.regulatory_sell_fee_usd(
+        notional_usd=proceeds, quantity=open_trade.quantity
+    )
+    realized = proceeds - financing_usd - fx_usd - commission_usd - slippage_usd - regulatory_usd
     invested = open_trade.entry_notional
     pnl_usd = realized - invested
     pnl_pct = (pnl_usd / invested) * 100 if invested else 0.0
@@ -484,11 +501,17 @@ def _close_trade(
         "spread_usd": round(open_trade.entry_spread_usd + exit_spread_usd, 6),
         "financing_usd": round(financing_usd, 6),
         "fx_usd": round(fx_usd, 6),
+        "commission_usd": round(commission_usd, 6),
+        "slippage_usd": round(slippage_usd, 6),
+        "regulatory_usd": round(regulatory_usd, 6),
     }
     cost_event = {
         "spread_usd": open_trade.entry_spread_usd + exit_spread_usd,
         "financing_usd": financing_usd,
         "fx_usd": fx_usd,
+        "commission_usd": commission_usd,
+        "slippage_usd": slippage_usd,
+        "regulatory_usd": regulatory_usd,
     }
     return realized, cost_event, trade_record, warning
 
