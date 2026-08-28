@@ -620,6 +620,9 @@ def create_app(
             runtime_state=runtime_state_repository,
             run_logs=run_log_repository,
             tick_interval_seconds=max(int(app_settings.background_scheduler_tick_seconds), 1),
+            self_heal_enabled=bool(app_settings.scheduler_self_heal_enabled),
+            stale_restart_seconds=max(int(app_settings.scheduler_self_heal_stale_seconds), 1),
+            monitor_interval_seconds=max(int(app_settings.scheduler_self_heal_check_seconds), 1),
         )
 
     app.state.build_scheduler_worker = _build_scheduler_worker

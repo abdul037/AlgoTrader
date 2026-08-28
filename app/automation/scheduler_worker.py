@@ -19,7 +19,7 @@ import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from typing import Any
 
 from app.utils.time import utc_now
@@ -33,6 +33,7 @@ TICK_COUNT_KEY = "scheduler_worker:tick_count"
 LAST_ERROR_KEY = "scheduler_worker:last_error"
 LAST_ERROR_AT_KEY = "scheduler_worker:last_error_at"
 RESTART_COUNT_KEY = "scheduler_worker:restart_count"
+RESTART_REASON_KEY = "scheduler_worker:restart_reason"
 
 
 @dataclass
@@ -63,32 +64,63 @@ class SchedulerWorker:
         run_logs: Any | None = None,
         tick_interval_seconds: float = 5.0,
         clock: Callable[[], datetime] = utc_now,
+        self_heal_enabled: bool = True,
+        stale_restart_seconds: float = 300.0,
+        monitor_interval_seconds: float = 30.0,
     ) -> None:
         self.jobs: list[ScheduledJob] = list(jobs)
         self.runtime_state = runtime_state
         self.run_logs = run_logs
         self.tick_interval_seconds = max(float(tick_interval_seconds), 1.0)
         self._clock = clock
+        self.self_heal_enabled = bool(self_heal_enabled)
+        # A hung tick (a job blocking with no timeout) leaves the thread alive
+        # but never heart-beating; force a restart once the beat is this stale.
+        # Kept well above the tick interval so a legitimately long job does not
+        # trigger a false restart.
+        self.stale_restart_seconds = max(
+            float(stale_restart_seconds), self.tick_interval_seconds * 3
+        )
+        self.monitor_interval_seconds = max(float(monitor_interval_seconds), 1.0)
         self._stop_event = Event()
         self._thread: Thread | None = None
+        self._monitor_thread: Thread | None = None
+        self._lifecycle_lock = Lock()
+        self._generation = 0
         self._tick_count = 0
         self._last_heartbeat_at: datetime | None = None
         self._last_error: str | None = None
         self._last_error_at: datetime | None = None
         self._restart_count = 0
+        self._last_restart_reason: str | None = None
 
     # -- lifecycle -----------------------------------------------------------
 
     def start(self) -> None:
         """Start the supervised loop once (idempotent)."""
 
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop_event.clear()
-        now = self._clock()
-        self._persist(STARTED_KEY, now.isoformat())
-        self._thread = Thread(target=self._run, name="scheduler-worker", daemon=True)
-        self._thread.start()
+        with self._lifecycle_lock:
+            if self._thread and self._thread.is_alive():
+                return
+            self._stop_event.clear()
+            now = self._clock()
+            self._persist(STARTED_KEY, now.isoformat())
+            self._last_heartbeat_at = now
+            self._generation += 1
+            generation = self._generation
+            self._thread = Thread(
+                target=self._run, args=(generation,), name="scheduler-worker", daemon=True
+            )
+            self._thread.start()
+            # An internal watchdog so recovery does not depend on an external
+            # readiness probe ever being called again after deploy.
+            if self.self_heal_enabled and not (
+                self._monitor_thread and self._monitor_thread.is_alive()
+            ):
+                self._monitor_thread = Thread(
+                    target=self._run_monitor, name="scheduler-worker-monitor", daemon=True
+                )
+                self._monitor_thread.start()
 
     def stop(self) -> None:
         """Signal the loop to stop and wait briefly for it to exit."""
@@ -96,34 +128,78 @@ class SchedulerWorker:
         self._stop_event.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=self.tick_interval_seconds + 2)
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            self._monitor_thread.join(timeout=self.monitor_interval_seconds + 2)
 
     def ensure_alive(self) -> bool:
-        """Restart the loop if its thread died unexpectedly. Returns True if restarted.
+        """Restart the loop if its thread died or hung. Returns True if restarted.
 
-        A watchdog for unattended operation: called on each readiness probe, it
-        revives a worker whose thread crashed out of the loop. It does not start
-        a worker that was never started or one intentionally stopped -- a hung
-        (alive but not heart-beating) thread is left for the readiness probe to
-        surface as not-ready so the orchestrator can restart the process.
+        A watchdog for unattended operation. It revives a worker whose thread
+        crashed out of the loop, and -- when self-healing is enabled -- also one
+        that is still alive but has stopped heart-beating past
+        ``stale_restart_seconds`` (a job blocking with no timeout hangs the whole
+        synchronous tick). It does not start a worker that was never started or
+        one intentionally stopped. Called both by the readiness probe and by the
+        internal monitor thread; a lock keeps concurrent callers from racing.
         """
 
         if self._stop_event.is_set() or self._thread is None:
             return False
-        if self._thread.is_alive():
-            return False
+        with self._lifecycle_lock:
+            if self._stop_event.is_set() or self._thread is None:
+                return False
+            alive = self._thread.is_alive()
+            hung = self.self_heal_enabled and alive and self._is_heartbeat_stale()
+            if alive and not hung:
+                return False
+            return self._restart_locked("hung_heartbeat_stale" if hung else "thread_died")
+
+    def _restart_locked(self, reason: str) -> bool:
+        """Spawn a fresh worker thread. Caller must hold ``_lifecycle_lock``.
+
+        Bumping the generation orphans any previous (possibly hung) thread: it
+        exits its loop the next time it checks, so it can never double-run jobs
+        alongside the replacement.
+        """
+
         self._restart_count += 1
+        self._last_restart_reason = reason
+        # Reset the beat baseline up front so a slow restart is not itself seen
+        # as a fresh stall by a concurrent monitor tick.
+        self._last_heartbeat_at = self._clock()
         self._persist(RESTART_COUNT_KEY, str(self._restart_count))
+        self._persist(RESTART_REASON_KEY, reason)
         if self.run_logs is not None:
             try:
                 self.run_logs.log(
-                    "scheduler_worker_restarted", {"restart_count": self._restart_count}
+                    "scheduler_worker_restarted",
+                    {"restart_count": self._restart_count, "reason": reason},
                 )
             except Exception:  # noqa: BLE001 - logging must never block the restart
                 logger.debug("scheduler worker could not log restart", exc_info=True)
-        logger.warning("scheduler worker thread died; restarting (#%d)", self._restart_count)
-        self._thread = Thread(target=self._run, name="scheduler-worker", daemon=True)
+        logger.warning("scheduler worker %s; restarting (#%d)", reason, self._restart_count)
+        self._generation += 1
+        generation = self._generation
+        self._thread = Thread(
+            target=self._run, args=(generation,), name="scheduler-worker", daemon=True
+        )
         self._thread.start()
         return True
+
+    def _run_monitor(self) -> None:
+        """Periodically self-check liveness, independent of any HTTP probe."""
+
+        while not self._stop_event.wait(self.monitor_interval_seconds):
+            try:
+                self.ensure_alive()
+            except Exception:  # noqa: BLE001 - the monitor must never die
+                logger.exception("scheduler worker monitor tick failed")
+
+    def _is_heartbeat_stale(self) -> bool:
+        last = self._last_heartbeat_at
+        if last is None:
+            return False
+        return (self._clock() - last).total_seconds() > self.stale_restart_seconds
 
     # -- execution -----------------------------------------------------------
 
@@ -154,10 +230,12 @@ class SchedulerWorker:
         self._heartbeat(now)
         return ran
 
-    def _run(self) -> None:
+    def _run(self, generation: int = 0) -> None:
         # Emit an immediate heartbeat so readiness reflects a live worker at once.
         self._heartbeat(self._clock())
-        while not self._stop_event.is_set():
+        # A superseded (restarted) thread exits as soon as it notices the
+        # generation has moved on, so an orphaned hung thread cannot double-run.
+        while not self._stop_event.is_set() and self._generation == generation:
             try:
                 self.run_due_jobs()
             except Exception as exc:  # noqa: BLE001 - never let the loop die
@@ -181,9 +259,7 @@ class SchedulerWorker:
         self._persist(LAST_ERROR_AT_KEY, now.isoformat())
         if self.run_logs is not None:
             try:
-                self.run_logs.log(
-                    "scheduler_worker_error", {"source": source, "error": str(exc)}
-                )
+                self.run_logs.log("scheduler_worker_error", {"source": source, "error": str(exc)})
             except Exception:  # noqa: BLE001 - logging must never break the loop
                 logger.debug("scheduler worker could not record run log", exc_info=True)
 
@@ -203,8 +279,10 @@ class SchedulerWorker:
         age = None if last is None else (now - last).total_seconds()
         return {
             "running": bool(self._thread and self._thread.is_alive()),
+            "self_heal_enabled": self.self_heal_enabled,
             "tick_count": self._tick_count,
             "restart_count": self._restart_count,
+            "last_restart_reason": self._last_restart_reason,
             "last_heartbeat_at": last.isoformat() if last else None,
             "heartbeat_age_seconds": age,
             "last_error": self._last_error,

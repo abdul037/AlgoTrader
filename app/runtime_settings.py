@@ -121,6 +121,12 @@ class AppSettings(BaseSettings):
     background_scheduler_tick_seconds: int = 5
     # Readiness turns "warning" once the worker heartbeat is older than this.
     scheduler_heartbeat_max_age_seconds: int = 180
+    # Self-healing watchdog: an internal monitor thread force-restarts the worker
+    # if a hung tick stops the heartbeat, so recovery never depends on an
+    # external readiness probe being called after deploy.
+    scheduler_self_heal_enabled: bool = True
+    scheduler_self_heal_stale_seconds: int = 300
+    scheduler_self_heal_check_seconds: int = 30
     # Scheduled refresh of the internal (self-simulated) paper position ledger.
     paper_position_refresh_enabled: bool = True
     paper_position_refresh_interval_seconds: int = 60
