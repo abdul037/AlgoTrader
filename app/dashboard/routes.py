@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from app.performance.strategy_performance import analyze_by_strategy, decay_verdict
 from app.storage.repositories import ExecutionRepository, RuntimeStateRepository
 from app.utils.time import utc_now
 
@@ -106,6 +107,9 @@ def dashboard_data(request: Request) -> JSONResponse:
     scans = _safe(lambda: _model_list(state.scan_decision_repository.list(limit=30)), [])
     positions = _safe(lambda: state.broker_position_repository.list(limit=50), [])
 
+    # Stage 1 measurement: per-strategy live performance + live-vs-backtest decay.
+    strategy_performance = _safe(lambda: _strategy_performance(state), [])
+
     payload = {
         "generated_at": utc_now().isoformat(),
         "build": _build_info(),
@@ -125,8 +129,46 @@ def dashboard_data(request: Request) -> JSONResponse:
         "proposals": proposals[:25],
         "scans": scans,
         "positions": positions,
+        "strategy_performance": strategy_performance,
     }
     return JSONResponse(payload)
+
+
+def _strategy_performance(state: Any) -> list[dict[str, Any]]:
+    """Per-strategy live paper performance with a keep/watch/demote decay verdict."""
+
+    trade_repo = getattr(state, "paper_trade_repository", None)
+    if trade_repo is None:
+        return []
+    trades = trade_repo.list(limit=2000)
+    performances = analyze_by_strategy(trades)
+    baseline = _safe(lambda: state.backtest_repository.expectancy_by_strategy(), {})
+    min_trades = int(getattr(state.settings, "stage1_decay_min_trades", 20) or 20)
+    rows: list[dict[str, Any]] = []
+    for perf in performances:
+        verdict = decay_verdict(
+            perf,
+            backtest_expectancy_usd=baseline.get(perf.strategy_name),
+            min_trades=min_trades,
+        )
+        rows.append(
+            {
+                "strategy_name": perf.strategy_name,
+                "trades": perf.trades,
+                "win_rate": perf.win_rate,
+                "expectancy_usd": perf.expectancy_usd,
+                "profit_factor": perf.profit_factor,
+                "realized_pnl_usd": perf.realized_pnl_usd,
+                "average_r_multiple": perf.average_r_multiple,
+                "max_drawdown_usd": perf.max_drawdown_usd,
+                "backtest_expectancy_usd": verdict.backtest_expectancy_usd,
+                "retention_ratio": verdict.retention_ratio,
+                "status": verdict.status,
+                "action": verdict.action,
+                "reasons": verdict.reasons,
+            }
+        )
+    return rows
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
@@ -210,6 +252,15 @@ _DASHBOARD_HTML = """<!doctype html>
   </section>
 
   <section>
+    <h2>Strategy performance <span class="muted" style="font-weight:400;font-size:12px">(live paper · keep / watch / demote)</span></h2>
+    <div class="scroll"><table id="stratperf"><thead><tr>
+      <th>Strategy</th><th class="num">Trades</th><th class="num">Win%</th>
+      <th class="num">Expectancy</th><th class="num">PF</th><th class="num">Realized P&amp;L</th>
+      <th class="num">Max DD</th><th class="num">vs BT</th><th>Verdict</th>
+    </tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section>
     <h2>Action log (recent scan decisions)</h2>
     <div class="scroll"><table id="scans"><thead><tr>
       <th>Time</th><th>Task</th><th>Symbol</th><th>Strategy</th><th>TF</th>
@@ -286,6 +337,24 @@ async function tick(){
     `<td>${esc(s.status)}</td>`,`<td class="num">${s.final_score!=null?num(s.final_score,1):''}</td>`,
     `<td class="muted">${esc((s.rejection_reasons||[]).join(', '))}</td>`
   ]), 8, 'No scans recorded yet (runs during market hours).');
+
+  const verdictCls = {healthy:'ok', insufficient_data:'warn', decaying:'warn', dead:'bad'};
+  rows('#stratperf', (d.strategy_performance||[]).map(p=>{
+    const cls = verdictCls[p.status] || 'warn';
+    const label = String(p.action||'').toUpperCase()+' · '+String(p.status||'').replace(/_/g,' ');
+    const vsBt = p.retention_ratio!=null ? Math.round(p.retention_ratio*100)+'%' : '—';
+    return [
+      `<td><span class="tag">${esc(p.strategy_name)}</span></td>`,
+      `<td class="num">${p.trades!=null?p.trades:''}</td>`,
+      `<td class="num">${num(p.win_rate,1)}</td>`,
+      `<td class="num">${pnl(p.expectancy_usd)}</td>`,
+      `<td class="num">${num(p.profit_factor,2)}</td>`,
+      `<td class="num">${pnl(p.realized_pnl_usd)}</td>`,
+      `<td class="num">${p.max_drawdown_usd!=null?'-'+num(p.max_drawdown_usd,0):''}</td>`,
+      `<td class="num">${esc(vsBt)}</td>`,
+      `<td><span class="pill ${cls}">${esc(label)}</span></td>`
+    ];
+  }), 9, 'No closed paper trades yet — populates once Stage 1 trading begins.');
 }
 tick(); setInterval(tick, 10000);
 </script>

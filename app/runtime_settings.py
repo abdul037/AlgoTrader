@@ -280,6 +280,9 @@ class AppSettings(BaseSettings):
     portfolio_future_max_risk_per_trade_pct: float = 0.5
     portfolio_micro_live_max_risk_per_trade_pct: float = 0.1
     institutional_portfolio_controls_enabled: bool = False
+    # Stage 1 (prove-expectancy-on-paper): minimum closed trades before the
+    # live-vs-backtest decay monitor will judge a strategy keep/watch/demote.
+    stage1_decay_min_trades: int = 20
     short_trading_enabled: bool = False
     short_minimum_account_equity_usd: float = 25_000.0
     short_max_borrow_cost_annual_pct: float = 5.0

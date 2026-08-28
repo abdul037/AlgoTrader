@@ -41,11 +41,15 @@ def test_dashboard_data_snapshot_shape(tmp_path: Path) -> None:
     data = client.get("/dashboard/data").json()
 
     # All sections present and JSON-serialisable even on a fresh, empty database.
-    for key in ("config", "automation", "flags", "trades", "proposals", "scans", "positions"):
+    for key in (
+        "config", "automation", "flags", "trades", "proposals", "scans",
+        "positions", "strategy_performance",
+    ):
         assert key in data
     assert data["config"]["alpaca_account"] == "PA3B287XBZYU"
     assert isinstance(data["trades"], list)
     assert isinstance(data["scans"], list)
+    assert isinstance(data["strategy_performance"], list)
     assert "commit" in data["build"]
 
 

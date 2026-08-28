@@ -643,6 +643,33 @@ class BacktestRepository:
                 return item
         return parsed[0]
 
+    def expectancy_by_strategy(self, *, limit: int = 2000) -> dict[str, float]:
+        """Average backtest ``expectancy_usd`` per strategy across recent runs.
+
+        The live-vs-backtest decay monitor compares a strategy's live paper
+        expectancy against this baseline. Averaged across the strategy's backtest
+        rows (all symbols) so a single symbol's run does not define the baseline.
+        """
+
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                "SELECT strategy_name, metrics_json FROM backtests "
+                "ORDER BY completed_at DESC LIMIT ?",
+                (max(limit, 1),),
+            ).fetchall()
+        buckets: dict[str, list[float]] = {}
+        for row in rows:
+            try:
+                metrics = json.loads(row["metrics_json"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            expectancy = metrics.get("expectancy_usd")
+            if expectancy in (None, ""):
+                continue
+            name = str(row["strategy_name"] or "unknown")
+            buckets.setdefault(name, []).append(float(expectancy))
+        return {name: round(sum(vals) / len(vals), 4) for name, vals in buckets.items() if vals}
+
 
 class ScanDecisionRepository:
     """Persist per-candidate scan decisions for review and anti-spam logic."""
