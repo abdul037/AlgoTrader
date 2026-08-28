@@ -234,14 +234,22 @@ class ExecutionRepository:
         self.db = db
 
     def create(self, execution: ExecutionRecord) -> ExecutionRecord:
+        # Attribution: prefer the explicit field, but fall back to the strategy
+        # carried in the request payload so callers that only populate the order
+        # still get a first-class strategy column instead of buried JSON.
+        strategy_name = execution.strategy_name or (
+            str(execution.request_payload.get("strategy_name") or "").strip() or None
+        )
+        execution.strategy_name = strategy_name
         with self.db.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO executions (
-                    id, proposal_id, status, mode, broker_order_id, request_json,
-                    response_json, error_message, realized_pnl_usd, created_at, updated_at
+                    id, proposal_id, status, mode, broker_order_id, strategy_name,
+                    request_json, response_json, error_message, realized_pnl_usd,
+                    created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     execution.id,
@@ -249,6 +257,7 @@ class ExecutionRepository:
                     execution.status,
                     execution.mode,
                     execution.broker_order_id,
+                    strategy_name,
                     _dump_json(execution.request_payload) or "{}",
                     _dump_json(execution.response_payload) or "{}",
                     execution.error_message,
@@ -301,13 +310,15 @@ class ExecutionRepository:
             connection.execute(
                 """
                 UPDATE executions
-                SET status = ?, broker_order_id = ?, request_json = ?, response_json = ?,
-                    error_message = ?, realized_pnl_usd = ?, updated_at = ?
+                SET status = ?, broker_order_id = ?, strategy_name = ?, request_json = ?,
+                    response_json = ?, error_message = ?, realized_pnl_usd = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
                     execution.status,
                     execution.broker_order_id,
+                    execution.strategy_name
+                    or (str(execution.request_payload.get("strategy_name") or "").strip() or None),
                     _dump_json(execution.request_payload) or "{}",
                     _dump_json(execution.response_payload) or "{}",
                     execution.error_message,
@@ -392,12 +403,17 @@ class ExecutionRepository:
 
     @staticmethod
     def _row_to_model(row: Any) -> ExecutionRecord:
+        try:
+            strategy_name = row["strategy_name"]
+        except (KeyError, IndexError):
+            strategy_name = None
         return ExecutionRecord(
             id=row["id"],
             proposal_id=row["proposal_id"],
             status=row["status"],
             mode=row["mode"],
             broker_order_id=row["broker_order_id"],
+            strategy_name=strategy_name,
             request_payload=json.loads(row["request_json"] or "{}"),
             response_payload=json.loads(row["response_json"] or "{}"),
             error_message=row["error_message"],

@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS executions (
     status TEXT NOT NULL,
     mode TEXT NOT NULL,
     broker_order_id TEXT,
+    strategy_name TEXT,
     request_json TEXT,
     response_json TEXT,
     error_message TEXT,
@@ -866,6 +867,13 @@ class Database:
             if not self.is_sqlite:
                 schema = schema.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
             connection.executescript(schema)
+            # Idempotent column back-fills for databases created before a column
+            # was added. These run for BOTH dialects: a live Postgres table that
+            # predates the column would otherwise never gain it (CREATE ... IF NOT
+            # EXISTS leaves an existing table untouched), and an INSERT naming the
+            # missing column would fail at runtime.
+            self._ensure_column(connection, "execution_queue", "client_order_id", "TEXT")
+            self._ensure_column(connection, "executions", "strategy_name", "TEXT")
             if self.is_sqlite:
                 self._apply_schema_upgrades(connection)
 
@@ -875,10 +883,12 @@ class Database:
         return True if not self.is_sqlite else Path(self.path).exists()
 
     def _apply_schema_upgrades(self, connection: sqlite3.Connection) -> None:
-        """Apply idempotent schema upgrades for existing SQLite files."""
+        """Apply SQLite-only schema upgrades (partial indexes) for existing files.
 
-        if not self._column_exists(connection, "execution_queue", "client_order_id"):
-            connection.execute("ALTER TABLE execution_queue ADD COLUMN client_order_id TEXT")
+        Column back-fills now happen dialect-agnostically in ``initialize`` via
+        ``_ensure_column``; this keeps only the SQLite-specific partial index.
+        """
+
         connection.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_unique_open_per_symbol
@@ -886,6 +896,22 @@ class Database:
             WHERE status IN ('queued','processing')
             """
         )
+
+    def _ensure_column(self, connection: Any, table_name: str, column_name: str, column_type: str) -> None:
+        """Idempotently add a column to an existing table on either dialect.
+
+        Postgres supports ``ADD COLUMN IF NOT EXISTS`` directly; SQLite does not,
+        so we probe ``PRAGMA table_info`` first. A fresh database already has the
+        column from ``CREATE TABLE`` and this is a no-op.
+        """
+
+        if self.is_sqlite:
+            if not self._column_exists(connection, table_name, column_name):
+                connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
+        else:
+            connection.execute(
+                f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {column_name} {column_type}"
+            )
 
     @staticmethod
     def _column_exists(connection: sqlite3.Connection, table_name: str, column_name: str) -> bool:

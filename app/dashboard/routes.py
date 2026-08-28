@@ -91,7 +91,9 @@ def dashboard_data(request: Request) -> JSONResponse:
                 "side": req.get("side"),
                 "amount_usd": req.get("amount_usd"),
                 "qty": req.get("qty") or req.get("quantity"),
-                "strategy_name": req.get("strategy_name"),
+                # Prefer the first-class column; fall back to the payload for rows
+                # written before the executions.strategy_name column existed.
+                "strategy_name": getattr(record, "strategy_name", None) or req.get("strategy_name"),
                 "mode": getattr(record, "mode", None),
                 "status": getattr(record, "status", None),
                 "broker_order_id": getattr(record, "broker_order_id", None),
