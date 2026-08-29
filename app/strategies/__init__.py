@@ -32,6 +32,7 @@ from app.strategies.mean_reversion import MeanReversionStrategy
 from app.strategies.momentum_breakout import MomentumBreakoutStrategy
 from app.strategies.overnight_drift import OvernightDriftStrategy
 from app.strategies.pairs import PairsTradingStrategy
+from app.strategies.pead import PEADStrategy
 from app.strategies.pullback_trend import PullbackTrendStrategy
 from app.strategies.rsi_reversal import RSIReversalStrategy
 from app.strategies.rsi_trend_continuation import RSITrendContinuationStrategy
@@ -83,6 +84,7 @@ STRATEGY_REGISTRY: dict[str, type[BaseStrategy]] = {
     "connors_rsi2_reversion": ConnorsRSI2ReversionStrategy,
     "pairs_stat_arb": PairsTradingStrategy,
     "overnight_drift": OvernightDriftStrategy,
+    "post_earnings_drift": PEADStrategy,
 }
 
 CORE_STRATEGY_NAMES = frozenset(
@@ -123,6 +125,7 @@ ENHANCED_RESEARCH_STRATEGY_NAMES = frozenset(
         "connors_rsi2_reversion",
         "pairs_stat_arb",
         "overnight_drift",
+        "post_earnings_drift",
     }
 )
 
@@ -217,6 +220,7 @@ STRATEGY_SPECS: list[StrategySpec] = [
     StrategySpec("pairs_stat_arb", timeframe="1d", style="mean_reversion", default_kwargs={"timeframe": "1d"}, metadata=ENHANCED_METADATA),
     StrategySpec("pairs_stat_arb", timeframe="1h", style="mean_reversion", default_kwargs={"timeframe": "1h"}, metadata=ENHANCED_METADATA),
     StrategySpec("overnight_drift", timeframe="1d", style="momentum", default_kwargs={"timeframe": "1d"}, metadata=ENHANCED_METADATA),
+    StrategySpec("post_earnings_drift", timeframe="1d", style="momentum", default_kwargs={"timeframe": "1d"}, metadata=ENHANCED_METADATA),
 ]
 
 STRATEGY_SPECS = [
