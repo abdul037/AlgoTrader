@@ -27,6 +27,7 @@ from app.strategies.enhanced import (
     RelativeStrengthMomentumStrategy,
     VolatilityContractionBreakoutStrategy,
 )
+from app.strategies.connors_rsi2_reversion import ConnorsRSI2ReversionStrategy
 from app.strategies.mean_reversion import MeanReversionStrategy
 from app.strategies.momentum_breakout import MomentumBreakoutStrategy
 from app.strategies.pullback_trend import PullbackTrendStrategy
@@ -77,6 +78,7 @@ STRATEGY_REGISTRY: dict[str, type[BaseStrategy]] = {
     "early_breakout_pullback_continuation": EarlyBreakoutPullbackContinuationStrategy,
     "regime_aligned_trend_continuation": RegimeAlignedTrendContinuationStrategy,
     "confluence_recovery_breakout": ConfluenceRecoveryBreakoutStrategy,
+    "connors_rsi2_reversion": ConnorsRSI2ReversionStrategy,
 }
 
 CORE_STRATEGY_NAMES = frozenset(
@@ -114,6 +116,7 @@ ENHANCED_RESEARCH_STRATEGY_NAMES = frozenset(
         "early_breakout_pullback_continuation",
         "regime_aligned_trend_continuation",
         "confluence_recovery_breakout",
+        "connors_rsi2_reversion",
     }
 )
 
@@ -203,6 +206,8 @@ STRATEGY_SPECS: list[StrategySpec] = [
     StrategySpec("regime_aligned_trend_continuation", timeframe="1d", style="trend", default_kwargs={"timeframe": "1d"}, metadata=ENHANCED_METADATA),
     StrategySpec("confluence_recovery_breakout", timeframe="15m", style="breakout", default_kwargs={"timeframe": "15m"}, metadata=ENHANCED_METADATA),
     StrategySpec("confluence_recovery_breakout", timeframe="1h", style="breakout", default_kwargs={"timeframe": "1h"}, metadata=ENHANCED_METADATA),
+    StrategySpec("connors_rsi2_reversion", timeframe="1d", style="mean_reversion", default_kwargs={"timeframe": "1d"}, metadata=ENHANCED_METADATA),
+    StrategySpec("connors_rsi2_reversion", timeframe="1h", style="mean_reversion", default_kwargs={"timeframe": "1h"}, metadata=ENHANCED_METADATA),
 ]
 
 STRATEGY_SPECS = [
