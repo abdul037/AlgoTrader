@@ -1496,6 +1496,15 @@ def scan_universe(
                 break
 
     ranked = sorted(candidates, key=service._ranking_key, reverse=True)
+    # Cross-sectional momentum overlay: concentrate in the universe's leaders by
+    # dropping all but the top-momentum slice before truncation. No-op unless
+    # cross_sectional_momentum_enabled.
+    if bool(getattr(service.settings, "cross_sectional_momentum_enabled", False)) and ranked:
+        from app.screener.cross_sectional_momentum import filter_top_momentum
+
+        ranked = filter_top_momentum(
+            ranked, top_pct=float(getattr(service.settings, "cross_sectional_momentum_top_pct", 30.0) or 30.0)
+        )
     top_k = min(limit or service.settings.screener_top_k, len(ranked)) if ranked else 0
     top_candidates = [
         item.model_copy(update={"rank": index + 1})

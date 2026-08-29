@@ -291,6 +291,11 @@ class AppSettings(BaseSettings):
     # How long a computed market regime is reused within a scan before recompute,
     # so a full scan triggers one index-ETF fetch rather than one per candidate.
     regime_router_cache_seconds: float = 300.0
+    # Cross-sectional momentum: when true, the scan keeps only the top
+    # cross_sectional_momentum_top_pct percent of candidates by momentum,
+    # concentrating in the universe's leaders. Default off (scan unchanged).
+    cross_sectional_momentum_enabled: bool = False
+    cross_sectional_momentum_top_pct: float = 30.0
     # Intraday drawdown governor: when true, new position sizes are scaled down
     # as the day's realized loss deepens — full size until the soft threshold,
     # ramping to `floor` at the hard threshold. Keyed on daily realized P&L, so
