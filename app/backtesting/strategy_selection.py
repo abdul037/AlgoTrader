@@ -11,9 +11,12 @@ The screener still imports them from here; everything else stays the same.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.strategies import get_strategy_specs
+
+if TYPE_CHECKING:
+    from app.screener.regime_router import RegimeSignal
 
 
 def active_strategy_names(settings: Any, *, requested: set[str] | None = None) -> set[str] | None:
@@ -41,14 +44,27 @@ def strategy_specs_for(
     *,
     timeframe: str,
     requested: set[str] | None = None,
+    regime: RegimeSignal | None = None,
 ) -> list[Any]:
-    """Return the list of strategy specs active for ``timeframe``."""
+    """Return the list of strategy specs active for ``timeframe``.
+
+    When ``settings.regime_router_enabled`` is set and a ``regime`` is supplied,
+    the result is further narrowed to the strategy families the regime router
+    permits (momentum on healthy trends, mean-reversion in chop, defensive in
+    downtrends). With the flag off or no regime — the default — selection is
+    unchanged, so this is a safe no-op until explicitly enabled.
+    """
 
     active = active_strategy_names(settings, requested=requested)
     specs = get_strategy_specs(timeframe=timeframe)
-    if active is None:
-        return specs
-    return [spec for spec in specs if spec.name.lower() in active]
+    if active is not None:
+        specs = [spec for spec in specs if spec.name.lower() in active]
+    if regime is not None and bool(getattr(settings, "regime_router_enabled", False)):
+        # Imported lazily to avoid a screener<->backtesting import cycle.
+        from app.screener.regime_router import route_specs
+
+        specs = route_specs(specs, regime)
+    return specs
 
 
 def strategy_kwargs_for(settings: Any, spec: Any) -> dict[str, object]:

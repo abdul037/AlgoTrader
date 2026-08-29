@@ -283,6 +283,11 @@ class AppSettings(BaseSettings):
     # Stage 1 (prove-expectancy-on-paper): minimum closed trades before the
     # live-vs-backtest decay monitor will judge a strategy keep/watch/demote.
     stage1_decay_min_trades: int = 20
+    # Regime router: when true, strategy selection toggles whole families on/off
+    # by market regime (momentum on healthy trends, mean-reversion in chop,
+    # defensive in downtrends). Default off — it changes nothing live until
+    # explicitly enabled and validated.
+    regime_router_enabled: bool = False
     short_trading_enabled: bool = False
     short_minimum_account_equity_usd: float = 25_000.0
     short_max_borrow_cost_annual_pct: float = 5.0
