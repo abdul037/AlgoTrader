@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import AliasChoices, Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+if TYPE_CHECKING:
+    from app.config_sections import ConfigSections
 
 
 class AppSettings(BaseSettings):
@@ -670,6 +673,16 @@ class AppSettings(BaseSettings):
         if self.telegram_webhook_url:
             return "webhook"
         return "send-only"
+
+    @property
+    def sections(self) -> "ConfigSections":
+        """Typed, grouped view (Risk / Execution / Data / Strategy) over the flat
+        fields. Additive and back-compatible — flat access is unchanged. See
+        ``app.config_sections``."""
+
+        from app.config_sections import build_config_sections
+
+        return build_config_sections(self)
 
 
 @lru_cache(maxsize=1)
