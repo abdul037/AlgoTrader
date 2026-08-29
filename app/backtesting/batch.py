@@ -90,6 +90,14 @@ class BatchBacktestService:
                 for spec in strategy_specs_for(self.settings, timeframe=timeframe, requested=requested):
                     run_count += 1
                     strategy = get_strategy(spec.name, **strategy_kwargs_for(self.settings, spec))
+                    # Pairs/stat-arb needs its second leg; give it a hedge provider
+                    # bound to this engine + timeframe so it can be backtested.
+                    if hasattr(strategy, "set_hedge_provider"):
+                        strategy.set_hedge_provider(
+                            lambda sym, bars, _tf=timeframe, _prov=provider: self.market_data.get_history(
+                                sym, timeframe=_tf, bars=bars, provider=_prov
+                            )
+                        )
                     try:
                         summary = self._run_strategy(
                             engine=engine,

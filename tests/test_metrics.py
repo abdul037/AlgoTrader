@@ -17,10 +17,10 @@ def test_metrics_exposes_reconciliation_trading_and_safety_gauges(tmp_path):
     assert "algobot_positions_open 0" in response.text
     assert "algobot_reconciliation_healthy 0" in response.text
     assert "algobot_kill_switch_enabled 0" in response.text
-    assert "algobot_strategy_families_total 29" in response.text
-    assert "algobot_strategy_specs_total 72" in response.text
-    assert "algobot_strategy_families_enhanced_total 17" in response.text
-    assert "algobot_strategy_specs_enhanced_total 36" in response.text
+    assert "algobot_strategy_families_total 30" in response.text
+    assert "algobot_strategy_specs_total 74" in response.text
+    assert "algobot_strategy_families_enhanced_total 18" in response.text
+    assert "algobot_strategy_specs_enhanced_total 38" in response.text
 
 
 def test_process_health_does_not_depend_on_database_heavy_workflow_status(tmp_path, monkeypatch):
