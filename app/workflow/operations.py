@@ -269,6 +269,9 @@ def send_daily_summary_impl(service: Any, *, notify: bool) -> WorkflowTaskRespon
     reliability_lines = _daily_reliability_lines(service)
     if reliability_lines:
         message = f"{message}\n" + "\n".join(reliability_lines)
+    pnl_lines = _daily_pnl_lines(service)
+    if pnl_lines:
+        message = f"{message}\n" + "\n".join(pnl_lines)
     alerts_sent = 1 if (notify and service.notifier.send_text(message)) else 0
     service.alert_history.create(
         category="daily_summary",
@@ -335,6 +338,43 @@ def _daily_reliability_lines(service: Any) -> list[str]:
         if int(learning_status.get("failed_jobs") or 0) > 0:
             blockers.append("learning_failed_jobs_present")
     lines.append("Blockers: " + (", ".join(sorted(set(blockers))) if blockers else "none"))
+    return lines
+
+
+def _daily_pnl_lines(service: Any) -> list[str]:
+    """A today-focused P&L block for the daily summary: the day's realized P&L,
+    trade count, and best/worst strategy today. Complements the overall realized
+    P&L already in the reliability block. Fail-safe: returns [] on any problem."""
+
+    paper = getattr(service, "paper_trading", None)
+    trade_repo = getattr(paper, "trades", None)
+    if trade_repo is None or not hasattr(trade_repo, "list"):
+        return []
+    trades = _safe_list(lambda: trade_repo.list(limit=2000))
+    if not trades:
+        return []
+
+    from app.performance.strategy_performance import analyze_by_strategy, daily_pnl_series
+
+    series = daily_pnl_series(trades)
+    if not series:
+        return []
+    today = utc_now().strftime("%Y-%m-%d")
+    today_row = next((row for row in series if row["date"] == today), None)
+    today_trades = [t for t in trades if str(getattr(t, "closed_at", "") or "")[:10] == today]
+
+    lines = ["Today's paper P&L:"]
+    if today_row:
+        lines.append(f"Realized today: {today_row['realized_pnl_usd']:+.2f} ({today_row['trades']} trades)")
+    else:
+        lines.append("Realized today: +0.00 (0 trades)")
+    if today_trades:
+        ranked = analyze_by_strategy(today_trades)
+        best = ranked[0]
+        lines.append(f"Best: {best.strategy_name} {best.realized_pnl_usd:+.2f}")
+        worst = ranked[-1]
+        if worst.strategy_name != best.strategy_name:
+            lines.append(f"Worst: {worst.strategy_name} {worst.realized_pnl_usd:+.2f}")
     return lines
 
 
