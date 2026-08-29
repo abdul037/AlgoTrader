@@ -288,6 +288,9 @@ class AppSettings(BaseSettings):
     # defensive in downtrends). Default off — it changes nothing live until
     # explicitly enabled and validated.
     regime_router_enabled: bool = False
+    # How long a computed market regime is reused within a scan before recompute,
+    # so a full scan triggers one index-ETF fetch rather than one per candidate.
+    regime_router_cache_seconds: float = 300.0
     # Intraday drawdown governor: when true, new position sizes are scaled down
     # as the day's realized loss deepens — full size until the soft threshold,
     # ramping to `floor` at the hard threshold. Keyed on daily realized P&L, so
