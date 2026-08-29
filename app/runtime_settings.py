@@ -288,6 +288,14 @@ class AppSettings(BaseSettings):
     # defensive in downtrends). Default off — it changes nothing live until
     # explicitly enabled and validated.
     regime_router_enabled: bool = False
+    # Intraday drawdown governor: when true, new position sizes are scaled down
+    # as the day's realized loss deepens — full size until the soft threshold,
+    # ramping to `floor` at the hard threshold. Keyed on daily realized P&L, so
+    # it needs no equity high-water mark. Default off (no live sizing change).
+    drawdown_governor_enabled: bool = False
+    drawdown_governor_soft_pct: float = 2.0
+    drawdown_governor_hard_pct: float = 5.0
+    drawdown_governor_floor: float = 0.25
     short_trading_enabled: bool = False
     short_minimum_account_equity_usd: float = 25_000.0
     short_max_borrow_cost_annual_pct: float = 5.0

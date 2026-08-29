@@ -17,6 +17,7 @@ from app.models.execution import ExecutionRecord, ExecutionStatus
 from app.models.execution_queue import ExecutionQueueRecord, ExecutionQueueStatus
 from app.risk.context import build_risk_context
 from app.risk.guardrails import RiskManager
+from app.risk.volatility_target import daily_drawdown_pct, drawdown_governor_multiplier
 from app.utils.time import utc_now
 
 
@@ -218,6 +219,8 @@ class ExecutionCoordinator:
                 },
             )
             return record
+
+        self._apply_drawdown_governor(proposal, risk_context)
 
         if broker_name == "alpaca" and bool(getattr(self.settings, "alpaca_require_bracket_orders", True)):
             bracket_reasons = self._alpaca_bracket_reasons(proposal, quote_price)
@@ -561,6 +564,45 @@ class ExecutionCoordinator:
         if self.learning is not None:
             self.learning.record_execution_event(persisted, event_type="submitted")
         return persisted
+
+    def _apply_drawdown_governor(self, proposal: Any, risk_context: Any) -> None:
+        """Scale down a new order's size as the day's realized loss deepens.
+
+        No-op unless ``drawdown_governor_enabled``. Uses the day's realized P&L
+        already tracked in the risk context, ramps from full size at the soft
+        threshold to ``drawdown_governor_floor`` at the hard threshold, and never
+        sizes below the floor. Mutates ``proposal.order.amount_usd`` in place so
+        every downstream sizing (and the recorded request payload) reflects it.
+        """
+
+        if not bool(getattr(self.settings, "drawdown_governor_enabled", False)):
+            return
+        dd_pct = daily_drawdown_pct(
+            daily_realized_pnl_usd=float(getattr(risk_context, "daily_realized_pnl_usd", 0.0) or 0.0),
+            equity_usd=float(getattr(risk_context, "account_balance", 0.0) or 0.0),
+        )
+        multiplier = drawdown_governor_multiplier(
+            drawdown_pct=dd_pct,
+            soft_pct=float(getattr(self.settings, "drawdown_governor_soft_pct", 2.0)),
+            hard_pct=float(getattr(self.settings, "drawdown_governor_hard_pct", 5.0)),
+            floor=float(getattr(self.settings, "drawdown_governor_floor", 0.25)),
+        )
+        if multiplier >= 1.0:
+            return
+        original = float(proposal.order.amount_usd)
+        governed = round(original * multiplier, 2)
+        proposal.order.amount_usd = governed
+        self.logs.log(
+            "drawdown_governor_applied",
+            {
+                "proposal_id": proposal.id,
+                "symbol": proposal.order.symbol,
+                "daily_drawdown_pct": round(dd_pct, 3),
+                "multiplier": round(multiplier, 3),
+                "amount_before": original,
+                "amount_after": governed,
+            },
+        )
 
     @staticmethod
     def _alpaca_bracket_reasons(proposal: Any, quote_price: float) -> list[str]:

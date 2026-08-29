@@ -149,6 +149,20 @@ def drawdown_governor_multiplier(
     return min(max(scaled, floor), 1.0)
 
 
+def daily_drawdown_pct(*, daily_realized_pnl_usd: float, equity_usd: float) -> float:
+    """The day's realized loss as a positive percentage of equity (0 if up).
+
+    A cheap, no-extra-state drawdown proxy for an intraday sizing governor: it
+    uses the realized P&L already tracked per session, so new trades shrink as
+    the day's losses mount without needing a persisted equity high-water mark.
+    """
+
+    if equity_usd <= 0:
+        return 0.0
+    loss = min(0.0, float(daily_realized_pnl_usd))
+    return (-loss / equity_usd) * 100.0
+
+
 def time_stop_hit(*, bars_held: int, max_bars: int | None) -> bool:
     """True when a position has been held at least ``max_bars`` bars.
 
