@@ -36,7 +36,11 @@ def _service(trades, *, ready_gates=True):
 
 def _ready_record():
     # 120 winning days -> clears 60-day / 100-trade / Sharpe / DD / expectancy gates.
-    return [_trade(150.0, f"2026-{(i//28)+1:02d}-{(i%28)+1:02d}") for i in range(120)]
+    # Vary the daily P&L deterministically (100/125/150/175/200) so the return
+    # series has genuine, non-degenerate variance. A *constant* series has zero
+    # variance, where Sharpe is undefined and depends on float rounding (a huge
+    # number on one interpreter, exactly 0.0 on another) — fragile across CI.
+    return [_trade(100.0 + (i % 5) * 25.0, f"2026-{(i//28)+1:02d}-{(i%28)+1:02d}") for i in range(120)]
 
 
 def test_fires_once_when_ready() -> None:
