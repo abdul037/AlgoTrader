@@ -43,7 +43,7 @@ def test_dashboard_data_snapshot_shape(tmp_path: Path) -> None:
     # All sections present and JSON-serialisable even on a fresh, empty database.
     for key in (
         "config", "automation", "flags", "trades", "proposals", "scans",
-        "positions", "strategy_performance", "pnl_series",
+        "positions", "strategy_performance", "pnl_series", "stage3",
     ):
         assert key in data
     assert isinstance(data["pnl_series"], list)

@@ -403,6 +403,8 @@ class AppSettings(BaseSettings):
     paper_account_balance_usd: float = 100000.0
     paper_slippage_bps: float = 3.0
     weekly_profit_target_usd: float = 1000.0
+    # Stage 3 dollar-per-day goal used by the capital-sizing calculator.
+    daily_profit_target_usd: float = 1000.0
     weekly_target_window_weeks: int = 13
     weekly_target_capital_scenarios_usd: list[float] = Field(
         default_factory=lambda: [100_000.0, 250_000.0, 500_000.0]

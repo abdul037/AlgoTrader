@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from app.performance.stage3 import assess_stage3, real_capital_preflight
 from app.performance.strategy_performance import analyze_by_strategy, daily_pnl_series, decay_verdict
 from app.storage.repositories import ExecutionRepository, RuntimeStateRepository
 from app.utils.time import utc_now
@@ -116,6 +117,7 @@ def dashboard_data(request: Request) -> JSONResponse:
     pnl_series = _safe(
         lambda: daily_pnl_series(state.paper_trade_repository.list(limit=2000)), []
     )
+    stage3 = _safe(lambda: _stage3(state), None)
 
     payload = {
         "generated_at": utc_now().isoformat(),
@@ -139,8 +141,49 @@ def dashboard_data(request: Request) -> JSONResponse:
         "strategy_performance": strategy_performance,
         "pnl_series": pnl_series,
         "avg_slippage_bps": avg_slippage_bps,
+        "stage3": stage3,
     }
     return JSONResponse(payload)
+
+
+def _stage3(state: Any) -> dict[str, Any] | None:
+    """Stage 3 readiness + capital plan ('path to $1k/day') from the paper track record."""
+
+    trade_repo = getattr(state, "paper_trade_repository", None)
+    if trade_repo is None:
+        return None
+    settings = state.settings
+    capital = float(getattr(settings, "paper_account_balance_usd", 100_000.0) or 100_000.0)
+    target = float(getattr(settings, "weekly_profit_target_usd", 1000.0) or 1000.0)
+    # weekly target is a weekly figure elsewhere; here we want the daily goal.
+    daily_target = float(getattr(settings, "daily_profit_target_usd", 1000.0) or 1000.0)
+    readiness = assess_stage3(
+        trade_repo.list(limit=2000), capital_usd=capital, daily_target_usd=daily_target
+    )
+    preflight = real_capital_preflight(
+        readiness=readiness,
+        enable_real_trading=bool(getattr(settings, "enable_real_trading", False)),
+    )
+    plan = readiness.capital_plan
+    return {
+        "capital_usd": capital,
+        "daily_target_usd": daily_target,
+        "trading_days": readiness.trading_days,
+        "total_trades": readiness.total_trades,
+        "realized_pnl_usd": readiness.realized_pnl_usd,
+        "sharpe": readiness.sharpe,
+        "max_drawdown_pct": readiness.max_drawdown_pct,
+        "measured_daily_return_pct": plan.measured_daily_return_pct if plan else 0.0,
+        "capital_required_usd": plan.capital_required_usd if plan else None,
+        "implied_annualized_return_pct": plan.implied_annualized_return_pct if plan else 0.0,
+        "feasibility": plan.feasibility if plan else "no_edge",
+        "capital_note": plan.note if plan else "",
+        "gates": readiness.gates,
+        "blockers": readiness.blockers,
+        "stage3_ready": readiness.ready,
+        "real_trading_enabled": preflight.real_trading_currently_enabled,
+        "decision_allowed": preflight.decision_allowed,
+    }
 
 
 def _strategy_performance(state: Any) -> list[dict[str, Any]]:
@@ -244,6 +287,13 @@ _DASHBOARD_HTML = """<!doctype html>
   </section>
 
   <section>
+    <h2>Path to $1k/day <span class="muted" style="font-weight:400;font-size:12px">(Stage 3 · capital sizing &amp; readiness)</span></h2>
+    <div class="grid" id="stage3tiles"></div>
+    <div id="stage3gates" style="margin-top:6px"></div>
+    <div id="stage3note" class="muted" style="font-size:12px;margin-top:6px"></div>
+  </section>
+
+  <section>
     <h2>Trade log (executions)</h2>
     <div class="scroll"><table id="trades"><thead><tr>
       <th>Time</th><th>Symbol</th><th>Side</th><th>Qty / $</th><th>Strategy</th>
@@ -290,6 +340,29 @@ const t = iso => { if(!iso) return ''; const d=new Date(iso); return isNaN(d)?es
 const num = (v,d=2) => (v==null||v==='')?'':Number(v).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});
 const pnl = v => { if(v==null||v==='') return ''; const n=Number(v); const c=n>0?'pos':(n<0?'neg':''); return `<span class="${c}">${n>0?'+':''}${num(n)}</span>`; };
 function pill(el, text, cls){ el.textContent=text; el.className='pill '+cls; }
+function drawStage3(s){
+  const tiles = $('#stage3tiles'), gatesEl = $('#stage3gates'), noteEl = $('#stage3note');
+  if(!s){ tiles.innerHTML=''; gatesEl.innerHTML=''; noteEl.textContent=''; return; }
+  const capReq = s.capital_required_usd==null ? '—' : '$'+num(s.capital_required_usd,0);
+  const feasCls = {plausible:'ok', top_decile:'warn', implausible_extrapolation:'bad', no_edge:'bad'}[s.feasibility]||'warn';
+  tiles.innerHTML = [
+    ['Measured return/day', num(s.measured_daily_return_pct,3)+'%'],
+    ['Capital for $'+num(s.daily_target_usd,0)+'/day', capReq],
+    ['Implied annual', num(s.implied_annualized_return_pct,0)+'%'],
+    ['Track record', (s.trading_days||0)+' days · '+(s.total_trades||0)+' trades'],
+    ['Sharpe', num(s.sharpe,2)],
+    ['Max DD', num(s.max_drawdown_pct,1)+'%'],
+  ].map(([k,v])=>`<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join('');
+  const gate = (label,ok)=>`<span class="pill ${ok?'ok':'bad'}">${ok?'✓':'✗'} ${esc(label)}</span>`;
+  const g = s.gates||{};
+  gatesEl.innerHTML =
+    gate('60+ days', g.track_record_days) + ' ' + gate('100+ trades', g.trade_count) + ' ' +
+    gate('Sharpe ≥1.5', g.sharpe) + ' ' + gate('DD ≤8%', g.drawdown) + ' ' +
+    gate('positive expectancy', g.positive_expectancy) + ' ' +
+    `<span class="pill ${s.stage3_ready?'ok':'warn'}">${s.stage3_ready?'READY for capital decision':'accruing track record'}</span>` +
+    (s.real_trading_enabled?` <span class="pill bad">⚠ REAL TRADING ON</span>`:` <span class="pill ok">paper only</span>`);
+  noteEl.innerHTML = `<span class="pill ${feasCls}" style="margin-right:6px">${esc(s.feasibility||'')}</span>${esc(s.capital_note||'')}`;
+}
 function drawEquity(series){
   const svg = $('#equity'), empty = $('#equityempty');
   if(!series || series.length < 2){ svg.style.display='none'; empty.style.display='block'; svg.innerHTML=''; return; }
@@ -382,6 +455,7 @@ async function tick(){
   ]), 8, 'No scans recorded yet (runs during market hours).');
 
   drawEquity(d.pnl_series || []);
+  drawStage3(d.stage3);
 
   const verdictCls = {healthy:'ok', insufficient_data:'warn', decaying:'warn', dead:'bad'};
   rows('#stratperf', (d.strategy_performance||[]).map(p=>{
