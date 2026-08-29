@@ -272,6 +272,9 @@ def send_daily_summary_impl(service: Any, *, notify: bool) -> WorkflowTaskRespon
     pnl_lines = _daily_pnl_lines(service)
     if pnl_lines:
         message = f"{message}\n" + "\n".join(pnl_lines)
+    gated_lines = _gated_feature_lines(service)
+    if gated_lines:
+        message = f"{message}\n" + "\n".join(gated_lines)
     alerts_sent = 1 if (notify and service.notifier.send_text(message)) else 0
     if notify:
         _maybe_announce_stage3_ready(service)
@@ -436,6 +439,48 @@ def _daily_pnl_lines(service: Any) -> list[str]:
         worst = ranked[-1]
         if worst.strategy_name != best.strategy_name:
             lines.append(f"Worst: {worst.strategy_name} {worst.realized_pnl_usd:+.2f}")
+    return lines
+
+
+def _gated_feature_lines(service: Any) -> list[str]:
+    """A compact gated-feature status block for the daily summary: each default-off
+    feature's on/off state and its current GO/NO-GO verdict, plus an overall line.
+
+    Reuses the same collector the dashboard and Monday CLI use, via a small local
+    adapter that maps the workflow service onto the attribute names the collector
+    reads. Uses the cached regime (no forced fetch) to keep the daily push light.
+    Fail-safe: returns [] on any problem."""
+
+    from types import SimpleNamespace
+
+    from app.performance.gated_feature_report import collect_feature_verdicts
+
+    settings = getattr(service, "settings", None)
+    if settings is None:
+        return []
+    paper = getattr(service, "paper_trading", None)
+    screener = getattr(service, "market_screener", None)
+    adapter = SimpleNamespace(
+        settings=settings,
+        screener_service=screener,
+        market_screener_service=screener,
+        paper_trade_repository=getattr(paper, "trades", None),
+    )
+    try:
+        report = collect_feature_verdicts(adapter, force_refresh=False)
+    except Exception:  # noqa: BLE001 — the daily summary must never fail on this
+        return []
+
+    labels = {
+        "regime_router": "regime router",
+        "drawdown_governor": "drawdown governor",
+        "cross_sectional_momentum": "cross-sectional momentum",
+    }
+    lines = ["Gated features (default-off):"]
+    for feat in report["features"]:
+        state_txt = "ON" if feat["enabled"] else "off"
+        lines.append(f"{labels.get(feat['feature'], feat['feature'])}: {state_txt} — {feat['verdict']}")
+    lines.append(f"Overall: {report['overall']}")
     return lines
 
 
