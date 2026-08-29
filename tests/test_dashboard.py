@@ -44,8 +44,16 @@ def test_dashboard_data_snapshot_shape(tmp_path: Path) -> None:
     for key in (
         "config", "automation", "flags", "trades", "proposals", "scans",
         "positions", "strategy_performance", "pnl_series", "stage3",
+        "gated_features",
     ):
         assert key in data
+    # Gated-feature verdicts are present and well-shaped even on an empty DB.
+    gated = data["gated_features"]
+    assert gated is not None
+    assert {f["feature"] for f in gated["features"]} == {
+        "regime_router", "drawdown_governor", "cross_sectional_momentum",
+    }
+    assert gated["overall"] in {"GO", "REVIEW", "NEED-DATA", "NO-GO"}
     assert isinstance(data["pnl_series"], list)
     assert data["config"]["alpaca_account"] == "PA3B287XBZYU"
     assert isinstance(data["trades"], list)

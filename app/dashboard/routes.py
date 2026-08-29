@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from app.performance.gated_feature_report import collect_feature_verdicts
 from app.performance.stage3 import assess_stage3, real_capital_preflight
 from app.performance.strategy_performance import analyze_by_strategy, daily_pnl_series, decay_verdict
 from app.storage.repositories import ExecutionRepository, RuntimeStateRepository
@@ -118,6 +119,9 @@ def dashboard_data(request: Request) -> JSONResponse:
         lambda: daily_pnl_series(state.paper_trade_repository.list(limit=2000)), []
     )
     stage3 = _safe(lambda: _stage3(state), None)
+    # Gated-feature GO/NO-GO verdicts (cached regime — no forced fetch — to keep
+    # the dashboard fast). Same collector the Monday validation CLI uses.
+    gated_features = _safe(lambda: collect_feature_verdicts(state, force_refresh=False), None)
 
     payload = {
         "generated_at": utc_now().isoformat(),
@@ -142,6 +146,7 @@ def dashboard_data(request: Request) -> JSONResponse:
         "pnl_series": pnl_series,
         "avg_slippage_bps": avg_slippage_bps,
         "stage3": stage3,
+        "gated_features": gated_features,
     }
     return JSONResponse(payload)
 
@@ -294,6 +299,13 @@ _DASHBOARD_HTML = """<!doctype html>
   </section>
 
   <section>
+    <h2>Gated features <span class="muted" style="font-weight:400;font-size:12px">(default-off · read-only GO / NO-GO verdicts)</span>
+      <span id="gatedoverall" class="pill" style="margin-left:6px"></span></h2>
+    <div class="grid" id="gatedtiles"></div>
+    <div id="gatedempty" class="empty" style="padding:8px 2px">Verdicts unavailable (screener/data not ready).</div>
+  </section>
+
+  <section>
     <h2>Trade log (executions)</h2>
     <div class="scroll"><table id="trades"><thead><tr>
       <th>Time</th><th>Symbol</th><th>Side</th><th>Qty / $</th><th>Strategy</th>
@@ -362,6 +374,22 @@ function drawStage3(s){
     `<span class="pill ${s.stage3_ready?'ok':'warn'}">${s.stage3_ready?'READY for capital decision':'accruing track record'}</span>` +
     (s.real_trading_enabled?` <span class="pill bad">⚠ REAL TRADING ON</span>`:` <span class="pill ok">paper only</span>`);
   noteEl.innerHTML = `<span class="pill ${feasCls}" style="margin-right:6px">${esc(s.feasibility||'')}</span>${esc(s.capital_note||'')}`;
+}
+function drawGated(g){
+  const tiles = $('#gatedtiles'), empty = $('#gatedempty'), overall = $('#gatedoverall');
+  const cls = {'GO':'ok','REVIEW':'warn','NEED-DATA':'warn','NO-GO':'bad'};
+  const label = {regime_router:'Regime router', drawdown_governor:'Drawdown governor', cross_sectional_momentum:'Cross-sectional momentum'};
+  if(!g || !g.features || !g.features.length){ tiles.innerHTML=''; empty.style.display='block'; overall.textContent=''; return; }
+  empty.style.display='none';
+  overall.textContent = 'overall: '+g.overall; overall.className = 'pill '+(cls[g.overall]||'warn');
+  tiles.innerHTML = g.features.map(f=>{
+    const on = f.enabled ? '<span class="tag" style="margin-left:6px">ON</span>' : '<span class="tag" style="margin-left:6px">off</span>';
+    return `<div class="card">
+      <div class="k">${esc(label[f.feature]||f.feature)}${on}</div>
+      <div style="margin:4px 0"><span class="pill ${cls[f.verdict]||'warn'}">${esc(f.verdict)}</span></div>
+      <div class="muted" style="font-size:12px">${esc(f.detail)}</div>
+    </div>`;
+  }).join('');
 }
 function drawEquity(series){
   const svg = $('#equity'), empty = $('#equityempty');
@@ -456,6 +484,7 @@ async function tick(){
 
   drawEquity(d.pnl_series || []);
   drawStage3(d.stage3);
+  drawGated(d.gated_features);
 
   const verdictCls = {healthy:'ok', insufficient_data:'warn', decaying:'warn', dead:'bad'};
   rows('#stratperf', (d.strategy_performance||[]).map(p=>{
