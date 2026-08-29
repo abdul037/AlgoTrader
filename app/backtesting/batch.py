@@ -198,6 +198,22 @@ class BatchBacktestService:
         metrics = aggregated["metrics"]
         metrics["out_of_sample"] = True
         metrics["fold_count"] = int(metrics.get("fold_count", 0) or 0)
+
+        # Surface cost drag: the per-fold metrics carry cost_drag_pct/total_cost_usd
+        # from the engine, but aggregate_out_of_sample rebuilds metrics from trades
+        # and drops them. Average them back in so the gate sees friction.
+        fold_cost_drags = [float(m.get("cost_drag_pct", 0.0) or 0.0) for m in per_fold_metrics]
+        if fold_cost_drags:
+            metrics["cost_drag_pct"] = round(sum(fold_cost_drags) / len(fold_cost_drags), 6)
+            metrics["total_cost_usd"] = round(
+                sum(float(m.get("total_cost_usd", 0.0) or 0.0) for m in per_fold_metrics), 4
+            )
+
+        # Evaluate the sealed holdout (the permanent last-N-days window that no
+        # fold ever trained or tested on). This is the honest final check the
+        # brief mandates; its result gates promotion in _promotion_hint.
+        metrics.update(self._evaluate_holdout(engine, symbol, strategy, history, splitter, file_path))
+
         completed_at = utc_now().isoformat()
         if self.backtests is not None:
             self.backtests.create(
@@ -218,6 +234,44 @@ class BatchBacktestService:
             "out_of_sample": True,
             "fold_count": aggregated["metrics"].get("fold_count", 0),
             **metrics,
+        }
+
+    def _evaluate_holdout(
+        self,
+        engine: BacktestEngine,
+        symbol: str,
+        strategy: Any,
+        history: Any,
+        splitter: WalkForwardSplitter,
+        file_path: str,
+    ) -> dict[str, Any]:
+        """Score the sealed holdout window. Runs through a repo-less engine so the
+        holdout result is surfaced in the OOS metrics but never persisted as its
+        own backtest row (which could pollute the gate's latest-summary lookup)."""
+
+        try:
+            window = splitter.holdout_window(history)
+        except Exception:
+            window = None
+        if window is None:
+            return {"holdout_evaluated": False}
+        try:
+            holdout_engine = BacktestEngine(config=engine.config)
+            result = holdout_engine.run(
+                symbol=symbol,
+                strategy=strategy,
+                data=window.test_df,
+                file_path=f"{file_path}:holdout",
+            )
+        except Exception:
+            return {"holdout_evaluated": False}
+        m = result.metrics
+        return {
+            "holdout_evaluated": True,
+            "holdout_return_pct": round(float(m.get("total_return_pct", 0.0) or 0.0), 4),
+            "holdout_max_drawdown_pct": round(float(m.get("max_drawdown_pct", 0.0) or 0.0), 4),
+            "holdout_trades": int(m.get("number_of_trades", 0) or 0),
+            "holdout_expectancy_usd": round(float(m.get("expectancy_usd", 0.0) or 0.0), 4),
         }
 
     @staticmethod
@@ -257,7 +311,11 @@ class BatchBacktestService:
             avg_profit_factor = _avg(items, "profit_factor", cap=99.0)
             avg_sharpe = _avg(items, "sharpe_like")
             avg_drawdown = _avg(items, "max_drawdown_pct")
+            avg_cost_drag = _avg(items, "cost_drag_pct")
             profitable_run_pct = _profitable_run_pct(items)
+            holdout_items = [item for item in items if item.get("holdout_evaluated")]
+            holdout_evaluated = bool(holdout_items)
+            avg_holdout_return = _avg(holdout_items, "holdout_return_pct") if holdout_items else 0.0
             score = (
                 (avg_sharpe * 25.0)
                 + (avg_profit_factor * 10.0)
@@ -265,6 +323,7 @@ class BatchBacktestService:
                 + (profitable_run_pct * 0.15)
                 + (min(total_trades, 200) * 0.05)
                 - (avg_drawdown * 1.5)
+                - (avg_cost_drag * 2.0)
                 - (len(leakage_warnings) * 25.0)
             )
             rankings.append(
@@ -277,7 +336,10 @@ class BatchBacktestService:
                     "average_profit_factor": round(avg_profit_factor, 4),
                     "average_sharpe_like": round(avg_sharpe, 4),
                     "average_max_drawdown_pct": round(avg_drawdown, 4),
+                    "average_cost_drag_pct": round(avg_cost_drag, 6),
                     "profitable_run_pct": round(profitable_run_pct, 2),
+                    "holdout_evaluated": holdout_evaluated,
+                    "average_holdout_return_pct": round(avg_holdout_return, 4),
                     "leakage_warning_count": len(leakage_warnings),
                     "risk_adjusted_rank_score": round(score, 4),
                     "promotion_hint": _promotion_hint(
@@ -286,6 +348,8 @@ class BatchBacktestService:
                         profit_factor=avg_profit_factor,
                         drawdown=avg_drawdown,
                         leakage_warning_count=len(leakage_warnings),
+                        holdout_evaluated=holdout_evaluated,
+                        holdout_return_pct=avg_holdout_return,
                     ),
                 }
             )
@@ -326,9 +390,16 @@ def _promotion_hint(
     profit_factor: float,
     drawdown: float,
     leakage_warning_count: int,
+    holdout_evaluated: bool = False,
+    holdout_return_pct: float = 0.0,
 ) -> str:
     if leakage_warning_count:
         return "blocked_leakage_warning"
+    # The sealed holdout is the final honest test: a strategy that lost money on
+    # the window nothing ever trained or tested on is not a paper candidate,
+    # however good its walk-forward folds looked.
+    if holdout_evaluated and holdout_return_pct < 0.0:
+        return "blocked_holdout_negative"
     if total_trades >= 100 and expectancy > 0.0 and profit_factor >= 1.15 and drawdown <= 12.0:
         return "paper_candidate"
     return "research_only"
