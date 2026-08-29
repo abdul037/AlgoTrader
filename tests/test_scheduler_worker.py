@@ -105,6 +105,34 @@ def test_one_failing_job_does_not_stop_others_or_heartbeat() -> None:
     assert good["last_error"] is None
 
 
+def test_job_timeout_abandons_blocking_job_and_keeps_ticking() -> None:
+    import threading
+
+    clock = Clock(datetime(2026, 1, 1, tzinfo=UTC))
+    state = FakeRuntimeState()
+    release = threading.Event()
+    calls: list[str] = []
+
+    def hang() -> None:
+        release.wait(2)  # bounded so the abandoned thread cannot wedge the test
+
+    jobs = [
+        ScheduledJob("slow", 60, hang, timeout_seconds=0.3),
+        ScheduledJob("fast", 60, lambda: calls.append("fast")),
+    ]
+    worker = SchedulerWorker(jobs, runtime_state=state, clock=clock)
+
+    ran = worker.run_due_jobs()
+
+    assert ran == ["slow", "fast"]  # both attempted despite the slow one blocking
+    assert calls == ["fast"]  # the fast job still ran after the slow one timed out
+    assert state.get(HEARTBEAT_KEY) == clock.now.isoformat()  # heartbeat still advanced
+    status = worker.status()
+    slow = next(j for j in status["jobs"] if j["name"] == "slow")
+    assert "timeout" in (slow["last_error"] or "").lower()
+    release.set()
+
+
 def test_status_reports_heartbeat_age() -> None:
     clock = Clock(datetime(2026, 1, 1, tzinfo=UTC))
     worker = _worker([ScheduledJob("a", 60, lambda: None)], clock)
@@ -131,7 +159,9 @@ def test_ensure_alive_noop_when_stopped() -> None:
 def test_ensure_alive_restarts_dead_thread() -> None:
     import threading
 
-    worker = SchedulerWorker([ScheduledJob("a", 0.05, lambda: None)], tick_interval_seconds=1)
+    worker = SchedulerWorker(
+        [ScheduledJob("a", 0.05, lambda: None)], tick_interval_seconds=1, self_heal_enabled=False
+    )
     worker.start()
     # Simulate the loop thread having died without an intentional stop.
     dead = threading.Thread(target=lambda: None)
@@ -143,4 +173,85 @@ def test_ensure_alive_restarts_dead_thread() -> None:
     assert worker.ensure_alive() is True
     assert worker._thread is not dead
     assert worker.status()["restart_count"] == 1
+    assert worker.status()["last_restart_reason"] == "thread_died"
     worker.stop()
+
+
+def test_self_heal_restarts_hung_worker_on_stale_heartbeat() -> None:
+    import threading
+
+    clock = Clock(datetime(2026, 1, 1, tzinfo=UTC))
+    started = threading.Event()
+    release = threading.Event()
+
+    def hang() -> None:
+        started.set()
+        release.wait(2)  # bounded so an orphaned thread can never wedge the test
+
+    worker = SchedulerWorker(
+        [ScheduledJob("hang", 0.01, hang)],
+        tick_interval_seconds=1,
+        clock=clock,
+        self_heal_enabled=True,
+        stale_restart_seconds=100,
+        monitor_interval_seconds=1000,  # exercise ensure_alive() directly, not the monitor
+    )
+    worker.start()
+    assert started.wait(2)  # the tick is now blocked inside the job -> no more heartbeats
+
+    # A healthy live thread is left alone...
+    assert worker.ensure_alive() is False
+    # ...but once the beat is stale past the threshold, the hung thread is replaced.
+    clock.advance(200)
+    assert worker.ensure_alive() is True
+    assert worker.status()["restart_count"] == 1
+    assert worker.status()["last_restart_reason"] == "hung_heartbeat_stale"
+
+    release.set()
+    worker.stop()
+
+
+def test_self_heal_disabled_leaves_hung_thread_untouched() -> None:
+    import threading
+
+    clock = Clock(datetime(2026, 1, 1, tzinfo=UTC))
+    started = threading.Event()
+    release = threading.Event()
+
+    def hang() -> None:
+        started.set()
+        release.wait(2)
+
+    worker = SchedulerWorker(
+        [ScheduledJob("hang", 0.01, hang)],
+        tick_interval_seconds=1,
+        clock=clock,
+        self_heal_enabled=False,
+    )
+    worker.start()
+    assert started.wait(2)
+    assert worker._monitor_thread is None  # no monitor when self-heal is off
+
+    clock.advance(10_000)
+    assert worker.ensure_alive() is False  # hung thread is NOT restarted when disabled
+    assert worker.status()["restart_count"] == 0
+
+    release.set()
+    worker.stop()
+
+
+def test_monitor_thread_runs_only_when_self_heal_enabled() -> None:
+    on = SchedulerWorker(
+        [ScheduledJob("a", 1, lambda: None)], tick_interval_seconds=1, self_heal_enabled=True
+    )
+    on.start()
+    assert on._monitor_thread is not None and on._monitor_thread.is_alive()
+    on.stop()
+    assert not on._monitor_thread.is_alive()
+
+    off = SchedulerWorker(
+        [ScheduledJob("a", 1, lambda: None)], tick_interval_seconds=1, self_heal_enabled=False
+    )
+    off.start()
+    assert off._monitor_thread is None
+    off.stop()

@@ -8,9 +8,31 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
+from app.backtesting.metrics import deflated_sharpe
 from app.models.institutional import StrategyAudit, StrategyVersion
 
 router = APIRouter(prefix="/strategies/qualification", tags=["strategies"])
+
+
+def _deflated_sharpe_for_ranking(ranking: dict[str, Any], *, n_trials: int) -> float:
+    """Deflate a ranking's observed Sharpe for the number of strategies tested.
+
+    ``n_trials`` is how many strategy/timeframe configurations competed in this
+    batch — the multiple-testing count the Deflated Sharpe Ratio corrects for.
+    ``n_observations`` uses the out-of-sample trade count as a proxy for the
+    number of return observations. Returns a probability in [0, 1] that the true
+    Sharpe is positive after accounting for selection bias.
+    """
+
+    observed = float(ranking.get("average_sharpe_like") or 0.0)
+    n_obs = int(ranking.get("total_trades") or 0)
+    if observed <= 0.0 or n_obs < 2:
+        return 0.0
+    return deflated_sharpe(
+        observed,
+        n_trials=max(int(n_trials), 1),
+        n_observations=n_obs,
+    )
 
 
 class QualificationRunRequest(BaseModel):
@@ -80,7 +102,11 @@ def qualification_run(request: Request, payload: QualificationRunRequest):
     institutional = request.app.state.institutional_service
     errors = list(getattr(summary, "errors", []) or [])
     decisions: list[dict[str, Any]] = []
-    for ranking in list(getattr(summary, "audit_rankings", []) or []):
+    audit_rankings = list(getattr(summary, "audit_rankings", []) or [])
+    # The number of strategy/timeframe configurations that competed in this batch
+    # is the multiple-testing count the Deflated Sharpe Ratio must correct for.
+    n_trials = max(len(audit_rankings), 1)
+    for ranking in audit_rankings:
         strategy_name = str(ranking.get("strategy_name") or "").strip()
         timeframe = str(ranking.get("timeframe") or "").strip()
         if not strategy_name or not timeframe:
@@ -107,7 +133,7 @@ def qualification_run(request: Request, payload: QualificationRunRequest):
                 dataset_version=dataset_version,
                 timeframe=timeframe,
                 out_of_sample_trades=int(ranking.get("total_trades") or 0),
-                deflated_sharpe=float(ranking.get("average_sharpe_like") or 0.0),
+                deflated_sharpe=_deflated_sharpe_for_ranking(ranking, n_trials=n_trials),
                 rolling_sharpe=float(ranking.get("average_sharpe_like") or 0.0),
                 profit_factor=float(ranking.get("average_profit_factor") or 0.0),
                 expectancy_after_costs=float(ranking.get("average_expectancy_usd") or 0.0),

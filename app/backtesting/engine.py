@@ -58,6 +58,8 @@ class OpenTrade:
     take_profit: float | None
     entry_notional: float
     entry_spread_usd: float = 0.0
+    entry_bar_index: int = -1
+    max_hold_bars: int | None = None
 
 
 @dataclass
@@ -178,6 +180,7 @@ class BacktestEngine:
                     next_bar=next_bar,
                     cash=cash,
                     config=run_config,
+                    fill_bar_index=index + 1,
                 )
                 if entry_attempt is None:
                     continue
@@ -224,6 +227,14 @@ class BacktestEngine:
         from app.backtesting.cost_model import summarize_costs  # local import to avoid cycle
 
         cost_breakdown = summarize_costs(cost_events)
+
+        # Surface cost drag inside ``metrics`` so the validation/graduation gates,
+        # which read only the persisted ``metrics_json``, cannot ignore friction.
+        total_cost_usd = float(cost_breakdown.get("total_cost_usd", 0.0) or 0.0)
+        metrics["total_cost_usd"] = round(total_cost_usd, 4)
+        metrics["cost_drag_pct"] = round(
+            (total_cost_usd / run_config.initial_cash) * 100.0, 6
+        ) if run_config.initial_cash > 0 else 0.0
 
         result = BacktestResult(
             id=generate_id("bt"),
@@ -330,6 +341,17 @@ def _evaluate_exit(
     bar_time = _ensure_utc(bar["timestamp"])
     extended = _is_extended(bar_time, allow_extended_hours, bars_per_year=bars_per_year)
 
+    # Time-stop: once the max hold has elapsed, close at this bar's open. Decided
+    # at the open, so it precedes any intrabar stop/target on the same bar. This
+    # is what lets a short-hold / overnight-drift strategy exit on schedule.
+    if (
+        open_trade.max_hold_bars is not None
+        and open_trade.entry_bar_index >= 0
+        and (bar_index - open_trade.entry_bar_index) >= open_trade.max_hold_bars
+    ):
+        fill = cost_model.exit_fill_price(bar_open, side=open_trade.side, extended_hours=extended)
+        return _ExitAction(fill, bar_time, bar["timestamp"], "time_stop")
+
     # Stop and take-profit are evaluated intrabar. Stop wins ties to stay
     # conservative. Gap-through is modelled by taking the worse of the level
     # and the bar's open for the trader.
@@ -373,6 +395,7 @@ def _attempt_entry(
     next_bar: pd.Series,
     cash: float,
     config: EngineConfig,
+    fill_bar_index: int = -1,
 ) -> _EntryAttempt | None:
     if not valid_trade_plan(
         action=getattr(signal, "action", None),
@@ -417,8 +440,28 @@ def _attempt_entry(
         take_profit=_coerce_float(getattr(signal, "take_profit", None)),
         entry_notional=notional,
         entry_spread_usd=max(entry_spread, 0.0),
+        entry_bar_index=fill_bar_index,
+        max_hold_bars=_max_hold_bars(signal),
     )
     return _EntryAttempt(open_trade=open_trade, cash_after_entry=cash_after)
+
+
+def _max_hold_bars(signal: Any) -> int | None:
+    """Read an optional time-stop (max bars to hold) from a signal's metadata.
+
+    A strategy sets ``metadata['max_hold_bars']`` to force a time-based exit --
+    e.g. an overnight-drift strategy holds ~1 bar. None means no time-stop.
+    """
+
+    metadata = getattr(signal, "metadata", {}) or {}
+    raw = metadata.get("max_hold_bars")
+    if raw in (None, ""):
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 def _size_position(
@@ -462,7 +505,16 @@ def _close_trade(
         exit_time=exit_time,
     )
     fx_usd = cost_model.fx_round_trip_cost_usd(notional_usd=open_trade.entry_notional)
-    realized = proceeds - financing_usd - fx_usd
+    # Commission is charged on both legs; slippage drags both notionals; US equity
+    # regulatory fees apply to the sell leg only (the exit of a long).
+    commission_usd = 2.0 * cost_model.commission_usd(quantity=open_trade.quantity)
+    slippage_usd = cost_model.slippage_usd(
+        notional_usd=open_trade.entry_notional
+    ) + cost_model.slippage_usd(notional_usd=proceeds)
+    regulatory_usd = cost_model.regulatory_sell_fee_usd(
+        notional_usd=proceeds, quantity=open_trade.quantity
+    )
+    realized = proceeds - financing_usd - fx_usd - commission_usd - slippage_usd - regulatory_usd
     invested = open_trade.entry_notional
     pnl_usd = realized - invested
     pnl_pct = (pnl_usd / invested) * 100 if invested else 0.0
@@ -484,11 +536,17 @@ def _close_trade(
         "spread_usd": round(open_trade.entry_spread_usd + exit_spread_usd, 6),
         "financing_usd": round(financing_usd, 6),
         "fx_usd": round(fx_usd, 6),
+        "commission_usd": round(commission_usd, 6),
+        "slippage_usd": round(slippage_usd, 6),
+        "regulatory_usd": round(regulatory_usd, 6),
     }
     cost_event = {
         "spread_usd": open_trade.entry_spread_usd + exit_spread_usd,
         "financing_usd": financing_usd,
         "fx_usd": fx_usd,
+        "commission_usd": commission_usd,
+        "slippage_usd": slippage_usd,
+        "regulatory_usd": regulatory_usd,
     }
     return realized, cost_event, trade_record, warning
 

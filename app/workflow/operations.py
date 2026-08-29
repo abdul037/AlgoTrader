@@ -269,7 +269,15 @@ def send_daily_summary_impl(service: Any, *, notify: bool) -> WorkflowTaskRespon
     reliability_lines = _daily_reliability_lines(service)
     if reliability_lines:
         message = f"{message}\n" + "\n".join(reliability_lines)
+    pnl_lines = _daily_pnl_lines(service)
+    if pnl_lines:
+        message = f"{message}\n" + "\n".join(pnl_lines)
+    gated_lines = _gated_feature_lines(service)
+    if gated_lines:
+        message = f"{message}\n" + "\n".join(gated_lines)
     alerts_sent = 1 if (notify and service.notifier.send_text(message)) else 0
+    if notify:
+        _maybe_announce_stage3_ready(service)
     service.alert_history.create(
         category="daily_summary",
         status="sent" if alerts_sent else "generated",
@@ -335,6 +343,144 @@ def _daily_reliability_lines(service: Any) -> list[str]:
         if int(learning_status.get("failed_jobs") or 0) > 0:
             blockers.append("learning_failed_jobs_present")
     lines.append("Blockers: " + (", ".join(sorted(set(blockers))) if blockers else "none"))
+    return lines
+
+
+STAGE3_ANNOUNCED_KEY = "stage3:ready_announced_at"
+
+
+def _maybe_announce_stage3_ready(service: Any) -> bool:
+    """One-time alert the first day the paper track record clears the Stage 3
+    gates, so the operator knows the capital-decision conversation is warranted.
+
+    Persisted via runtime_state so it fires once. It only *reports* readiness;
+    real trading stays off until an explicit human decision. Fail-safe: any
+    problem is swallowed so it can never break the daily summary."""
+
+    runtime = getattr(service, "runtime_state", None)
+    settings = getattr(service, "settings", None)
+    trade_repo = getattr(getattr(service, "paper_trading", None), "trades", None)
+    if runtime is None or settings is None or trade_repo is None or not hasattr(trade_repo, "list"):
+        return False
+    try:
+        if runtime.get(STAGE3_ANNOUNCED_KEY):
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+
+    trades = _safe_list(lambda: trade_repo.list(limit=5000))
+    if not trades:
+        return False
+
+    from app.performance.stage3 import assess_stage3
+
+    capital = max(float(getattr(settings, "paper_account_balance_usd", 100_000.0) or 100_000.0), 1.0)
+    daily_target = float(getattr(settings, "daily_profit_target_usd", 1000.0) or 1000.0)
+    readiness = assess_stage3(trades, capital_usd=capital, daily_target_usd=daily_target)
+    if not readiness.ready:
+        return False
+    try:
+        runtime.set(STAGE3_ANNOUNCED_KEY, utc_now().isoformat())
+    except Exception:  # noqa: BLE001
+        return False
+
+    plan = readiness.capital_plan
+    cap_line = (
+        f"Capital for ${daily_target:,.0f}/day: ${plan.capital_required_usd:,.0f} ({plan.feasibility})"
+        if plan and plan.capital_required_usd
+        else "Capital plan: unavailable"
+    )
+    service.notifier.send_text(
+        "\n".join(
+            [
+                "\U0001f3af Stage 3 reached — paper track record meets the gates",
+                f"Days: {readiness.trading_days} | Trades: {readiness.total_trades} | "
+                f"Sharpe: {readiness.sharpe} | MaxDD: {readiness.max_drawdown_pct}%",
+                cap_line,
+                "The capital-decision conversation is now warranted. Real trading stays OFF "
+                "until you explicitly decide.",
+            ]
+        )
+    )
+    return True
+
+
+def _daily_pnl_lines(service: Any) -> list[str]:
+    """A today-focused P&L block for the daily summary: the day's realized P&L,
+    trade count, and best/worst strategy today. Complements the overall realized
+    P&L already in the reliability block. Fail-safe: returns [] on any problem."""
+
+    paper = getattr(service, "paper_trading", None)
+    trade_repo = getattr(paper, "trades", None)
+    if trade_repo is None or not hasattr(trade_repo, "list"):
+        return []
+    trades = _safe_list(lambda: trade_repo.list(limit=2000))
+    if not trades:
+        return []
+
+    from app.performance.strategy_performance import analyze_by_strategy, daily_pnl_series
+
+    series = daily_pnl_series(trades)
+    if not series:
+        return []
+    today = utc_now().strftime("%Y-%m-%d")
+    today_row = next((row for row in series if row["date"] == today), None)
+    today_trades = [t for t in trades if str(getattr(t, "closed_at", "") or "")[:10] == today]
+
+    lines = ["Today's paper P&L:"]
+    if today_row:
+        lines.append(f"Realized today: {today_row['realized_pnl_usd']:+.2f} ({today_row['trades']} trades)")
+    else:
+        lines.append("Realized today: +0.00 (0 trades)")
+    if today_trades:
+        ranked = analyze_by_strategy(today_trades)
+        best = ranked[0]
+        lines.append(f"Best: {best.strategy_name} {best.realized_pnl_usd:+.2f}")
+        worst = ranked[-1]
+        if worst.strategy_name != best.strategy_name:
+            lines.append(f"Worst: {worst.strategy_name} {worst.realized_pnl_usd:+.2f}")
+    return lines
+
+
+def _gated_feature_lines(service: Any) -> list[str]:
+    """A compact gated-feature status block for the daily summary: each default-off
+    feature's on/off state and its current GO/NO-GO verdict, plus an overall line.
+
+    Reuses the same collector the dashboard and Monday CLI use, via a small local
+    adapter that maps the workflow service onto the attribute names the collector
+    reads. Uses the cached regime (no forced fetch) to keep the daily push light.
+    Fail-safe: returns [] on any problem."""
+
+    from types import SimpleNamespace
+
+    from app.performance.gated_feature_report import collect_feature_verdicts
+
+    settings = getattr(service, "settings", None)
+    if settings is None:
+        return []
+    paper = getattr(service, "paper_trading", None)
+    screener = getattr(service, "market_screener", None)
+    adapter = SimpleNamespace(
+        settings=settings,
+        screener_service=screener,
+        market_screener_service=screener,
+        paper_trade_repository=getattr(paper, "trades", None),
+    )
+    try:
+        report = collect_feature_verdicts(adapter, force_refresh=False)
+    except Exception:  # noqa: BLE001 — the daily summary must never fail on this
+        return []
+
+    labels = {
+        "regime_router": "regime router",
+        "drawdown_governor": "drawdown governor",
+        "cross_sectional_momentum": "cross-sectional momentum",
+    }
+    lines = ["Gated features (default-off):"]
+    for feat in report["features"]:
+        state_txt = "ON" if feat["enabled"] else "off"
+        lines.append(f"{labels.get(feat['feature'], feat['feature'])}: {state_txt} — {feat['verdict']}")
+    lines.append(f"Overall: {report['overall']}")
     return lines
 
 

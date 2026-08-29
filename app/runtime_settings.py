@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import AliasChoices, Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+if TYPE_CHECKING:
+    from app.config_sections import ConfigSections
 
 
 class AppSettings(BaseSettings):
@@ -121,6 +124,16 @@ class AppSettings(BaseSettings):
     background_scheduler_tick_seconds: int = 5
     # Readiness turns "warning" once the worker heartbeat is older than this.
     scheduler_heartbeat_max_age_seconds: int = 180
+    # Self-healing watchdog: an internal monitor thread force-restarts the worker
+    # if a hung tick stops the heartbeat, so recovery never depends on an
+    # external readiness probe being called after deploy.
+    scheduler_self_heal_enabled: bool = True
+    scheduler_self_heal_stale_seconds: int = 300
+    scheduler_self_heal_check_seconds: int = 30
+    # Per-job wall-clock cap so one blocking job (e.g. a stalled market-data
+    # call) can never wedge the shared tick. Kept below the self-heal stale
+    # threshold so a bounded job finishes before a full worker restart.
+    scheduler_job_timeout_seconds: int = 180
     # Scheduled refresh of the internal (self-simulated) paper position ledger.
     paper_position_refresh_enabled: bool = True
     paper_position_refresh_interval_seconds: int = 60
@@ -263,9 +276,37 @@ class AppSettings(BaseSettings):
     portfolio_max_symbol_exposure_pct: float = 15.0
     portfolio_max_sector_exposure_pct: float = 25.0
     portfolio_max_correlated_exposure_pct: float = 30.0
+    # Portfolio heat: the sum of open per-trade risk (each position's entry->stop
+    # dollar risk) as a percent of equity. A book can pass every single-trade risk
+    # check and still bet the account; this caps the aggregate. 0 disables.
+    portfolio_max_heat_pct: float = 6.0
     portfolio_future_max_risk_per_trade_pct: float = 0.5
     portfolio_micro_live_max_risk_per_trade_pct: float = 0.1
     institutional_portfolio_controls_enabled: bool = False
+    # Stage 1 (prove-expectancy-on-paper): minimum closed trades before the
+    # live-vs-backtest decay monitor will judge a strategy keep/watch/demote.
+    stage1_decay_min_trades: int = 20
+    # Regime router: when true, strategy selection toggles whole families on/off
+    # by market regime (momentum on healthy trends, mean-reversion in chop,
+    # defensive in downtrends). Default off — it changes nothing live until
+    # explicitly enabled and validated.
+    regime_router_enabled: bool = False
+    # How long a computed market regime is reused within a scan before recompute,
+    # so a full scan triggers one index-ETF fetch rather than one per candidate.
+    regime_router_cache_seconds: float = 300.0
+    # Cross-sectional momentum: when true, the scan keeps only the top
+    # cross_sectional_momentum_top_pct percent of candidates by momentum,
+    # concentrating in the universe's leaders. Default off (scan unchanged).
+    cross_sectional_momentum_enabled: bool = False
+    cross_sectional_momentum_top_pct: float = 30.0
+    # Intraday drawdown governor: when true, new position sizes are scaled down
+    # as the day's realized loss deepens — full size until the soft threshold,
+    # ramping to `floor` at the hard threshold. Keyed on daily realized P&L, so
+    # it needs no equity high-water mark. Default off (no live sizing change).
+    drawdown_governor_enabled: bool = False
+    drawdown_governor_soft_pct: float = 2.0
+    drawdown_governor_hard_pct: float = 5.0
+    drawdown_governor_floor: float = 0.25
     short_trading_enabled: bool = False
     short_minimum_account_equity_usd: float = 25_000.0
     short_max_borrow_cost_annual_pct: float = 5.0
@@ -370,6 +411,8 @@ class AppSettings(BaseSettings):
     paper_account_balance_usd: float = 100000.0
     paper_slippage_bps: float = 3.0
     weekly_profit_target_usd: float = 1000.0
+    # Stage 3 dollar-per-day goal used by the capital-sizing calculator.
+    daily_profit_target_usd: float = 1000.0
     weekly_target_window_weeks: int = 13
     weekly_target_capital_scenarios_usd: list[float] = Field(
         default_factory=lambda: [100_000.0, 250_000.0, 500_000.0]
@@ -630,6 +673,16 @@ class AppSettings(BaseSettings):
         if self.telegram_webhook_url:
             return "webhook"
         return "send-only"
+
+    @property
+    def sections(self) -> "ConfigSections":
+        """Typed, grouped view (Risk / Execution / Data / Strategy) over the flat
+        fields. Additive and back-compatible — flat access is unchanged. See
+        ``app.config_sections``."""
+
+        from app.config_sections import build_config_sections
+
+        return build_config_sections(self)
 
 
 @lru_cache(maxsize=1)

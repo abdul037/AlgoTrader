@@ -71,6 +71,7 @@ class ExecutionRecord(BaseModel):
     status: str = ExecutionStatus.CREATED
     mode: str
     broker_order_id: str | None = None
+    strategy_name: str | None = None
     request_payload: dict[str, Any] = Field(default_factory=dict)
     response_payload: dict[str, Any] = Field(default_factory=dict)
     error_message: str | None = None

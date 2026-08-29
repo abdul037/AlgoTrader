@@ -37,6 +37,14 @@ def build_risk_context(settings: Any, broker: Any, executions_repo: Any) -> Risk
 
     portfolio = broker.get_portfolio()
     account_balance = max(portfolio.account.equity, portfolio.account.cash_balance, 1.0)
+    # Broker position objects don't carry their protective stop (it lives on the
+    # bracket legs), so exact entry->stop risk isn't recoverable here. Use a
+    # conservative proxy: assume each open position still carries its full initial
+    # per-trade risk budget. This never under-estimates portfolio heat, which is
+    # the safe direction for an aggregate risk cap.
+    per_position_risk_usd = account_balance * (
+        float(getattr(settings, "max_risk_per_trade_pct", 0.0) or 0.0) / 100.0
+    )
     positions_by_symbol: dict[str, int] = {}
     exposure_by_symbol_pct: dict[str, float] = {}
     exposure_by_sector_pct: dict[str, float] = {}
@@ -77,5 +85,6 @@ def build_risk_context(settings: Any, broker: Any, executions_repo: Any) -> Risk
         correlated_exposure_pct=max(exposure_by_correlation_bucket_pct.values(), default=0.0),
         consecutive_losses_today=consecutive_losses,
         trades_today=trades_today,
+        open_trade_risks_usd=[per_position_risk_usd] * len(portfolio.positions),
         mode="paper" if settings.execution_mode == "paper" else settings.etoro_account_mode,
     )

@@ -240,6 +240,38 @@ class MarketIntelligenceService:
             measurements=measurements,
         )
 
+    def market_regime_signal(self, *, force_refresh: bool = False) -> Any | None:
+        """Compute a market-wide RegimeSignal (trend/volatility/breadth) from the
+        index ETFs alone — no symbol, no signal entanglement.
+
+        This is the input the portfolio-level regime router needs *before* per-
+        symbol signal generation. Returns None if the benchmark history can't be
+        fetched (the router then falls back to running every family). The bridge
+        is imported lazily to avoid a screener<->intelligence import cycle.
+        """
+
+        benchmark_daily = self._safe_history("SPY", timeframe="1d", bars=180, force_refresh=force_refresh)
+        if benchmark_daily is None:
+            return None
+        growth_daily = self._safe_history("QQQ", timeframe="1d", bars=180, force_refresh=force_refresh)
+        breadth_daily = self._safe_history("IWM", timeframe="1d", bars=180, force_refresh=force_refresh)
+
+        trend_score = self._market_trend_score(
+            benchmark_daily=benchmark_daily, growth_daily=growth_daily, is_short=False
+        )
+        breadth_score = self._breadth_score(
+            benchmark_daily=benchmark_daily, breadth_daily=breadth_daily, is_short=False
+        )
+        _vol_score, volatility_environment = self._volatility_environment(benchmark_daily)
+
+        from app.screener.regime_router import regime_signal_from_scores
+
+        return regime_signal_from_scores(
+            trend_score=trend_score,
+            breadth_score=breadth_score,
+            volatility_environment=volatility_environment,
+        )
+
     def _safe_history(
         self,
         symbol: str | None,

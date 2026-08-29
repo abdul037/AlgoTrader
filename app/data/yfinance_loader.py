@@ -2,13 +2,52 @@
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+import threading
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 import pandas as pd
 import yfinance as yf
 
+logger = logging.getLogger(__name__)
 
 REQUIRED_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
+
+# Yahoo aggressively rate-limits / stalls requests from cloud-provider IPs, and
+# yfinance can then block indefinitely (no reliable internal timeout in 1.6.0).
+# A hard wall-clock cap guarantees a stalled fetch fails fast so the scheduler
+# tick can fall back to another provider instead of hanging the whole worker.
+DEFAULT_YFINANCE_TIMEOUT_SECONDS = 15.0
+
+_T = TypeVar("_T")
+
+
+def _call_with_timeout(fn: Callable[[], _T], timeout: float, *, what: str) -> _T:
+    """Run ``fn`` on a daemon thread, raising ``TimeoutError`` if it overruns.
+
+    The overrunning thread is abandoned (it is a daemon, so it cannot keep the
+    process alive); this trades a rare leaked thread for a guarantee that the
+    caller — and the scheduler tick above it — never blocks past ``timeout``.
+    """
+
+    box: dict[str, Any] = {}
+
+    def _target() -> None:
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller thread
+            box["error"] = exc
+
+    worker = threading.Thread(target=_target, name="yfinance-fetch", daemon=True)
+    worker.start()
+    worker.join(max(float(timeout), 1.0))
+    if worker.is_alive():
+        logger.warning("yfinance fetch timed out after %.0fs: %s", timeout, what)
+        raise TimeoutError(f"yfinance fetch timed out after {timeout:.0f}s: {what}")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]  # type: ignore[return-value]
 
 
 def _flatten_columns(frame: pd.DataFrame) -> pd.DataFrame:
@@ -60,11 +99,19 @@ def load_yfinance_history(
     period: str = "5y",
     interval: str = "1d",
     auto_adjust: bool = False,
+    timeout: float = DEFAULT_YFINANCE_TIMEOUT_SECONDS,
 ) -> pd.DataFrame:
-    """Load historical OHLCV data from Yahoo Finance."""
+    """Load historical OHLCV data from Yahoo Finance (with a hard timeout)."""
 
-    ticker = yf.Ticker(symbol.upper())
-    frame = ticker.history(period=period, interval=interval, auto_adjust=auto_adjust)
+    def _fetch() -> pd.DataFrame:
+        ticker = yf.Ticker(symbol.upper())
+        return ticker.history(period=period, interval=interval, auto_adjust=auto_adjust)
+
+    frame = _call_with_timeout(
+        _fetch,
+        timeout,
+        what=f"symbol={symbol.upper()} period={period} interval={interval}",
+    )
     if frame.empty:
         raise ValueError(
             f"yfinance returned no data for symbol={symbol.upper()} period={period} interval={interval}."

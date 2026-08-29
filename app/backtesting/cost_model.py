@@ -16,6 +16,7 @@ share between backtest runs because it holds no state.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
@@ -58,6 +59,37 @@ class CostModel:
     without the Friday triple-charge. Leave True for equity CFDs.
     """
 
+    commission_per_share: float = 0.0
+    """Broker commission charged per share, applied on both entry and exit legs."""
+
+    commission_min_usd: float = 0.0
+    """Per-leg commission floor. A non-zero commission is raised to this minimum."""
+
+    slippage_bps: float = 0.0
+    """Non-spread execution slippage in bps, applied as a drag to each fill leg.
+
+    This captures the gap between the model's reference fill and the price a real
+    marketable order actually gets, *beyond* the quoted half-spread — queue
+    position, latency, and the fact that our size walks the book. Applied to
+    entry notional and exit notional independently.
+    """
+
+    sec_fee_per_dollar: float = 0.0
+    """SEC Section 31 fee, charged on the *sell* side only, per dollar of notional.
+    2024 rate is $27.80 per $1,000,000 sold == 0.0000278."""
+
+    finra_taf_per_share: float = 0.0
+    """FINRA Trading Activity Fee, charged on the *sell* side only, per share sold.
+    2024 rate is $0.000166/share, capped per trade (see ``finra_taf_max_usd``)."""
+
+    finra_taf_max_usd: float = 0.0
+    """Per-trade cap on the FINRA TAF. Zero means uncapped (use a real cap for equities)."""
+
+    impact_coefficient: float = 0.0
+    """Square-root market-impact coefficient. Impact fraction == coef * sqrt(participation),
+    where participation == order_notional / average_daily_dollar_volume. Zero disables
+    ADV-based impact (callers that have no ADV rely on ``slippage_bps`` instead)."""
+
     @classmethod
     def alpaca_equities(cls) -> "CostModel":
         """Realistic cost defaults for US equities executed via Alpaca paper/live.
@@ -66,6 +98,10 @@ class CostModel:
           spread: ~1-3 bps round-trip on top100 names during RTH (much wider in extended hours)
           financing: 0 for cash equity positions (only applies if margin-borrowed; default cash)
           FX: 0 for USD-denominated account holding USD equities
+          commission: $0 at Alpaca, but regulatory sell-side fees are real:
+            SEC Section 31 fee 0.0000278/$ sold; FINRA TAF $0.000166/share sold, cap $8.30
+          slippage: a conservative 1 bps/leg of non-spread execution drag
+          impact: square-root model, coef 0.1 (trading 100% of ADV ~= 10% impact)
           min position: Alpaca supports fractional shares from $1; floor at $1
         """
 
@@ -77,6 +113,13 @@ class CostModel:
             fx_spread_bps=0.0,
             min_position_usd=1.0,
             include_weekend_financing=False,
+            commission_per_share=0.0,
+            commission_min_usd=0.0,
+            slippage_bps=1.0,
+            sec_fee_per_dollar=0.0000278,
+            finra_taf_per_share=0.000166,
+            finra_taf_max_usd=8.30,
+            impact_coefficient=0.1,
         )
 
     def half_spread_fraction(self, *, extended_hours: bool = False) -> float:
@@ -167,6 +210,64 @@ class CostModel:
             return 0.0
         return notional_usd * self.fx_spread_bps * _BPS
 
+    def commission_usd(self, *, quantity: float) -> float:
+        """Per-leg broker commission for ``quantity`` shares."""
+
+        if quantity <= 0 or (self.commission_per_share <= 0 and self.commission_min_usd <= 0):
+            return 0.0
+        raw = abs(quantity) * self.commission_per_share
+        if self.commission_min_usd > 0 and raw < self.commission_min_usd:
+            return self.commission_min_usd
+        return raw
+
+    def slippage_usd(self, *, notional_usd: float) -> float:
+        """Per-leg non-spread execution slippage in dollars."""
+
+        if notional_usd <= 0 or self.slippage_bps <= 0:
+            return 0.0
+        return abs(notional_usd) * self.slippage_bps * _BPS
+
+    def market_impact_usd(
+        self,
+        *,
+        notional_usd: float,
+        avg_daily_dollar_volume: float | None,
+    ) -> float:
+        """Square-root market-impact cost for a single fill leg.
+
+        ``impact_fraction = impact_coefficient * sqrt(order_notional / ADV$)``.
+        Returns 0 when impact is disabled or ADV is unknown/non-positive — callers
+        without ADV fall back to the flat ``slippage_bps`` drag instead.
+        """
+
+        if (
+            notional_usd <= 0
+            or self.impact_coefficient <= 0
+            or not avg_daily_dollar_volume
+            or avg_daily_dollar_volume <= 0
+        ):
+            return 0.0
+        participation = abs(notional_usd) / float(avg_daily_dollar_volume)
+        impact_fraction = self.impact_coefficient * math.sqrt(participation)
+        return abs(notional_usd) * impact_fraction
+
+    def regulatory_sell_fee_usd(self, *, notional_usd: float, quantity: float) -> float:
+        """SEC Section 31 + FINRA TAF fees, charged on the sell leg only.
+
+        US equity regulatory fees apply to sales, not purchases. For a long
+        round-trip that is the exit; callers must invoke this only on the sell.
+        """
+
+        if notional_usd <= 0:
+            return 0.0
+        sec = abs(notional_usd) * self.sec_fee_per_dollar if self.sec_fee_per_dollar > 0 else 0.0
+        taf = 0.0
+        if self.finra_taf_per_share > 0 and quantity > 0:
+            taf = abs(quantity) * self.finra_taf_per_share
+            if self.finra_taf_max_usd > 0:
+                taf = min(taf, self.finra_taf_max_usd)
+        return sec + taf
+
     def accepts_position(self, *, notional_usd: float) -> bool:
         """Reject fills that do not clear the minimum-position threshold."""
 
@@ -236,17 +337,37 @@ def summarize_costs(cost_events: Iterable[dict[str, float]]) -> dict[str, float]
     total_spread = 0.0
     total_financing = 0.0
     total_fx = 0.0
+    total_commission = 0.0
+    total_slippage = 0.0
+    total_regulatory = 0.0
+    total_impact = 0.0
     trade_count = 0
     for event in cost_events:
         total_spread += float(event.get("spread_usd", 0.0) or 0.0)
         total_financing += float(event.get("financing_usd", 0.0) or 0.0)
         total_fx += float(event.get("fx_usd", 0.0) or 0.0)
+        total_commission += float(event.get("commission_usd", 0.0) or 0.0)
+        total_slippage += float(event.get("slippage_usd", 0.0) or 0.0)
+        total_regulatory += float(event.get("regulatory_usd", 0.0) or 0.0)
+        total_impact += float(event.get("impact_usd", 0.0) or 0.0)
         trade_count += 1
-    total = total_spread + total_financing + total_fx
+    total = (
+        total_spread
+        + total_financing
+        + total_fx
+        + total_commission
+        + total_slippage
+        + total_regulatory
+        + total_impact
+    )
     return {
         "total_cost_usd": round(total, 4),
         "spread_cost_usd": round(total_spread, 4),
         "financing_cost_usd": round(total_financing, 4),
         "fx_cost_usd": round(total_fx, 4),
+        "commission_cost_usd": round(total_commission, 4),
+        "slippage_cost_usd": round(total_slippage, 4),
+        "regulatory_cost_usd": round(total_regulatory, 4),
+        "impact_cost_usd": round(total_impact, 4),
         "trades_costed": int(trade_count),
     }

@@ -10,6 +10,7 @@ from app.models.trade import TradeOrder
 from app.risk.rules import RiskValidationResult, estimate_risk_amount, leverage_cap_for_asset
 from app.risk.sectors import correlation_bucket_for_symbol, sector_for_symbol
 from app.risk.shorting import ShortTradePolicy
+from app.risk.volatility_target import fits_within_heat, portfolio_heat_pct
 
 
 class RiskContext(BaseModel):
@@ -29,6 +30,9 @@ class RiskContext(BaseModel):
     portfolio_drawdown_pct: float = 0.0
     consecutive_losses_today: int = 0
     trades_today: int = 0
+    open_trade_risks_usd: list[float] = Field(default_factory=list)
+    """Per-trade dollar risk (entry->stop) of each currently open position. Summed
+    into portfolio heat and checked against ``portfolio_max_heat_pct``."""
     mode: str = "demo"
 
 
@@ -174,6 +178,25 @@ class RiskManager:
             if risk_pct > risk_cap:
                 reasons.append(
                     f"Estimated trade risk {risk_pct:.2f}% exceeds the {risk_cap:.2f}% cap"
+                )
+
+            # Portfolio-heat cap: the sum of open per-trade risk plus this order's
+            # risk must stay within the aggregate budget. This catches the case
+            # where every individual trade is within its per-trade cap yet the
+            # book as a whole is over-exposed.
+            max_heat_pct = float(getattr(self.settings, "portfolio_max_heat_pct", 0.0) or 0.0)
+            if max_heat_pct > 0 and not fits_within_heat(
+                risk_amount,
+                context.open_trade_risks_usd,
+                equity_usd=context.account_balance,
+                max_heat_pct=max_heat_pct,
+            ):
+                current_heat = portfolio_heat_pct(
+                    context.open_trade_risks_usd, context.account_balance
+                )
+                reasons.append(
+                    f"Portfolio heat {current_heat:.2f}% + this trade exceeds the "
+                    f"{max_heat_pct:.2f}% aggregate risk cap"
                 )
 
         if context.mode == "real" and not self.settings.enable_real_trading:

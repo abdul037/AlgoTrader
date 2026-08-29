@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from app.backtesting.batch import BatchBacktestService
@@ -90,6 +91,7 @@ class MarketScreenerService:
         self.strategy_lab = strategy_lab_service
         self.filters = ScreenerFilterPipeline(self.effective_settings)
         self.intelligence = MarketIntelligenceService(self.effective_settings, market_data_engine)
+        self._regime_cache: tuple[float, Any] | None = None
 
     def get_universe(self, *, limit: int | None = None) -> MarketUniverseResponse:
         symbols = resolve_universe(self.settings, limit=limit)
@@ -161,13 +163,35 @@ class MarketScreenerService:
         return backtest_validation(self, symbol, strategy_name, timeframe)
 
     def _strategy_specs_for_timeframe(self, timeframe: str, strategy_spec_keys: list[str] | set[str] | None = None) -> list[Any]:
-        specs = list(_strategy_specs(self.settings, timeframe=timeframe))
+        specs = list(_strategy_specs(self.settings, timeframe=timeframe, regime=self._current_regime()))
         if self.strategy_lab is not None:
             specs.extend(self.strategy_lab.active_specs(timeframe=timeframe))
         if strategy_spec_keys:
             requested = {str(item).strip().lower() for item in strategy_spec_keys if str(item).strip()}
             specs = [spec for spec in specs if self._strategy_spec_key(spec) in requested]
         return specs
+
+    def _current_regime(self) -> Any | None:
+        """The current market regime for the router, or None when disabled/unavailable.
+
+        Computed at most once per ``regime_router_cache_seconds`` window and cached
+        on the instance so a full scan (many symbols x timeframes) triggers a single
+        index-ETF fetch, not one per candidate. Any failure yields None, and the
+        router treats None as 'run every family' — so a regime hiccup never starves
+        the scan. Entirely inert unless ``regime_router_enabled``."""
+
+        if not bool(getattr(self.settings, "regime_router_enabled", False)):
+            return None
+        ttl = float(getattr(self.settings, "regime_router_cache_seconds", 300.0) or 0.0)
+        now = time.monotonic()
+        if self._regime_cache is not None and (now - self._regime_cache[0]) < ttl:
+            return self._regime_cache[1]
+        try:
+            signal = self.intelligence.market_regime_signal()
+        except Exception:
+            signal = None
+        self._regime_cache = (now, signal)
+        return signal
 
     def strategy_spec_keys_for_timeframes(self, timeframes: list[str]) -> list[str]:
         """Return stable spec keys for workflow-level scheduled batching."""
@@ -189,7 +213,23 @@ class MarketScreenerService:
             strategy = self.strategy_lab.build_strategy_for_spec(spec)
             if strategy is not None:
                 return configure_weak_signal_emission(strategy, self.settings)
-        return configure_weak_signal_emission(get_strategy(spec.name, **_strategy_kwargs(self.settings, spec)), self.settings)
+        strategy = get_strategy(spec.name, **_strategy_kwargs(self.settings, spec))
+        self._inject_providers(strategy, spec)
+        return configure_weak_signal_emission(strategy, self.settings)
+
+    def _inject_providers(self, strategy: Any, spec: Any) -> None:
+        """Give multi-leg strategies (pairs/stat-arb) the extra data they need.
+
+        The single-symbol scan can't hand a strategy its second leg, so a pairs
+        strategy pulls it through a provider bound to this screener's market-data
+        engine and the spec's timeframe -- the same wiring the batch backtester
+        uses, so a pairs edge validated in backtest behaves identically live."""
+
+        if hasattr(strategy, "set_hedge_provider"):
+            timeframe = getattr(spec, "timeframe", "1d")
+            strategy.set_hedge_provider(
+                lambda sym, bars, _tf=timeframe: self.market_data.get_history(sym, timeframe=_tf, bars=bars)
+            )
 
     def _get_latest_backtest_summary(
         self,

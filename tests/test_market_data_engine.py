@@ -246,3 +246,37 @@ def test_market_data_engine_rejects_unsupported_timeframe(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="Unsupported timeframe"):
         engine.get_history("NVDA", timeframe="2m", bars=20, force_refresh=True)
+
+
+def test_market_data_engine_auto_prefers_alpaca_when_credentials_present(tmp_path) -> None:
+    engine = MarketDataEngine(
+        make_settings(
+            tmp_path,
+            primary_market_data_provider="auto",
+            fallback_market_data_provider="none",
+            alpaca_api_key="PKtestkey",
+            alpaca_secret_key="secrettestkey",
+            market_data_cache_dir=str(tmp_path / "cache"),
+        ),
+        etoro_client=None,
+        history_service=FiveMinuteHistoryService(),
+    )
+
+    # 'auto' must not default scans to Yahoo when the broker's data API is
+    # available -- yfinance stalls from cloud IPs and hangs the scheduler tick.
+    assert engine._resolve_provider("1d", None) == "alpaca"
+
+
+def test_market_data_engine_auto_stays_yfinance_without_alpaca_credentials(tmp_path) -> None:
+    engine = MarketDataEngine(
+        make_settings(
+            tmp_path,
+            primary_market_data_provider="auto",
+            fallback_market_data_provider="none",
+            market_data_cache_dir=str(tmp_path / "cache"),
+        ),
+        etoro_client=None,
+        history_service=FiveMinuteHistoryService(),
+    )
+
+    assert engine._resolve_provider("1d", None) == "yfinance"
