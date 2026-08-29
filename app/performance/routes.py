@@ -137,6 +137,55 @@ def weekly_target_readiness(request: Request):
     }
 
 
+@router.get("/stage3")
+def stage3_readiness(request: Request):
+    """Full Stage 3 picture: honest track-record metrics, readiness gates against
+    those metrics, the capital-sizing plan for the daily target, a staged
+    capital-deployment ladder, and a real-capital preflight. Reports only — it
+    never enables real trading."""
+
+    from dataclasses import asdict
+
+    from app.performance.stage3 import (
+        assess_stage3,
+        capital_deployment_ladder,
+        real_capital_preflight,
+        track_record_report,
+    )
+
+    _require_control_token(request)
+    state = request.app.state
+    settings = state.settings
+    capital = max(float(getattr(settings, "paper_account_balance_usd", 100_000.0) or 100_000.0), 1.0)
+    daily_target = float(getattr(settings, "daily_profit_target_usd", 1000.0) or 1000.0)
+
+    trades = state.paper_trade_repository.list(limit=5000)
+    readiness = assess_stage3(trades, capital_usd=capital, daily_target_usd=daily_target)
+    report = track_record_report(trades, capital_usd=capital)
+    preflight = real_capital_preflight(
+        readiness=readiness,
+        enable_real_trading=bool(getattr(settings, "enable_real_trading", False)),
+    )
+    target_capital = readiness.capital_plan.capital_required_usd if readiness.capital_plan else None
+    ladder = (
+        [asdict(stage) for stage in capital_deployment_ladder(target_capital_usd=target_capital)]
+        if target_capital
+        else []
+    )
+
+    return {
+        "capital_usd": capital,
+        "daily_target_usd": daily_target,
+        "ready_for_capital_decision": readiness.ready,
+        "gates": readiness.gates,
+        "blockers": readiness.blockers,
+        "track_record": asdict(report),
+        "capital_plan": asdict(readiness.capital_plan) if readiness.capital_plan else None,
+        "deployment_ladder": ladder,
+        "preflight": asdict(preflight),
+    }
+
+
 def _is_clean_lifecycle(item: Any) -> bool:
     flags = item.flags
     return bool(

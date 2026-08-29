@@ -233,6 +233,175 @@ def assess_stage3(
 
 
 # ---------------------------------------------------------------------------
+# Track-record report — the honest metrics a capital decision needs
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TrackRecordReport:
+    trading_days: int
+    total_trades: int
+    realized_pnl_usd: float
+    total_return_pct: float
+    annualized_return_pct: float
+    sharpe: float
+    sortino: float
+    calmar: float
+    max_drawdown_usd: float
+    max_drawdown_pct: float
+    longest_drawdown_days: int
+    win_rate: float
+    profit_factor: float
+    expectancy_usd: float
+    avg_win_usd: float
+    avg_loss_usd: float
+    best_day_usd: float
+    worst_day_usd: float
+    monthly_returns_pct: dict[str, float]
+    profitable_months_pct: float
+
+
+def _sortino(daily_returns_pct: list[float]) -> float:
+    if len(daily_returns_pct) < 3:
+        return 0.0
+    mean = sum(daily_returns_pct) / len(daily_returns_pct)
+    downside = [r for r in daily_returns_pct if r < 0]
+    if not downside:
+        return 0.0
+    dvar = sum(r * r for r in downside) / len(downside)
+    dstd = math.sqrt(dvar)
+    if dstd == 0:
+        return 0.0
+    return (mean / dstd) * math.sqrt(TRADING_DAYS_PER_YEAR)
+
+
+def track_record_report(trades: Iterable[Any], *, capital_usd: float) -> TrackRecordReport:
+    """Full honest-metrics report over the paper track record.
+
+    Sharpe/Sortino/Calmar from the daily return series; drawdown (depth and
+    longest duration) from the cumulative realized-P&L equity curve; monthly
+    returns and profitable-month share for consistency.
+    """
+
+    from app.performance.strategy_performance import daily_pnl_series
+
+    trade_list = list(trades)
+    series = daily_pnl_series(trade_list)
+    trading_days = len(series)
+    total_trades = len(trade_list)
+    realized = round(sum(float(getattr(t, "realized_pnl_usd", 0.0) or 0.0) for t in trade_list), 2)
+
+    daily_pnls = [row["realized_pnl_usd"] for row in series]
+    daily_returns_pct = [(p / capital_usd) * 100.0 for p in daily_pnls] if capital_usd > 0 else []
+    mean_r = (sum(daily_returns_pct) / len(daily_returns_pct)) if daily_returns_pct else 0.0
+    sharpe = round(_sharpe_from_daily(daily_returns_pct), 4)
+    sortino = round(_sortino(daily_returns_pct), 4)
+
+    # Drawdown depth and longest duration (consecutive days below the prior peak).
+    equity = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    longest = 0
+    current = 0
+    for p in daily_pnls:
+        equity += p
+        if equity >= peak:
+            peak = equity
+            current = 0
+        else:
+            current += 1
+            longest = max(longest, current)
+        max_dd = min(max_dd, equity - peak)
+    max_dd_usd = round(abs(max_dd), 2)
+    max_dd_pct = round((max_dd_usd / capital_usd) * 100.0, 4) if capital_usd > 0 else 0.0
+
+    total_return_pct = round((realized / capital_usd) * 100.0, 4) if capital_usd > 0 else 0.0
+    annual = round(mean_r * TRADING_DAYS_PER_YEAR, 4)
+    calmar = round((annual / max_dd_pct), 4) if max_dd_pct > 0 else 0.0
+
+    winners = [float(getattr(t, "realized_pnl_usd", 0.0) or 0.0) for t in trade_list if float(getattr(t, "realized_pnl_usd", 0.0) or 0.0) > 0]
+    losers = [float(getattr(t, "realized_pnl_usd", 0.0) or 0.0) for t in trade_list if float(getattr(t, "realized_pnl_usd", 0.0) or 0.0) < 0]
+    gross_profit = sum(winners)
+    gross_loss = abs(sum(losers))
+    profit_factor = round(gross_profit / gross_loss, 4) if gross_loss > 0 else (99.0 if gross_profit else 0.0)
+
+    monthly: dict[str, float] = {}
+    for row in series:
+        month = row["date"][:7]
+        monthly[month] = round(monthly.get(month, 0.0) + row["realized_pnl_usd"], 2)
+    monthly_pct = {
+        m: round((v / capital_usd) * 100.0, 4) for m, v in monthly.items()
+    } if capital_usd > 0 else {}
+    profitable_months = sum(1 for v in monthly.values() if v > 0)
+    profitable_months_pct = round((profitable_months / len(monthly)) * 100.0, 2) if monthly else 0.0
+
+    return TrackRecordReport(
+        trading_days=trading_days,
+        total_trades=total_trades,
+        realized_pnl_usd=realized,
+        total_return_pct=total_return_pct,
+        annualized_return_pct=annual,
+        sharpe=sharpe,
+        sortino=sortino,
+        calmar=calmar,
+        max_drawdown_usd=max_dd_usd,
+        max_drawdown_pct=max_dd_pct,
+        longest_drawdown_days=longest,
+        win_rate=round((len(winners) / total_trades) * 100.0, 2) if total_trades else 0.0,
+        profit_factor=profit_factor,
+        expectancy_usd=round(realized / total_trades, 4) if total_trades else 0.0,
+        avg_win_usd=round(sum(winners) / len(winners), 2) if winners else 0.0,
+        avg_loss_usd=round(sum(losers) / len(losers), 2) if losers else 0.0,
+        best_day_usd=round(max(daily_pnls), 2) if daily_pnls else 0.0,
+        worst_day_usd=round(min(daily_pnls), 2) if daily_pnls else 0.0,
+        monthly_returns_pct=monthly_pct,
+        profitable_months_pct=profitable_months_pct,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Capital deployment ladder — scale real capital in, don't dump it in
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DeploymentStage:
+    stage: int
+    capital_usd: float
+    cumulative_pct: float
+    gate: str
+
+
+def capital_deployment_ladder(
+    *, target_capital_usd: float, fractions: list[float] | None = None
+) -> list[DeploymentStage]:
+    """A staged plan to phase real capital in as the LIVE record confirms paper.
+
+    Never deploy the full size at once: each stage unlocks only after the live
+    track record keeps matching paper, so a paper-to-live gap surfaces cheaply.
+    """
+
+    fractions = fractions or [0.25, 0.50, 0.75, 1.0]
+    gates = [
+        "start — 2 weeks live P&L within tolerance of paper",
+        "1 month live, Sharpe holding, no gap vs paper",
+        "6–8 weeks live, drawdown within the paper envelope",
+        "full size — sustained live track record confirms paper",
+    ]
+    ladder: list[DeploymentStage] = []
+    for i, frac in enumerate(fractions):
+        ladder.append(
+            DeploymentStage(
+                stage=i + 1,
+                capital_usd=round(target_capital_usd * frac, 2),
+                cumulative_pct=round(frac * 100.0, 2),
+                gate=gates[i] if i < len(gates) else f"stage {i + 1}",
+            )
+        )
+    return ladder
+
+
+# ---------------------------------------------------------------------------
 # Real-capital preflight — reports readiness, never enables anything
 # ---------------------------------------------------------------------------
 

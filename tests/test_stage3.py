@@ -93,3 +93,48 @@ class TestRealCapitalPreflight:
         # The preflight only reports; it has no power to enable anything.
         assert pre.real_trading_currently_enabled is False
         assert "explicit human decision" in pre.note
+
+
+class TestTrackRecordReport:
+    def _trades(self, specs):
+        # specs: list of (pnl, "YYYY-MM-DD")
+        return [SimpleNamespace(realized_pnl_usd=p, closed_at=f"{d}T15:00:00Z", payload={}) for p, d in specs]
+
+    def test_report_computes_full_metrics(self) -> None:
+        from app.performance.stage3 import track_record_report
+        trades = self._trades([
+            (100, "2026-01-05"), (-40, "2026-01-06"), (200, "2026-02-03"), (-60, "2026-02-10"),
+        ])
+        rep = track_record_report(trades, capital_usd=100_000)
+        assert rep.total_trades == 4
+        assert rep.realized_pnl_usd == 200.0
+        assert rep.trading_days == 4
+        assert set(rep.monthly_returns_pct.keys()) == {"2026-01", "2026-02"}
+        assert rep.profitable_months_pct == 100.0  # both months net positive
+        assert rep.profit_factor > 1.0
+        assert rep.best_day_usd == 200.0 and rep.worst_day_usd == -60.0
+
+    def test_longest_drawdown_duration(self) -> None:
+        from app.performance.stage3 import track_record_report
+        # Up, then three down days, then up -> longest DD run == 3.
+        trades = self._trades([
+            (100, "2026-01-01"), (-10, "2026-01-02"), (-10, "2026-01-03"),
+            (-10, "2026-01-04"), (500, "2026-01-05"),
+        ])
+        rep = track_record_report(trades, capital_usd=100_000)
+        assert rep.longest_drawdown_days == 3
+
+
+class TestCapitalLadder:
+    def test_ladder_scales_in(self) -> None:
+        from app.performance.stage3 import capital_deployment_ladder
+        ladder = capital_deployment_ladder(target_capital_usd=400_000)
+        assert [s.capital_usd for s in ladder] == [100_000, 200_000, 300_000, 400_000]
+        assert ladder[0].cumulative_pct == 25.0
+        assert ladder[-1].cumulative_pct == 100.0
+        assert all(s.gate for s in ladder)
+
+    def test_custom_fractions(self) -> None:
+        from app.performance.stage3 import capital_deployment_ladder
+        ladder = capital_deployment_ladder(target_capital_usd=100_000, fractions=[0.5, 1.0])
+        assert len(ladder) == 2 and ladder[0].capital_usd == 50_000

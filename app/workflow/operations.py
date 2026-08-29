@@ -273,6 +273,8 @@ def send_daily_summary_impl(service: Any, *, notify: bool) -> WorkflowTaskRespon
     if pnl_lines:
         message = f"{message}\n" + "\n".join(pnl_lines)
     alerts_sent = 1 if (notify and service.notifier.send_text(message)) else 0
+    if notify:
+        _maybe_announce_stage3_ready(service)
     service.alert_history.create(
         category="daily_summary",
         status="sent" if alerts_sent else "generated",
@@ -339,6 +341,65 @@ def _daily_reliability_lines(service: Any) -> list[str]:
             blockers.append("learning_failed_jobs_present")
     lines.append("Blockers: " + (", ".join(sorted(set(blockers))) if blockers else "none"))
     return lines
+
+
+STAGE3_ANNOUNCED_KEY = "stage3:ready_announced_at"
+
+
+def _maybe_announce_stage3_ready(service: Any) -> bool:
+    """One-time alert the first day the paper track record clears the Stage 3
+    gates, so the operator knows the capital-decision conversation is warranted.
+
+    Persisted via runtime_state so it fires once. It only *reports* readiness;
+    real trading stays off until an explicit human decision. Fail-safe: any
+    problem is swallowed so it can never break the daily summary."""
+
+    runtime = getattr(service, "runtime_state", None)
+    settings = getattr(service, "settings", None)
+    trade_repo = getattr(getattr(service, "paper_trading", None), "trades", None)
+    if runtime is None or settings is None or trade_repo is None or not hasattr(trade_repo, "list"):
+        return False
+    try:
+        if runtime.get(STAGE3_ANNOUNCED_KEY):
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+
+    trades = _safe_list(lambda: trade_repo.list(limit=5000))
+    if not trades:
+        return False
+
+    from app.performance.stage3 import assess_stage3
+
+    capital = max(float(getattr(settings, "paper_account_balance_usd", 100_000.0) or 100_000.0), 1.0)
+    daily_target = float(getattr(settings, "daily_profit_target_usd", 1000.0) or 1000.0)
+    readiness = assess_stage3(trades, capital_usd=capital, daily_target_usd=daily_target)
+    if not readiness.ready:
+        return False
+    try:
+        runtime.set(STAGE3_ANNOUNCED_KEY, utc_now().isoformat())
+    except Exception:  # noqa: BLE001
+        return False
+
+    plan = readiness.capital_plan
+    cap_line = (
+        f"Capital for ${daily_target:,.0f}/day: ${plan.capital_required_usd:,.0f} ({plan.feasibility})"
+        if plan and plan.capital_required_usd
+        else "Capital plan: unavailable"
+    )
+    service.notifier.send_text(
+        "\n".join(
+            [
+                "\U0001f3af Stage 3 reached — paper track record meets the gates",
+                f"Days: {readiness.trading_days} | Trades: {readiness.total_trades} | "
+                f"Sharpe: {readiness.sharpe} | MaxDD: {readiness.max_drawdown_pct}%",
+                cap_line,
+                "The capital-decision conversation is now warranted. Real trading stays OFF "
+                "until you explicitly decide.",
+            ]
+        )
+    )
+    return True
 
 
 def _daily_pnl_lines(service: Any) -> list[str]:
