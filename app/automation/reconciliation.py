@@ -253,11 +253,30 @@ class AlpacaReconciliationService:
 
     def _update_execution(self, execution: Any, payload: dict[str, Any]) -> None:
         status = str(payload.get("status") or "").lower()
+
+        # Execution quality: signed slippage of the fill vs the decision price.
+        # For a long entry, positive bps means we paid up (worse); it is stamped
+        # onto the execution so the dashboard can show per-fill and average
+        # slippage -- the edge that leaks here never shows up in the P&L story
+        # otherwise.
+        fill_price = float(payload.get("filled_avg_price") or 0.0) or None
+        proposed_price = float((execution.request_payload or {}).get("proposed_price") or 0.0)
+        signed_slippage_bps = (
+            round(((fill_price - proposed_price) / proposed_price) * 10_000.0, 3)
+            if fill_price is not None and proposed_price > 0
+            else None
+        )
+
         execution.response_payload = {
             **dict(execution.response_payload or {}),
             "broker": "alpaca",
             "broker_execution": payload,
         }
+        if fill_price is not None:
+            execution.response_payload["fill_price"] = fill_price
+        if signed_slippage_bps is not None:
+            execution.response_payload["slippage_bps"] = signed_slippage_bps
+
         if status == "filled":
             execution.status = ExecutionStatus.FILLED
         elif status in {"canceled", "cancelled", "expired", "rejected"}:
@@ -271,18 +290,11 @@ class AlpacaReconciliationService:
                 event_type=self._learning_event_type(payload),
             )
         if self.broker_governance is not None:
-            fill_price = float(payload.get("filled_avg_price") or 0.0) or None
-            proposed_price = float((execution.request_payload or {}).get("proposed_price") or 0.0)
-            slippage_bps = (
-                abs((fill_price - proposed_price) / proposed_price) * 10_000.0
-                if fill_price is not None and proposed_price > 0
-                else None
-            )
             self.broker_governance.update_comparison_fill(
                 broker="alpaca",
                 broker_order_id=str(payload.get("broker_order_id") or execution.broker_order_id or ""),
                 fill_price=fill_price,
-                slippage_bps=slippage_bps,
+                slippage_bps=abs(signed_slippage_bps) if signed_slippage_bps is not None else None,
             )
 
     @staticmethod

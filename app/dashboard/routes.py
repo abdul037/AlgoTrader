@@ -85,6 +85,7 @@ def dashboard_data(request: Request) -> JSONResponse:
     trades: list[dict[str, Any]] = []
     for record in executions:
         req = getattr(record, "request_payload", {}) or {}
+        resp = getattr(record, "response_payload", {}) or {}
         trades.append(
             {
                 "created_at": getattr(record, "created_at", None),
@@ -99,9 +100,12 @@ def dashboard_data(request: Request) -> JSONResponse:
                 "status": getattr(record, "status", None),
                 "broker_order_id": getattr(record, "broker_order_id", None),
                 "realized_pnl_usd": getattr(record, "realized_pnl_usd", 0.0),
+                "slippage_bps": resp.get("slippage_bps"),
                 "error_message": getattr(record, "error_message", None),
             }
         )
+    fills_with_slip = [t["slippage_bps"] for t in trades if t.get("slippage_bps") is not None]
+    avg_slippage_bps = round(sum(fills_with_slip) / len(fills_with_slip), 2) if fills_with_slip else None
 
     proposals = _safe(lambda: _model_list(state.proposal_service.list_proposals()), [])
     scans = _safe(lambda: _model_list(state.scan_decision_repository.list(limit=30)), [])
@@ -134,6 +138,7 @@ def dashboard_data(request: Request) -> JSONResponse:
         "positions": positions,
         "strategy_performance": strategy_performance,
         "pnl_series": pnl_series,
+        "avg_slippage_bps": avg_slippage_bps,
     }
     return JSONResponse(payload)
 
@@ -242,7 +247,7 @@ _DASHBOARD_HTML = """<!doctype html>
     <h2>Trade log (executions)</h2>
     <div class="scroll"><table id="trades"><thead><tr>
       <th>Time</th><th>Symbol</th><th>Side</th><th>Qty / $</th><th>Strategy</th>
-      <th>Mode</th><th>Status</th><th class="num">Realized P&L</th><th>Broker order</th>
+      <th>Mode</th><th>Status</th><th class="num">Realized P&L</th><th class="num">Slip bps</th><th>Broker order</th>
     </tr></thead><tbody></tbody></table></div>
   </section>
 
@@ -339,6 +344,7 @@ async function tick(){
     ['Account', c.alpaca_account||'—'],
     ['Realized P&L', totalPnl==null?'—':(totalPnl>0?'+':'')+'$'+num(totalPnl,0)],
     ['Today P&L', (todayPnl>0?'+':'')+'$'+num(todayPnl,0)],
+    ['Avg slip', d.avg_slippage_bps==null?'—':num(d.avg_slippage_bps,1)+' bps'],
     ['Ticks', w.tick_count!=null?w.tick_count:'—'],
     ['Restarts', (w.restart_count!=null?w.restart_count:'—')+(f['scheduler_worker:restart_reason']?` (${esc(f['scheduler_worker:restart_reason'])})`:'')],
     ['Positions', (d.positions||[]).length],
@@ -353,8 +359,9 @@ async function tick(){
     `<td>${x.qty!=null?esc(x.qty):(x.amount_usd!=null?'$'+num(x.amount_usd,0):'')}</td>`,
     `<td><span class="tag">${esc(x.strategy_name||'')}</span></td>`,`<td>${esc(x.mode)}</td>`,
     `<td>${esc(x.status)}</td>`,`<td class="num">${pnl(x.realized_pnl_usd)}</td>`,
+    `<td class="num">${x.slippage_bps==null?'':(x.slippage_bps>0?'+':'')+num(x.slippage_bps,1)}</td>`,
     `<td class="muted">${esc((x.broker_order_id||'').slice(0,8))}</td>`
-  ]), 9, 'No executions yet.');
+  ]), 10, 'No executions yet.');
 
   rows('#positions', (d.positions||[]).map(p=>[
     `<td>${esc(p.symbol)}</td>`,`<td class="num">${num(p.quantity,4)}</td>`,
