@@ -18,8 +18,14 @@ scheduler self-heals, but a cold deploy needs a minute.
 Run on the deployed bot (it has market data + the paper DB):
 
 ```
-python -m scripts.validate_gated_features
+python -m scripts.validate_gated_features          # human-readable readout
+python -m scripts.validate_gated_features --json    # machine-readable JSON
 ```
+
+The `--json` form emits `{"features": [...], "overall": "..."}` (each feature
+carries its flag, current value, verdict, detail, and metrics) so the dashboard
+or notification layer can surface the verdicts automatically. `overall` is the
+most-blocking verdict across the three.
 
 You get three sections, each ending in a verdict:
 

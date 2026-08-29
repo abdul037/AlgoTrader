@@ -4,7 +4,8 @@ before enabling them.
 
 Run on the deployed bot (or anywhere with market-data + the paper DB):
 
-    python -m scripts.validate_gated_features
+    python -m scripts.validate_gated_features          # human-readable readout
+    python -m scripts.validate_gated_features --json    # machine-readable JSON
 
 It reports, without changing any setting or placing any trade:
 
@@ -17,14 +18,19 @@ It reports, without changing any setting or placing any trade:
      honest note that its effect is measured at scan time (next scan's kept
      count), since it is a live selection-layer filter over scan candidates.
 
-Each section ends with a one-line GO / NO-GO / NEED-DATA verdict. Nothing is
-enabled by this script; it only measures.
+Each feature yields a one-line GO / NO-GO / REVIEW / NEED-DATA verdict. The
+``--json`` form emits ``{"features": [...], "overall": "..."}`` so the dashboard
+or notification layer can surface the verdicts automatically. Nothing is enabled
+by this script; it only measures.
 """
 
 from __future__ import annotations
 
+import argparse
+import json
 import logging
 import sys
+from typing import Any
 
 from app.main import create_app
 from app.performance.gated_feature_validation import (
@@ -38,121 +44,177 @@ from app.performance.gated_feature_validation import (
 for _noisy in ("app.broker.etoro_market_data", "yfinance", "app.broker.alpaca_data_provider"):
     logging.getLogger(_noisy).setLevel(logging.CRITICAL)
 
-
-def _verdict(label: str, decision: str, detail: str) -> None:
-    print(f"  >> {decision}: {label} — {detail}")
+VERDICT_RANK = {"NO-GO": 0, "REVIEW": 1, "NEED-DATA": 2, "GO": 3}
 
 
-def _regime_section(app) -> str:
+def _result(feature: str, flag: str, enabled: bool, verdict: str, detail: str, **metrics: Any) -> dict[str, Any]:
+    return {
+        "feature": feature,
+        "flag": flag,
+        "enabled": enabled,
+        "verdict": verdict,
+        "detail": detail,
+        "metrics": metrics,
+    }
+
+
+def _regime_result(app) -> dict[str, Any]:
     state = app.state
     settings = state.settings
     enabled = bool(getattr(settings, "regime_router_enabled", False))
-    print(f"  Flag: regime_router_enabled = {enabled}")
     screener = getattr(state, "screener_service", None) or getattr(state, "market_screener_service", None)
     intelligence = getattr(screener, "intelligence", None)
     if intelligence is None:
-        _verdict("regime router", "NEED-DATA", "screener/intelligence unavailable — cannot compute regime")
-        return "NEED-DATA"
-    regime = None
+        return _result("regime_router", "regime_router_enabled", enabled, "NEED-DATA",
+                       "screener/intelligence unavailable — cannot compute regime")
     try:
         regime = intelligence.market_regime_signal(force_refresh=True)
     except Exception as exc:  # noqa: BLE001
-        _verdict("regime router", "NEED-DATA", f"regime computation failed: {exc}")
-        return "NEED-DATA"
+        return _result("regime_router", "regime_router_enabled", enabled, "NEED-DATA",
+                       f"regime computation failed: {exc}")
     if regime is None:
-        _verdict("regime router", "NEED-DATA", "no benchmark history — router would run every family")
-        return "NEED-DATA"
+        return _result("regime_router", "regime_router_enabled", enabled, "NEED-DATA",
+                       "no benchmark history — router would run every family")
 
     from app.backtesting.strategy_selection import strategy_specs_for
 
     timeframes = ["1m", "5m", "10m", "15m", "1h", "1d", "1w"]
     specs_by_tf = {tf: strategy_specs_for(settings, timeframe=tf) for tf in timeframes}
     impact = regime_router_impact(specs_by_tf, regime)
-
-    print(f"  Regime: trend={impact.regime['trend']} volatility={impact.regime['volatility']} breadth={impact.regime['breadth']}")
-    print(f"  Families the router would run: {', '.join(impact.allowed_families)}")
-    print(f"  Specs kept overall: {impact.total_specs_after}/{impact.total_specs_before}")
-    for tf, row in impact.per_timeframe.items():
-        if row["dropped"]:
-            print(f"    {tf}: keep {row['after']}/{row['before']} (drops {row['dropped']} in {', '.join(row['dropped_families'])})")
-
     dropped_total = impact.total_specs_before - impact.total_specs_after
+    per_tf = {tf: row for tf, row in impact.per_timeframe.items() if row["dropped"]}
+
     if dropped_total == 0:
-        _verdict("regime router", "GO", "regime is broad — router drops nothing now; enabling is a no-op until regime narrows")
+        verdict = "GO"
+        detail = "regime is broad — router drops nothing now; enabling is a no-op until regime narrows"
     else:
-        _verdict(
-            "regime router",
-            "REVIEW",
-            f"router would drop {dropped_total} specs in this regime — enable only if those families should be off now",
-        )
-    return "OK"
+        verdict = "REVIEW"
+        detail = f"router would drop {dropped_total} specs in this regime — enable only if those families should be off now"
+
+    return _result(
+        "regime_router", "regime_router_enabled", enabled, verdict, detail,
+        regime=impact.regime,
+        allowed_families=impact.allowed_families,
+        specs_before=impact.total_specs_before,
+        specs_after=impact.total_specs_after,
+        dropped_total=dropped_total,
+        per_timeframe=per_tf,
+    )
 
 
-def _governor_section(app) -> str:
+def _governor_result(app) -> dict[str, Any]:
     state = app.state
-    trade_repo = getattr(state, "paper_trade_repository", None)
-    if trade_repo is None:
-        _verdict("drawdown governor", "NEED-DATA", "paper_trade_repository unavailable")
-        return "NEED-DATA"
-    trades = trade_repo.list(limit=5000)
     settings = state.settings
     enabled = bool(getattr(settings, "drawdown_governor_enabled", False))
-    print(f"  Flag: drawdown_governor_enabled = {enabled}  "
-          f"(soft {getattr(settings, 'drawdown_governor_soft_pct', 2.0)}% / "
-          f"hard {getattr(settings, 'drawdown_governor_hard_pct', 5.0)}% / "
-          f"floor {getattr(settings, 'drawdown_governor_floor', 0.25)})")
+    trade_repo = getattr(state, "paper_trade_repository", None)
+    thresholds = {
+        "soft_pct": float(getattr(settings, "drawdown_governor_soft_pct", 2.0)),
+        "hard_pct": float(getattr(settings, "drawdown_governor_hard_pct", 5.0)),
+        "floor": float(getattr(settings, "drawdown_governor_floor", 0.25)),
+    }
+    if trade_repo is None:
+        return _result("drawdown_governor", "drawdown_governor_enabled", enabled, "NEED-DATA",
+                       "paper_trade_repository unavailable", thresholds=thresholds)
+    trades = trade_repo.list(limit=5000)
     if not trades:
-        _verdict("drawdown governor", "NEED-DATA", "no closed paper trades yet — accrues during Stage 1")
-        return "NEED-DATA"
+        return _result("drawdown_governor", "drawdown_governor_enabled", enabled, "NEED-DATA",
+                       "no closed paper trades yet — accrues during Stage 1", thresholds=thresholds)
     sim = simulate_drawdown_governor(
         trades,
         capital_usd=float(getattr(settings, "paper_account_balance_usd", 100_000.0) or 100_000.0),
-        soft_pct=float(getattr(settings, "drawdown_governor_soft_pct", 2.0)),
-        hard_pct=float(getattr(settings, "drawdown_governor_hard_pct", 5.0)),
-        floor=float(getattr(settings, "drawdown_governor_floor", 0.25)),
+        soft_pct=thresholds["soft_pct"],
+        hard_pct=thresholds["hard_pct"],
+        floor=thresholds["floor"],
     )
-    print(f"  Trades replayed: {sim.trades}")
-    print(f"  Baseline P&L: ${sim.baseline_pnl_usd:,.2f}  |  Governed P&L: ${sim.governed_pnl_usd:,.2f}  (delta ${sim.delta_usd:,.2f})")
-    print(f"  Max drawdown  baseline ${sim.baseline_max_drawdown_usd:,.2f} -> governed ${sim.governed_max_drawdown_usd:,.2f}")
     dd_cut = sim.baseline_max_drawdown_usd - sim.governed_max_drawdown_usd
     if dd_cut > 0 and sim.delta_usd >= -abs(sim.baseline_pnl_usd) * 0.25:
-        _verdict("drawdown governor", "GO", f"cuts max drawdown by ${dd_cut:,.2f} for acceptable P&L give-up (${sim.delta_usd:,.2f})")
+        verdict = "GO"
+        detail = f"cuts max drawdown by ${dd_cut:,.2f} for acceptable P&L give-up (${sim.delta_usd:,.2f})"
     elif dd_cut <= 0:
-        _verdict("drawdown governor", "NO-GO", "does not reduce drawdown on this history — leave off")
+        verdict = "NO-GO"
+        detail = "does not reduce drawdown on this history — leave off"
     else:
-        _verdict("drawdown governor", "REVIEW", f"cuts drawdown ${dd_cut:,.2f} but gives up ${abs(sim.delta_usd):,.2f} P&L — judge the trade-off")
-    print(f"  (module recommendation: {sim.recommendation})")
-    return "OK"
+        verdict = "REVIEW"
+        detail = f"cuts drawdown ${dd_cut:,.2f} but gives up ${abs(sim.delta_usd):,.2f} P&L — judge the trade-off"
+
+    return _result(
+        "drawdown_governor", "drawdown_governor_enabled", enabled, verdict, detail,
+        thresholds=thresholds,
+        trades=sim.trades,
+        baseline_pnl_usd=sim.baseline_pnl_usd,
+        governed_pnl_usd=sim.governed_pnl_usd,
+        delta_usd=sim.delta_usd,
+        baseline_max_drawdown_usd=sim.baseline_max_drawdown_usd,
+        governed_max_drawdown_usd=sim.governed_max_drawdown_usd,
+        drawdown_cut_usd=dd_cut,
+        recommendation=sim.recommendation,
+    )
 
 
-def _momentum_section(app) -> str:
+def _momentum_result(app) -> dict[str, Any]:
     settings = app.state.settings
     enabled = bool(getattr(settings, "cross_sectional_momentum_enabled", False))
     top_pct = float(getattr(settings, "cross_sectional_momentum_top_pct", 30.0))
-    print(f"  Flag: cross_sectional_momentum_enabled = {enabled}  (keep top {top_pct:g}% by momentum)")
-    print("  This is a live selection-layer filter over scan candidates, not a")
-    print("  historical replay: with it on, the next scan keeps only the top")
-    print(f"  {top_pct:g}% of ranked candidates. Effect is visible in that scan's kept count.")
-    _verdict(
-        "cross-sectional momentum",
-        "GO" if 0 < top_pct < 100 else "REVIEW",
-        f"concentrates the book to the top {top_pct:g}% — enable when you want leader-only exposure; watch the next scan's kept count",
+    verdict = "GO" if 0 < top_pct < 100 else "REVIEW"
+    detail = (
+        f"concentrates the book to the top {top_pct:g}% — enable when you want "
+        "leader-only exposure; watch the next scan's kept count"
     )
-    return "OK"
+    return _result(
+        "cross_sectional_momentum", "cross_sectional_momentum_enabled", enabled, verdict, detail,
+        top_pct=top_pct,
+        note="live selection-layer filter; effect shows in the next scan's kept count, not a historical replay",
+    )
 
 
-def main() -> int:
-    app = create_app()
+def collect(app) -> dict[str, Any]:
+    features = [_regime_result(app), _governor_result(app), _momentum_result(app)]
+    overall = min((f["verdict"] for f in features), key=lambda v: VERDICT_RANK.get(v, 99))
+    return {"features": features, "overall": overall}
+
+
+def _print_text(report: dict[str, Any]) -> None:
+    titles = {
+        "regime_router": "[1] Regime router — what enabling it would change right now:",
+        "drawdown_governor": "[2] Drawdown governor — replay on the paper track record:",
+        "cross_sectional_momentum": "[3] Cross-sectional momentum — configured concentration:",
+    }
     print("=" * 72)
     print("GATED-FEATURE VALIDATION (read-only; enables nothing)")
     print("=" * 72)
-    print("\n[1] Regime router — what enabling it would change right now:")
-    _regime_section(app)
-    print("\n[2] Drawdown governor — replay on the paper track record:")
-    _governor_section(app)
-    print("\n[3] Cross-sectional momentum — configured concentration:")
-    _momentum_section(app)
-    print("\nNeither feature was enabled. Flip a flag only if its verdict matches intent.")
+    for feat in report["features"]:
+        print("\n" + titles.get(feat["feature"], feat["feature"]))
+        print(f"  Flag: {feat['flag']} = {feat['enabled']}")
+        m = feat["metrics"]
+        if feat["feature"] == "regime_router" and "regime" in m:
+            r = m["regime"]
+            print(f"  Regime: trend={r['trend']} volatility={r['volatility']} breadth={r['breadth']}")
+            print(f"  Families the router would run: {', '.join(m['allowed_families'])}")
+            print(f"  Specs kept overall: {m['specs_after']}/{m['specs_before']}")
+            for tf, row in m.get("per_timeframe", {}).items():
+                print(f"    {tf}: keep {row['after']}/{row['before']} (drops {row['dropped']} in {', '.join(row['dropped_families'])})")
+        elif feat["feature"] == "drawdown_governor" and "trades" in m:
+            print(f"  Trades replayed: {m['trades']}")
+            print(f"  Baseline P&L: ${m['baseline_pnl_usd']:,.2f}  |  Governed P&L: ${m['governed_pnl_usd']:,.2f}  (delta ${m['delta_usd']:,.2f})")
+            print(f"  Max drawdown  baseline ${m['baseline_max_drawdown_usd']:,.2f} -> governed ${m['governed_max_drawdown_usd']:,.2f}")
+        elif feat["feature"] == "cross_sectional_momentum":
+            print(f"  Keep top {m['top_pct']:g}% by momentum. {m['note']}")
+        print(f"  >> {feat['verdict']}: {feat['detail']}")
+    print(f"\nOverall: {report['overall']}")
+    print("Neither feature was enabled. Flip a flag only if its verdict matches intent.")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Read-only gated-feature validation.")
+    parser.add_argument("--json", action="store_true", help="emit machine-readable JSON instead of text")
+    args = parser.parse_args(argv)
+
+    app = create_app()
+    report = collect(app)
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        _print_text(report)
     return 0
 
 
