@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import pandas as pd
 import pytest
 
@@ -440,7 +442,7 @@ def test_enhanced_research_strategies_emit_valid_long_only_trade_plans(
     customize,
 ) -> None:
     enriched = customize(_enhanced_frame())
-    monkeypatch.setattr(enhanced_module, "enrich_technical_indicators", lambda data, timeframe: enriched)
+    monkeypatch.setattr(sys.modules[type(strategy).__module__], "enrich_technical_indicators", lambda data, timeframe: enriched)
 
     signal = strategy.generate_signal(enriched, "NVDA")
 
@@ -457,7 +459,7 @@ def test_enhanced_research_strategies_emit_valid_long_only_trade_plans(
 def test_enhanced_research_strategy_records_near_miss_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
     strategy = VolatilityContractionBreakoutStrategy(timeframe="1d")
     enriched = _enhanced_frame().assign(relative_volume=0.2)
-    monkeypatch.setattr(enhanced_module, "enrich_technical_indicators", lambda data, timeframe: enriched)
+    monkeypatch.setattr(sys.modules[type(strategy).__module__], "enrich_technical_indicators", lambda data, timeframe: enriched)
 
     signal = strategy.generate_signal(enriched, "NVDA")
 
@@ -483,7 +485,7 @@ def test_enhanced_research_strategy_emits_supervised_weak_valid_signal(
         macd_hist=[*_enhanced_frame()["macd_hist"].iloc[:-1], 0.05],
         relative_volume=[*_enhanced_frame()["relative_volume"].iloc[:-1], 0.35],
     )
-    monkeypatch.setattr(enhanced_module, "enrich_technical_indicators", lambda data, timeframe: enriched)
+    monkeypatch.setattr(sys.modules[type(strategy).__module__], "enrich_technical_indicators", lambda data, timeframe: enriched)
 
     signal = strategy.generate_signal(enriched, "NVDA")
 
@@ -510,7 +512,7 @@ def test_enhanced_research_strategy_does_not_emit_weak_signal_without_setup_anch
         ema_50=[*base["ema_50"].iloc[:-1], 101.0],
         relative_volume=[*base["relative_volume"].iloc[:-1], 0.35],
     )
-    monkeypatch.setattr(enhanced_module, "enrich_technical_indicators", lambda data, timeframe: enriched)
+    monkeypatch.setattr(sys.modules[type(strategy).__module__], "enrich_technical_indicators", lambda data, timeframe: enriched)
 
     signal = strategy.generate_signal(enriched, "NVDA")
 
