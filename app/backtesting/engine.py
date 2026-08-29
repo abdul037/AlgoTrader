@@ -58,6 +58,8 @@ class OpenTrade:
     take_profit: float | None
     entry_notional: float
     entry_spread_usd: float = 0.0
+    entry_bar_index: int = -1
+    max_hold_bars: int | None = None
 
 
 @dataclass
@@ -178,6 +180,7 @@ class BacktestEngine:
                     next_bar=next_bar,
                     cash=cash,
                     config=run_config,
+                    fill_bar_index=index + 1,
                 )
                 if entry_attempt is None:
                     continue
@@ -338,6 +341,17 @@ def _evaluate_exit(
     bar_time = _ensure_utc(bar["timestamp"])
     extended = _is_extended(bar_time, allow_extended_hours, bars_per_year=bars_per_year)
 
+    # Time-stop: once the max hold has elapsed, close at this bar's open. Decided
+    # at the open, so it precedes any intrabar stop/target on the same bar. This
+    # is what lets a short-hold / overnight-drift strategy exit on schedule.
+    if (
+        open_trade.max_hold_bars is not None
+        and open_trade.entry_bar_index >= 0
+        and (bar_index - open_trade.entry_bar_index) >= open_trade.max_hold_bars
+    ):
+        fill = cost_model.exit_fill_price(bar_open, side=open_trade.side, extended_hours=extended)
+        return _ExitAction(fill, bar_time, bar["timestamp"], "time_stop")
+
     # Stop and take-profit are evaluated intrabar. Stop wins ties to stay
     # conservative. Gap-through is modelled by taking the worse of the level
     # and the bar's open for the trader.
@@ -381,6 +395,7 @@ def _attempt_entry(
     next_bar: pd.Series,
     cash: float,
     config: EngineConfig,
+    fill_bar_index: int = -1,
 ) -> _EntryAttempt | None:
     if not valid_trade_plan(
         action=getattr(signal, "action", None),
@@ -425,8 +440,28 @@ def _attempt_entry(
         take_profit=_coerce_float(getattr(signal, "take_profit", None)),
         entry_notional=notional,
         entry_spread_usd=max(entry_spread, 0.0),
+        entry_bar_index=fill_bar_index,
+        max_hold_bars=_max_hold_bars(signal),
     )
     return _EntryAttempt(open_trade=open_trade, cash_after_entry=cash_after)
+
+
+def _max_hold_bars(signal: Any) -> int | None:
+    """Read an optional time-stop (max bars to hold) from a signal's metadata.
+
+    A strategy sets ``metadata['max_hold_bars']`` to force a time-based exit --
+    e.g. an overnight-drift strategy holds ~1 bar. None means no time-stop.
+    """
+
+    metadata = getattr(signal, "metadata", {}) or {}
+    raw = metadata.get("max_hold_bars")
+    if raw in (None, ""):
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 def _size_position(
