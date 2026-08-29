@@ -213,7 +213,23 @@ class MarketScreenerService:
             strategy = self.strategy_lab.build_strategy_for_spec(spec)
             if strategy is not None:
                 return configure_weak_signal_emission(strategy, self.settings)
-        return configure_weak_signal_emission(get_strategy(spec.name, **_strategy_kwargs(self.settings, spec)), self.settings)
+        strategy = get_strategy(spec.name, **_strategy_kwargs(self.settings, spec))
+        self._inject_providers(strategy, spec)
+        return configure_weak_signal_emission(strategy, self.settings)
+
+    def _inject_providers(self, strategy: Any, spec: Any) -> None:
+        """Give multi-leg strategies (pairs/stat-arb) the extra data they need.
+
+        The single-symbol scan can't hand a strategy its second leg, so a pairs
+        strategy pulls it through a provider bound to this screener's market-data
+        engine and the spec's timeframe -- the same wiring the batch backtester
+        uses, so a pairs edge validated in backtest behaves identically live."""
+
+        if hasattr(strategy, "set_hedge_provider"):
+            timeframe = getattr(spec, "timeframe", "1d")
+            strategy.set_hedge_provider(
+                lambda sym, bars, _tf=timeframe: self.market_data.get_history(sym, timeframe=_tf, bars=bars)
+            )
 
     def _get_latest_backtest_summary(
         self,
