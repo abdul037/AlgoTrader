@@ -128,6 +128,42 @@ def analyze_by_strategy(trades: Iterable[Any]) -> list[StrategyLivePerformance]:
     return results
 
 
+def daily_pnl_series(trades: Iterable[Any]) -> list[dict[str, Any]]:
+    """Aggregate closed trades into a per-day realized-P&L and equity-curve series.
+
+    Returns one row per calendar day (UTC, ascending) with the day's realized
+    P&L, the trade count, and the cumulative equity (sum of realized P&L up to
+    and including that day). Days with no closed trades are omitted — the curve
+    still reads correctly because equity only changes when a trade closes.
+    """
+
+    by_day: dict[str, dict[str, float]] = {}
+    for trade in trades:
+        closed_at = str(getattr(trade, "closed_at", "") or "")
+        day = closed_at[:10]  # ISO date prefix
+        if not day:
+            continue
+        pnl = float(getattr(trade, "realized_pnl_usd", 0.0) or 0.0)
+        bucket = by_day.setdefault(day, {"pnl": 0.0, "trades": 0})
+        bucket["pnl"] += pnl
+        bucket["trades"] += 1
+
+    cumulative = 0.0
+    series: list[dict[str, Any]] = []
+    for day in sorted(by_day):
+        pnl = round(by_day[day]["pnl"], 2)
+        cumulative = round(cumulative + pnl, 2)
+        series.append(
+            {
+                "date": day,
+                "realized_pnl_usd": pnl,
+                "trades": int(by_day[day]["trades"]),
+                "cumulative_pnl_usd": cumulative,
+            }
+        )
+    return series
+
+
 def decay_verdict(
     live: StrategyLivePerformance,
     *,

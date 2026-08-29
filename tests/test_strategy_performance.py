@@ -13,6 +13,7 @@ from app.performance.strategy_performance import (
     STATUS_HEALTHY,
     STATUS_INSUFFICIENT,
     analyze_by_strategy,
+    daily_pnl_series,
     decay_verdict,
 )
 
@@ -93,3 +94,21 @@ class TestDecayVerdict:
         perf = self._perf(trades=30, expectancy=10)
         v = decay_verdict(perf, backtest_expectancy_usd=None, min_trades=20)
         assert v.status == STATUS_HEALTHY and v.retention_ratio is None
+
+
+class TestDailyPnlSeries:
+    def test_aggregates_per_day_with_cumulative_equity(self) -> None:
+        trades = [
+            _trade("a", 100, closed_at="2026-08-01T15:00:00Z"),
+            _trade("b", -40, closed_at="2026-08-01T16:00:00Z"),
+            _trade("c", 60, closed_at="2026-08-03T10:00:00Z"),
+        ]
+        series = daily_pnl_series(trades)
+        assert [r["date"] for r in series] == ["2026-08-01", "2026-08-03"]
+        assert series[0]["realized_pnl_usd"] == 60.0  # 100 - 40
+        assert series[0]["trades"] == 2
+        assert series[0]["cumulative_pnl_usd"] == 60.0
+        assert series[1]["cumulative_pnl_usd"] == 120.0  # 60 + 60
+
+    def test_empty_input(self) -> None:
+        assert daily_pnl_series([]) == []

@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from app.performance.strategy_performance import analyze_by_strategy, decay_verdict
+from app.performance.strategy_performance import analyze_by_strategy, daily_pnl_series, decay_verdict
 from app.storage.repositories import ExecutionRepository, RuntimeStateRepository
 from app.utils.time import utc_now
 
@@ -109,6 +109,9 @@ def dashboard_data(request: Request) -> JSONResponse:
 
     # Stage 1 measurement: per-strategy live performance + live-vs-backtest decay.
     strategy_performance = _safe(lambda: _strategy_performance(state), [])
+    pnl_series = _safe(
+        lambda: daily_pnl_series(state.paper_trade_repository.list(limit=2000)), []
+    )
 
     payload = {
         "generated_at": utc_now().isoformat(),
@@ -130,6 +133,7 @@ def dashboard_data(request: Request) -> JSONResponse:
         "scans": scans,
         "positions": positions,
         "strategy_performance": strategy_performance,
+        "pnl_series": pnl_series,
     }
     return JSONResponse(payload)
 
@@ -229,6 +233,12 @@ _DASHBOARD_HTML = """<!doctype html>
   <div class="grid" id="tiles"></div>
 
   <section>
+    <h2>Equity curve <span class="muted" style="font-weight:400;font-size:12px">(cumulative realized paper P&amp;L)</span></h2>
+    <div id="equitywrap" class="scroll"><svg id="equity" width="100%" height="160" preserveAspectRatio="none" viewBox="0 0 1000 160"></svg></div>
+    <div id="equityempty" class="empty" style="padding:8px 2px">No closed paper trades yet — the curve draws once Stage 1 trading begins.</div>
+  </section>
+
+  <section>
     <h2>Trade log (executions)</h2>
     <div class="scroll"><table id="trades"><thead><tr>
       <th>Time</th><th>Symbol</th><th>Side</th><th>Qty / $</th><th>Strategy</th>
@@ -275,6 +285,25 @@ const t = iso => { if(!iso) return ''; const d=new Date(iso); return isNaN(d)?es
 const num = (v,d=2) => (v==null||v==='')?'':Number(v).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});
 const pnl = v => { if(v==null||v==='') return ''; const n=Number(v); const c=n>0?'pos':(n<0?'neg':''); return `<span class="${c}">${n>0?'+':''}${num(n)}</span>`; };
 function pill(el, text, cls){ el.textContent=text; el.className='pill '+cls; }
+function drawEquity(series){
+  const svg = $('#equity'), empty = $('#equityempty');
+  if(!series || series.length < 2){ svg.style.display='none'; empty.style.display='block'; svg.innerHTML=''; return; }
+  svg.style.display='block'; empty.style.display='none';
+  const W=1000, H=160, pad=8;
+  const vals = series.map(p=>Number(p.cumulative_pnl_usd)||0);
+  let lo=Math.min(0,...vals), hi=Math.max(0,...vals); if(hi===lo) hi=lo+1;
+  const x=i=>pad + i*(W-2*pad)/(series.length-1);
+  const y=v=>H-pad - (v-lo)*(H-2*pad)/(hi-lo);
+  const line = vals.map((v,i)=>`${i?'L':'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  const area = `${line} L${x(vals.length-1).toFixed(1)},${y(lo).toFixed(1)} L${x(0).toFixed(1)},${y(lo).toFixed(1)} Z`;
+  const up = vals[vals.length-1] >= 0;
+  const stroke = up ? '#57d38c' : '#ff6b6b', fill = up ? 'rgba(87,211,140,.14)' : 'rgba(255,107,107,.14)';
+  const zeroY = y(0).toFixed(1);
+  svg.innerHTML =
+    `<line x1="0" y1="${zeroY}" x2="${W}" y2="${zeroY}" stroke="#26313f" stroke-width="1" stroke-dasharray="4 4"/>`+
+    `<path d="${area}" fill="${fill}"/>`+
+    `<path d="${line}" fill="none" stroke="${stroke}" stroke-width="2"/>`;
+}
 function rows(tbodySel, data, cols, emptyMsg){
   const tb = $(tbodySel).tBodies[0];
   if(!data || !data.length){ tb.innerHTML=`<tr><td class="empty" colspan="${cols}">${emptyMsg}</td></tr>`; return; }
@@ -301,8 +330,15 @@ async function tick(){
   $('#build').textContent = b.commit ? ('build '+String(b.commit).slice(0,7)) : '';
 
   const rec = d.reconciliation || {};
+  const series = d.pnl_series || [];
+  const totalPnl = series.length ? series[series.length-1].cumulative_pnl_usd : null;
+  const todayStr = new Date().toISOString().slice(0,10);
+  const todayRow = series.length ? series[series.length-1] : null;
+  const todayPnl = (todayRow && todayRow.date===todayStr) ? todayRow.realized_pnl_usd : 0;
   $('#tiles').innerHTML = [
     ['Account', c.alpaca_account||'—'],
+    ['Realized P&L', totalPnl==null?'—':(totalPnl>0?'+':'')+'$'+num(totalPnl,0)],
+    ['Today P&L', (todayPnl>0?'+':'')+'$'+num(todayPnl,0)],
     ['Ticks', w.tick_count!=null?w.tick_count:'—'],
     ['Restarts', (w.restart_count!=null?w.restart_count:'—')+(f['scheduler_worker:restart_reason']?` (${esc(f['scheduler_worker:restart_reason'])})`:'')],
     ['Positions', (d.positions||[]).length],
@@ -337,6 +373,8 @@ async function tick(){
     `<td>${esc(s.status)}</td>`,`<td class="num">${s.final_score!=null?num(s.final_score,1):''}</td>`,
     `<td class="muted">${esc((s.rejection_reasons||[]).join(', '))}</td>`
   ]), 8, 'No scans recorded yet (runs during market hours).');
+
+  drawEquity(d.pnl_series || []);
 
   const verdictCls = {healthy:'ok', insufficient_data:'warn', decaying:'warn', dead:'bad'};
   rows('#stratperf', (d.strategy_performance||[]).map(p=>{
