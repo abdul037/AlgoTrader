@@ -24,7 +24,6 @@ class AppSettings(BaseSettings):
         enable_decoding=False,
     )
 
-    app_name: str = "eToro Approval Trading Bot"
     environment: str = "development"
     database_url: str = "sqlite:///./etoro_bot.db"
     control_api_token: str = ""
@@ -404,7 +403,6 @@ class AppSettings(BaseSettings):
     strategy_health_rolling_trades: int = 30
     circuit_breaker_enabled: bool = True
     reconciliation_failures_before_kill_switch: int = 3
-    execution_recheck_quote_before_order: bool = True
     execution_max_entry_drift_bps: float = 35.0
     execution_queue_enabled: bool = True
     execution_mode: Literal["paper", "live"] = "paper"
@@ -436,7 +434,6 @@ class AppSettings(BaseSettings):
     ledger_pending_expiry_hours: int = 48
     ledger_track_manual_positions_enabled: bool = False
     model_deployment_mode: Literal["shadow", "advisory", "gating"] = "shadow"
-    meta_model_path: str = ""
     learning_capture_enabled: bool = True
     learning_worker_enabled: bool = False
     learning_reviews_enabled: bool = False
