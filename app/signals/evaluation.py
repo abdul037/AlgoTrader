@@ -50,10 +50,13 @@ def evaluate_symbol(service: Any, symbol: str) -> LiveSignalSnapshot:
 
     if symbol.upper() == "GOLD":
         snapshot = evaluate_gold(service, symbol.upper(), candles, quote)
-    elif getattr(service.settings, "live_signal_use_strategy_catalog", False):
-        snapshot = evaluate_equity_catalog(service, symbol.upper(), candles, quote)
     else:
-        snapshot = evaluate_equity(service, symbol.upper(), candles, quote)
+        # Single canonical route for equities: evaluate the full strategy catalog
+        # and pick the best long setup — the same strategy library the automated
+        # screener path uses. evaluate_equity_catalog falls back to the legacy
+        # single-strategy snapshot internally when no strategy fires, so the
+        # familiar "watch / no signal" narrative is preserved.
+        snapshot = evaluate_equity_catalog(service, symbol.upper(), candles, quote)
     return service._attach_backtest_context(snapshot)
 
 

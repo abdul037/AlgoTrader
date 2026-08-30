@@ -510,12 +510,12 @@ class AppSettings(BaseSettings):
     live_signal_candles_count: int = 250
     live_signal_trend_window: int = 100
     live_signal_pullback_window: int = 10
-    # Live-path strategy unification. When enabled, the live signal path runs the
+    # Live-path strategy unification: the on-demand signal path always runs the
     # configured strategy catalog and selects the best qualifying long setup per
-    # symbol, instead of a single hardcoded strategy. Off by default preserves
-    # the legacy pullback_trend behavior. When live_signal_strategy_names is
-    # empty, screener_active_strategy_names is used ("all" -> the core pack).
-    live_signal_use_strategy_catalog: bool = False
+    # symbol (the same strategy library the automated screener uses), falling
+    # back to the legacy single-strategy snapshot only when no strategy fires.
+    # When live_signal_strategy_names is empty, screener_active_strategy_names is
+    # used ("all" -> the core pack).
     live_signal_strategy_names: list[str] = Field(default_factory=list)
     # When the catalog is on, rank candidates with the screener's full
     # 21-component ranker instead of the strategy's own confidence/reward-to-risk.
