@@ -24,7 +24,6 @@ def _service(**settings):
         live_signal_interval="OneDay",
         live_signal_strategy_names=[],
         screener_active_strategy_names=["rsi_vwap_ema_confluence"],
-        live_signal_use_strategy_catalog=True,
         live_signal_candles_count=250,
     )
     base.update(settings)
@@ -175,8 +174,10 @@ def test_no_buy_falls_back_to_legacy(monkeypatch) -> None:
 # -- dispatch ----------------------------------------------------------------
 
 
-def test_evaluate_symbol_dispatches_to_catalog_when_enabled(monkeypatch) -> None:
-    service = _service(live_signal_use_strategy_catalog=True)
+def test_evaluate_symbol_dispatches_to_catalog(monkeypatch) -> None:
+    # Equities always route through the strategy catalog (the single canonical
+    # evaluation path); there is no longer a legacy single-strategy entry branch.
+    service = _service()
     service.market_data = SimpleNamespace(
         get_daily_candles=lambda *a, **k: _candles(),
         get_rates=lambda symbols: {"NVDA": _quote()},

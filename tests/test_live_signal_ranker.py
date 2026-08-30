@@ -21,7 +21,6 @@ def _service(*, ranker_on: bool, strategy_names, settings_obj=None):
         live_signal_interval="OneDay",
         live_signal_strategy_names=strategy_names,
         screener_active_strategy_names=["rsi_vwap_ema_confluence"],
-        live_signal_use_strategy_catalog=True,
         live_signal_use_screener_ranker=ranker_on,
     )
     svc = SimpleNamespace(settings=settings, resolver=_Resolver(), backtests=None)

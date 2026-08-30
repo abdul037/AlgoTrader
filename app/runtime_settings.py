@@ -24,7 +24,6 @@ class AppSettings(BaseSettings):
         enable_decoding=False,
     )
 
-    app_name: str = "eToro Approval Trading Bot"
     environment: str = "development"
     database_url: str = "sqlite:///./etoro_bot.db"
     control_api_token: str = ""
@@ -404,7 +403,6 @@ class AppSettings(BaseSettings):
     strategy_health_rolling_trades: int = 30
     circuit_breaker_enabled: bool = True
     reconciliation_failures_before_kill_switch: int = 3
-    execution_recheck_quote_before_order: bool = True
     execution_max_entry_drift_bps: float = 35.0
     execution_queue_enabled: bool = True
     execution_mode: Literal["paper", "live"] = "paper"
@@ -436,7 +434,6 @@ class AppSettings(BaseSettings):
     ledger_pending_expiry_hours: int = 48
     ledger_track_manual_positions_enabled: bool = False
     model_deployment_mode: Literal["shadow", "advisory", "gating"] = "shadow"
-    meta_model_path: str = ""
     learning_capture_enabled: bool = True
     learning_worker_enabled: bool = False
     learning_reviews_enabled: bool = False
@@ -510,12 +507,12 @@ class AppSettings(BaseSettings):
     live_signal_candles_count: int = 250
     live_signal_trend_window: int = 100
     live_signal_pullback_window: int = 10
-    # Live-path strategy unification. When enabled, the live signal path runs the
+    # Live-path strategy unification: the on-demand signal path always runs the
     # configured strategy catalog and selects the best qualifying long setup per
-    # symbol, instead of a single hardcoded strategy. Off by default preserves
-    # the legacy pullback_trend behavior. When live_signal_strategy_names is
-    # empty, screener_active_strategy_names is used ("all" -> the core pack).
-    live_signal_use_strategy_catalog: bool = False
+    # symbol (the same strategy library the automated screener uses), falling
+    # back to the legacy single-strategy snapshot only when no strategy fires.
+    # When live_signal_strategy_names is empty, screener_active_strategy_names is
+    # used ("all" -> the core pack).
     live_signal_strategy_names: list[str] = Field(default_factory=list)
     # When the catalog is on, rank candidates with the screener's full
     # 21-component ranker instead of the strategy's own confidence/reward-to-risk.
