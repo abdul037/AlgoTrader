@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -115,14 +116,48 @@ class SignalWorkflowService:
         if not self.settings.screener_scheduler_enabled:
             return summary
 
+        # Budget-aware dispatch: each bucket runs a full universe scan bounded by
+        # its own batch deadline, so several buckets coming due together (a market
+        # open/close burst) can sum past the worker's per-job wall-clock timeout,
+        # abandoning the whole tick. Instead, stop starting new buckets once the
+        # elapsed time nears a soft budget and let the next tick (seconds later)
+        # pick up the rest — _bucket_due keeps them due until they actually run.
+        soft_budget = self._cadence_soft_budget_seconds()
+        started_at = time.monotonic()
+        deferred: list[str] = []
         for bucket_name in self.SCAN_BUCKETS:
             if not self._bucket_due(bucket_name):
+                continue
+            if soft_budget > 0 and (time.monotonic() - started_at) >= soft_budget:
+                deferred.append(bucket_name)
                 continue
             result = self.run_bucket(bucket_name, notify=True, force_refresh=bucket_name in {"premarket_scan", "market_open_scan", "end_of_day_scan"})
             summary["alerts_sent"] += result.alerts_sent
             if result.status == "ok":
                 summary["buckets_run"] += 1
+        if deferred:
+            self.run_logs.log(
+                "workflow_cadence_deferred",
+                {"deferred_buckets": deferred, "soft_budget_seconds": soft_budget},
+            )
         return summary
+
+    def _cadence_soft_budget_seconds(self) -> float:
+        """How long ``run_scheduled_tasks`` may keep starting new buckets before
+        deferring the rest to the next tick.
+
+        Defaults to a headroom-adjusted fraction of the worker's per-job
+        wall-clock timeout so a tick finishes comfortably inside its budget even
+        after the last bucket it starts runs to its own deadline. Overridable via
+        ``scheduler_cadence_soft_budget_seconds`` (<= 0 disables deferral)."""
+
+        explicit = getattr(self.settings, "scheduler_cadence_soft_budget_seconds", None)
+        if explicit is not None:
+            return float(explicit)
+        # Stop launching new buckets past ~60% of the job budget, leaving the
+        # back 40% for the last bucket already in flight to finish under timeout.
+        job_timeout = float(getattr(self.settings, "scheduler_job_timeout_seconds", 180) or 180)
+        return max(job_timeout * 0.6, 30.0)
 
     def run_premarket_scan(self, *, notify: bool = True, force_refresh: bool = False) -> WorkflowTaskResponse:
         return self._execute_guarded(

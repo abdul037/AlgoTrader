@@ -228,6 +228,13 @@ class SchedulerWorker:
             if not job.is_due(now):
                 continue
             ran.append(job.name)
+            # Refresh liveness before each job so a tick that runs several jobs
+            # back-to-back (each up to its own wall-clock budget) can't let the
+            # heartbeat age past the staleness threshold and trigger a spurious
+            # self-heal restart. A single job that runs the full budget is still
+            # bounded by its own timeout (<= the staleness window). This does not
+            # count a tick — the loop counts one tick via _heartbeat at the end.
+            self._mark_alive(self._clock())
             timeout = job.timeout_seconds or self.default_job_timeout_seconds
             try:
                 self._invoke_job(job.func, timeout)
@@ -239,7 +246,7 @@ class SchedulerWorker:
             finally:
                 job.last_run_at = now
                 job.run_count += 1
-        self._heartbeat(now)
+        self._heartbeat(self._clock())
         return ran
 
     def _invoke_job(self, func: Callable[[], Any], timeout: float | None) -> None:
@@ -285,6 +292,16 @@ class SchedulerWorker:
             self._stop_event.wait(self.tick_interval_seconds)
 
     # -- heartbeat / status --------------------------------------------------
+
+    def _mark_alive(self, now: datetime) -> None:
+        """Refresh the liveness timestamp without counting a tick.
+
+        Called between jobs within one tick so a long-but-healthy run can't age
+        the heartbeat past the staleness window; the tick itself is counted once
+        by ``_heartbeat`` at the end of the loop."""
+
+        self._last_heartbeat_at = now
+        self._persist(HEARTBEAT_KEY, now.isoformat())
 
     def _heartbeat(self, now: datetime) -> None:
         self._tick_count += 1

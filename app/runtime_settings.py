@@ -134,6 +134,12 @@ class AppSettings(BaseSettings):
     # call) can never wedge the shared tick. Kept below the self-heal stale
     # threshold so a bounded job finishes before a full worker restart.
     scheduler_job_timeout_seconds: int = 180
+    # Soft budget for one workflow-cadence tick: once this much wall-clock has
+    # elapsed the tick stops starting new scan buckets and defers the rest to the
+    # next tick, so a burst of due buckets can't sum past the per-job timeout
+    # above. None -> derived as ~60% of scheduler_job_timeout_seconds; <= 0
+    # disables deferral (buckets always all run).
+    scheduler_cadence_soft_budget_seconds: float | None = None
     # Scheduled refresh of the internal (self-simulated) paper position ledger.
     paper_position_refresh_enabled: bool = True
     paper_position_refresh_interval_seconds: int = 60
