@@ -55,6 +55,34 @@ def test_first_run_executes_all_jobs_and_heartbeats() -> None:
     assert state.get(TICK_COUNT_KEY) == "1"
 
 
+def test_heartbeat_refreshes_between_jobs_in_a_long_tick() -> None:
+    # A tick that runs several jobs back-to-back must refresh the heartbeat
+    # between them, so a long-but-healthy job can't age the heartbeat past the
+    # staleness window and trigger a spurious self-heal restart.
+    clock = Clock(datetime(2026, 1, 1, tzinfo=UTC))
+    state = FakeRuntimeState()
+    seen: dict[str, str | None] = {}
+
+    def slow_a() -> None:
+        clock.advance(200)  # a long-running job
+
+    def read_b() -> None:
+        # Heartbeat as observed just before job "b" runs its body.
+        seen["hb_before_b"] = state.get(HEARTBEAT_KEY)
+
+    jobs = [
+        ScheduledJob("a", 60, slow_a),
+        ScheduledJob("b", 60, read_b),
+    ]
+    worker = _worker(jobs, clock, state)
+
+    worker.run_due_jobs()
+
+    # Without the per-job heartbeat the value here would be the stale tick-start
+    # time (or None); with it, the heartbeat already reflects the advanced clock.
+    assert seen["hb_before_b"] == clock.now.isoformat()
+
+
 def test_jobs_respect_independent_cadences() -> None:
     clock = Clock(datetime(2026, 1, 1, tzinfo=UTC))
     calls: list[str] = []

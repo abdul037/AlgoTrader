@@ -537,6 +537,87 @@ def test_scheduled_tasks_skip_scans_when_automation_paused(tmp_path) -> None:
     assert next(item for item in paused if item.name == "intraday_rotation").last_status == "paused"
 
 
+def test_cadence_defers_buckets_once_soft_budget_is_reached(tmp_path, monkeypatch) -> None:
+    import app.workflow.service as service_module
+    from app.models.workflow import WorkflowTaskResponse
+
+    # Controllable monotonic clock: each run_bucket call "takes" 60s.
+    elapsed = {"t": 0.0}
+    monkeypatch.setattr(service_module.time, "monotonic", lambda: elapsed["t"])
+
+    logs = FakeLogs()
+    workflow = SignalWorkflowService(
+        settings=make_settings(
+            tmp_path,
+            screener_scheduler_enabled=True,
+            ledger_enabled=False,
+            ledger_cycle_enabled=False,
+            scheduler_cadence_soft_budget_seconds=100.0,
+        ),
+        market_screener=FakeMarketScreener([]),
+        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="NVDA", last_execution=101.0)),
+        notifier=FakeNotifier(),
+        tracked_signals=FakeTrackedSignals(),
+        alert_history=FakeAlertHistory(),
+        runtime_state=FakeState(),
+        run_logs=logs,
+    )
+    # All scan buckets due; maintenance not due.
+    monkeypatch.setattr(workflow, "_bucket_due", lambda name: name in workflow.SCAN_BUCKETS)
+    ran: list[str] = []
+
+    def fake_run_bucket(name, *, notify=True, force_refresh=True):
+        ran.append(name)
+        elapsed["t"] += 60.0
+        return WorkflowTaskResponse(task=name, status="ok", detail="", alerts_sent=0)
+
+    monkeypatch.setattr(workflow, "run_bucket", fake_run_bucket)
+
+    summary = workflow.run_scheduled_tasks()
+
+    # t=0 -> bucket 1 (elapsed 0 < 100) -> t=60 -> bucket 2 (60 < 100) -> t=120
+    # -> bucket 3 sees elapsed 120 >= 100 and is deferred (along with the rest).
+    assert ran == ["premarket_scan", "market_open_scan"]
+    assert summary["buckets_run"] == 2
+    deferred_events = [payload for event, payload in logs.items if event == "workflow_cadence_deferred"]
+    assert len(deferred_events) == 1
+    assert deferred_events[0]["deferred_buckets"] == ["intraday_rotation", "swing_hourly", "end_of_day_scan"]
+
+
+def test_cadence_runs_all_buckets_when_budget_disabled(tmp_path, monkeypatch) -> None:
+    from app.models.workflow import WorkflowTaskResponse
+
+    workflow = SignalWorkflowService(
+        settings=make_settings(
+            tmp_path,
+            screener_scheduler_enabled=True,
+            ledger_enabled=False,
+            ledger_cycle_enabled=False,
+            scheduler_cadence_soft_budget_seconds=0.0,  # deferral disabled
+        ),
+        market_screener=FakeMarketScreener([]),
+        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="NVDA", last_execution=101.0)),
+        notifier=FakeNotifier(),
+        tracked_signals=FakeTrackedSignals(),
+        alert_history=FakeAlertHistory(),
+        runtime_state=FakeState(),
+        run_logs=FakeLogs(),
+    )
+    monkeypatch.setattr(workflow, "_bucket_due", lambda name: name in workflow.SCAN_BUCKETS)
+    ran: list[str] = []
+    monkeypatch.setattr(
+        workflow, "run_bucket",
+        lambda name, *, notify=True, force_refresh=True: (
+            ran.append(name) or WorkflowTaskResponse(task=name, status="ok", detail="", alerts_sent=0)
+        ),
+    )
+
+    summary = workflow.run_scheduled_tasks()
+
+    assert ran == list(workflow.SCAN_BUCKETS)  # nothing deferred
+    assert summary["buckets_run"] == len(workflow.SCAN_BUCKETS)
+
+
 def test_intraday_scan_rotates_top100_batches(tmp_path) -> None:
     screener = FakeMarketScreener([])
     state = FakeState()
