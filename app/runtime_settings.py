@@ -401,10 +401,8 @@ class AppSettings(BaseSettings):
     strategy_health_enabled: bool = True
     strategy_health_min_closed_trades: int = 20
     strategy_health_rolling_trades: int = 30
-    circuit_breaker_enabled: bool = True
     reconciliation_failures_before_kill_switch: int = 3
     execution_max_entry_drift_bps: float = 35.0
-    execution_queue_enabled: bool = True
     execution_mode: Literal["paper", "live"] = "paper"
     broker_for_equities: Literal["alpaca", "etoro", "none"] = "alpaca"
     broker_for_non_equities: Literal["alpaca", "etoro", "none"] = "etoro"
