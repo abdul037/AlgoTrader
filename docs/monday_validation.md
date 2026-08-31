@@ -13,6 +13,22 @@ curl -s https://<railway-app>/health/ready
 Expect `ready: true`. If not, check the Railway logs before anything else — the
 scheduler self-heals, but a cold deploy needs a minute.
 
+## 0.5 Pre-open readiness — will today accrue data, safely?
+
+```
+python -m scripts.preopen_check          # human-readable
+python -m scripts.preopen_check --json    # machine-readable (exit 2 on NO-GO)
+```
+
+One GO / WARN / NO-GO readout across four groups — Safety (paper-only, not
+paused, kill-switch off), Deploy (running commit), Trading mode, and the gated
+baseline. The group that catches the common silent failure is **Trading mode**:
+if `paper_auto_operation_mode` is `shadow`, the bot proposes but places nothing,
+so the day accrues **zero** closed trades and Stage 1 never advances. For the
+day to produce measurement data the mode must be `supervised`/`unattended` with
+propose + approve + execute all open. Fix it in the Railway env (not the repo),
+redeploy, and re-run this check until Trading mode reads GO.
+
 ## 1. Gated-feature validation
 
 Run on the deployed bot (it has market data + the paper DB):
