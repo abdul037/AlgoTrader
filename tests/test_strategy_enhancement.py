@@ -86,6 +86,10 @@ def _client(tmp_path) -> TestClient:
         paper_scanner_exploration_enabled=True,
         paper_exploration_signal_profile="balanced_loose",
         paper_near_miss_promotion_enabled=True,
+        # Pin the narrow allow-list this test exercises (it asserts
+        # indicator_confluence_too_low is an *unsupported* near-miss reason),
+        # independent of the deployed default.
+        paper_near_miss_allowed_reasons=["relative_volume_too_low", "final_score_below_auto_threshold"],
         auto_propose_enabled=True,
         paper_auto_operation_mode="supervised",
         paper_supervised_weak_valid_enabled=True,
