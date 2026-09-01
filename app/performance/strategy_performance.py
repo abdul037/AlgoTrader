@@ -227,3 +227,59 @@ def decay_verdict(
         action=action,
         reasons=reasons,
     )
+
+
+def strategy_demote_verdicts(
+    trades: Iterable[Any],
+    *,
+    backtest_expectancy_by_strategy: dict[str, float] | None = None,
+    min_trades: int = 20,
+    retention_threshold: float = 0.5,
+) -> list[StrategyDecayVerdict]:
+    """Compute a keep/watch/demote verdict for every strategy with live trades.
+
+    Pure convenience wrapper: run ``analyze_by_strategy`` then ``decay_verdict``
+    per strategy, using the per-strategy backtest expectancy baseline when known.
+    This is the single source of truth the live-selection auto-demote gate reads,
+    so the dashboard, the daily digest, and the enforcement path all agree.
+    """
+
+    baseline = backtest_expectancy_by_strategy or {}
+    verdicts: list[StrategyDecayVerdict] = []
+    for live in analyze_by_strategy(trades):
+        verdicts.append(
+            decay_verdict(
+                live,
+                backtest_expectancy_usd=baseline.get(live.strategy_name),
+                min_trades=min_trades,
+                retention_threshold=retention_threshold,
+            )
+        )
+    return verdicts
+
+
+def demoted_strategy_names(
+    trades: Iterable[Any],
+    *,
+    backtest_expectancy_by_strategy: dict[str, float] | None = None,
+    min_trades: int = 20,
+    retention_threshold: float = 0.5,
+) -> set[str]:
+    """Return the set of strategy names that have decayed to a ``demote`` verdict.
+
+    A strategy is demoted only once it has at least ``min_trades`` closed live
+    trades and a non-positive live expectancy (it is losing money live). Fewer
+    trades => never demoted (insufficient evidence). Callers gate enforcement
+    behind an explicit flag; on its own this function changes nothing.
+    """
+
+    return {
+        v.strategy_name
+        for v in strategy_demote_verdicts(
+            trades,
+            backtest_expectancy_by_strategy=backtest_expectancy_by_strategy,
+            min_trades=min_trades,
+            retention_threshold=retention_threshold,
+        )
+        if v.action == ACTION_DEMOTE
+    }
