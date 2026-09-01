@@ -146,18 +146,20 @@ class SignalWorkflowService:
         """How long ``run_scheduled_tasks`` may keep starting new buckets before
         deferring the rest to the next tick.
 
-        Defaults to a headroom-adjusted fraction of the worker's per-job
-        wall-clock timeout so a tick finishes comfortably inside its budget even
-        after the last bucket it starts runs to its own deadline. Overridable via
-        ``scheduler_cadence_soft_budget_seconds`` (<= 0 disables deferral)."""
+        Derived so the invariant ``soft_budget + one_batch_deadline < job_timeout``
+        holds: the last bucket may start just before the soft budget and then run
+        up to its own batch deadline, and that must still finish before the job
+        wall-clock cap. Otherwise a single deep bucket started late would trip the
+        timeout — which is exactly the failure this guards against. Overridable
+        via ``scheduler_cadence_soft_budget_seconds`` (<= 0 disables deferral)."""
 
         explicit = getattr(self.settings, "scheduler_cadence_soft_budget_seconds", None)
         if explicit is not None:
             return float(explicit)
-        # Stop launching new buckets past ~60% of the job budget, leaving the
-        # back 40% for the last bucket already in flight to finish under timeout.
-        job_timeout = float(getattr(self.settings, "scheduler_job_timeout_seconds", 180) or 180)
-        return max(job_timeout * 0.6, 30.0)
+        job_timeout = float(getattr(self.settings, "scheduler_job_timeout_seconds", 240) or 240)
+        batch_deadline = float(getattr(self.settings, "screener_batch_deadline_seconds", 180) or 180)
+        # Leave room for one in-flight batch to finish, plus a 10s margin.
+        return max(job_timeout - batch_deadline - 10.0, 30.0)
 
     def run_premarket_scan(self, *, notify: bool = True, force_refresh: bool = False) -> WorkflowTaskResponse:
         return self._execute_guarded(
