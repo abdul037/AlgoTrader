@@ -17,6 +17,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.models.signal import Signal, SignalAction
+from app.runtime_settings import DEFAULT_PAPER_NEAR_MISS_ALLOWED_REASONS
 from app.screener.filters import FilterOutcome
 from app.screener.profiles import (
     effective_auto_execution_min_score,
@@ -24,12 +25,33 @@ from app.screener.profiles import (
 )
 from app.utils.time import utc_now
 
+def _is_unattended_paper_exploration(settings: Any) -> bool:
+    """True when the bot is running fully autonomous paper exploration.
+
+    In this mode the near-miss auto-exec path is the whole point: it exists to
+    trade genuine near-misses in paper and gather live data. We therefore make
+    it robust to stale/narrow ops config (e.g. a Railway env var pinned to an
+    old value) so autonomous exploration can't be silently starved of trades.
+    Supervised mode keeps ops config fully authoritative.
+    """
+    if not paper_exploration_profile_enabled(settings):
+        return False
+    mode = str(getattr(settings, "paper_auto_operation_mode", "") or "").strip().lower()
+    return mode == "unattended"
+
+
 def _near_miss_allowed_reasons(settings: Any) -> set[str]:
-    return {
+    configured = {
         str(item).strip().lower()
         for item in (getattr(settings, "paper_near_miss_allowed_reasons", []) or [])
         if str(item).strip()
     }
+    # In unattended exploration the curated SOFT-reason baseline is a floor, so a
+    # stale/narrow override can't block genuine soft near-misses. HARD gates are
+    # enforced separately in _paper_near_miss_blockers and are unaffected.
+    if _is_unattended_paper_exploration(settings):
+        return configured | {r.lower() for r in DEFAULT_PAPER_NEAR_MISS_ALLOWED_REASONS}
+    return configured
 
 
 def _weak_valid_allowed_reasons(settings: Any) -> set[str]:
@@ -289,7 +311,11 @@ def _paper_near_miss_blockers(
     unsupported_reasons = sorted(normalized_reasons - allowed)
     if unsupported_reasons:
         blockers.append("paper_near_miss_unsupported_reasons:" + ",".join(unsupported_reasons))
-    if filter_outcome.watchlist_only:
+    # A weak/unvalidated recent backtest downgrades a signal to watchlist-only.
+    # In unattended exploration that defeats the purpose (exploration already
+    # opts out of requiring backtest validation), so it must not block auto-exec
+    # -- the hard risk/liquidity gates above still apply.
+    if filter_outcome.watchlist_only and not _is_unattended_paper_exploration(settings):
         blockers.append("paper_near_miss_watchlist_filter")
     score = float(ranking.get("final_score") or 0.0)
     minimum = effective_auto_execution_min_score(settings) - float(getattr(settings, "paper_near_miss_max_score_gap", 5.0) or 0.0)
