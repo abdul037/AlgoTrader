@@ -20,7 +20,29 @@ DEFAULT_TOP_100_US = [
     "SNOW", "MELI", "REGN", "PYPL", "ETN", "HON", "APH", "CB", "SO", "NKE",
 ]
 
+# Second 100 liquid US large/mid-caps (not already in DEFAULT_TOP_100_US), used
+# to widen the scan universe so more genuine near-miss setups surface each day.
+# All are high-dollar-volume names; the IEX-calibrated liquidity floor still
+# filters anything that isn't actually tradeable, so widening here adds
+# opportunities without lowering quality.
+ADDITIONAL_LIQUID_US_100 = [
+    "ELV", "VZ", "TMUS", "CI", "CVS", "MCK", "ZTS", "BSX", "PGR", "CME",
+    "ICE", "MMM", "EQIX", "AON", "ITW", "GD", "NOC", "LMT", "WM", "SHW",
+    "CL", "EOG", "SLB", "APD", "FCX", "EMR", "PSX", "MPC", "VLO", "F",
+    "GM", "PSA", "O", "CCI", "AMT", "SPG", "DLR", "WELL", "PLD", "NEM",
+    "KMB", "GIS", "KHC", "HSY", "STZ", "MNST", "KDP", "DOW", "DD", "NUE",
+    "CTAS", "PH", "ROK", "CARR", "OTIS", "JCI", "CMI", "PCAR", "FDX", "NSC",
+    "CSX", "ODFL", "URI", "PWR", "FTNT", "ADSK", "WDAY", "TEAM", "DDOG", "NET",
+    "ZS", "ABNB", "DASH", "RBLX", "COIN", "HOOD", "MRVL", "ON", "MCHP", "NXPI",
+    "TER", "ENPH", "FSLR", "CEG", "VST", "D", "EXC", "AEP", "PEG", "XEL",
+    "SRE", "PCG", "DUK", "MO", "HCA", "GEHC", "TGT", "DELL", "HPQ", "GLW",
+]
+
+# Broad ~200-name universe: the top 100 plus the next 100 liquid names.
+DEFAULT_TOP_200_US = DEFAULT_TOP_100_US + ADDITIONAL_LIQUID_US_100
+
 UNIVERSE_TIERS: dict[str, list[str]] = {
+    "broad_top200": DEFAULT_TOP_200_US,
     "broad_top100": DEFAULT_TOP_100_US,
     "large_cap_leaders": [
         "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "AVGO", "TSLA", "LLY", "JPM",

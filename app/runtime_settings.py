@@ -123,9 +123,9 @@ class AppSettings(BaseSettings):
     telegram_hourly_alerts_enabled: bool = False
     telegram_alert_interval_minutes: int = 60
     telegram_alert_symbols: list[str] = Field(default_factory=lambda: ["NVDA"])
-    market_universe_name: str = "top100_us"
-    market_universe_tier: str = "large_cap_leaders"
-    market_universe_limit: int = 100
+    market_universe_name: str = "top200_us"
+    market_universe_tier: str = "broad_top200"
+    market_universe_limit: int = 200
     market_universe_symbols: list[str] = Field(default_factory=list)
     primary_market_data_provider: str = "auto"
     fallback_market_data_provider: str = "none"
