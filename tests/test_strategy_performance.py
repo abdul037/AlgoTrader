@@ -15,6 +15,8 @@ from app.performance.strategy_performance import (
     analyze_by_strategy,
     daily_pnl_series,
     decay_verdict,
+    demoted_strategy_names,
+    strategy_demote_verdicts,
 )
 
 
@@ -112,3 +114,36 @@ class TestDailyPnlSeries:
 
     def test_empty_input(self) -> None:
         assert daily_pnl_series([]) == []
+
+
+class TestDemotedStrategyNames:
+    def test_losing_strategy_with_enough_trades_is_demoted(self) -> None:
+        # 20 losing trades (<= 0 expectancy) -> demote.
+        trades = [_trade("loser", -10, closed_at=f"2026-08-{i+1:02d}") for i in range(20)]
+        assert demoted_strategy_names(trades, min_trades=20) == {"loser"}
+
+    def test_winning_strategy_is_not_demoted(self) -> None:
+        trades = [_trade("winner", 25, closed_at=f"2026-08-{i+1:02d}") for i in range(20)]
+        assert demoted_strategy_names(trades, min_trades=20) == set()
+
+    def test_losing_strategy_below_min_trades_is_not_demoted(self) -> None:
+        # Only 5 losing trades -> insufficient evidence, never demoted.
+        trades = [_trade("loser", -10, closed_at=f"2026-08-{i+1:02d}") for i in range(5)]
+        assert demoted_strategy_names(trades, min_trades=20) == set()
+
+    def test_mixed_book_demotes_only_the_dead_strategy(self) -> None:
+        losers = [_trade("dead", -5, closed_at=f"2026-08-{i+1:02d}") for i in range(20)]
+        winners = [_trade("alive", 15, closed_at=f"2026-08-{i+1:02d}") for i in range(20)]
+        assert demoted_strategy_names(losers + winners, min_trades=20) == {"dead"}
+
+    def test_verdicts_cover_every_strategy_with_trades(self) -> None:
+        trades = [
+            _trade("a", 10, closed_at="2026-08-01"),
+            _trade("b", -10, closed_at="2026-08-01"),
+        ]
+        names = {v.strategy_name for v in strategy_demote_verdicts(trades, min_trades=1)}
+        assert names == {"a", "b"}
+
+    def test_empty_input(self) -> None:
+        assert demoted_strategy_names([]) == set()
+        assert strategy_demote_verdicts([]) == []

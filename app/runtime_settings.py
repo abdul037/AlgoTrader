@@ -340,6 +340,12 @@ class AppSettings(BaseSettings):
     # Stage 1 (prove-expectancy-on-paper): minimum closed trades before the
     # live-vs-backtest decay monitor will judge a strategy keep/watch/demote.
     stage1_decay_min_trades: int = 20
+    # Close the profit loop: when true, a strategy that decays to a `demote`
+    # verdict (non-positive live expectancy over stage1_decay_min_trades closed
+    # trades) is automatically dropped from the live scan rotation. Default OFF
+    # = observe-only: the demote set is computed and logged each cycle but
+    # selection is unchanged, so it never removes a strategy until you trust it.
+    strategy_auto_demote_enabled: bool = False
     # Regime router: when true, strategy selection toggles whole families on/off
     # by market regime (momentum on healthy trends, mean-reversion in chop,
     # defensive in downtrends). Default off — it changes nothing live until
