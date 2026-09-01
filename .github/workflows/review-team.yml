@@ -27,23 +27,32 @@ jobs:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      # Surfaces whether the subscription token secret is configured, so the job
-      # degrades gracefully instead of failing every PR before it's added.
-      HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
     steps:
-      - name: Notice if token missing
-        if: env.HAS_TOKEN != 'true'
-        run: echo "::notice::CLAUDE_CODE_OAUTH_TOKEN not set — review team skipped. Run 'claude setup-token' and add it as a repo secret to enable automated PR reviews."
+      # Gate on the secret from a STEP-level env (where the `secrets` context is
+      # reliably available) and expose the result as a step output. Prints only
+      # whether the token is present — never its value — so the job degrades
+      # gracefully (and is debuggable) instead of failing before the secret exists.
+      - name: Check for review token
+        id: token
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -n "${CLAUDE_CODE_OAUTH_TOKEN}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "CLAUDE_CODE_OAUTH_TOKEN is present — running the review team."
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CLAUDE_CODE_OAUTH_TOKEN not set — review team skipped. Run 'claude setup-token' and add it as a repo secret to enable automated PR reviews."
+          fi
 
       - name: Checkout
-        if: env.HAS_TOKEN == 'true'
+        if: steps.token.outputs.present == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0  # full history so the reviewers can diff against base
 
       - name: Review team
-        if: env.HAS_TOKEN == 'true'
+        if: steps.token.outputs.present == 'true'
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
