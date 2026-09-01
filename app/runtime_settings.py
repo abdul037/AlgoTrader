@@ -197,12 +197,24 @@ class AppSettings(BaseSettings):
     screener_min_score_improvement_for_repeat: float = 6.0
     screener_min_price: float = 5.0
     screener_max_price: float = 10000.0
-    screener_min_last_volume: int = 250_000
-    screener_min_average_volume: int = 750_000
-    screener_min_average_dollar_volume: float = 20_000_000.0
+    # Volume/liquidity floors are calibrated for the *configured* market-data
+    # feed, not the consolidated tape. The live feed is Alpaca IEX
+    # (ALPACA_DATA_FEED=iex), which prints only ~2-3% of consolidated US
+    # volume, so SIP-scale floors (250k/750k shares, $20M) reject even AMZN or
+    # NVDA. These are IEX-per-bar floors: the dollar-volume floor is the
+    # primary liquidity gate (price-aware); the two share floors are nominal
+    # guards against near-zero-volume bars. See scan_promotion.py -- false
+    # liquidity rejections here otherwise poison every near-miss reason list.
+    screener_min_last_volume: int = 250
+    screener_min_average_volume: int = 500
+    screener_min_average_dollar_volume: float = 250_000.0
     screener_min_relative_volume: float = 1.05
     screener_max_spread_bps: float = 50.0
-    screener_min_atr_pct: float = 0.35
+    # ATR floor is per-bar on the scanned timeframe (5m/15m intraday dominate).
+    # 0.35%/bar implies ~3% daily range and excludes the whole liquid large-cap
+    # universe intraday; 0.12%/bar admits normal large-caps while still
+    # requiring real movement (stops/targets scale with ATR downstream).
+    screener_min_atr_pct: float = 0.12
     screener_max_atr_pct: float = 8.5
     screener_scalp_min_confidence: float = 0.72
     screener_scalp_min_relative_volume: float = 1.25
