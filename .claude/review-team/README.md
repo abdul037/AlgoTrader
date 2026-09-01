@@ -2,7 +2,7 @@
 
 A team of four role-based Claude reviewers that automatically reviews **every pull request**
 and posts one combined review comment, focused on the project's goal: a safe, measured path to
-profit.
+profit. It runs on your **Claude subscription** (OAuth token) — no metered API key.
 
 | Bot | Reviews for | Verdict scale |
 |-----|-------------|---------------|
@@ -16,27 +16,35 @@ reviews are in a collapsible block underneath.
 
 ## How it works
 - Workflow: `.github/workflows/review-team.yml` runs on `opened`/`synchronize`/`reopened`/`ready_for_review`.
-- Orchestrator: `scripts/review_team.py` computes the PR diff, runs each bot, posts/updates **one**
-  comment in place (so re-pushes don't spam the thread).
+- Engine: the official [`anthropics/claude-code-action`](https://github.com/anthropics/claude-code-action),
+  authenticated with your Claude subscription OAuth token. The action reads the personas below,
+  diffs the PR, runs the four reviewers, and posts/updates **one sticky comment**.
 - Personas: the `*.md` files in this folder. Edit them to tune what each bot cares about —
   they're versioned like any other code.
-- **Advisory only.** It never blocks a merge; it's a second pair of (four) eyes.
+- **Advisory only.** It never blocks a merge, and it can never push code (`contents: read`).
 
-## Setup (one step)
-Add the repository secret **`ANTHROPIC_API_KEY`**:
-`GitHub repo → Settings → Secrets and variables → Actions → New repository secret`.
+## Setup (one step) — use your Claude subscription
+1. In Claude Code (with a Pro/Max subscription), run:
+   ```
+   claude setup-token
+   ```
+   This prints a long-lived OAuth token.
+2. Add it as the repository secret **`CLAUDE_CODE_OAUTH_TOKEN`**:
+   `GitHub repo → Settings → Secrets and variables → Actions → New repository secret`.
 
-Without the secret the workflow still runs and exits cleanly with a notice — it just won't post a
-review until the key is present.
+Reviews then draw on your existing subscription instead of a pay-per-use API bill. Until the
+secret is present, the workflow runs and exits cleanly with a notice — no failed checks.
 
-## Cost / quality levers (optional repo *variables*)
-Set under `Settings → Secrets and variables → Actions → Variables`:
-- `REVIEW_MODEL` — default `claude-opus-5`. Use `claude-sonnet-5` or `claude-haiku-4-5` to cut cost.
-- `REVIEW_EFFORT` — default `high`. Use `medium`/`low` to cut cost.
+> Prefer a metered API key instead? Swap `claude_code_oauth_token` for `anthropic_api_key` in the
+> workflow and store an `ANTHROPIC_API_KEY` secret from console.anthropic.com.
 
-Each PR runs 4 model calls; the diff is prompt-cached across them to keep cost down. Large diffs
-are capped (`REVIEW_MAX_DIFF_CHARS`, default 120k chars).
+## Tuning
+- **What each bot checks:** edit the persona `*.md` files here.
+- **Model / turns:** adjust `claude_args` in the workflow (e.g. `--model ...`, `--max-turns ...`).
+- **Large diffs / cost:** the action reviews the diff directly; keep PRs focused for the tightest reviews.
 
 ## Adding or removing a bot
-- **Remove:** delete its entry from `SPECIALISTS` in `scripts/review_team.py` (and optionally its `.md`).
-- **Add:** drop a new `<role>.md` here and add `("your-role.md", "Name", "🔧")` to `SPECIALISTS`.
+- **Remove:** delete its persona file here and drop it from the workflow prompt's Step-1 list and
+  the combined-comment template.
+- **Add:** drop a new `<role>.md` here and reference it in the workflow prompt (Step 1 + the
+  comment template).
