@@ -339,12 +339,19 @@ class AppSettings(BaseSettings):
     paper_auto_min_clean_supervised_lifecycles: int = 10
     paper_auto_min_strategy_closed_trades: int = 30
     paper_auto_min_strategy_profit_factor: float = 1.20
-    paper_scanner_exploration_enabled: bool = False
+    # Paper-exploration is ON by default so the unattended paper bot accrues a
+    # Stage-1 track record: it auto-executes genuine near-miss signals (within
+    # paper_near_miss_max_score_gap of the loosened alert threshold) that clear
+    # every HARD risk/liquidity gate — verified data, spread, reward:risk,
+    # relative-volume floor, valid bracket — and fail only the SOFT quality gates
+    # in paper_near_miss_allowed_reasons. Paper-only by construction; real
+    # trading stays gated by enable_real_trading.
+    paper_scanner_exploration_enabled: bool = True
     paper_scanner_bypass_production_approval: bool = False
     paper_scanner_allowed_strategies: list[str] = Field(default_factory=lambda: ["all"])
     paper_exploration_require_backtest_validated: bool = False
     paper_exploration_require_regular_hours: bool = True
-    paper_exploration_signal_profile: Literal["off", "balanced_loose"] = "off"
+    paper_exploration_signal_profile: Literal["off", "balanced_loose"] = "balanced_loose"
     paper_exploration_min_final_score_to_alert: float = 60.0
     paper_exploration_min_final_score_to_keep: float = 50.0
     paper_exploration_min_relative_volume: float = 0.80
@@ -352,10 +359,35 @@ class AppSettings(BaseSettings):
     paper_exploration_min_reward_to_risk: float = 1.20
     paper_exploration_min_indicator_confluence: float = 0.35
     paper_exploration_auto_execution_min_score: float = 60.0
-    paper_near_miss_promotion_enabled: bool = False
+    paper_near_miss_promotion_enabled: bool = True
     paper_near_miss_max_score_gap: float = 5.0
+    # SOFT quality gates a near-miss may fail and still be auto-executed in paper
+    # exploration. HARD gates (liquidity/volume floors, spread, reward:risk,
+    # verified data, valid bracket) are enforced separately in
+    # _paper_near_miss_blockers and are deliberately NOT listed here, so illiquid
+    # or badly-priced names are never auto-traded even in exploration.
     paper_near_miss_allowed_reasons: list[str] = Field(
-        default_factory=lambda: ["relative_volume_too_low", "final_score_below_auto_threshold"]
+        default_factory=lambda: [
+            "relative_volume_too_low",
+            "final_score_below_auto_threshold",
+            "final_score_below_keep_threshold",
+            "recent_backtest_consistency_too_low",
+            "indicator_confluence_too_low",
+            "confluence_score_too_low",
+            "trend_strength_too_low",
+            "structure_too_choppy",
+            "market_regime_fit_too_low",
+            "regime_alignment_too_low",
+            "relative_strength_market_too_low",
+            "relative_strength_sector_too_low",
+            "sector_strength_too_low",
+            "benchmark_strength_too_low",
+            "timeframe_alignment_too_low",
+            "confirmation_too_weak",
+            "execution_quality_too_low",
+            "accuracy_score_too_low",
+            "entry_too_extended",
+        ]
     )
     paper_supervised_weak_valid_enabled: bool = False
     paper_supervised_weak_valid_profile: Literal["aggressive"] = "aggressive"

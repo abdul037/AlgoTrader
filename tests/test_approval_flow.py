@@ -99,7 +99,14 @@ def test_automation_routes_smoke(tmp_path) -> None:
 
 def test_continuous_readiness_requires_control_token_and_reports_gates(tmp_path) -> None:
     app = create_app(
-        make_settings(tmp_path, control_api_token="secret", alpaca_expected_account_number="PAPER-1"),
+        # This test asserts the readiness gates report exploration as disabled,
+        # so pin it off here independent of the deployed default.
+        make_settings(
+            tmp_path,
+            control_api_token="secret",
+            alpaca_expected_account_number="PAPER-1",
+            paper_scanner_exploration_enabled=False,
+        ),
         broker=MockBroker(),
         enable_background_jobs=False,
     )
