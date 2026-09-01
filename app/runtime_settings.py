@@ -13,6 +13,39 @@ if TYPE_CHECKING:
     from app.config_sections import ConfigSections
 
 
+# Canonical SOFT quality gates a near-miss may fail and still be auto-executed
+# in paper exploration. HARD gates (liquidity/volume floors, spread,
+# reward:risk, verified data, valid bracket) are enforced separately in
+# _paper_near_miss_blockers and are deliberately NOT listed here. This is the
+# curated baseline; in unattended paper-exploration the near-miss path treats
+# it as a floor (see scan_promotion._near_miss_allowed_reasons) so a stale or
+# narrow ops override can't silently starve autonomous exploration of trades.
+DEFAULT_PAPER_NEAR_MISS_ALLOWED_REASONS: tuple[str, ...] = (
+    "relative_volume_too_low",
+    "final_score_below_auto_threshold",
+    "final_score_below_keep_threshold",
+    "confluence_score_too_low",
+    "adx_too_low",
+    "candle_body_too_small",
+    "close_location_too_low",
+    "recent_backtest_consistency_too_low",
+    "indicator_confluence_too_low",
+    "trend_strength_too_low",
+    "structure_too_choppy",
+    "market_regime_fit_too_low",
+    "regime_alignment_too_low",
+    "relative_strength_market_too_low",
+    "relative_strength_sector_too_low",
+    "sector_strength_too_low",
+    "benchmark_strength_too_low",
+    "timeframe_alignment_too_low",
+    "confirmation_too_weak",
+    "execution_quality_too_low",
+    "accuracy_score_too_low",
+    "entry_too_extended",
+)
+
+
 class AppSettings(BaseSettings):
     """Runtime settings loaded from environment variables."""
 
@@ -379,27 +412,7 @@ class AppSettings(BaseSettings):
     # _paper_near_miss_blockers and are deliberately NOT listed here, so illiquid
     # or badly-priced names are never auto-traded even in exploration.
     paper_near_miss_allowed_reasons: list[str] = Field(
-        default_factory=lambda: [
-            "relative_volume_too_low",
-            "final_score_below_auto_threshold",
-            "final_score_below_keep_threshold",
-            "recent_backtest_consistency_too_low",
-            "indicator_confluence_too_low",
-            "confluence_score_too_low",
-            "trend_strength_too_low",
-            "structure_too_choppy",
-            "market_regime_fit_too_low",
-            "regime_alignment_too_low",
-            "relative_strength_market_too_low",
-            "relative_strength_sector_too_low",
-            "sector_strength_too_low",
-            "benchmark_strength_too_low",
-            "timeframe_alignment_too_low",
-            "confirmation_too_weak",
-            "execution_quality_too_low",
-            "accuracy_score_too_low",
-            "entry_too_extended",
-        ]
+        default_factory=lambda: list(DEFAULT_PAPER_NEAR_MISS_ALLOWED_REASONS)
     )
     paper_supervised_weak_valid_enabled: bool = False
     paper_supervised_weak_valid_profile: Literal["aggressive"] = "aggressive"
