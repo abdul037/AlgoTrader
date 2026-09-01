@@ -122,7 +122,8 @@ class AppSettings(BaseSettings):
     background_scheduler_interval_seconds: int = 60
     background_scheduler_tick_seconds: int = 5
     # Readiness turns "warning" once the worker heartbeat is older than this.
-    scheduler_heartbeat_max_age_seconds: int = 180
+    # Kept >= the per-job timeout so a single deep scan doesn't flap readiness.
+    scheduler_heartbeat_max_age_seconds: int = 240
     # Self-healing watchdog: an internal monitor thread force-restarts the worker
     # if a hung tick stops the heartbeat, so recovery never depends on an
     # external readiness probe being called after deploy.
@@ -130,9 +131,12 @@ class AppSettings(BaseSettings):
     scheduler_self_heal_stale_seconds: int = 300
     scheduler_self_heal_check_seconds: int = 30
     # Per-job wall-clock cap so one blocking job (e.g. a stalled market-data
-    # call) can never wedge the shared tick. Kept below the self-heal stale
-    # threshold so a bounded job finishes before a full worker restart.
-    scheduler_job_timeout_seconds: int = 180
+    # call) can never wedge the shared tick. Must sit ABOVE a single scan
+    # bucket's own batch deadline (screener_batch_deadline_seconds) so a deep
+    # scan that legitimately runs to its deadline does not trip this cap, and
+    # BELOW the self-heal stale threshold so a genuinely hung job is still
+    # bounded before a full worker restart. 240 > 180 batch deadline, < 300 heal.
+    scheduler_job_timeout_seconds: int = 240
     # Soft budget for one workflow-cadence tick: once this much wall-clock has
     # elapsed the tick stops starting new scan buckets and defers the rest to the
     # next tick, so a burst of due buckets can't sum past the per-job timeout

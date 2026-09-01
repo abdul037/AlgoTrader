@@ -537,6 +537,30 @@ def test_scheduled_tasks_skip_scans_when_automation_paused(tmp_path) -> None:
     assert next(item for item in paused if item.name == "intraday_rotation").last_status == "paused"
 
 
+def test_cadence_soft_budget_keeps_one_batch_inside_the_job_timeout(tmp_path) -> None:
+    # Invariant that prevents the observed workflow_cadence timeout: the last
+    # bucket may start just before the soft budget and run to its own batch
+    # deadline, and that must still finish before the per-job wall-clock cap.
+    workflow = SignalWorkflowService(
+        settings=make_settings(tmp_path),
+        market_screener=FakeMarketScreener([]),
+        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="NVDA", last_execution=101.0)),
+        notifier=FakeNotifier(),
+        tracked_signals=FakeTrackedSignals(),
+        alert_history=FakeAlertHistory(),
+        runtime_state=FakeState(),
+        run_logs=FakeLogs(),
+    )
+    s = workflow.settings
+    soft = workflow._cadence_soft_budget_seconds()
+    batch_deadline = float(s.screener_batch_deadline_seconds)
+    job_timeout = float(s.scheduler_job_timeout_seconds)
+    assert soft + batch_deadline < job_timeout
+    # And the job cap must sit under the self-heal threshold so a bounded job
+    # never triggers a spurious restart.
+    assert job_timeout < float(s.scheduler_self_heal_stale_seconds)
+
+
 def test_cadence_defers_buckets_once_soft_budget_is_reached(tmp_path, monkeypatch) -> None:
     import app.workflow.service as service_module
     from app.models.workflow import WorkflowTaskResponse
