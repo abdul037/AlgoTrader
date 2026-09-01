@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from contextlib import suppress
 from typing import Any
 
 from app.backtesting.batch import BatchBacktestService
@@ -212,10 +213,34 @@ class MarketScreenerService:
         if self.strategy_lab is not None:
             strategy = self.strategy_lab.build_strategy_for_spec(spec)
             if strategy is not None:
+                self._align_strategy_liquidity_floor(strategy)
                 return configure_weak_signal_emission(strategy, self.settings)
         strategy = get_strategy(spec.name, **_strategy_kwargs(self.settings, spec))
         self._inject_providers(strategy, spec)
+        self._align_strategy_liquidity_floor(strategy)
         return configure_weak_signal_emission(strategy, self.settings)
+
+    def _align_strategy_liquidity_floor(self, strategy: Any) -> None:
+        """Align a strategy's internal dollar-volume floor to the screener's.
+
+        Live scanning runs on the Alpaca IEX feed, which prints only a small
+        slice of consolidated volume. Strategy classes (gap/breakout/
+        continuation) carry SIP-scale ``minimum_dollar_volume`` defaults
+        ($2-5M) that reject every liquid name on IEX, poisoning the near-miss
+        reason list with false ``average_dollar_volume_below_threshold``. Pin
+        their floor to the (feed-calibrated) screener liquidity floor so the
+        live path and the screener agree on what "liquid enough" means.
+
+        This is intentionally the *live* path only -- the batch backtester
+        builds strategies via ``get_strategy`` directly and keeps the SIP-scale
+        defaults, since it evaluates against consolidated historical data.
+        """
+        if not hasattr(strategy, "minimum_dollar_volume"):
+            return
+        with suppress(Exception):
+            strategy.minimum_dollar_volume = float(
+                self.settings.screener_min_average_dollar_volume
+            )
 
     def _inject_providers(self, strategy: Any, spec: Any) -> None:
         """Give multi-leg strategies (pairs/stat-arb) the extra data they need.
