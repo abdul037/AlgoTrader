@@ -20,6 +20,20 @@ The active production Telegram path is webhook mode through FastAPI. Polling rem
 - [24/7 production runbook](docs/production_runbook.md): VPS/Docker Compose runtime, webhook reset, backups, and restore.
 - [Railway shadow-mode runbook](docs/railway_runbook.md): managed long-running deployment with Supabase PostgreSQL.
 
+## Automated PR Review
+
+Every pull request is reviewed by a team of four role-based Claude bots
+(see [`.claude/review-team/`](.claude/review-team/README.md)):
+
+- 🧪 **QA Bot** — correctness, regressions, test coverage, safety gates
+- 📈 **Financial Strategy Bot** — edge soundness, backtest methodology, overfitting
+- 💹 **Trader Bot** — net-of-cost realism, risk of ruin, execution quality
+- 📋 **Project Manager Bot** — synthesizes the three and calls the next step
+
+They post one combined, sticky comment and are **advisory only** — they never block a
+merge and can never push code. The workflow runs on a Claude subscription via the
+`CLAUDE_CODE_OAUTH_TOKEN` repo secret; without it, the check is skipped cleanly.
+
 ## Safe Defaults
 
 - `EXECUTION_MODE=paper` and `PAPER_BROKER=alpaca` for the Alpaca paper rollout.
