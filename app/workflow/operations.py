@@ -273,6 +273,9 @@ def send_daily_summary_impl(service: Any, *, notify: bool) -> WorkflowTaskRespon
     pnl_lines = _daily_pnl_lines(service)
     if pnl_lines:
         message = f"{message}\n" + "\n".join(pnl_lines)
+    scorecard_lines = _daily_strategy_scorecard_lines(service)
+    if scorecard_lines:
+        message = f"{message}\n" + "\n".join(scorecard_lines)
     gated_lines = _gated_feature_lines(service)
     if gated_lines:
         message = f"{message}\n" + "\n".join(gated_lines)
@@ -440,6 +443,48 @@ def _daily_pnl_lines(service: Any) -> list[str]:
         worst = ranked[-1]
         if worst.strategy_name != best.strategy_name:
             lines.append(f"Worst: {worst.strategy_name} {worst.realized_pnl_usd:+.2f}")
+    return lines
+
+
+def _daily_strategy_scorecard_lines(service: Any) -> list[str]:
+    """Per-strategy live-paper scorecard for the daily summary: each strategy's
+    realized P&L, trades, expectancy, win rate and keep/watch/demote verdict, so
+    the daily push shows which strategies are actually earning (the signal that
+    drives prune/concentrate decisions). Fail-safe: returns [] on any problem."""
+
+    paper = getattr(service, "paper_trading", None)
+    trade_repo = getattr(paper, "trades", None)
+    if trade_repo is None or not hasattr(trade_repo, "list"):
+        return []
+    trades = _safe_list(lambda: trade_repo.list(limit=2000))
+    if not trades:
+        return []
+
+    from app.performance.strategy_performance import analyze_by_strategy, decay_verdict
+
+    performances = analyze_by_strategy(trades)
+    if not performances:
+        return []
+    baseline: dict[str, float] = {}
+    backtests = getattr(getattr(service, "market_screener", None), "backtests", None)
+    if backtests is not None:
+        try:
+            baseline = backtests.expectancy_by_strategy() or {}
+        except Exception:  # noqa: BLE001 - baseline is best-effort
+            baseline = {}
+    min_trades = int(getattr(service.settings, "stage1_decay_min_trades", 20) or 20)
+    icon = {"keep": "✅", "watch": "⚠️", "demote": "⛔"}
+
+    lines = ["Strategy scorecard (live paper · keep/watch/demote):"]
+    for perf in performances[:8]:
+        verdict = decay_verdict(
+            perf, backtest_expectancy_usd=baseline.get(perf.strategy_name), min_trades=min_trades
+        )
+        mark = icon.get(verdict.action, "•")
+        lines.append(
+            f"{mark} {perf.strategy_name}: {perf.realized_pnl_usd:+.2f} "
+            f"({perf.trades} tr, exp {perf.expectancy_usd:+.2f}, win {perf.win_rate:.0f}%)"
+        )
     return lines
 
 

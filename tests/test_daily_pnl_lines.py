@@ -5,7 +5,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from app.utils.time import utc_now
-from app.workflow.operations import _daily_pnl_lines, _gated_feature_lines
+from app.workflow.operations import (
+    _daily_pnl_lines,
+    _daily_strategy_scorecard_lines,
+    _gated_feature_lines,
+)
 
 
 def _trade(strategy: str, pnl: float, day: str):
@@ -84,3 +88,28 @@ def test_gated_feature_lines_reflects_enabled_flag() -> None:
 
 def test_gated_feature_lines_empty_without_settings() -> None:
     assert _gated_feature_lines(SimpleNamespace()) == []
+
+
+def _scorecard_service(trades, *, min_trades: int = 20):
+    trade_repo = SimpleNamespace(list=lambda limit=2000: trades)
+    return SimpleNamespace(
+        paper_trading=SimpleNamespace(trades=trade_repo),
+        market_screener=None,  # no backtest expectancy baseline
+        settings=SimpleNamespace(stage1_decay_min_trades=min_trades),
+    )
+
+
+def test_scorecard_reports_per_strategy_verdicts() -> None:
+    trades = (
+        [_trade("winner", 10.0, "2026-08-01") for _ in range(20)]
+        + [_trade("loser", -5.0, "2026-08-01") for _ in range(20)]
+    )
+    text = "\n".join(_daily_strategy_scorecard_lines(_scorecard_service(trades)))
+    assert "Strategy scorecard (live paper" in text
+    assert "✅ winner:" in text   # healthy/keep
+    assert "⛔ loser:" in text    # dead/demote
+
+
+def test_scorecard_empty_without_trades() -> None:
+    assert _daily_strategy_scorecard_lines(SimpleNamespace()) == []
+    assert _daily_strategy_scorecard_lines(_scorecard_service([])) == []
