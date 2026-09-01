@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from contextlib import suppress
 from typing import Any
 
 from app.models.approval import ApprovalStatus
@@ -727,3 +728,51 @@ def run_ledger_cycle_impl(service: Any) -> WorkflowTaskResponse:
         ),
         closed_signals=int(result.get("closed_new", 0) or 0),
     )
+
+
+def refresh_demoted_strategies(service: Any, completed: list[str], errors: list[str]) -> None:
+    """Recompute which strategies have decayed to a ``demote`` verdict and hand
+    the set to the live screener.
+
+    Close-the-loop step 2: the decay monitor produces keep/watch/demote verdicts
+    from live paper performance; this feeds the ``demote`` set to the screener so
+    it can stop scanning strategies that are losing money live. Observe-only by
+    default -- the screener only drops them when ``strategy_auto_demote_enabled``
+    is set. Any failure is logged and swallowed so maintenance always continues.
+    """
+
+    # Function-local import keeps app.workflow -> app.performance out of the
+    # import-time graph (the escape hatch the architecture-fitness test ignores).
+    from app.performance.strategy_performance import demoted_strategy_names
+
+    try:
+        trade_repo = getattr(service.paper_trading, "trades", None)
+        if trade_repo is None:
+            return
+        trades = trade_repo.list(limit=2000)
+        baseline: dict[str, float] = {}
+        backtests = getattr(service.market_screener, "backtests", None)
+        if backtests is not None:
+            try:
+                baseline = backtests.expectancy_by_strategy() or {}
+            except Exception:  # noqa: BLE001 - baseline is best-effort
+                baseline = {}
+        min_trades = int(getattr(service.settings, "stage1_decay_min_trades", 20) or 20)
+        demoted = sorted(
+            demoted_strategy_names(
+                trades, backtest_expectancy_by_strategy=baseline, min_trades=min_trades
+            )
+        )
+        if hasattr(service.market_screener, "set_demoted_strategies"):
+            service.market_screener.set_demoted_strategies(demoted)
+        enforced = bool(getattr(service.settings, "strategy_auto_demote_enabled", False))
+        service.runtime_state.set("strategy_demote:demoted", json.dumps(demoted))
+        service.run_logs.log(
+            "strategy_demote_evaluated",
+            {"demoted": demoted, "count": len(demoted), "enforced": enforced},
+        )
+        completed.append("strategy_demote_refresh")
+    except Exception as exc:  # noqa: BLE001 - maintenance continues after failures
+        errors.append(f"strategy_demote_refresh:{exc}")
+        with suppress(Exception):
+            service.run_logs.log("strategy_demote_error", {"error": str(exc)})

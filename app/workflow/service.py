@@ -19,6 +19,7 @@ from app.workflow.operations import (
     close_status,
     copy_candidate_with_metadata,
     ledger_alert_payload,
+    refresh_demoted_strategies,
     run_ledger_cycle_impl,
     run_scan_task,
     send_daily_summary_impl,
@@ -303,6 +304,9 @@ class SignalWorkflowService:
                 completed.append("etoro_demo_reconciliation")
                 if reconciliation.get("status") == "error":
                     errors.extend(list(reconciliation.get("issues") or []))
+            # Refresh the auto-demote set (observe-only unless the flag is set).
+            if self._is_due("strategy_demote:last_run_at", 15):
+                refresh_demoted_strategies(self, completed, errors)
             if self.auto_trading is not None:
                 health = self.auto_trading.refresh_strategy_health()
                 if health:

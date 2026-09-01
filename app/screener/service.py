@@ -64,6 +64,23 @@ __all__ = [
 ]
 
 
+def filter_out_demoted(specs: list[Any], demoted: set[str], *, enabled: bool) -> list[Any]:
+    """Drop specs whose strategy has decayed to a ``demote`` verdict.
+
+    Pure and side-effect free. When ``enabled`` is False (the default posture)
+    or ``demoted`` is empty, the specs are returned unchanged — so this is inert
+    until an operator turns on ``strategy_auto_demote_enabled`` and the decay
+    monitor has actually flagged a strategy.
+    """
+
+    if not enabled or not demoted:
+        return specs
+    return [
+        spec for spec in specs
+        if str(getattr(spec, "name", "")).strip().lower() not in demoted
+    ]
+
+
 class MarketScreenerService:
     """Evaluate a configurable market universe across multiple strategies and timeframes."""
 
@@ -93,6 +110,12 @@ class MarketScreenerService:
         self.filters = ScreenerFilterPipeline(self.effective_settings)
         self.intelligence = MarketIntelligenceService(self.effective_settings, market_data_engine)
         self._regime_cache: tuple[float, Any] | None = None
+        # Strategies the live-vs-backtest decay monitor has judged `demote`
+        # (losing money live). Refreshed by the maintenance loop via
+        # ``set_demoted_strategies``; only removed from the scan when
+        # ``strategy_auto_demote_enabled`` is set (observe-only otherwise).
+        # Starts empty, so it has no effect until maintenance populates it.
+        self._demoted_strategies: set[str] = set()
 
     def get_universe(self, *, limit: int | None = None) -> MarketUniverseResponse:
         symbols = resolve_universe(self.settings, limit=limit)
@@ -170,7 +193,24 @@ class MarketScreenerService:
         if strategy_spec_keys:
             requested = {str(item).strip().lower() for item in strategy_spec_keys if str(item).strip()}
             specs = [spec for spec in specs if self._strategy_spec_key(spec) in requested]
+        specs = filter_out_demoted(
+            specs,
+            self._demoted_strategies,
+            enabled=bool(getattr(self.settings, "strategy_auto_demote_enabled", False)),
+        )
         return specs
+
+    def set_demoted_strategies(self, names: Any) -> None:
+        """Record the set of strategies judged ``demote`` by the decay monitor.
+
+        Called by the maintenance loop. Enforcement (dropping them from the scan)
+        only happens when ``strategy_auto_demote_enabled`` is set; otherwise this
+        is observe-only and the set simply reflects what *would* be demoted.
+        """
+
+        self._demoted_strategies = {
+            str(name).strip().lower() for name in (names or []) if str(name).strip()
+        }
 
     def _current_regime(self) -> Any | None:
         """The current market regime for the router, or None when disabled/unavailable.
