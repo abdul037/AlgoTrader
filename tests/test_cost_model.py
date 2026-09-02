@@ -6,7 +6,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.backtesting.cost_model import CostModel, is_extended_hours, summarize_costs
+from app.backtesting.cost_model import (
+    CostModel,
+    is_extended_hours,
+    measured_slippage_bps,
+    summarize_costs,
+)
 
 
 def test_half_spread_applied_symmetrically() -> None:
@@ -79,3 +84,30 @@ def test_summarize_costs_sums_fields() -> None:
     summary = summarize_costs(events)
     assert summary["total_cost_usd"] == pytest.approx(5.0, rel=1e-6)
     assert summary["trades_costed"] == 2
+
+
+class TestMeasuredSlippageBps:
+    def test_none_when_too_few_samples(self) -> None:
+        assert measured_slippage_bps([1.0, 2.0, 3.0], min_samples=30) is None
+
+    def test_returns_median_when_enough_samples(self) -> None:
+        samples = [2.0] * 20 + [4.0] * 20  # median 3.0
+        assert measured_slippage_bps(samples, min_samples=30) == 3.0
+
+    def test_median_resists_outliers(self) -> None:
+        samples = [2.0] * 39 + [10_000.0]  # one wild outlier
+        assert measured_slippage_bps(samples, min_samples=30, cap_bps=25.0) == 2.0
+
+    def test_result_floored_at_zero(self) -> None:
+        # Consistent price improvement -> negative median -> floored to 0 (never
+        # let the backtest assume better-than-decision fills).
+        samples = [-3.0] * 40
+        assert measured_slippage_bps(samples, min_samples=30) == 0.0
+
+    def test_result_capped(self) -> None:
+        samples = [500.0] * 40
+        assert measured_slippage_bps(samples, min_samples=30, cap_bps=25.0) == 25.0
+
+    def test_ignores_none_samples(self) -> None:
+        samples = [None] * 5 + [3.0] * 40
+        assert measured_slippage_bps(samples, min_samples=30) == 3.0
