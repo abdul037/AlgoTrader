@@ -346,6 +346,14 @@ class AppSettings(BaseSettings):
     # = observe-only: the demote set is computed and logged each cycle but
     # selection is unchanged, so it never removes a strategy until you trust it.
     strategy_auto_demote_enabled: bool = False
+    # Calibrate the backtest cost model to live IEX fill quality: when true, the
+    # batch backtester replaces its conservative default slippage_bps with the
+    # median realized slippage measured from live fills (>= min_fills samples,
+    # capped at cap_bps). Default OFF = keep the conservative modelled slippage,
+    # so backtest numbers are unchanged until an operator opts in with data.
+    backtest_use_measured_slippage_enabled: bool = False
+    backtest_measured_slippage_min_fills: int = 30
+    backtest_measured_slippage_cap_bps: float = 25.0
     # Regime router: when true, strategy selection toggles whole families on/off
     # by market regime (momentum on healthy trends, mean-reversion in chop,
     # defensive in downtrends). Default off — it changes nothing live until

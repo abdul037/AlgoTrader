@@ -17,6 +17,7 @@ share between backtest runs because it holds no state.
 from __future__ import annotations
 
 import math
+import statistics
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
@@ -304,6 +305,34 @@ def zero_cost_model() -> CostModel:
         min_position_usd=0.0,
         include_weekend_financing=False,
     )
+
+
+def measured_slippage_bps(
+    samples: Iterable[float],
+    *,
+    min_samples: int = 30,
+    cap_bps: float = 25.0,
+) -> float | None:
+    """Robust per-fill realized-slippage estimate (bps) from live executions,
+    for calibrating the backtest cost model to the actual IEX fill quality.
+
+    Returns the MEDIAN of the sampled realized slippage in basis points, clamped
+    to ``[0, cap_bps]``, or ``None`` when there are fewer than ``min_samples``
+    usable samples (not enough evidence to override the conservative default).
+    The median (not mean) resists a few outlier fills; the result is floored at
+    0 so measured price-improvement never makes the backtest optimistic, and
+    capped so a bad data patch can't blow up modelled costs.
+
+    Pure and side-effect free: the caller decides whether to apply the result
+    (e.g. ``dataclasses.replace(cost_model, slippage_bps=measured)``) via config,
+    so on its own this changes nothing.
+    """
+
+    values = [float(s) for s in samples if s is not None]
+    if len(values) < max(1, int(min_samples)):
+        return None
+    median = statistics.median(values)
+    return float(min(max(median, 0.0), float(cap_bps)))
 
 
 def is_extended_hours(timestamp: datetime | str | pd.Timestamp) -> bool:
