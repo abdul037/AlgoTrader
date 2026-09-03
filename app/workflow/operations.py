@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import inspect
 import json
+from collections import Counter
 from contextlib import suppress
 from typing import Any
 
+from app.automation.reliability import candidate_propose_drop_reason, proposal_quality_label
 from app.models.approval import ApprovalStatus
 from app.models.execution_queue import ExecutionQueueStatus
 from app.models.workflow import WorkflowTaskResponse
@@ -68,7 +70,7 @@ def run_scan_task(
         )
     alerts_sent = service._send_scan_alerts(task=task, response=response, notify=notify)
     service._track_candidates(response, origin=origin)
-    proposals_created = service._auto_propose_candidates(response, origin=origin, notify=notify)
+    proposals_created = auto_propose_candidates(service, response, origin=origin, notify=notify)
     if hasattr(response, "coverage"):
         response.coverage["proposals_created"] = proposals_created
         if spec_batch:
@@ -821,3 +823,122 @@ def refresh_demoted_strategies(service: Any, completed: list[str], errors: list[
         errors.append(f"strategy_demote_refresh:{exc}")
         with suppress(Exception):
             service.run_logs.log("strategy_demote_error", {"error": str(exc)})
+
+
+def auto_propose_candidates(service: Any, response: Any, *, origin: str, notify: bool) -> int:
+    """Auto-create (and, when unattended, approve/execute) proposals from scan candidates.
+
+    Emits a per-scan `auto_propose_funnel` run-log attributing where each candidate
+    exits the promotion->proposal->execution pipeline. The funnel is pure
+    observability: it never changes a gate — every eligibility and safety check is
+    enforced exactly as before.
+    """
+
+    if not (
+        bool(getattr(service.settings, "auto_propose_enabled", False))
+        or bool(getattr(service.settings, "paper_auto_approve_proposals", False))
+    ):
+        return 0
+    if service.proposal_service is None:
+        return 0
+    if service.automation is not None and service.automation.scan_blockers():
+        return 0
+    existing_symbols = {
+        proposal.order.symbol.upper()
+        for status in (ApprovalStatus.PENDING, ApprovalStatus.APPROVED)
+        for proposal in service.proposal_service.list_proposals(status=status)
+    }
+    created = 0
+    candidates = list(getattr(response, "candidates", []) or [])
+    funnel: Counter[str] = Counter()
+    funnel["entered"] = len(candidates)
+    for candidate in candidates:
+        symbol = str(getattr(candidate, "symbol", "") or "").upper()
+        if not symbol or symbol in existing_symbols:
+            funnel["dropped:duplicate_or_no_symbol"] += 1
+            continue
+        if service.auto_trading is not None:
+            proposal_blockers = service.auto_trading.candidate_proposal_blockers(candidate)
+            if proposal_blockers:
+                funnel["safety_blocked"] += 1
+                funnel.update(f"safety_blocked:{blocker}" for blocker in proposal_blockers)
+                service.run_logs.log(
+                    "auto_proposal_safety_blocked",
+                    {"origin": origin, "symbol": symbol, "blockers": proposal_blockers},
+                )
+                continue
+        drop_reason = candidate_propose_drop_reason(candidate)
+        if drop_reason is not None:
+            funnel[f"dropped:{drop_reason}"] += 1
+            continue
+        try:
+            candidate_metadata = dict(getattr(candidate, "metadata", {}) or {})
+            notes = f"Auto-created from {origin}; Telegram approval is required before execution."
+            if str(candidate_metadata.get("source") or "").lower() == "supervised_weak_valid":
+                notes = (
+                    "Supervised weak-valid paper proposal; not production-qualified. "
+                    f"Auto-created from {origin}; Telegram approval is required before execution."
+                )
+            request = service._approval_adapter.build_proposal_request(
+                candidate,
+                amount_usd=float(getattr(service.settings, "default_trade_amount_usd", 1000.0)),
+                notes=notes,
+            )
+            proposal_quality = proposal_quality_label(candidate)
+            request.metadata = {
+                **dict(getattr(request, "metadata", {}) or {}),
+                **candidate_metadata,
+                "proposal_quality": proposal_quality,
+                "proposal_source": candidate_metadata.get("source") or "scanner_strategy",
+                "proposal_origin": origin,
+                "auto_approval_tier": str(
+                    getattr(service.settings, "paper_auto_approval_tier", "tier1_supervised_only")
+                ),
+                "supervised_approval_required": (
+                    proposal_quality in {"supervised_weak_valid", "paper_near_miss"}
+                    or str(getattr(service.settings, "paper_auto_operation_mode", "shadow")) != "unattended"
+                ),
+            }
+            proposal = service.proposal_service.create_proposal(request)
+        except Exception as exc:  # noqa: BLE001
+            funnel["proposal_failed"] += 1
+            service.run_logs.log(
+                "auto_proposal_failed",
+                {"origin": origin, "symbol": symbol, "error": str(exc)},
+            )
+            continue
+        existing_symbols.add(symbol)
+        created += 1
+        funnel["proposals_created"] += 1
+        service.run_logs.log(
+            "auto_proposal_created",
+            {
+                "origin": origin,
+                "proposal_id": proposal.id,
+                "symbol": symbol,
+                "proposal_quality": proposal_quality,
+            },
+        )
+        if service.auto_trading is not None:
+            service.auto_trading.approve_enqueue_execute(proposal, candidate, funnel=funnel)
+        if notify:
+            service.notifier.send_text(
+                "\n".join(
+                    [
+                        "Auto proposal created",
+                        f"ID: {proposal.id}",
+                        f"Symbol: {proposal.order.symbol}",
+                        f"Entry: {proposal.order.proposed_price:.2f}",
+                        f"Stop: {proposal.order.stop_loss or 'n/a'}",
+                        f"Target: {proposal.order.take_profit or 'n/a'}",
+                        f"Approve: /approve {proposal.id}",
+                        f"Reject: /reject {proposal.id}",
+                    ]
+                )
+            )
+    if candidates:
+        service.run_logs.log(
+            "auto_propose_funnel",
+            {"origin": origin, "created": created, **dict(funnel)},
+        )
+    return created

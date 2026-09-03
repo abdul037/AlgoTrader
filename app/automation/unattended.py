@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 from app.automation.reliability import (
@@ -195,14 +196,21 @@ class PaperAutoTradingService:
         }
         return "all" in allowed or strategy.strip().lower() in allowed
 
-    def approve_enqueue_execute(self, proposal: Any, candidate: Any) -> Any | None:
+    def approve_enqueue_execute(
+        self, proposal: Any, candidate: Any, *, funnel: Counter[str] | None = None
+    ) -> Any | None:
         blockers = self.candidate_blockers(candidate)
         if blockers:
             self.logs.log(
                 "paper_auto_candidate_blocked",
                 {"proposal_id": proposal.id, "symbol": proposal.order.symbol, "blockers": blockers},
             )
+            if funnel is not None:
+                funnel["exec_blocked_candidates"] += 1
+                funnel.update(f"exec_blocked:{blocker}" for blocker in blockers)
             return None
+        if funnel is not None:
+            funnel["executed"] += 1
         approved = self.proposals.approve_proposal(
             proposal.id,
             ApprovalDecisionRequest(reviewer="paper_auto", notes="Paper-only auto-approved by safety policy"),

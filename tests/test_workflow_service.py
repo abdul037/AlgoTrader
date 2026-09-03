@@ -8,6 +8,7 @@ import pandas as pd
 
 from app.live_signal_schema import LiveSignalSnapshot, MarketQuote, SignalState
 from app.models.screener import ScreenerRunResponse
+from app.workflow.operations import auto_propose_candidates
 from app.workflow.service import SignalWorkflowService
 from tests.conftest import make_settings
 
@@ -278,8 +279,10 @@ class FakeSupervisedAutoTrading:
     def candidate_proposal_blockers(_candidate):
         return []
 
-    def approve_enqueue_execute(self, _proposal, _candidate):
+    def approve_enqueue_execute(self, _proposal, _candidate, *, funnel=None):
         self.approve_calls += 1
+        if funnel is not None:
+            funnel["executed"] += 1
         return None
 
 
@@ -346,7 +349,7 @@ def test_weak_valid_auto_proposal_stays_supervised_and_warns_not_production(tmp_
         auto_trading_service=auto_trading,
     )
 
-    created = workflow._auto_propose_candidates(response, origin="intraday_scan", notify=False)
+    created = auto_propose_candidates(workflow, response, origin="intraday_scan", notify=False)
 
     assert created == 1
     assert auto_trading.approve_calls == 1

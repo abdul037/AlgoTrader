@@ -45,6 +45,28 @@ def proposal_quality_label(
     return STRICT_VALID
 
 
+def candidate_propose_drop_reason(candidate: Any) -> str | None:
+    """Classify why a scan candidate is not eligible to become an auto-proposal.
+
+    Pure, side-effect-free mirror of the pre-proposal ``continue`` checks in the
+    auto-propose loop. Returns a stable funnel drop-reason label, or ``None`` when
+    the candidate should proceed to proposal creation. This exists so the scan
+    funnel can attribute silent drops without duplicating the loop's logic, and
+    so the mapping is unit-testable. It does NOT gate anything on its own — the
+    caller still enforces every check — it only names the reason for diagnostics.
+    """
+
+    if not bool(getattr(candidate, "execution_ready", False)):
+        return "not_execution_ready"
+    if not bool((getattr(candidate, "metadata", {}) or {}).get("alert_eligible", False)):
+        return "not_alert_eligible"
+    if str(getattr(candidate, "signal_role", "") or "").lower() == "entry_short":
+        return "entry_short"
+    if getattr(candidate, "stop_loss", None) is None:
+        return "missing_stop"
+    return None
+
+
 def lifecycle_complete(record: Any, *, require_autonomous: bool = True) -> bool:
     """Return whether a paper lifecycle has complete evidence for reliability gates."""
 
