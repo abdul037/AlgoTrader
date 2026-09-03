@@ -420,6 +420,16 @@ class AppSettings(BaseSettings):
     paper_exploration_auto_execution_min_score: float = 60.0
     paper_near_miss_promotion_enabled: bool = True
     paper_near_miss_max_score_gap: float = 5.0
+    # Fully autonomous near-miss trading (PAPER ONLY). Near-miss candidates are
+    # exploratory, so by default the auto-approval policy requires a human to
+    # approve each one (plus a clean-supervised-lifecycle bootstrap). When this
+    # is true AND execution_mode==paper AND enable_real_trading is false AND
+    # paper_auto_operation_mode==unattended, that approval-tier POLICY is
+    # bypassed for near-miss candidates so they auto-execute unattended. Every
+    # HARD gate still applies -- spread, reward:risk, valid bracket, liquidity,
+    # universe/asset support, blacklist, regular hours, score, and the
+    # lifecycle-failure circuit-breaker. Default off; opt in via .env for paper.
+    paper_unattended_near_miss_auto_exec_enabled: bool = False
     # SOFT quality gates a near-miss may fail and still be auto-executed in paper
     # exploration. HARD gates (liquidity/volume floors, spread, reward:risk,
     # verified data, valid bracket) are enforced separately in

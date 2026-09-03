@@ -119,25 +119,40 @@ def auto_approval_tier_blockers(
     tier = str(getattr(settings, "paper_auto_approval_tier", AUTO_TIER_SUPERVISED_ONLY) or "").lower()
     quality = proposal_quality_label(candidate)
     blockers: list[str] = []
-    if tier == AUTO_TIER_PENDING_ONLY:
-        blockers.append("paper_auto_tier_pending_only")
-    if tier == AUTO_TIER_SUPERVISED_ONLY:
-        blockers.append("paper_auto_tier_supervised_only")
-    if quality == SUPERVISED_WEAK_VALID:
-        blockers.append("weak_valid_requires_human_approval")
-    if quality == PAPER_NEAR_MISS:
-        blockers.append("near_miss_requires_human_approval")
-    if tier in {AUTO_TIER_STRICT_VALID, AUTO_TIER_STRATEGY_QUALIFIED} and quality != STRICT_VALID:
-        blockers.append("paper_auto_requires_strict_valid_quality")
-    if tier == AUTO_TIER_STRATEGY_QUALIFIED:
-        blockers.extend(_strategy_evidence_blockers(settings=settings, candidate=candidate, lifecycles=lifecycles or []))
-    minimum = max(int(getattr(settings, "paper_auto_min_clean_supervised_lifecycles", 10) or 0), 0)
-    if minimum and lifecycles is None:
-        blockers.append("paper_lifecycle_evidence_unavailable")
-    if minimum and lifecycles is not None:
-        clean_count = sum(1 for item in lifecycles if lifecycle_complete(item))
-        if clean_count < minimum:
-            blockers.append("insufficient_clean_supervised_lifecycles")
+    # PAPER-ONLY explicit opt-in: fully autonomous near-miss trading. When on,
+    # the approval-tier POLICY and the clean-lifecycle bootstrap are bypassed for
+    # near-miss candidates so they auto-execute unattended. The lifecycle-failure
+    # circuit-breaker below still applies, and every HARD gate (spread,
+    # reward:risk, bracket, liquidity, universe, asset support, blacklist,
+    # regular hours, score) is enforced by the caller regardless.
+    paper_unattended_near_miss = (
+        quality == PAPER_NEAR_MISS
+        and bool(getattr(settings, "paper_unattended_near_miss_auto_exec_enabled", False))
+        and str(getattr(settings, "execution_mode", "paper") or "").lower() == "paper"
+        and not bool(getattr(settings, "enable_real_trading", False))
+        and str(getattr(settings, "paper_auto_operation_mode", "") or "").lower() == "unattended"
+    )
+    if not paper_unattended_near_miss:
+        if tier == AUTO_TIER_PENDING_ONLY:
+            blockers.append("paper_auto_tier_pending_only")
+        if tier == AUTO_TIER_SUPERVISED_ONLY:
+            blockers.append("paper_auto_tier_supervised_only")
+        if quality == SUPERVISED_WEAK_VALID:
+            blockers.append("weak_valid_requires_human_approval")
+        if quality == PAPER_NEAR_MISS:
+            blockers.append("near_miss_requires_human_approval")
+        if tier in {AUTO_TIER_STRICT_VALID, AUTO_TIER_STRATEGY_QUALIFIED} and quality != STRICT_VALID:
+            blockers.append("paper_auto_requires_strict_valid_quality")
+        if tier == AUTO_TIER_STRATEGY_QUALIFIED:
+            blockers.extend(_strategy_evidence_blockers(settings=settings, candidate=candidate, lifecycles=lifecycles or []))
+        minimum = max(int(getattr(settings, "paper_auto_min_clean_supervised_lifecycles", 10) or 0), 0)
+        if minimum and lifecycles is None:
+            blockers.append("paper_lifecycle_evidence_unavailable")
+        if minimum and lifecycles is not None:
+            clean_count = sum(1 for item in lifecycles if lifecycle_complete(item))
+            if clean_count < minimum:
+                blockers.append("insufficient_clean_supervised_lifecycles")
+    # The lifecycle-failure circuit-breaker is a hard safety stop; it always runs.
     blockers.extend(lifecycle_safety_blockers(lifecycles or []))
     return sorted(set(blockers))
 

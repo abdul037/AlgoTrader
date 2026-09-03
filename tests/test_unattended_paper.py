@@ -267,6 +267,10 @@ def test_paper_near_miss_uses_configured_score_gap_without_bypassing_safety(tmp_
         paper_exploration_signal_profile="balanced_loose",
         paper_near_miss_promotion_enabled=True,
         paper_near_miss_max_score_gap=5.0,
+        # This test asserts the default safety path (near-miss requires human
+        # approval), so pin the unattended-auto-exec bypass OFF independent of
+        # the deployed .env default.
+        paper_unattended_near_miss_auto_exec_enabled=False,
         market_universe_symbols=["NVDA"],
     )
     safety = SimpleNamespace(
