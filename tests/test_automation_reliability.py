@@ -10,6 +10,7 @@ from app.automation.reliability import (
     STRICT_VALID,
     SUPERVISED_WEAK_VALID,
     auto_approval_tier_blockers,
+    candidate_propose_drop_reason,
     proposal_quality_label,
 )
 from app.main import create_app
@@ -82,6 +83,28 @@ def _lifecycle(*, complete: bool = True, source: str = "scanner_strategy") -> Pa
         flags=flags,
         blockers=[],
         execution=execution,
+    )
+
+
+def test_candidate_propose_drop_reason_maps_each_stage() -> None:
+    # A fully eligible candidate proceeds (no drop reason).
+    assert candidate_propose_drop_reason(_candidate()) is None
+    # Each ineligibility maps to a stable funnel label, in precedence order.
+    assert candidate_propose_drop_reason(_candidate(execution_ready=False)) == "not_execution_ready"
+    assert (
+        candidate_propose_drop_reason(_candidate(metadata={"alert_eligible": False}))
+        == "not_alert_eligible"
+    )
+    assert (
+        candidate_propose_drop_reason(_candidate(signal_role="entry_short")) == "entry_short"
+    )
+    assert candidate_propose_drop_reason(_candidate(stop_loss=None)) == "missing_stop"
+    # Precedence: readiness is checked before eligibility.
+    assert (
+        candidate_propose_drop_reason(
+            _candidate(execution_ready=False, metadata={"alert_eligible": False})
+        )
+        == "not_execution_ready"
     )
 
 

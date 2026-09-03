@@ -7,9 +7,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from app.automation.reliability import proposal_quality_label
 from app.execution.interfaces import SignalApprovalAdapter
-from app.models.approval import ApprovalStatus
 from app.models.workflow import WorkflowBucketStatus, WorkflowStatusResponse, WorkflowTaskResponse
 from app.universe import resolve_universe
 from app.utils.time import utc_now
@@ -518,107 +516,6 @@ class SignalWorkflowService:
 
     def _run_scan_task(self, **kwargs: Any) -> WorkflowTaskResponse:
         return run_scan_task(self, **kwargs)
-
-    def _auto_propose_candidates(self, response: Any, *, origin: str, notify: bool) -> int:
-        if not (
-            bool(getattr(self.settings, "auto_propose_enabled", False))
-            or bool(getattr(self.settings, "paper_auto_approve_proposals", False))
-        ):
-            return 0
-        if self.proposal_service is None:
-            return 0
-        if self.automation is not None and self.automation.scan_blockers():
-            return 0
-        existing_symbols = {
-            proposal.order.symbol.upper()
-            for status in (ApprovalStatus.PENDING, ApprovalStatus.APPROVED)
-            for proposal in self.proposal_service.list_proposals(status=status)
-        }
-        created = 0
-        for candidate in list(getattr(response, "candidates", []) or []):
-            symbol = str(getattr(candidate, "symbol", "") or "").upper()
-            if not symbol or symbol in existing_symbols:
-                continue
-            if self.auto_trading is not None:
-                proposal_blockers = self.auto_trading.candidate_proposal_blockers(candidate)
-                if proposal_blockers:
-                    self.run_logs.log(
-                        "auto_proposal_safety_blocked",
-                        {"origin": origin, "symbol": symbol, "blockers": proposal_blockers},
-                    )
-                    continue
-            if not bool(getattr(candidate, "execution_ready", False)):
-                continue
-            if not bool((getattr(candidate, "metadata", {}) or {}).get("alert_eligible", False)):
-                continue
-            if str(getattr(candidate, "signal_role", "") or "").lower() == "entry_short":
-                continue
-            if getattr(candidate, "stop_loss", None) is None:
-                continue
-            try:
-                candidate_metadata = dict(getattr(candidate, "metadata", {}) or {})
-                notes = f"Auto-created from {origin}; Telegram approval is required before execution."
-                if str(candidate_metadata.get("source") or "").lower() == "supervised_weak_valid":
-                    notes = (
-                        "Supervised weak-valid paper proposal; not production-qualified. "
-                        f"Auto-created from {origin}; Telegram approval is required before execution."
-                    )
-                request = self._approval_adapter.build_proposal_request(
-                    candidate,
-                    amount_usd=float(getattr(self.settings, "default_trade_amount_usd", 1000.0)),
-                    notes=notes,
-                )
-                proposal_quality = proposal_quality_label(candidate)
-                request.metadata = {
-                    **dict(getattr(request, "metadata", {}) or {}),
-                    **candidate_metadata,
-                    "proposal_quality": proposal_quality,
-                    "proposal_source": candidate_metadata.get("source") or "scanner_strategy",
-                    "proposal_origin": origin,
-                    "auto_approval_tier": str(
-                        getattr(self.settings, "paper_auto_approval_tier", "tier1_supervised_only")
-                    ),
-                    "supervised_approval_required": (
-                        proposal_quality in {"supervised_weak_valid", "paper_near_miss"}
-                        or str(getattr(self.settings, "paper_auto_operation_mode", "shadow")) != "unattended"
-                    ),
-                }
-                proposal = self.proposal_service.create_proposal(request)
-            except Exception as exc:  # noqa: BLE001
-                self.run_logs.log(
-                    "auto_proposal_failed",
-                    {"origin": origin, "symbol": symbol, "error": str(exc)},
-                )
-                continue
-            existing_symbols.add(symbol)
-            created += 1
-            self.run_logs.log(
-                "auto_proposal_created",
-                {
-                    "origin": origin,
-                    "proposal_id": proposal.id,
-                    "symbol": symbol,
-                    "proposal_quality": proposal_quality,
-                },
-            )
-            if self.auto_trading is not None:
-                self.auto_trading.approve_enqueue_execute(proposal, candidate)
-            if notify:
-                self.notifier.send_text(
-                    "\n".join(
-                        [
-                            "Auto proposal created",
-                            f"ID: {proposal.id}",
-                            f"Symbol: {proposal.order.symbol}",
-                            f"Entry: {proposal.order.proposed_price:.2f}",
-                            f"Stop: {proposal.order.stop_loss or 'n/a'}",
-                            f"Target: {proposal.order.take_profit or 'n/a'}",
-                            f"Approve: /approve {proposal.id}",
-                            f"Reject: /reject {proposal.id}",
-                        ]
-                    )
-                )
-        return created
 
     def _intraday_scan_symbols(self) -> list[str]:
         universe = resolve_universe(

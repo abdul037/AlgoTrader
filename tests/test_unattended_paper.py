@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -319,3 +320,60 @@ def test_paper_near_miss_uses_configured_score_gap_without_bypassing_safety(tmp_
     assert "near_miss_requires_human_approval" in blockers
     assert "paper_auto_tier_supervised_only" in blockers
     assert "paper_lifecycle_evidence_unavailable" in blockers
+
+
+def test_approve_enqueue_execute_records_blocked_candidate_into_funnel(tmp_path):
+    # A blocked candidate must tally into the diagnostic funnel (exec_blocked
+    # count + a per-blocker label) without executing anything. Pure observability.
+    settings = make_settings(
+        tmp_path,
+        execution_mode="paper",
+        enable_real_trading=False,
+        paper_auto_operation_mode="unattended",
+        paper_unattended_near_miss_auto_exec_enabled=False,
+    )
+    logged: list[tuple[str, dict]] = []
+    run_logs = SimpleNamespace(log=lambda event, payload: logged.append((event, payload)))
+    service = PaperAutoTradingService(
+        settings=settings,
+        proposal_service=None,
+        execution_coordinator=None,
+        automation=SimpleNamespace(execution_blockers=lambda: []),
+        reconciliation=SimpleNamespace(account_verified=lambda: True),
+        safety_state=SimpleNamespace(
+            is_blacklisted=lambda _symbol: False,
+            strategy_active=lambda _strategy: True,
+        ),
+        executions=None,
+        run_logs=run_logs,
+        notifier=None,
+        alpaca_client=SimpleNamespace(
+            is_regular_market_open=lambda: True,
+            is_supported_equity=lambda _symbol: True,
+        ),
+    )
+    near_miss_candidate = SimpleNamespace(
+        symbol="NVDA",
+        strategy_name="momentum_breakout",
+        execution_ready=True,
+        signal_role="entry_long",
+        score=56.0,
+        stop_loss=95.0,
+        take_profit=110.0,
+        metadata={
+            "alert_eligible": True,
+            "signal_classification": "paper_near_miss",
+            "source": "paper_near_miss",
+        },
+    )
+    proposal = SimpleNamespace(id="prop_1", order=SimpleNamespace(symbol="NVDA"))
+    funnel: Counter[str] = Counter()
+
+    result = service.approve_enqueue_execute(proposal, near_miss_candidate, funnel=funnel)
+
+    assert result is None
+    assert funnel["exec_blocked_candidates"] == 1
+    assert funnel["executed"] == 0
+    # The specific gate is attributed under an exec_blocked:<blocker> key.
+    assert funnel["exec_blocked:near_miss_requires_human_approval"] == 1
+    assert any(event == "paper_auto_candidate_blocked" for event, _ in logged)
