@@ -155,3 +155,61 @@ def test_reliability_endpoint_reports_supervised_and_auto_blockers(tmp_path) -> 
     assert "daily_proposal_target_not_met" in payload["proposal_flow"]["proposal_blockers"]
     assert "paper_auto_tier_supervised_only" in payload["auto_approval"]["blockers"]
     assert "paper_auto_approve_disabled" in payload["auto_approval"]["blockers"]
+
+
+def _near_miss_candidate():
+    return _candidate(metadata={"alert_eligible": True, "signal_classification": PAPER_NEAR_MISS})
+
+
+def test_paper_unattended_near_miss_bypasses_approval_policy(tmp_path) -> None:
+    near_miss = _near_miss_candidate()
+
+    off = make_settings(
+        tmp_path,
+        paper_auto_approval_tier="tier1_supervised_only",
+        paper_auto_operation_mode="unattended",
+        paper_auto_min_clean_supervised_lifecycles=10,
+        paper_unattended_near_miss_auto_exec_enabled=False,
+    )
+    off_blockers = auto_approval_tier_blockers(settings=off, candidate=near_miss, lifecycles=[])
+    assert "near_miss_requires_human_approval" in off_blockers
+    assert "paper_auto_tier_supervised_only" in off_blockers
+    assert "insufficient_clean_supervised_lifecycles" in off_blockers
+
+    on = make_settings(
+        tmp_path,
+        paper_auto_approval_tier="tier1_supervised_only",
+        paper_auto_operation_mode="unattended",
+        paper_auto_min_clean_supervised_lifecycles=10,
+        paper_unattended_near_miss_auto_exec_enabled=True,
+    )
+    on_blockers = auto_approval_tier_blockers(settings=on, candidate=near_miss, lifecycles=[])
+    assert "near_miss_requires_human_approval" not in on_blockers
+    assert "paper_auto_tier_supervised_only" not in on_blockers
+    assert "insufficient_clean_supervised_lifecycles" not in on_blockers
+
+
+def test_paper_unattended_near_miss_bypass_requires_paper_mode(tmp_path) -> None:
+    # In live mode the bypass must NOT apply even with the flag set.
+    live = make_settings(
+        tmp_path,
+        paper_auto_approval_tier="tier1_supervised_only",
+        paper_auto_operation_mode="unattended",
+        paper_unattended_near_miss_auto_exec_enabled=True,
+        execution_mode="live",
+        enable_real_trading=False,
+    )
+    blockers = auto_approval_tier_blockers(settings=live, candidate=_near_miss_candidate(), lifecycles=[])
+    assert "near_miss_requires_human_approval" in blockers
+
+
+def test_paper_unattended_near_miss_bypass_requires_unattended_mode(tmp_path) -> None:
+    # Supervised mode keeps the human-approval requirement even with the flag.
+    supervised = make_settings(
+        tmp_path,
+        paper_auto_approval_tier="tier1_supervised_only",
+        paper_auto_operation_mode="supervised",
+        paper_unattended_near_miss_auto_exec_enabled=True,
+    )
+    blockers = auto_approval_tier_blockers(settings=supervised, candidate=_near_miss_candidate(), lifecycles=[])
+    assert "near_miss_requires_human_approval" in blockers
