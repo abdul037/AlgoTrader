@@ -39,13 +39,23 @@ These are permanent guardrails, not goals:
   batch deadline was only checked *between symbols*, so one symbol's full strategy
   evaluation could overrun the job budget.
 - **Fix applied:** (a) Railway `SCREENER_BATCH_DEADLINE_SECONDS` lowered to 120 (safely
-  under the 240s job cap); (b) code fix — enforce the wall-clock deadline *inside* the
-  per-symbol strategy-spec loop so a scan can never overrun regardless of config
-  (returns partial ranked results; no gate weakened). Watching the next session to
-  confirm scans complete and the first trade fires.
+  under the 240s job cap); (b) code fix (#27) — enforce the wall-clock deadline *inside*
+  the per-symbol strategy-spec loop so a scan can never overrun regardless of config
+  (returns partial ranked results; no gate weakened).
+- **SECOND, DEEPER P0 FOUND (infra):** the bot's Supabase database pooler (session mode,
+  port 5432) is **exhausted** — Railway deploy logs show
+  `ECHECKOUTTIMEOUT ... in Session mode`. Consequences: DB calls stall/fail (so scans
+  can't complete or persist anything), the operator's own DB reads time out, and — the
+  kicker — **the #27 deploy FAILED to boot** because the app couldn't get a DB
+  connection, so the fixed code isn't even running yet (bot limps on the 07:11 code).
+  Likely mechanism: scans killed mid-DB-operation leaked connections over ~13h until the
+  small session-mode pool was exhausted. Fixes: (a) bound the SQLAlchemy pool small so
+  old+new deploy instances fit the connection limit (`db_pool_size`/`max_overflow`,
+  code); (b) OPERATOR: switch `DATABASE_URL` to the transaction-mode pooler (port 6543)
+  and restart the Supabase project once to clear leaked connections.
 - Honest framing: there is no "instant profit". Profit comes from a *validated edge
-  measured over time*. The current phase is: get scans completing → first trades
-  firing → then let real data drive which gate/strategy changes are worth making.
+  measured over time*. Immediate phase: **get the bot deploying + its DB healthy → scans
+  completing → first trades firing** → then let real data drive gate/strategy changes.
 
 ---
 

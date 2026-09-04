@@ -825,6 +825,21 @@ ON rl_policy_proposals(status, created_at);
 """
 
 
+def _postgres_engine_kwargs(settings: AppSettings) -> dict[str, Any]:
+    """Bounded Postgres pool options (env-tunable). Kept small so old+new instances
+    during a rolling deploy fit a limited Supabase connection budget — the previous
+    ~15-conn default exhausted it and blocked deploys with ECHECKOUTTIMEOUT."""
+
+    return {
+        "pool_pre_ping": True,
+        "pool_size": max(int(getattr(settings, "db_pool_size", 3) or 3), 1),
+        "max_overflow": max(int(getattr(settings, "db_pool_max_overflow", 2) or 2), 0),
+        "pool_recycle": max(int(getattr(settings, "db_pool_recycle_seconds", 600) or 600), 60),
+        "pool_timeout": max(int(getattr(settings, "db_pool_timeout_seconds", 20) or 20), 1),
+        "future": True,
+    }
+
+
 class Database:
     """Database wrapper supporting SQLite and PostgreSQL through one repository API."""
 
@@ -837,7 +852,7 @@ class Database:
         if not self.is_sqlite:
             from sqlalchemy import create_engine
 
-            self._engine = create_engine(self.url, pool_pre_ping=True, future=True)
+            self._engine = create_engine(self.url, **_postgres_engine_kwargs(settings))
 
     @contextmanager
     def connect(self) -> Iterator[Any]:
