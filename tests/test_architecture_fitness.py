@@ -172,7 +172,7 @@ KNOWN_LARGE_FILES: dict[str, int] = {
     "app/storage/repositories.py": 2871,
     "app/notifications/telegram_bot.py": 1951,
     "app/workflow/service.py": 1061,
-    "app/storage/db.py": 1027,
+    "app/storage/db.py": 1046,
 }
 
 

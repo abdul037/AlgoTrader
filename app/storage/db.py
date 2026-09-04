@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -875,8 +876,26 @@ class Database:
             yield _SqlAlchemyConnection(connection)
 
     def initialize(self) -> None:
-        """Create all required tables."""
+        """Create all required tables, retrying a transiently unavailable pool.
 
+        On Postgres the first connection happens here at startup. If the pooler is
+        momentarily exhausted (e.g. an old instance still holding connections during
+        a rolling deploy), a single attempt would hard-crash the boot — so retry with
+        backoff and let the new instance grab a connection the moment one frees,
+        instead of dying on the first ECHECKOUTTIMEOUT. SQLite never retries.
+        """
+
+        attempts = 1 if self.is_sqlite else max(int(getattr(self.settings, "db_connect_max_attempts", 12) or 12), 1)
+        for attempt in range(1, attempts + 1):
+            try:
+                self._create_schema()
+                return
+            except Exception:  # noqa: BLE001 - survive a transiently exhausted pool at boot
+                if attempt >= attempts:
+                    raise
+                time.sleep(min(5.0 * attempt, 30.0))
+
+    def _create_schema(self) -> None:
         with self.connect() as connection:
             schema = SCHEMA
             if not self.is_sqlite:
