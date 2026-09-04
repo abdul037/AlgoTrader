@@ -826,18 +826,9 @@ ON rl_policy_proposals(status, created_at);
 
 
 def _postgres_engine_kwargs(settings: AppSettings) -> dict[str, Any]:
-    """SQLAlchemy engine options for the Postgres pool.
-
-    A BOUNDED, conservative pool: the previous default (pool_size 5 + overflow 10 =
-    up to 15 connections per process) meant that during a Railway rolling deploy the
-    old and new instances together could demand ~30 connections and exhaust a small
-    Supabase connection limit — the new instance then failed to start with
-    `ECHECKOUTTIMEOUT (Session mode)`, so fixes couldn't deploy. Capping each
-    instance to ~5 connections lets old+new overlap fit within the limit; the
-    recycle keeps idle connections from lingering past the pooler's own timeout, and
-    pre_ping drops already-dead connections. All values are env-tunable with safe
-    defaults. Paper-only infra hardening — no gate or trading behaviour changes.
-    """
+    """Bounded Postgres pool options (env-tunable). Kept small so old+new instances
+    during a rolling deploy fit a limited Supabase connection budget — the previous
+    ~15-conn default exhausted it and blocked deploys with ECHECKOUTTIMEOUT."""
 
     return {
         "pool_pre_ping": True,
