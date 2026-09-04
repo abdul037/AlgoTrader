@@ -9,6 +9,7 @@ from app.automation.reliability import (
     PAPER_NEAR_MISS,
     STRICT_VALID,
     SUPERVISED_WEAK_VALID,
+    aggregate_scan_funnel,
     auto_approval_tier_blockers,
     candidate_propose_drop_reason,
     proposal_quality_label,
@@ -108,6 +109,75 @@ def test_candidate_propose_drop_reason_maps_each_stage() -> None:
     )
 
 
+def test_aggregate_scan_funnel_rolls_up_stages_across_scans() -> None:
+    rows = [
+        {
+            "payload": {
+                "origin": "intraday_scan",
+                "created": 1,
+                "entered": 5,
+                "proposals_created": 1,
+                "executed": 0,
+                "dropped:not_execution_ready": 2,
+                "safety_blocked": 1,
+                "safety_blocked:symbol_blacklisted": 1,
+                "exec_blocked_candidates": 1,
+                "exec_blocked:near_miss_requires_human_approval": 1,
+            }
+        },
+        # A bare payload dict (not wrapped in {"payload": ...}) is also accepted.
+        {
+            "origin": "swing_scan",
+            "entered": 3,
+            "proposals_created": 1,
+            "executed": 1,
+            "dropped:missing_stop": 1,
+        },
+        "not-a-dict",  # defensively skipped, never raised on
+    ]
+
+    summary = aggregate_scan_funnel(rows)
+
+    assert summary["scans"] == 2
+    assert summary["entered"] == 8
+    assert summary["proposals_created"] == 2
+    assert summary["executed"] == 1
+    assert summary["dropped"] == {"missing_stop": 1, "not_execution_ready": 2}
+    assert summary["safety_blocked"] == {"symbol_blacklisted": 1}
+    assert summary["safety_blocked_total"] == 1
+    assert summary["exec_blocked"] == {"near_miss_requires_human_approval": 1}
+    assert summary["exec_blocked_candidates"] == 1
+    assert summary["origins"] == {"intraday_scan": 1, "swing_scan": 1}
+
+
+def test_aggregate_scan_funnel_empty() -> None:
+    summary = aggregate_scan_funnel([])
+    assert summary["scans"] == 0
+    assert summary["entered"] == 0
+    assert summary["executed"] == 0
+    assert summary["dropped"] == {}
+    assert summary["exec_blocked"] == {}
+
+
+def test_run_log_list_by_event_reads_back_only_matching_event(tmp_path) -> None:
+    from app.storage.db import Database
+    from app.storage.repositories import RunLogRepository
+
+    db = Database(make_settings(tmp_path))
+    db.initialize()
+    logs = RunLogRepository(db)
+    logs.log("auto_propose_funnel", {"origin": "intraday_scan", "entered": 3, "executed": 1})
+    logs.log("some_other_event", {"noise": 1})
+
+    rows = logs.list_by_event("auto_propose_funnel", limit=10)
+
+    assert len(rows) == 1
+    assert rows[0]["payload"]["entered"] == 3
+    # A future-dated since_iso filters everything out (created_at is today).
+    assert logs.list_by_event("auto_propose_funnel", since_iso="2999-01-01") == []
+    assert aggregate_scan_funnel(rows)["executed"] == 1
+
+
 def test_proposal_quality_labels_guard_supervised_paths() -> None:
     assert proposal_quality_label(_candidate()) == STRICT_VALID
     assert (
@@ -178,6 +248,10 @@ def test_reliability_endpoint_reports_supervised_and_auto_blockers(tmp_path) -> 
     assert "daily_proposal_target_not_met" in payload["proposal_flow"]["proposal_blockers"]
     assert "paper_auto_tier_supervised_only" in payload["auto_approval"]["blockers"]
     assert "paper_auto_approve_disabled" in payload["auto_approval"]["blockers"]
+    scan_funnel = payload["proposal_flow"]["scan_funnel"]
+    assert scan_funnel["scans"] == 0
+    assert scan_funnel["executed"] == 0
+    assert scan_funnel["dropped"] == {}
 
 
 def _near_miss_candidate():

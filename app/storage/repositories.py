@@ -819,6 +819,37 @@ class RunLogRepository:
                 (event_type, json.dumps(payload), utc_now().isoformat()),
             )
 
+    def list_by_event(
+        self, event_type: str, *, limit: int = 500, since_iso: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Recent run-log entries for one event type, newest first.
+
+        Items are ``{"created_at": <iso>, "payload": {...}}``. ``since_iso`` keeps
+        ``created_at >= since_iso`` (ISO-8601 sorts chronologically as text, so a
+        date prefix like ``2026-09-04`` selects that day onward). A malformed
+        payload becomes ``{}`` rather than raising.
+        """
+
+        clauses, params = ["event_type = ?"], [event_type]
+        if since_iso:
+            clauses.append("created_at >= ?")
+            params.append(since_iso)
+        params.append(int(limit))
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                f"SELECT created_at, payload_json FROM run_logs "  # noqa: S608 - clauses are literals
+                f"WHERE {' AND '.join(clauses)} ORDER BY id DESC LIMIT ?",
+                tuple(params),
+            ).fetchall()
+
+        def _payload(raw: Any) -> dict[str, Any]:
+            try:
+                return json.loads(raw)
+            except (TypeError, ValueError):
+                return {}
+
+        return [{"created_at": str(r["created_at"]), "payload": _payload(r["payload_json"])} for r in rows]
+
 
 class RuntimeStateRepository:
     """Persist lightweight key/value runtime state."""

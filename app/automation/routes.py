@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from app.automation.reliability import (
     AUTO_TIER_PENDING_ONLY,
     AUTO_TIER_SUPERVISED_ONLY,
+    aggregate_scan_funnel,
     daily_items,
     lifecycle_stats,
     proposal_quality_label,
@@ -500,6 +501,12 @@ def automation_reliability(request: Request):
         if str(decision.status) == "supervised_weak_valid"
         or str((decision.payload.get("metadata") or {}).get("signal_classification") or "") == "supervised_weak_valid"
     )
+    today_iso = utc_now().date().isoformat()
+    scan_funnel = aggregate_scan_funnel(
+        request.app.state.run_log_repository.list_by_event(
+            "auto_propose_funnel", limit=500, since_iso=today_iso
+        )
+    )
     target_min = int(getattr(settings, "paper_supervised_daily_proposal_target_min", 1) or 1)
     target_max = int(getattr(settings, "paper_supervised_daily_proposal_target_max", 5) or 5)
     proposals_created = len(today_proposals)
@@ -540,6 +547,7 @@ def automation_reliability(request: Request):
             "proposal_quality_counts": dict(proposal_quality_counts),
             "proposal_blockers": sorted(set(proposal_flow_blockers)),
             "top_no_signal_reasons": dict(no_signal_reasons.most_common(10)),
+            "scan_funnel": scan_funnel,
         },
         "scheduler": workflow_health,
         "reconciliation": {

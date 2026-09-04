@@ -186,6 +186,52 @@ def daily_items(items: list[Any], *, now: datetime | None = None) -> list[Any]:
     return [item for item in items if str(getattr(item, "created_at", "") or "").startswith(today)]
 
 
+def aggregate_scan_funnel(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Roll up per-scan ``auto_propose_funnel`` payloads into one day-level view.
+
+    Each row is a run-log entry ``{"created_at": ..., "payload": {...}}`` (or a
+    bare payload dict). The integer counters are summed across scans and grouped
+    by prefix so the whole promotion->proposal->execution pipeline reads at a
+    glance: headline totals (entered, proposals_created, executed), plus
+    ``dropped`` / ``safety_blocked`` / ``exec_blocked`` breakdowns keyed by
+    reason. Pure and defensive — non-integer or unexpected values are ignored,
+    never raised on.
+    """
+
+    totals: Counter[str] = Counter()
+    origins: Counter[str] = Counter()
+    scans = 0
+    for row in rows:
+        payload = row.get("payload") if isinstance(row, dict) and "payload" in row else row
+        if not isinstance(payload, dict):
+            continue
+        scans += 1
+        origin = str(payload.get("origin") or "")
+        if origin:
+            origins[origin] += 1
+        for key, value in payload.items():
+            if key == "origin" or isinstance(value, bool) or not isinstance(value, int):
+                continue
+            totals[key] += value
+
+    dropped = {k.split(":", 1)[1]: v for k, v in totals.items() if k.startswith("dropped:")}
+    safety = {k.split(":", 1)[1]: v for k, v in totals.items() if k.startswith("safety_blocked:")}
+    exec_blocked = {k.split(":", 1)[1]: v for k, v in totals.items() if k.startswith("exec_blocked:")}
+    return {
+        "scans": scans,
+        "origins": dict(origins),
+        "entered": int(totals.get("entered", 0)),
+        "proposals_created": int(totals.get("proposals_created", 0)),
+        "executed": int(totals.get("executed", 0)),
+        "proposal_failed": int(totals.get("proposal_failed", 0)),
+        "safety_blocked_total": int(totals.get("safety_blocked", 0)),
+        "exec_blocked_candidates": int(totals.get("exec_blocked_candidates", 0)),
+        "dropped": dict(sorted(dropped.items())),
+        "safety_blocked": dict(sorted(safety.items())),
+        "exec_blocked": dict(sorted(exec_blocked.items())),
+    }
+
+
 def _strategy_evidence_blockers(*, settings: Any, candidate: Any, lifecycles: list[Any]) -> list[str]:
     strategy = str(getattr(candidate, "strategy_name", "") or "")
     closed = [
