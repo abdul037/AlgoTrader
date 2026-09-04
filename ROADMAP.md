@@ -30,12 +30,22 @@ These are permanent guardrails, not goals:
   Alpaca **paper** account, IEX data feed.
 - **Autonomous paper execution is unblocked** (PR #22) and **fully instrumented**
   (PRs #23–#25).
-- **Open question:** as of the last close, promoted near-miss candidates were not yet
-  executing (the enabling deploy landed minutes before close). The **first autonomous
-  paper trade** is still unconfirmed — watched at each US open via the funnel below.
+- **ROOT-CAUSE FOUND (P0):** zero autonomous trades were NOT a gate/data-calibration
+  issue. The core scan job `workflow_cadence` was exceeding its 240s wall-clock cap
+  and being **killed every single cycle** (Railway logs, all of 2026-09-04). No scan
+  ever completed, so nothing could promote, propose, or execute — everything built on
+  top (near-miss unblock, funnel) is correct but downstream of a scan that never
+  finished. The trigger was the widened top200 universe; the mechanism was that the
+  batch deadline was only checked *between symbols*, so one symbol's full strategy
+  evaluation could overrun the job budget.
+- **Fix applied:** (a) Railway `SCREENER_BATCH_DEADLINE_SECONDS` lowered to 120 (safely
+  under the 240s job cap); (b) code fix — enforce the wall-clock deadline *inside* the
+  per-symbol strategy-spec loop so a scan can never overrun regardless of config
+  (returns partial ranked results; no gate weakened). Watching the next session to
+  confirm scans complete and the first trade fires.
 - Honest framing: there is no "instant profit". Profit comes from a *validated edge
-  measured over time*. The current phase is: get the first trades firing, then let
-  real data drive which gate/strategy changes are worth making.
+  measured over time*. The current phase is: get scans completing → first trades
+  firing → then let real data drive which gate/strategy changes are worth making.
 
 ---
 
