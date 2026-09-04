@@ -13,10 +13,15 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from app.automation.reliability import aggregate_scan_funnel
 from app.performance.gated_feature_report import collect_feature_verdicts
 from app.performance.stage3 import assess_stage3, real_capital_preflight
-from app.performance.strategy_performance import analyze_by_strategy, daily_pnl_series, decay_verdict
-from app.storage.repositories import ExecutionRepository, RuntimeStateRepository
+from app.performance.strategy_performance import (
+    analyze_by_strategy,
+    daily_pnl_series,
+    decay_verdict,
+)
+from app.storage.repositories import ExecutionRepository, RunLogRepository, RuntimeStateRepository
 from app.utils.time import utc_now
 
 router = APIRouter(tags=["dashboard"])
@@ -122,6 +127,16 @@ def dashboard_data(request: Request) -> JSONResponse:
     # Gated-feature GO/NO-GO verdicts (cached regime — no forced fetch — to keep
     # the dashboard fast). Same collector the Monday validation CLI uses.
     gated_features = _safe(lambda: collect_feature_verdicts(state, force_refresh=False), None)
+    # Today's auto-propose funnel: where scan candidates exit the
+    # promotion->proposal->execution pipeline (read-only diagnostic rollup).
+    scan_funnel = _safe(
+        lambda: aggregate_scan_funnel(
+            RunLogRepository(db).list_by_event(
+                "auto_propose_funnel", limit=500, since_iso=utc_now().date().isoformat()
+            )
+        ),
+        None,
+    )
 
     payload = {
         "generated_at": utc_now().isoformat(),
@@ -147,6 +162,7 @@ def dashboard_data(request: Request) -> JSONResponse:
         "avg_slippage_bps": avg_slippage_bps,
         "stage3": stage3,
         "gated_features": gated_features,
+        "scan_funnel": scan_funnel,
     }
     return JSONResponse(payload)
 
@@ -159,8 +175,8 @@ def _stage3(state: Any) -> dict[str, Any] | None:
         return None
     settings = state.settings
     capital = float(getattr(settings, "paper_account_balance_usd", 100_000.0) or 100_000.0)
-    target = float(getattr(settings, "weekly_profit_target_usd", 1000.0) or 1000.0)
-    # weekly target is a weekly figure elsewhere; here we want the daily goal.
+    # The Stage 3 capital plan sizes against the DAILY goal (weekly target is a
+    # separate figure used elsewhere).
     daily_target = float(getattr(settings, "daily_profit_target_usd", 1000.0) or 1000.0)
     readiness = assess_stage3(
         trade_repo.list(limit=2000), capital_usd=capital, daily_target_usd=daily_target
@@ -338,6 +354,13 @@ _DASHBOARD_HTML = """<!doctype html>
   </section>
 
   <section>
+    <h2>Auto-propose funnel <span class="muted" style="font-weight:400;font-size:12px">(today · where scan candidates exit the pipeline)</span></h2>
+    <div class="grid" id="funneltiles"></div>
+    <div id="funnelbreak" style="margin-top:6px"></div>
+    <div id="funnelempty" class="empty" style="padding:8px 2px">No scans with candidates yet today (runs during market hours).</div>
+  </section>
+
+  <section>
     <h2>Action log (recent scan decisions)</h2>
     <div class="scroll"><table id="scans"><thead><tr>
       <th>Time</th><th>Task</th><th>Symbol</th><th>Strategy</th><th>TF</th>
@@ -390,6 +413,28 @@ function drawGated(g){
       <div class="muted" style="font-size:12px">${esc(f.detail)}</div>
     </div>`;
   }).join('');
+}
+function drawFunnel(f){
+  const tiles = $('#funneltiles'), breakEl = $('#funnelbreak'), empty = $('#funnelempty');
+  if(!f || !f.scans){ tiles.innerHTML=''; breakEl.innerHTML=''; empty.style.display='block'; return; }
+  empty.style.display='none';
+  const execCls = f.executed>0 ? 'pos' : '';
+  tiles.innerHTML = [
+    ['Scans', f.scans],
+    ['Candidates entered', f.entered],
+    ['Proposals created', f.proposals_created],
+    ['Executed', `<span class="${execCls}">${f.executed}</span>`],
+    ['Exec-blocked', f.exec_blocked_candidates],
+    ['Safety-blocked', f.safety_blocked_total],
+  ].map(([k,v])=>`<div class="card"><div class="k">${esc(k)}</div><div class="v">${v}</div></div>`).join('');
+  const grp = (label, obj, cls) => {
+    const keys = Object.keys(obj||{});
+    if(!keys.length) return '';
+    const chips = keys.sort((a,b)=>obj[b]-obj[a])
+      .map(k=>`<span class="pill ${cls}">${esc(k)} · ${obj[k]}</span>`).join(' ');
+    return `<div style="margin:4px 0"><span class="muted" style="font-size:12px;margin-right:6px">${esc(label)}</span>${chips}</div>`;
+  };
+  breakEl.innerHTML = grp('dropped', f.dropped, 'warn') + grp('exec-blocked', f.exec_blocked, 'bad') + grp('safety-blocked', f.safety_blocked, 'bad');
 }
 function drawEquity(series){
   const svg = $('#equity'), empty = $('#equityempty');
@@ -485,6 +530,7 @@ async function tick(){
   drawEquity(d.pnl_series || []);
   drawStage3(d.stage3);
   drawGated(d.gated_features);
+  drawFunnel(d.scan_funnel);
 
   const verdictCls = {healthy:'ok', insufficient_data:'warn', decaying:'warn', dead:'bad'};
   rows('#stratperf', (d.strategy_performance||[]).map(p=>{
