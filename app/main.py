@@ -513,6 +513,7 @@ def create_app(
     app.state.tracked_signal_repository = tracked_signal_repository
     app.state.alert_history_repository = alert_history_repository
     app.state.scan_decision_repository = scan_decision_repository
+    app.state.run_log_repository = run_log_repository
     app.state.workflow_service = SignalWorkflowService(
         settings=app_settings,
         market_screener=app.state.market_screener_service,
