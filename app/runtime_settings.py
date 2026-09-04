@@ -66,6 +66,9 @@ class AppSettings(BaseSettings):
     db_pool_max_overflow: int = 2
     db_pool_recycle_seconds: int = 600
     db_pool_timeout_seconds: int = 20
+    # Startup retries the first DB connection so a transiently exhausted pool (e.g.
+    # rolling-deploy overlap) doesn't hard-crash the boot.
+    db_connect_max_attempts: int = 12
     control_api_token: str = ""
 
     etoro_api_key: str = ""

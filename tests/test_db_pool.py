@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from app.storage.db import _postgres_engine_kwargs
+import pytest
+
+from app.storage.db import Database, _postgres_engine_kwargs
 from tests.conftest import make_settings
 
 
@@ -39,3 +41,40 @@ def test_postgres_engine_pool_floors_pathological_values(tmp_path) -> None:
 
     assert kwargs["pool_size"] == 1
     assert kwargs["pool_recycle"] == 60
+
+
+def test_initialize_retries_transient_pool_exhaustion(tmp_path, monkeypatch) -> None:
+    # A transiently exhausted Postgres pool at boot (e.g. rolling-deploy overlap)
+    # must NOT hard-crash startup: initialize retries until a connection frees.
+    settings = make_settings(tmp_path)
+    settings.db_connect_max_attempts = 4
+    db = Database(settings)
+    db.is_sqlite = False  # exercise the Postgres retry path
+    monkeypatch.setattr("app.storage.db.time.sleep", lambda _s: None)
+
+    calls = {"n": 0}
+
+    def flaky_create_schema() -> None:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise RuntimeError("ECHECKOUTTIMEOUT")
+
+    monkeypatch.setattr(db, "_create_schema", flaky_create_schema)
+
+    db.initialize()
+
+    assert calls["n"] == 3  # failed twice, succeeded on the third attempt
+
+
+def test_initialize_reraises_after_max_attempts(tmp_path, monkeypatch) -> None:
+    settings = make_settings(tmp_path)
+    settings.db_connect_max_attempts = 3
+    db = Database(settings)
+    db.is_sqlite = False
+    monkeypatch.setattr("app.storage.db.time.sleep", lambda _s: None)
+    monkeypatch.setattr(
+        db, "_create_schema", lambda: (_ for _ in ()).throw(RuntimeError("ECHECKOUTTIMEOUT"))
+    )
+
+    with pytest.raises(RuntimeError):
+        db.initialize()
