@@ -1113,3 +1113,54 @@ def test_supervised_weak_valid_rejects_invalid_bracket(tmp_path, monkeypatch) ->
     ]
     assert attempts
     assert "supervised_weak_valid_invalid_bracket" in attempts[-1]["promotion_blockers"]
+
+
+def test_scan_stops_at_deadline_inside_strategy_spec_loop(tmp_path, monkeypatch) -> None:
+    # Regression: a single symbol with several strategy specs must not run past the
+    # batch deadline. The wall-clock check inside the per-spec loop stops the scan
+    # mid-symbol so one scan can never overrun the scheduler job's kill timeout
+    # (the production bug: workflow_cadence exceeded its 240s cap every cycle).
+    frame = _frame([100.0 + index for index in range(90)])
+    quote = MarketQuote(symbol="NVDA", bid=100.0, ask=100.1, last_execution=100.05, timestamp="2026-04-11T10:00:00Z")
+    service = MarketScreenerService(
+        settings=make_settings(
+            tmp_path,
+            market_universe_symbols=["NVDA"],
+            screener_default_timeframes=["1d"],
+            screener_batch_deadline_seconds=50,
+        ),
+        market_data_engine=FakeMarketDataEngine({("NVDA", "1d"): frame}, {"NVDA": quote}),
+        signal_state_repository=FakeSignalStateRepository(),
+        run_log_repository=FakeRunLogRepository(),
+        backtest_repository=FakeBacktestRepository(summary=None),
+        scan_decision_repository=FakeScanDecisionRepository(),
+        telegram_notifier=FakeTelegramNotifier(),
+    )
+
+    # Several specs must exist for the symbol/timeframe, or the test is vacuous.
+    assert len(service._strategy_specs_for_timeframe("1d")) >= 2
+
+    # A controllable clock that only advances when a strategy signal is evaluated,
+    # so the between-symbol/timeframe checks pass (elapsed 0) and the deadline is
+    # crossed *inside* the spec loop, right after the first evaluation.
+    clock = {"t": 0.0}
+    monkeypatch.setattr("app.screener.service_scan.time.monotonic", lambda: clock["t"])
+
+    calls = {"n": 0}
+
+    class _DeadlineStrategy:
+        last_diagnostics = None
+
+        def generate_signal(self, history, symbol):
+            calls["n"] += 1
+            clock["t"] += 100.0  # first evaluation pushes past the 50s deadline
+            return None
+
+    monkeypatch.setattr(service, "_build_strategy", lambda spec: _DeadlineStrategy())
+
+    response = service.scan_universe(limit=3)
+
+    # Exactly one spec ran before the deadline check broke the loop.
+    assert calls["n"] == 1
+    assert "scan_deadline_exceeded" in response.errors
+    assert response.candidates == []

@@ -10,14 +10,6 @@ from app.models.screener import ScreenerRunResponse
 from app.screener.accuracy import build_accuracy_profile
 from app.screener.filters import FilterOutcome, build_market_context
 from app.screener.profiles import effective_auto_execution_min_score
-from app.screener.scoring import build_backtest_snapshot, freshness_for_decision, rank_live_signal
-from app.screener.scan_support import (
-    ScanTimeoutError,
-    _bounded_call,
-    _normalize_spec_keys,
-    _spec_key,
-    _strategy_specs_for_timeframe,
-)
 from app.screener.scan_promotion import (
     _diagnostic_intelligence,
     _diagnostic_weak_valid_signal,
@@ -25,6 +17,14 @@ from app.screener.scan_promotion import (
     _maybe_promote_supervised_weak_valid,
     _weak_valid_daily_count,
 )
+from app.screener.scan_support import (
+    ScanTimeoutError,
+    _bounded_call,
+    _normalize_spec_keys,
+    _spec_key,
+    _strategy_specs_for_timeframe,
+)
+from app.screener.scoring import build_backtest_snapshot, freshness_for_decision, rank_live_signal
 from app.universe import resolve_universe
 from app.utils.time import utc_now
 
@@ -158,6 +158,17 @@ def scan_universe(
             specs = _strategy_specs_for_timeframe(service, timeframe, requested_spec_keys)
             specs_by_timeframe.setdefault(timeframe, len(specs))
             for spec in specs:
+                # Enforce the wall-clock deadline INSIDE the per-symbol strategy
+                # loop, not just between symbols/timeframes. Without this, a single
+                # symbol with many strategy specs could run well past the batch
+                # deadline (each generate_signal/backtest adds up), letting one scan
+                # overrun the scheduler job's wall-clock cap and be killed before it
+                # can emit any candidate. Stopping mid-symbol returns the ranked
+                # results gathered so far — bounded, never a weaker gate.
+                if deadline_seconds > 0 and (time.monotonic() - started_at) >= deadline_seconds:
+                    errors.append("scan_deadline_exceeded")
+                    abort_scan = True
+                    break
                 if service._scan_cancelled(cancel_event):
                     errors.append("scan_cancelled")
                     abort_scan = True
