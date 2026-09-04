@@ -825,6 +825,30 @@ ON rl_policy_proposals(status, created_at);
 """
 
 
+def _postgres_engine_kwargs(settings: AppSettings) -> dict[str, Any]:
+    """SQLAlchemy engine options for the Postgres pool.
+
+    A BOUNDED, conservative pool: the previous default (pool_size 5 + overflow 10 =
+    up to 15 connections per process) meant that during a Railway rolling deploy the
+    old and new instances together could demand ~30 connections and exhaust a small
+    Supabase connection limit — the new instance then failed to start with
+    `ECHECKOUTTIMEOUT (Session mode)`, so fixes couldn't deploy. Capping each
+    instance to ~5 connections lets old+new overlap fit within the limit; the
+    recycle keeps idle connections from lingering past the pooler's own timeout, and
+    pre_ping drops already-dead connections. All values are env-tunable with safe
+    defaults. Paper-only infra hardening — no gate or trading behaviour changes.
+    """
+
+    return {
+        "pool_pre_ping": True,
+        "pool_size": max(int(getattr(settings, "db_pool_size", 3) or 3), 1),
+        "max_overflow": max(int(getattr(settings, "db_pool_max_overflow", 2) or 2), 0),
+        "pool_recycle": max(int(getattr(settings, "db_pool_recycle_seconds", 600) or 600), 60),
+        "pool_timeout": max(int(getattr(settings, "db_pool_timeout_seconds", 20) or 20), 1),
+        "future": True,
+    }
+
+
 class Database:
     """Database wrapper supporting SQLite and PostgreSQL through one repository API."""
 
@@ -837,7 +861,7 @@ class Database:
         if not self.is_sqlite:
             from sqlalchemy import create_engine
 
-            self._engine = create_engine(self.url, pool_pre_ping=True, future=True)
+            self._engine = create_engine(self.url, **_postgres_engine_kwargs(settings))
 
     @contextmanager
     def connect(self) -> Iterator[Any]:

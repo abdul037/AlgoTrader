@@ -59,6 +59,13 @@ class AppSettings(BaseSettings):
 
     environment: str = "development"
     database_url: str = "sqlite:///./etoro_bot.db"
+    # Bounded Postgres connection pool (SQLite ignores these). Kept small so old +
+    # new instances during a Railway rolling deploy don't exhaust a small Supabase
+    # connection limit (the ECHECKOUTTIMEOUT that blocked deploys). ~5 conns/instance.
+    db_pool_size: int = 3
+    db_pool_max_overflow: int = 2
+    db_pool_recycle_seconds: int = 600
+    db_pool_timeout_seconds: int = 20
     control_api_token: str = ""
 
     etoro_api_key: str = ""
@@ -761,7 +768,7 @@ class AppSettings(BaseSettings):
         return "send-only"
 
     @property
-    def sections(self) -> "ConfigSections":
+    def sections(self) -> ConfigSections:
         """Typed, grouped view (Risk / Execution / Data / Strategy) over the flat
         fields. Additive and back-compatible — flat access is unchanged. See
         ``app.config_sections``."""
