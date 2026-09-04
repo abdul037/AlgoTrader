@@ -44,9 +44,14 @@ def test_dashboard_data_snapshot_shape(tmp_path: Path) -> None:
     for key in (
         "config", "automation", "flags", "trades", "proposals", "scans",
         "positions", "strategy_performance", "pnl_series", "stage3",
-        "gated_features",
+        "gated_features", "scan_funnel",
     ):
         assert key in data
+    # The auto-propose funnel rollup is present and well-shaped on an empty DB.
+    funnel = data["scan_funnel"]
+    assert funnel["scans"] == 0
+    assert funnel["executed"] == 0
+    assert funnel["dropped"] == {}
     # Gated-feature verdicts are present and well-shaped even on an empty DB.
     gated = data["gated_features"]
     assert gated is not None
