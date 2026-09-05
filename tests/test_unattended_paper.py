@@ -377,3 +377,115 @@ def test_approve_enqueue_execute_records_blocked_candidate_into_funnel(tmp_path)
     # The specific gate is attributed under an exec_blocked:<blocker> key.
     assert funnel["exec_blocked:near_miss_requires_human_approval"] == 1
     assert any(event == "paper_auto_candidate_blocked" for event, _ in logged)
+
+
+def _clean_paper_auto_settings(tmp_path):
+    # Every gate in candidate_blockers configured to PASS for a fully-validated,
+    # strict-valid production candidate — the exact conditions that must hold for
+    # the first autonomous paper trade to fire on Monday.
+    return make_settings(
+        tmp_path,
+        execution_mode="paper",
+        enable_real_trading=False,
+        alpaca_expected_account_number="PAPER-1",
+        paper_auto_approve_proposals=True,
+        auto_execution_worker_enabled=True,
+        paper_auto_operation_mode="unattended",
+        paper_auto_approval_tier="tier2_strict_valid",
+        # Drop the clean-lifecycle bootstrap so a strict-valid candidate can auto
+        # -execute without a pre-existing supervised track record (that bootstrap
+        # is a separate policy, exercised elsewhere).
+        paper_auto_min_clean_supervised_lifecycles=0,
+        market_universe_symbols=["NVDA"],
+    )
+
+
+def _strict_valid_candidate():
+    # No signal_classification/source -> classifies as STRICT_VALID; ready +
+    # alert_eligible + backtest_validated + a full bracket + a score above the
+    # 65.0 auto-exec floor.
+    return SimpleNamespace(
+        symbol="NVDA",
+        strategy_name="momentum_breakout",
+        execution_ready=True,
+        signal_role="entry_long",
+        score=95.0,
+        stop_loss=95.0,
+        take_profit=110.0,
+        metadata={"alert_eligible": True, "backtest_validated": True},
+    )
+
+
+def _clean_paper_auto_service(settings, *, run_logs, notifier, proposals, execution):
+    return PaperAutoTradingService(
+        settings=settings,
+        proposal_service=proposals,
+        execution_coordinator=execution,
+        automation=SimpleNamespace(execution_blockers=lambda: []),
+        reconciliation=SimpleNamespace(account_verified=lambda: True),
+        safety_state=SimpleNamespace(
+            is_blacklisted=lambda _symbol: False,
+            strategy_active=lambda _strategy: True,
+        ),
+        executions=None,
+        run_logs=run_logs,
+        notifier=notifier,
+        alpaca_client=SimpleNamespace(
+            is_regular_market_open=lambda: True,
+            is_supported_equity=lambda _symbol: True,
+        ),
+    )
+
+
+def test_fully_validated_candidate_has_no_blockers(tmp_path):
+    # The Monday-critical invariant: a strict-valid candidate with every gate
+    # satisfied must clear candidate_blockers entirely. If this ever regresses,
+    # the bot silently stops trading with no error — exactly the failure we spent
+    # this session hunting — so pin the whole clean path.
+    service = _clean_paper_auto_service(
+        _clean_paper_auto_settings(tmp_path),
+        run_logs=SimpleNamespace(log=lambda *a, **k: None),
+        notifier=SimpleNamespace(send_text=lambda *a, **k: None),
+        proposals=None,
+        execution=None,
+    )
+
+    assert service.candidate_blockers(_strict_valid_candidate()) == []
+
+
+def test_approve_enqueue_execute_executes_clean_candidate(tmp_path):
+    # The green path end to end: no blockers -> approve -> enqueue -> process ->
+    # a processed execution is returned, the funnel tallies one execution (and
+    # zero blocks), and the processed event is logged.
+    logged: list[tuple[str, dict]] = []
+    approved = SimpleNamespace(id="prop_1")
+    queued = SimpleNamespace(id="queue_1")
+    processed = SimpleNamespace(
+        id="queue_1", symbol="NVDA", status="submitted", validation_reason=None
+    )
+    approve_calls: list[str] = []
+    proposals = SimpleNamespace(
+        approve_proposal=lambda pid, req: approve_calls.append(pid) or approved
+    )
+    execution = SimpleNamespace(
+        enqueue_approved_proposal=lambda aid: queued,
+        process_queue_item=lambda qid: processed,
+    )
+    service = _clean_paper_auto_service(
+        _clean_paper_auto_settings(tmp_path),
+        run_logs=SimpleNamespace(log=lambda event, payload: logged.append((event, payload))),
+        notifier=SimpleNamespace(send_text=lambda *a, **k: None),
+        proposals=proposals,
+        execution=execution,
+    )
+    proposal = SimpleNamespace(id="prop_1", order=SimpleNamespace(symbol="NVDA"))
+    funnel: Counter[str] = Counter()
+
+    result = service.approve_enqueue_execute(proposal, _strict_valid_candidate(), funnel=funnel)
+
+    assert result is processed
+    assert result.status == "submitted"
+    assert approve_calls == ["prop_1"]  # the proposal was actually approved
+    assert funnel["executed"] == 1
+    assert funnel["exec_blocked_candidates"] == 0
+    assert any(event == "paper_auto_execution_processed" for event, _ in logged)
