@@ -49,6 +49,23 @@ These are permanent guardrails, not goals:
   sweep the whole universe. Not a Monday blocker (unattended paper exploration bypasses
   the weak-backtest watchlist downgrade), but it stops the recurring timeout, frees
   ~240s of worker time per cycle, and lets the quality gate finally populate.
+- **Config verified live + near-miss auto-exec ENABLED (2026-09-05 ~12:50 UTC).** The
+  new `execution_policy_effective` startup log (queryable from run_logs) revealed the
+  deployed policy auto-executed **strict-valid only** — near-miss candidates (the bulk
+  of exploration output) were proposed but held for human approval, so the first
+  autonomous trade might never have fired. With operator sign-off, set
+  `PAPER_UNATTENDED_NEAR_MISS_AUTO_EXEC_ENABLED=true` (confirmed `true` in the policy
+  log after redeploy). Paper-only intact; every HARD gate still enforced. Open flag:
+  `paper_exploration_auto_execution_min_score=0.15` deployed vs code default `60.0` —
+  likely a typo; with near-miss auto-exec on it effectively disables the score floor
+  for near-miss candidates (pending operator confirmation of intent).
+- **Backtest deadline fix confirmed working, coverage under observation.** After the fix,
+  `backtest_gate_refresh` logs a clean truncated `batch_backtest_run` instead of a 240s
+  kill. First (cold-cache) run covered only 1 symbol in the 180s budget; watching whether
+  warm-cache runs cover more as the rotation cursor advances. NOT Monday-blocking
+  (exploration candidates don't require backtest validation). If steady-state stays ~1
+  symbol/run, scope the gate's workload down (active strategies / traded universe) —
+  a careful post-Monday change.
 - **Still UNVERIFIED — the first autonomous paper trade.** Infra is healthy but no trade
   has fired yet (weekend; market closed). The **Monday 2026-09-07 13:40 UTC** watch is
   the real test: does a promoted candidate execute, or does the (now-populating) funnel
