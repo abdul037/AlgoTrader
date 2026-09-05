@@ -40,6 +40,15 @@ These are permanent guardrails, not goals:
      even boot, so the fix couldn't ship. Fixed by bounding the SQLAlchemy pool (#28) +
      retrying the first connection at startup (#29), and cleared by an operator Supabase
      restart on 2026-09-05.
+- **Third 240s timeout found & fixed (2026-09-05 ~12:15 UTC).** The 10:57 scan-health
+  check-in surfaced a *different* job hitting the 240s cap: `backtest_gate_refresh`
+  walk-forward-backtests the full 200-symbol universe every 6h with no time bound, so
+  it was killed every run and only ever covered the leading symbols. Fixed on the branch
+  (commit `8d1b4e5`): the runner now stops cleanly at a soft `deadline_seconds` (180s,
+  under the hard cap) and a persisted cursor rotates the start offset so successive runs
+  sweep the whole universe. Not a Monday blocker (unattended paper exploration bypasses
+  the weak-backtest watchlist downgrade), but it stops the recurring timeout, frees
+  ~240s of worker time per cycle, and lets the quality gate finally populate.
 - **Still UNVERIFIED — the first autonomous paper trade.** Infra is healthy but no trade
   has fired yet (weekend; market closed). The **Monday 2026-09-07 13:40 UTC** watch is
   the real test: does a promoted candidate execute, or does the (now-populating) funnel
