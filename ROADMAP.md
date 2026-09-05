@@ -24,38 +24,32 @@ These are permanent guardrails, not goals:
 
 ---
 
-## Current status (as of 2026-09-04)
+## Current status (as of 2026-09-05)
 
-- The bot runs unattended on Railway, scanning a widened US equity universe on the
-  Alpaca **paper** account, IEX data feed.
-- **Autonomous paper execution is unblocked** (PR #22) and **fully instrumented**
-  (PRs #23–#25).
-- **ROOT-CAUSE FOUND (P0):** zero autonomous trades were NOT a gate/data-calibration
-  issue. The core scan job `workflow_cadence` was exceeding its 240s wall-clock cap
-  and being **killed every single cycle** (Railway logs, all of 2026-09-04). No scan
-  ever completed, so nothing could promote, propose, or execute — everything built on
-  top (near-miss unblock, funnel) is correct but downstream of a scan that never
-  finished. The trigger was the widened top200 universe; the mechanism was that the
-  batch deadline was only checked *between symbols*, so one symbol's full strategy
-  evaluation could overrun the job budget.
-- **Fix applied:** (a) Railway `SCREENER_BATCH_DEADLINE_SECONDS` lowered to 120 (safely
-  under the 240s job cap); (b) code fix (#27) — enforce the wall-clock deadline *inside*
-  the per-symbol strategy-spec loop so a scan can never overrun regardless of config
-  (returns partial ranked results; no gate weakened).
-- **SECOND, DEEPER P0 FOUND (infra):** the bot's Supabase database pooler (session mode,
-  port 5432) is **exhausted** — Railway deploy logs show
-  `ECHECKOUTTIMEOUT ... in Session mode`. Consequences: DB calls stall/fail (so scans
-  can't complete or persist anything), the operator's own DB reads time out, and — the
-  kicker — **the #27 deploy FAILED to boot** because the app couldn't get a DB
-  connection, so the fixed code isn't even running yet (bot limps on the 07:11 code).
-  Likely mechanism: scans killed mid-DB-operation leaked connections over ~13h until the
-  small session-mode pool was exhausted. Fixes: (a) bound the SQLAlchemy pool small so
-  old+new deploy instances fit the connection limit (`db_pool_size`/`max_overflow`,
-  code); (b) OPERATOR: switch `DATABASE_URL` to the transaction-mode pooler (port 6543)
-  and restart the Supabase project once to clear leaked connections.
+- **The bot is HEALTHY and running the fixed code.** As of 2026-09-05 10:25 UTC the
+  fixed build (`b4f5fdd`) deployed and booted clean on a cleared Supabase pool:
+  DB connected, scheduler running 4 jobs, no `ECHECKOUTTIMEOUT`, no 240s scan kills.
+  Paper account, IEX feed, widened US universe.
+- **Two P0s were found and fixed this session** (both had blocked ALL autonomous trades):
+  1. **Scan-timeout:** `workflow_cadence` exceeded its 240s wall-clock cap and was
+     killed every cycle, so no scan ever completed. Fixed (#27) by enforcing the batch
+     deadline *inside* the per-symbol strategy-spec loop + Railway
+     `SCREENER_BATCH_DEADLINE_SECONDS=120`.
+  2. **DB pool exhaustion:** the Supabase pooler (session mode, port 5432) ran out of
+     connections (`ECHECKOUTTIMEOUT`) — scans stalled and, worse, new deploys couldn't
+     even boot, so the fix couldn't ship. Fixed by bounding the SQLAlchemy pool (#28) +
+     retrying the first connection at startup (#29), and cleared by an operator Supabase
+     restart on 2026-09-05.
+- **Still UNVERIFIED — the first autonomous paper trade.** Infra is healthy but no trade
+  has fired yet (weekend; market closed). The **Monday 2026-09-07 13:40 UTC** watch is
+  the real test: does a promoted candidate execute, or does the (now-populating) funnel
+  reveal a remaining gap?
+- **Operator follow-ups (optional, durable):** switch `DATABASE_URL` to the Supabase
+  **transaction pooler (port 6543)** so the pool can't re-exhaust; add
+  `CLAUDE_CODE_OAUTH_TOKEN` as a **repository** secret to switch on the review bots.
 - Honest framing: there is no "instant profit". Profit comes from a *validated edge
-  measured over time*. Immediate phase: **get the bot deploying + its DB healthy → scans
-  completing → first trades firing** → then let real data drive gate/strategy changes.
+  measured over time*. Current phase: **confirm the first trade fires Monday → then let
+  real funnel/P&L data drive which gate/strategy changes are worth making.**
 
 ---
 
@@ -65,6 +59,10 @@ Newest first. `PR #n` links the full write-up; the commit is the permanent recor
 
 | PR | Change | Why it matters |
 |----|--------|----------------|
+| #29 | Retry the first DB connection at startup | Deploys survive a transiently exhausted pool instead of hard-crashing on boot |
+| #28 | Bound the Postgres connection pool | Old+new deploy instances fit a small Supabase limit — unblocks deploys |
+| #27 | Enforce scan wall-clock deadline **inside the strategy-spec loop** | The P0 that stopped all trading: scan no longer overruns its 240s job cap and gets killed |
+| #26 | `ROADMAP.md` — durable build log & plan | The record survives ephemeral sessions |
 | #25 | Auto-propose funnel **tile** on `/dashboard` | Watch the pipeline live in a browser; `Executed` turns green on the first trade |
 | #24 | Funnel **rollup** in `GET /automation/reliability` (`scan_funnel`) | Day-level pipeline state in one API call |
 | #23 | Per-scan auto-propose **funnel log** (`auto_propose_funnel`) | One row per scan showing where each candidate exits the pipeline |
