@@ -59,13 +59,17 @@ These are permanent guardrails, not goals:
   `paper_exploration_auto_execution_min_score=0.15` deployed vs code default `60.0` —
   likely a typo; with near-miss auto-exec on it effectively disables the score floor
   for near-miss candidates (pending operator confirmation of intent).
-- **Backtest deadline fix confirmed working, coverage under observation.** After the fix,
-  `backtest_gate_refresh` logs a clean truncated `batch_backtest_run` instead of a 240s
-  kill. First (cold-cache) run covered only 1 symbol in the 180s budget; watching whether
-  warm-cache runs cover more as the rotation cursor advances. NOT Monday-blocking
-  (exploration candidates don't require backtest validation). If steady-state stays ~1
-  symbol/run, scope the gate's workload down (active strategies / traded universe) —
-  a careful post-Monday change.
+- **Backtest deadline fix, round 2 — the real bug.** The first deadline fix only checked
+  the budget at the *top of the symbol loop*, but a single symbol's full 20-strategy
+  walk-forward exceeds even the 240s hard cap, so the job was still hard-killed
+  mid-symbol — and because a hard kill never returns, the rotation cursor never advanced:
+  the bot was stuck re-killing the same slow symbol every cycle (observed 12:59 UTC).
+  Fixed by also checking the deadline *inside* the strategy-spec loop, so it bails
+  mid-symbol, returns cleanly, and the cursor advances. NOT Monday-blocking (exploration
+  candidates don't require backtest validation). Known limitation: one symbol still eats
+  the whole ~180s budget (≈1 symbol/run), so the gate populates slowly — the real
+  throughput fix (scope to active strategies / traded universe) is a careful post-Monday
+  change.
 - **Still UNVERIFIED — the first autonomous paper trade.** Infra is healthy but no trade
   has fired yet (weekend; market closed). The **Monday 2026-09-07 13:40 UTC** watch is
   the real test: does a promoted candidate execute, or does the (now-populating) funnel

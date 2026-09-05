@@ -112,6 +112,20 @@ class BatchBacktestService:
                 engine = BacktestEngine(self.backtests, config=engine_config)
 
                 for spec in strategy_specs_for(self.settings, timeframe=timeframe, requested=requested):
+                    if (
+                        deadline_seconds is not None
+                        and deadline_seconds > 0
+                        and (time.monotonic() - started_at) >= deadline_seconds
+                    ):
+                        # A single symbol's full strategy sweep can itself exceed
+                        # the scheduler's hard job cap, so the top-of-symbol check
+                        # alone is not enough — it would be killed mid-symbol and
+                        # never advance the cursor. Bail here so the run returns
+                        # cleanly; the symbol is already counted and the cursor
+                        # moves past it next cycle.
+                        truncated = True
+                        errors.append("backtest_deadline_exceeded")
+                        break
                     run_count += 1
                     strategy = get_strategy(spec.name, **strategy_kwargs_for(self.settings, spec))
                     # Pairs/stat-arb needs its second leg; give it a hedge provider
@@ -141,6 +155,10 @@ class BatchBacktestService:
                         tripwires.append(
                             f"{symbol} {timeframe} {spec.name}: {reason}"
                         )
+                if truncated:
+                    break
+            if truncated:
+                break
 
         aggregate = self._aggregate_metrics(results)
         summary = BatchBacktestSummary(

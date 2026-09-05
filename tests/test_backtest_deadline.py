@@ -48,6 +48,49 @@ def test_run_without_deadline_covers_whole_universe() -> None:
     assert "backtest_deadline_exceeded" not in summary.errors
 
 
+def test_run_deadline_trips_inside_a_single_symbol(monkeypatch) -> None:
+    # The production failure: one symbol's full strategy sweep exceeds the budget.
+    # The top-of-symbol check alone can't catch that (it only runs between
+    # symbols), so the job was hard-killed mid-symbol and never advanced. The
+    # in-loop check must bail mid-symbol, still count the symbol, and return.
+    from app.backtesting import batch as batch_mod
+
+    monkeypatch.setattr(
+        batch_mod,
+        "strategy_specs_for",
+        lambda settings, timeframe, requested: [
+            SimpleNamespace(name="s1"),
+            SimpleNamespace(name="s2"),
+            SimpleNamespace(name="s3"),
+        ],
+    )
+    monkeypatch.setattr(batch_mod, "strategy_kwargs_for", lambda settings, spec: {})
+    monkeypatch.setattr(batch_mod, "get_strategy", lambda name, **kw: SimpleNamespace())
+    monkeypatch.setattr(batch_mod, "leakage_tripwire_triggered", lambda summary: (False, ""))
+    # started_at, symbol-top, s1, s2 all under budget; s3 trips.
+    clock = iter([0.0, 0.0, 0.0, 0.0, 100.0])
+    monkeypatch.setattr(batch_mod.time, "monotonic", lambda: next(clock))
+
+    history = SimpleNamespace(copy=lambda: SimpleNamespace())
+    service = BatchBacktestService(
+        settings=SimpleNamespace(primary_market_data_provider="test", max_risk_per_trade_pct=1.0),
+        market_data_engine=SimpleNamespace(get_history=lambda *a, **k: history),
+        backtest_repository=None,
+        run_log_repository=SimpleNamespace(log=lambda *a, **k: None),
+    )
+    monkeypatch.setattr(
+        service,
+        "_run_strategy",
+        lambda **kw: {"strategy_name": "s", "annualized_return_pct": 0.0},
+    )
+
+    summary = service.run(symbols=["ONLY"], timeframes=["1d"], deadline_seconds=50.0)
+
+    assert summary.symbols_evaluated == 1  # the symbol is still counted (cursor advances)
+    assert summary.strategy_runs == 2  # s1, s2 ran; bailed before s3
+    assert "backtest_deadline_exceeded" in summary.errors
+
+
 def test_run_rotates_universe_by_start_offset() -> None:
     seen: list[str] = []
 
