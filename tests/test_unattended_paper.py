@@ -489,3 +489,119 @@ def test_approve_enqueue_execute_executes_clean_candidate(tmp_path):
     assert funnel["executed"] == 1
     assert funnel["exec_blocked_candidates"] == 0
     assert any(event == "paper_auto_execution_processed" for event, _ in logged)
+
+
+def _near_miss_exploration_settings(tmp_path):
+    # The path production most likely runs: paper-scanner exploration with
+    # unattended near-miss auto-execution explicitly opted in. Every gate set to
+    # PASS for a near-miss candidate.
+    return make_settings(
+        tmp_path,
+        execution_mode="paper",
+        enable_real_trading=False,
+        alpaca_expected_account_number="PAPER-1",
+        paper_auto_approve_proposals=True,
+        auto_execution_worker_enabled=True,
+        paper_auto_operation_mode="unattended",
+        paper_scanner_exploration_enabled=True,
+        paper_scanner_bypass_production_approval=True,
+        paper_scanner_allowed_strategies=["all"],
+        paper_exploration_signal_profile="balanced_loose",
+        paper_near_miss_promotion_enabled=True,
+        paper_near_miss_max_score_gap=5.0,
+        # The explicit PAPER-ONLY opt-in that lets a near-miss auto-execute
+        # unattended (bypasses the approval-tier policy + lifecycle bootstrap,
+        # every hard gate still enforced).
+        paper_unattended_near_miss_auto_exec_enabled=True,
+        paper_exploration_require_backtest_validated=False,
+        paper_exploration_require_regular_hours=False,
+        market_universe_symbols=["NVDA"],
+    )
+
+
+def _near_miss_candidate():
+    return SimpleNamespace(
+        symbol="NVDA",
+        strategy_name="momentum_breakout",
+        execution_ready=True,
+        signal_role="entry_long",
+        score=90.0,
+        stop_loss=95.0,
+        take_profit=110.0,
+        metadata={
+            "alert_eligible": True,
+            "signal_classification": "paper_near_miss",
+            "source": "paper_near_miss",
+        },
+    )
+
+
+def _near_miss_service(settings, *, run_logs, notifier, proposals, execution):
+    governance = SimpleNamespace(
+        strategy_production_approved=lambda _strategy: False,
+        strategy_paper_exploration_approved=lambda _strategy: True,
+    )
+    return PaperAutoTradingService(
+        settings=settings,
+        proposal_service=proposals,
+        execution_coordinator=execution,
+        automation=SimpleNamespace(execution_blockers=lambda: []),
+        reconciliation=SimpleNamespace(account_verified=lambda: True),
+        safety_state=SimpleNamespace(
+            is_blacklisted=lambda _symbol: False,
+            strategy_active=lambda _strategy: True,
+        ),
+        executions=None,
+        run_logs=run_logs,
+        notifier=notifier,
+        alpaca_client=SimpleNamespace(
+            is_regular_market_open=lambda: True,
+            is_supported_equity=lambda _symbol: True,
+        ),
+        strategy_governance=governance,
+    )
+
+
+def test_near_miss_exploration_candidate_has_no_blockers(tmp_path):
+    # The production-plausible auto-exec path: with the unattended near-miss
+    # opt-in ON, a near-miss exploration candidate must clear every gate. This
+    # guards the exact config the deployed bot most likely runs.
+    service = _near_miss_service(
+        _near_miss_exploration_settings(tmp_path),
+        run_logs=SimpleNamespace(log=lambda *a, **k: None),
+        notifier=SimpleNamespace(send_text=lambda *a, **k: None),
+        proposals=None,
+        execution=None,
+    )
+
+    assert service.candidate_blockers(_near_miss_candidate()) == []
+
+
+def test_near_miss_exploration_candidate_executes(tmp_path):
+    logged: list[tuple[str, dict]] = []
+    approved = SimpleNamespace(id="prop_1")
+    queued = SimpleNamespace(id="queue_1")
+    processed = SimpleNamespace(
+        id="queue_1", symbol="NVDA", status="submitted", validation_reason=None
+    )
+    proposals = SimpleNamespace(approve_proposal=lambda pid, req: approved)
+    execution = SimpleNamespace(
+        enqueue_approved_proposal=lambda aid: queued,
+        process_queue_item=lambda qid: processed,
+    )
+    service = _near_miss_service(
+        _near_miss_exploration_settings(tmp_path),
+        run_logs=SimpleNamespace(log=lambda event, payload: logged.append((event, payload))),
+        notifier=SimpleNamespace(send_text=lambda *a, **k: None),
+        proposals=proposals,
+        execution=execution,
+    )
+    proposal = SimpleNamespace(id="prop_1", order=SimpleNamespace(symbol="NVDA"))
+    funnel: Counter[str] = Counter()
+
+    result = service.approve_enqueue_execute(proposal, _near_miss_candidate(), funnel=funnel)
+
+    assert result is processed
+    assert funnel["executed"] == 1
+    assert funnel["exec_blocked_candidates"] == 0
+    assert any(event == "paper_auto_execution_processed" for event, _ in logged)
