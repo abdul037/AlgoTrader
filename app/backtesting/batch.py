@@ -15,6 +15,7 @@ that still want an in-sample pass can set ``walk_forward=False``.
 
 from __future__ import annotations
 
+import time
 from math import isfinite
 from typing import Any
 
@@ -57,16 +58,39 @@ class BatchBacktestService:
         limit: int | None = None,
         force_refresh: bool = False,
         walk_forward: bool = True,
+        deadline_seconds: float | None = None,
+        start_offset: int = 0,
     ) -> BatchBacktestSummary:
         universe = [symbol.upper() for symbol in (symbols or resolve_universe(self.settings, limit=limit))]
+        # Rotate the start so successive scheduled runs sweep the whole universe
+        # rather than always re-backtesting the same leading symbols. The runner
+        # bounds each pass to ``deadline_seconds`` (a full walk-forward pass over
+        # the universe overruns the scheduler's hard job cap and would be killed).
+        if start_offset and universe:
+            offset = start_offset % len(universe)
+            universe = universe[offset:] + universe[:offset]
         scan_timeframes = [timeframe.lower() for timeframe in (timeframes or ["1d"])]
         requested = set(strategy_names or [])
         errors: list[str] = []
         results: list[dict[str, Any]] = []
         tripwires: list[str] = []
         run_count = 0
+        started_at = time.monotonic()
+        symbols_covered = 0
+        truncated = False
 
         for symbol in universe:
+            if (
+                deadline_seconds is not None
+                and deadline_seconds > 0
+                and (time.monotonic() - started_at) >= deadline_seconds
+            ):
+                truncated = True
+                errors.append("backtest_deadline_exceeded")
+                break
+            # Count the symbol as covered as soon as it is attempted so the
+            # rotation cursor always advances past a slow or failing symbol.
+            symbols_covered += 1
             for timeframe in scan_timeframes:
                 try:
                     history = self.market_data.get_history(
@@ -121,7 +145,7 @@ class BatchBacktestService:
         aggregate = self._aggregate_metrics(results)
         summary = BatchBacktestSummary(
             generated_at=utc_now().isoformat(),
-            symbols_evaluated=len(universe),
+            symbols_evaluated=symbols_covered,
             strategy_runs=run_count,
             timeframe=",".join(scan_timeframes),
             provider=provider or self.settings.primary_market_data_provider,
@@ -133,7 +157,10 @@ class BatchBacktestService:
         self.logs.log(
             "batch_backtest_run",
             {
-                "symbols": len(universe),
+                "universe": len(universe),
+                "symbols_covered": symbols_covered,
+                "start_offset": start_offset,
+                "truncated": truncated,
                 "timeframes": scan_timeframes,
                 "strategy_runs": run_count,
                 "results": len(results),

@@ -601,11 +601,32 @@ def create_app(
             and app.state.batch_backtest_service is not None
         ):
             def _refresh_backtest_gate() -> None:
-                app.state.batch_backtest_service.run(
+                # A full-universe walk-forward pass overruns the scheduler's hard
+                # job cap and was killed every cycle. Bound each run to a soft
+                # deadline and rotate a persisted cursor so successive runs sweep
+                # the whole universe instead of only its leading symbols.
+                from app.universe import resolve_universe
+
+                limit = app_settings.backtest_scheduler_symbol_limit or None
+                universe_size = len(resolve_universe(app_settings, limit=limit))
+                cursor_key = "backtest_gate_refresh:cursor"
+                try:
+                    cursor = int(runtime_state_repository.get(cursor_key) or "0")
+                except (TypeError, ValueError):
+                    cursor = 0
+                summary = app.state.batch_backtest_service.run(
                     timeframes=list(app_settings.backtest_scheduler_timeframes) or ["1d"],
-                    limit=(app_settings.backtest_scheduler_symbol_limit or None),
+                    limit=limit,
                     walk_forward=True,
+                    deadline_seconds=max(
+                        float(app_settings.backtest_scheduler_deadline_seconds), 1.0
+                    ),
+                    start_offset=cursor,
                 )
+                covered = int(getattr(summary, "symbols_evaluated", 0) or 0)
+                if universe_size > 0:
+                    next_cursor = (cursor + max(covered, 1)) % universe_size
+                    runtime_state_repository.set(cursor_key, str(next_cursor))
 
             jobs.append(
                 ScheduledJob(

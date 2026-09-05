@@ -197,6 +197,13 @@ class AppSettings(BaseSettings):
     backtest_scheduler_interval_seconds: int = 21600
     backtest_scheduler_timeframes: list[str] = Field(default_factory=lambda: ["1d"])
     backtest_scheduler_symbol_limit: int = 0
+    # Soft per-run wall-clock budget for the batch backtester. A full-universe
+    # walk-forward pass cannot finish inside the scheduler's hard job cap
+    # (scheduler_job_timeout_seconds, default 240s), so without this the job was
+    # killed every cycle and never covered the whole universe. The runner now
+    # stops cleanly at this budget and a persisted cursor rotates the start
+    # offset, so successive runs sweep the universe. Keep it under the hard cap.
+    backtest_scheduler_deadline_seconds: float = 180.0
     workflow_scan_default_universe_limit: int = 10
     schedule_timezone: str = "America/New_York"
     premarket_scan_enabled: bool = True
