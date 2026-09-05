@@ -724,6 +724,18 @@ def create_app(
         logger.info(
             "Scheduler worker started with %d jobs", len(worker.jobs)
         )
+        # Record the effective (non-secret) auto-execution policy so the deployed
+        # config is always observable from run_logs — the app URL, raw env, and
+        # control endpoints can all be unreachable. A logging hiccup must never
+        # block startup.
+        try:
+            from app.automation.policy_snapshot import effective_execution_policy
+
+            run_log_repository.log(
+                "execution_policy_effective", effective_execution_policy(app_settings)
+            )
+        except Exception as exc:  # noqa: BLE001 - observability must not break boot
+            logger.exception("Failed to log effective execution policy: %s", exc)
 
         # Real-time order fill/exit stream (optional; sweep is the backstop).
         if (
