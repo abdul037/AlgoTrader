@@ -26,6 +26,14 @@ These are permanent guardrails, not goals:
 
 ## Current status (as of 2026-09-07)
 
+- **Review-team bots wired on (2026-09-07).** The QA/Strategy/Trader/PM review workflow
+  had been silently skipping for weeks due to a chain of three issues, all now fixed:
+  (1) no open PR (the workflow only triggers on `pull_request`) — opened PR #31;
+  (2) the repo secret was named `CLAUDE_CODE_AUTH_TOKEN` but the workflow referenced
+  `CLAUDE_CODE_OAUTH_TOKEN` — pointed the workflow at the real name; (3) the token value
+  had an embedded line break (110 chars on 2 lines) so the Authorization header was
+  rejected — operator re-pasted it as a single line. Advisory only; never blocks a merge.
+
 - **OUTAGE + RECOVERY (Sat 2026-09-05 20:42 → Mon 2026-09-07 ~16:50 UTC).** The bot went
   silent for ~2 days and missed Monday's open. Post-mortem:
   1. **DB pool wedge (root cause).** A Supabase session-pooler (port 5432) connectivity
