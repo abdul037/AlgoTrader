@@ -62,9 +62,10 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_AUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          show_full_output: "true"     # TEMP: verifying re-pasted token; remove once a review posts
           use_sticky_comment: "true"   # one combined comment, updated on each push
-          claude_args: "--max-turns 30"
+          # 4 personas × (read persona + diff + review) + synthesis + post is
+          # turn-hungry on a multi-commit PR; 30 ran out before posting.
+          claude_args: "--max-turns 60"
           prompt: |
             You are running the **AlgoTrader PR Review Team** on this pull request.
             The repository is an autonomous PAPER-trading bot (Alpaca paper account,
