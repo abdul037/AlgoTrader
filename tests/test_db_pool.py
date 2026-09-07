@@ -19,6 +19,27 @@ def test_postgres_engine_pool_is_bounded_by_default(tmp_path) -> None:
     assert kwargs["pool_timeout"] >= 1
 
 
+def test_postgres_engine_bounds_statements_and_keepalives(tmp_path) -> None:
+    # A dropped Supabase pooler connection must not hang a query forever (which
+    # exhausted the pool and wedged the bot for ~2 days). Every statement is
+    # bounded server-side and TCP keepalives detect dead sockets.
+    kwargs = _postgres_engine_kwargs(make_settings(tmp_path))
+    connect_args = kwargs["connect_args"]
+
+    assert "statement_timeout=30000" in connect_args["options"]  # 30s default, in ms
+    assert connect_args["keepalives"] == 1
+    assert connect_args["connect_timeout"] >= 1
+
+
+def test_postgres_statement_timeout_is_env_tunable(tmp_path) -> None:
+    settings = make_settings(tmp_path)
+    settings.db_statement_timeout_seconds = 45
+
+    connect_args = _postgres_engine_kwargs(settings)["connect_args"]
+
+    assert "statement_timeout=45000" in connect_args["options"]
+
+
 def test_postgres_engine_pool_is_env_tunable(tmp_path) -> None:
     settings = make_settings(tmp_path)
     settings.db_pool_size = 8

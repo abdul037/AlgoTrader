@@ -65,6 +65,12 @@ class AppSettings(BaseSettings):
     db_pool_size: int = 3
     db_pool_max_overflow: int = 2
     db_pool_recycle_seconds: int = 600
+    # Server-side per-statement timeout (seconds). A dropped Supabase pooler
+    # connection could otherwise hang a query forever, holding a pooled
+    # connection until all 5 exhaust and every scheduler job fails on
+    # "QueuePool limit reached" — which wedged the bot for ~2 days. Bounding
+    # every statement guarantees a stuck connection returns to the pool.
+    db_statement_timeout_seconds: int = 30
     db_pool_timeout_seconds: int = 20
     # Startup retries the first DB connection so a transiently exhausted pool (e.g.
     # rolling-deploy overlap) doesn't hard-crash the boot.
@@ -197,6 +203,13 @@ class AppSettings(BaseSettings):
     backtest_scheduler_interval_seconds: int = 21600
     backtest_scheduler_timeframes: list[str] = Field(default_factory=lambda: ["1d"])
     backtest_scheduler_symbol_limit: int = 0
+    # Soft per-run wall-clock budget for the batch backtester. A full-universe
+    # walk-forward pass cannot finish inside the scheduler's hard job cap
+    # (scheduler_job_timeout_seconds, default 240s), so without this the job was
+    # killed every cycle and never covered the whole universe. The runner now
+    # stops cleanly at this budget and a persisted cursor rotates the start
+    # offset, so successive runs sweep the universe. Keep it under the hard cap.
+    backtest_scheduler_deadline_seconds: float = 180.0
     workflow_scan_default_universe_limit: int = 10
     schedule_timezone: str = "America/New_York"
     premarket_scan_enabled: bool = True

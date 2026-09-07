@@ -24,6 +24,43 @@ These are permanent guardrails, not goals:
 
 ---
 
+## Current status (as of 2026-09-07)
+
+- **Review-team bots wired on (2026-09-07).** The QA/Strategy/Trader/PM review workflow
+  had been silently skipping for weeks due to a chain of three issues, all now fixed:
+  (1) no open PR (the workflow only triggers on `pull_request`) — opened PR #31;
+  (2) the repo secret was named `CLAUDE_CODE_AUTH_TOKEN` but the workflow referenced
+  `CLAUDE_CODE_OAUTH_TOKEN` — pointed the workflow at the real name; (3) the token value
+  had an embedded line break (110 chars on 2 lines) so the Authorization header was
+  rejected — operator re-pasted it as a single line. Advisory only; never blocks a merge.
+
+- **OUTAGE + RECOVERY (Sat 2026-09-05 20:42 → Mon 2026-09-07 ~16:50 UTC).** The bot went
+  silent for ~2 days and missed Monday's open. Post-mortem:
+  1. **DB pool wedge (root cause).** A Supabase session-pooler (port 5432) connectivity
+     blip Sat ~20:00 left all 5 SQLAlchemy connections stuck checked-out (no statement
+     timeout, no TCP keepalives → they hung forever). The pool exhausted and every
+     scheduler job failed on `QueuePool limit of size 3 overflow 2 reached`. The
+     self-heal watchdog couldn't help — it restarts the worker thread, not the
+     process-level pool. **Fixed (commit `f6d0d08`):** `connect_args` add a server-side
+     `statement_timeout` (30s, env `db_statement_timeout_seconds`) + TCP keepalives, so a
+     stuck connection always errors out and returns to the pool. Verified healthy in
+     prod (0 QueuePool errors after recovery).
+  2. **Railway did not auto-restart (made the outage 2 days instead of minutes).** The
+     hardened deploy ran healthy 10:06–10:44, then took a Railway SIGTERM (graceful
+     container reclaim) with no replacement. The service had **no restart policy** (so it
+     defaulted to `ON_FAILURE`, which ignores a clean exit) and **no healthcheck**.
+     **Fixed via the Railway connector:** restart policy → `ALWAYS` (max 10 retries) +
+     `/health/ready` healthcheck (300s). This is Railway config, not code — recorded here
+     because it lives only in this ledger.
+- **Bot RECOVERED and healthy (2026-09-07 16:50 UTC).** Redeploy of the hardened image
+  booted clean; 0 scheduler errors, events flowing, paper-safe (`enable_real_trading:
+  false`, `execution_mode: paper`), near-miss auto-exec on. **0 trades today** — the bot
+  was down for the whole morning session; watching for the first trade into the afternoon.
+- **Operator follow-up still open:** point `DATABASE_URL` at the Supabase **transaction
+  pooler (port 6543)** (same string, `:5432`→`:6543`). The statement-timeout fix stops the
+  pool from wedging; 6543 removes the failure class entirely. Needs the DB password
+  (redacted from the agent), so operator-only.
+
 ## Current status (as of 2026-09-05)
 
 - **The bot is HEALTHY and running the fixed code.** As of 2026-09-05 10:25 UTC the
@@ -40,6 +77,36 @@ These are permanent guardrails, not goals:
      even boot, so the fix couldn't ship. Fixed by bounding the SQLAlchemy pool (#28) +
      retrying the first connection at startup (#29), and cleared by an operator Supabase
      restart on 2026-09-05.
+- **Third 240s timeout found & fixed (2026-09-05 ~12:15 UTC).** The 10:57 scan-health
+  check-in surfaced a *different* job hitting the 240s cap: `backtest_gate_refresh`
+  walk-forward-backtests the full 200-symbol universe every 6h with no time bound, so
+  it was killed every run and only ever covered the leading symbols. Fixed on the branch
+  (commit `8d1b4e5`): the runner now stops cleanly at a soft `deadline_seconds` (180s,
+  under the hard cap) and a persisted cursor rotates the start offset so successive runs
+  sweep the whole universe. Not a Monday blocker (unattended paper exploration bypasses
+  the weak-backtest watchlist downgrade), but it stops the recurring timeout, frees
+  ~240s of worker time per cycle, and lets the quality gate finally populate.
+- **Config verified live + near-miss auto-exec ENABLED (2026-09-05 ~12:50 UTC).** The
+  new `execution_policy_effective` startup log (queryable from run_logs) revealed the
+  deployed policy auto-executed **strict-valid only** — near-miss candidates (the bulk
+  of exploration output) were proposed but held for human approval, so the first
+  autonomous trade might never have fired. With operator sign-off, set
+  `PAPER_UNATTENDED_NEAR_MISS_AUTO_EXEC_ENABLED=true` (confirmed `true` in the policy
+  log after redeploy). Paper-only intact; every HARD gate still enforced. Open flag:
+  `paper_exploration_auto_execution_min_score=0.15` deployed vs code default `60.0` —
+  likely a typo; with near-miss auto-exec on it effectively disables the score floor
+  for near-miss candidates (pending operator confirmation of intent).
+- **Backtest deadline fix, round 2 — the real bug.** The first deadline fix only checked
+  the budget at the *top of the symbol loop*, but a single symbol's full 20-strategy
+  walk-forward exceeds even the 240s hard cap, so the job was still hard-killed
+  mid-symbol — and because a hard kill never returns, the rotation cursor never advanced:
+  the bot was stuck re-killing the same slow symbol every cycle (observed 12:59 UTC).
+  Fixed by also checking the deadline *inside* the strategy-spec loop, so it bails
+  mid-symbol, returns cleanly, and the cursor advances. NOT Monday-blocking (exploration
+  candidates don't require backtest validation). Known limitation: one symbol still eats
+  the whole ~180s budget (≈1 symbol/run), so the gate populates slowly — the real
+  throughput fix (scope to active strategies / traded universe) is a careful post-Monday
+  change.
 - **Still UNVERIFIED — the first autonomous paper trade.** Infra is healthy but no trade
   has fired yet (weekend; market closed). The **Monday 2026-09-07 13:40 UTC** watch is
   the real test: does a promoted candidate execute, or does the (now-populating) funnel
