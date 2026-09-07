@@ -24,6 +24,35 @@ These are permanent guardrails, not goals:
 
 ---
 
+## Current status (as of 2026-09-07)
+
+- **OUTAGE + RECOVERY (Sat 2026-09-05 20:42 → Mon 2026-09-07 ~16:50 UTC).** The bot went
+  silent for ~2 days and missed Monday's open. Post-mortem:
+  1. **DB pool wedge (root cause).** A Supabase session-pooler (port 5432) connectivity
+     blip Sat ~20:00 left all 5 SQLAlchemy connections stuck checked-out (no statement
+     timeout, no TCP keepalives → they hung forever). The pool exhausted and every
+     scheduler job failed on `QueuePool limit of size 3 overflow 2 reached`. The
+     self-heal watchdog couldn't help — it restarts the worker thread, not the
+     process-level pool. **Fixed (commit `f6d0d08`):** `connect_args` add a server-side
+     `statement_timeout` (30s, env `db_statement_timeout_seconds`) + TCP keepalives, so a
+     stuck connection always errors out and returns to the pool. Verified healthy in
+     prod (0 QueuePool errors after recovery).
+  2. **Railway did not auto-restart (made the outage 2 days instead of minutes).** The
+     hardened deploy ran healthy 10:06–10:44, then took a Railway SIGTERM (graceful
+     container reclaim) with no replacement. The service had **no restart policy** (so it
+     defaulted to `ON_FAILURE`, which ignores a clean exit) and **no healthcheck**.
+     **Fixed via the Railway connector:** restart policy → `ALWAYS` (max 10 retries) +
+     `/health/ready` healthcheck (300s). This is Railway config, not code — recorded here
+     because it lives only in this ledger.
+- **Bot RECOVERED and healthy (2026-09-07 16:50 UTC).** Redeploy of the hardened image
+  booted clean; 0 scheduler errors, events flowing, paper-safe (`enable_real_trading:
+  false`, `execution_mode: paper`), near-miss auto-exec on. **0 trades today** — the bot
+  was down for the whole morning session; watching for the first trade into the afternoon.
+- **Operator follow-up still open:** point `DATABASE_URL` at the Supabase **transaction
+  pooler (port 6543)** (same string, `:5432`→`:6543`). The statement-timeout fix stops the
+  pool from wedging; 6543 removes the failure class entirely. Needs the DB password
+  (redacted from the agent), so operator-only.
+
 ## Current status (as of 2026-09-05)
 
 - **The bot is HEALTHY and running the fixed code.** As of 2026-09-05 10:25 UTC the
