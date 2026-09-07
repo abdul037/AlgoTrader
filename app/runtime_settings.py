@@ -65,6 +65,12 @@ class AppSettings(BaseSettings):
     db_pool_size: int = 3
     db_pool_max_overflow: int = 2
     db_pool_recycle_seconds: int = 600
+    # Server-side per-statement timeout (seconds). A dropped Supabase pooler
+    # connection could otherwise hang a query forever, holding a pooled
+    # connection until all 5 exhaust and every scheduler job fails on
+    # "QueuePool limit reached" — which wedged the bot for ~2 days. Bounding
+    # every statement guarantees a stuck connection returns to the pool.
+    db_statement_timeout_seconds: int = 30
     db_pool_timeout_seconds: int = 20
     # Startup retries the first DB connection so a transiently exhausted pool (e.g.
     # rolling-deploy overlap) doesn't hard-crash the boot.

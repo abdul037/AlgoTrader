@@ -831,6 +831,9 @@ def _postgres_engine_kwargs(settings: AppSettings) -> dict[str, Any]:
     during a rolling deploy fit a limited Supabase connection budget — the previous
     ~15-conn default exhausted it and blocked deploys with ECHECKOUTTIMEOUT."""
 
+    statement_timeout_ms = (
+        max(int(getattr(settings, "db_statement_timeout_seconds", 30) or 30), 1) * 1000
+    )
     return {
         "pool_pre_ping": True,
         "pool_size": max(int(getattr(settings, "db_pool_size", 3) or 3), 1),
@@ -838,6 +841,20 @@ def _postgres_engine_kwargs(settings: AppSettings) -> dict[str, Any]:
         "pool_recycle": max(int(getattr(settings, "db_pool_recycle_seconds", 600) or 600), 60),
         "pool_timeout": max(int(getattr(settings, "db_pool_timeout_seconds", 20) or 20), 1),
         "future": True,
+        # Resilience against a dropped Supabase pooler connection wedging the pool:
+        # a server-side statement_timeout bounds any single query, and TCP
+        # keepalives detect a dead socket promptly. Together they guarantee a
+        # stuck connection eventually errors and returns to the pool instead of
+        # being held forever (which exhausted all 5 connections and stalled every
+        # scheduler job). These are libpq params, honoured by psycopg2 and psycopg3.
+        "connect_args": {
+            "connect_timeout": 10,
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 3,
+            "options": f"-c statement_timeout={statement_timeout_ms}",
+        },
     }
 
 
