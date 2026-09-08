@@ -67,6 +67,12 @@ without explicit operator sign-off recorded here.
   deployment `ac733f02` runs `c6cd480`, functionally identical to head for the
   app (differs only in CI workflow + a test ceiling). Bot healthy through it.
 - **18:32** Re-armed pre-close check routine for 19:30 UTC.
+- **18:34** Operator sign-off: `MAX_TRADE_AMOUNT_USD` raised 500 → 1000 (Railway var;
+  redeploy triggered — verified below). Caveat found while applying it: the broker
+  step sizes as `floor(min(request_amount, max_cap) / price)` and the request
+  amount is `DEFAULT_TRADE_AMOUNT_USD=500`, so a $501 AMD share still rounds to 0
+  shares. The cap is no longer binding; the default request amount is. Raising
+  the default to 1000 doubles every trade's size — left for operator decision.
 - **13:03** Created this file at operator request ("update all the actions you
   are doing"): chose a repo Markdown ledger over Notion because it is
   version-controlled, reviewed by the PR bots, and lives with the code.
