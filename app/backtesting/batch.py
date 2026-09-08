@@ -19,6 +19,8 @@ import time
 from math import isfinite
 from typing import Any
 
+import pandas as pd
+
 from app.backtesting.engine import BacktestEngine, EngineConfig
 from app.backtesting.metrics import bars_per_year_for, leakage_tripwire_triggered
 from app.backtesting.strategy_selection import strategy_kwargs_for, strategy_specs_for
@@ -29,6 +31,23 @@ from app.strategies import get_strategy
 from app.universe import resolve_universe
 from app.utils.ids import generate_id
 from app.utils.time import utc_now
+
+
+def _with_warmup(window: Any) -> pd.DataFrame:
+    """Train bars + test bars, so the strategy has indicator context in the test window.
+
+    The engine is told (via ``trade_window_start``) to evaluate only from the
+    test start, so the train bars never contribute signals, trades or equity
+    points — they are context, exactly as the live scanner sees history before
+    today's bar. Without this every fold was ~10 daily bars and no strategy
+    could ever warm up, so the gate recorded 0 trades in 1.2M runs.
+    """
+
+    train_df = getattr(window, "train_df", None)
+    test_df = window.test_df
+    if train_df is None or len(train_df) == 0:
+        return test_df
+    return pd.concat([train_df, test_df], ignore_index=True)
 
 
 class BatchBacktestService:
@@ -230,11 +249,15 @@ class BatchBacktestService:
         per_fold_trades: list[list[dict]] = []
         per_fold_metrics: list[dict] = []
         for window in splitter.split(history):
+            # Feed the train bars as indicator warm-up but evaluate only the
+            # test window: a 14-day fold alone (~10 daily bars) is below every
+            # strategy's warm-up, which is why 1.2M fold runs produced 0 trades.
             fold_result = engine.run(
                 symbol=symbol,
                 strategy=strategy,
-                data=window.test_df,
+                data=_with_warmup(window),
                 file_path=f"{file_path}:fold:{window.test_start.isoformat()}",
+                trade_window_start=window.test_start,
             )
             per_fold_trades.append(fold_result.trades)
             per_fold_metrics.append(fold_result.metrics)
@@ -289,6 +312,10 @@ class BatchBacktestService:
             **metrics,
         }
 
+    @staticmethod
+    def _fold_frame_with_warmup(window: Any) -> Any:
+        return _with_warmup(window)
+
     def _evaluate_holdout(
         self,
         engine: BacktestEngine,
@@ -313,8 +340,9 @@ class BatchBacktestService:
             result = holdout_engine.run(
                 symbol=symbol,
                 strategy=strategy,
-                data=window.test_df,
+                data=_with_warmup(window),
                 file_path=f"{file_path}:holdout",
+                trade_window_start=window.test_start,
             )
         except Exception:
             return {"holdout_evaluated": False}

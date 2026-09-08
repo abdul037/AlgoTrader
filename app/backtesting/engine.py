@@ -112,10 +112,24 @@ class BacktestEngine:
         file_path: str,
         initial_cash: float | None = None,
         config: EngineConfig | None = None,
+        trade_window_start: Any | None = None,
     ) -> BacktestResult:
+        """Run ``strategy`` over ``data``.
+
+        ``trade_window_start`` lets a caller pass warm-up history (bars the
+        strategy's indicators need) without evaluating it: bars before that
+        timestamp are fed to the strategy as context only — no signals, no
+        entries, no equity points — so metrics and ``bars_evaluated`` describe
+        just the window from ``trade_window_start`` on. Walk-forward folds rely
+        on this: a 14-day test fold on its own is ~10 daily bars, which is below
+        every strategy's indicator warm-up, so without warm-up context no fold
+        could ever produce a trade.
+        """
+
         run_config = config or self.config
         if initial_cash is not None:
             run_config = _override_cash(run_config, initial_cash)
+        window_start = _ensure_utc(pd.Timestamp(trade_window_start)) if trade_window_start is not None else None
 
         started_at = utc_now().isoformat()
         normalized = _normalize_data(data)
@@ -135,6 +149,10 @@ class BacktestEngine:
         for index in range(total_bars):
             bar = normalized.iloc[index]
             bar_time = _ensure_utc(bar["timestamp"])
+            if window_start is not None and bar_time < window_start:
+                # Warm-up context only: visible to the strategy through
+                # ``window`` on later bars, never evaluated itself.
+                continue
             window = normalized.iloc[: index + 1]
 
             # Generate the signal from data available THROUGH this bar's close.

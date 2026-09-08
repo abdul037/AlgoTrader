@@ -155,6 +155,17 @@ without explicit operator sign-off recorded here.
   stored in proposal metadata. Startup policy log now includes the full risk profile.
   Plan steps still to do: fix the backtester (#63), 5m/15m timeframes + scan cadence
   fix, auto-demote after 15 trades, daily EOD report.
+- **19:36 — VERIFIED** the sizing deploy (`866f9413`) from its startup log: risk 1%/trade,
+  risk-based sizing on, daily loss $3,000, weekly $8,000, cooldown after 4 losses,
+  governor on (floor 0.5), 8 positions, 15 trades/day, paper-only.
+- **19:45** Shipped the backtester fix (Task #63). Root cause: each walk-forward fold ran
+  the engine on its ~10-bar test slice alone, below every strategy's indicator warm-up.
+  Fix: the engine gained `trade_window_start` (warm-up bars are context only — no
+  signals, entries or equity points), and folds/holdout now pass train+test bars with
+  the test start as the window. Regression test proves the same synthetic folds go from
+  0 trades (old) to >0 (new) with every entry inside the test window. 648 tests pass.
+  From the next `backtest_gate_refresh` run the gate starts filling with real
+  out-of-sample numbers per strategy × symbol.
 - **13:03** Created this file at operator request ("update all the actions you
   are doing"): chose a repo Markdown ledger over Notion because it is
   version-controlled, reviewed by the PR bots, and lives with the code.
