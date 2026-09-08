@@ -92,6 +92,27 @@ without explicit operator sign-off recorded here.
   `max_open_positions=3`, `max_trades_per_day=6`, `execution_mode=paper`,
   `enable_real_trading=false`. GOOGL position and bracket unaffected (held at the
   broker). Notion mirror updated with the same entry.
+- **18:50** Found the P&L ledger gap: with `paper_broker=alpaca` the coordinator writes
+  executions + broker order snapshots but never `paper_positions`/`paper_trades`, so
+  the equity curve, EOD digest and strategy scorecard were blind to real broker-backed
+  paper trades. Shipped `d8623cc` (`app/paper/broker_ledger.py`): a filled parent
+  bracket opens a ledger position from the broker fill; a filled stop/target leg (or
+  matched close order) closes it into a paper trade with realized P&L; broker-backed
+  rows are only marked-to-market, never closed by the simulator. Idempotent, paper-only.
+  Also fixed `test_railway_deployment` for the version-controlled watch patterns.
+- **18:58 — VERIFIED in prod** (deployment `03df1d2b`): first refresh wrote GOOGL as an
+  open ledger position (entry $338.75, marked $337.86, unrealized −$0.89, stop/target
+  from the bracket) and backfilled two old supervised Alpaca tests (AAPL Jul 16 −$1.49,
+  NVDA Jun 22 −$0.12) as closed trades. Task #62 complete.
+- **19:00** Root cause of "why only GOOGL": 17 of 19 promoted candidates failed at the
+  proposal step with `Instrument X is not in the allowed instrument list` (INTC ×6,
+  META ×3, AVGO ×2, QQQ ×2, AMZN, TSLA, NFLX, CSCO). `ALLOWED_INSTRUMENTS` was an old
+  whitelist (default `NVDA,GOOG,GOOGL,AMD,MU,GOLD`) never widened when the universe was
+  trimmed to 25 names — the scanner and the proposal gate disagreed. GOOGL and AMD
+  only got through because they were on the old list.
+- **19:02** Operator sign-off ("set the allowed instruments to match the universe"):
+  `ALLOWED_INSTRUMENTS` set to the exact 25-symbol `MARKET_UNIVERSE_SYMBOLS` value.
+  Redeploy verification recorded below.
 - **13:03** Created this file at operator request ("update all the actions you
   are doing"): chose a repo Markdown ledger over Notion because it is
   version-controlled, reviewed by the PR bots, and lives with the code.

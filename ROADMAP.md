@@ -33,6 +33,13 @@ These are permanent guardrails, not goals:
   reconciliation. Stage 1 (live track record) has begun. Also surfaced: the $500
   per-trade cap blocks any stock over $500/share (AMD attempt failed
   `one_share_exceeds_max_trade_amount`) — operator decision pending. Ledger: `OPS_LOG.md`.
+- **Same day, two more funnel fixes (2026-09-08 pm).** (1) Per-trade sizing raised to
+  $1,000 (default + cap) so >$500/share names can trade as one share. (2) The internal
+  P&L ledger now mirrors real Alpaca-paper fills (`app/paper/broker_ledger.py`), so
+  equity curve / EOD digest / scorecard see broker-backed trades; verified with GOOGL.
+  (3) `ALLOWED_INSTRUMENTS` aligned to the 25-name universe — it had silently rejected
+  17 of 19 promoted candidates at the proposal step. Expect materially more paper
+  trades from Wed 2026-09-09.
 - **Review-team bots wired on (2026-09-07).** The QA/Strategy/Trader/PM review workflow
   had been silently skipping for weeks due to a chain of three issues, all now fixed:
   (1) no open PR (the workflow only triggers on `pull_request`) — opened PR #31;
