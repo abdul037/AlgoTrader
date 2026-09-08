@@ -46,6 +46,27 @@ without explicit operator sign-off recorded here.
 - **13:02** Railway `watchPatterns` set to `["/**", "!/**/*.md", "!/docs/**"]`
   so that log/roadmap-only pushes no longer restart the bot. Verified after this
   push: no new deployment should appear.
+- **15:02** First auto-execution attempt: AMD `anchored_vwap_pullback_continuation`,
+  $500 notional. **Blocked at the broker step:** `one_share_exceeds_max_trade_amount`
+  (AMD ≈ $501/share > `MAX_TRADE_AMOUNT_USD=500`). Not a gate; a sizing cap.
+  Operator decision: raise the per-trade cap or allow fractional shares.
+- **17:00:50 — FIRST AUTONOMOUS PAPER TRADE.** GOOGL buy 1 share @ $338.75,
+  strategy `opening_range_breakout_retest` (supervised weak-valid path), $500
+  notional request, Alpaca paper bracket order `c3bd9790…`: parent filled, stop
+  leg $333.24 (held), take-profit leg $349.39 (limit, new). Quote verified live
+  (Alpaca IEX), bars fresh. Alpaca reconciliation clean: `positions_seen: 1`,
+  `orders_seen: 28`, equity $100,064.13 (baseline $100,064.91), cash $99,726.16.
+  Task #56 (autonomous paper-trade fluency) marked complete.
+- **13:30–18:30** Live-session stats: 690 scan decisions, 51 near-miss promotion
+  attempts, 19 promoted to candidate, 2 reached execution (1 filled, 1 blocked
+  by the sizing cap). `workflow_cadence` hit the 240s job timeout 16 times
+  (~every 20 min) — the scan still completes enough to trade, but this is the
+  recurring item the operator said to leave for now.
+- **13:10** Two Railway `redeploy`s of older snapshots appeared (commits
+  `c6cd480` and `0d412fb`), not triggered by this session; the surviving
+  deployment `ac733f02` runs `c6cd480`, functionally identical to head for the
+  app (differs only in CI workflow + a test ceiling). Bot healthy through it.
+- **18:32** Re-armed pre-close check routine for 19:30 UTC.
 - **13:03** Created this file at operator request ("update all the actions you
   are doing"): chose a repo Markdown ledger over Notion because it is
   version-controlled, reviewed by the PR bots, and lives with the code.

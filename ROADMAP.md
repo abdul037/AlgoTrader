@@ -26,6 +26,13 @@ These are permanent guardrails, not goals:
 
 ## Current status (as of 2026-09-08)
 
+- **🎉 FIRST AUTONOMOUS PAPER TRADE (2026-09-08 17:00:50 UTC).** GOOGL buy 1 @ $338.75,
+  `opening_range_breakout_retest`, Alpaca paper bracket (stop $333.24 / target $349.39),
+  reconciliation clean. The unattended pipeline is end-to-end proven: scan → near-miss /
+  weak-valid promotion → auto-approval → execution queue → broker bracket → fill →
+  reconciliation. Stage 1 (live track record) has begun. Also surfaced: the $500
+  per-trade cap blocks any stock over $500/share (AMD attempt failed
+  `one_share_exceeds_max_trade_amount`) — operator decision pending. Ledger: `OPS_LOG.md`.
 - **Review-team bots wired on (2026-09-07).** The QA/Strategy/Trader/PM review workflow
   had been silently skipping for weeks due to a chain of three issues, all now fixed:
   (1) no open PR (the workflow only triggers on `pull_request`) — opened PR #31;
