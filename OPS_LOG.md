@@ -137,6 +137,24 @@ without explicit operator sign-off recorded here.
   for weeks. Task #63 opened: fix fold sizing, assert >0 trades on a trending fixture,
   re-run for the 25-name universe. This is the top priority — nothing about expected
   daily return can be estimated until it is fixed.
+- **19:25 — OPERATOR APPROVED the aggressive paper plan + risk settings.** Applied via
+  Railway (deployment `b9b8de52`, SUCCESS 19:31): `MAX_RISK_PER_TRADE_PCT=1.0`,
+  `DEFAULT_TRADE_AMOUNT_USD=MAX_TRADE_AMOUNT_USD=12500` (per-position notional cap =
+  12.5% of equity, so 8 positions ≤ 100% gross, no margin), `MAX_OPEN_POSITIONS=8`,
+  `MAX_TRADES_PER_DAY=15`, `MAX_DAILY_LOSS_USD=3000` (3% hard stop, counts open losses),
+  `MAX_WEEKLY_LOSS_USD=8000`, `MAX_CONSECUTIVE_LOSSES_BEFORE_COOLDOWN=4` (was 2, which
+  would have halted most days by the second loss), drawdown governor ON (soft 2.5%,
+  hard 5%, floor 0.5 = size halves), `AUTO_PROPOSE_RISK_BASED_SIZING=true`.
+  Hard gates (spread, reward:risk, bracket, rvol, hours, blacklist) unchanged.
+- **19:33** Shipped risk-based sizing for the unattended path (`app/risk/proposal_sizing.py`,
+  wired in `auto_propose_candidates`). Finding: auto-proposals always passed a flat
+  `default_trade_amount_usd`, so `max_risk_per_trade_pct` never applied to any
+  autonomous trade — the $1,000 GOOGL trade risked ~$5. Now: notional = 1% of
+  reconciled equity ÷ stop distance, capped at $12,500; falls back to the flat default
+  if entry/stop/equity are missing (never blocks a proposal); the sizing record is
+  stored in proposal metadata. Startup policy log now includes the full risk profile.
+  Plan steps still to do: fix the backtester (#63), 5m/15m timeframes + scan cadence
+  fix, auto-demote after 15 trades, daily EOD report.
 - **13:03** Created this file at operator request ("update all the actions you
   are doing"): chose a repo Markdown ledger over Notion because it is
   version-controlled, reviewed by the PR bots, and lives with the code.

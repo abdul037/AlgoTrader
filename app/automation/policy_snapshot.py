@@ -69,6 +69,18 @@ def effective_execution_policy(settings: Any) -> dict[str, Any]:
         "max_trade_amount_usd": float(_get("max_trade_amount_usd", 0.0) or 0.0),
         "max_open_positions": int(_get("max_open_positions", 0) or 0),
         "max_trades_per_day": int(_get("max_trades_per_day", 0) or 0),
+        # Risk profile (operator-approved aggressive paper profile, 2026-09-08).
+        "max_risk_per_trade_pct": float(_get("max_risk_per_trade_pct", 0.0) or 0.0),
+        "auto_propose_risk_based_sizing": bool(_get("auto_propose_risk_based_sizing", False)),
+        "max_daily_loss_usd": float(_get("max_daily_loss_usd", 0.0) or 0.0),
+        "max_weekly_loss_usd": float(_get("max_weekly_loss_usd", 0.0) or 0.0),
+        "max_consecutive_losses_before_cooldown": int(
+            _get("max_consecutive_losses_before_cooldown", 0) or 0
+        ),
+        "drawdown_governor_enabled": bool(_get("drawdown_governor_enabled", False)),
+        "drawdown_governor_soft_pct": float(_get("drawdown_governor_soft_pct", 0.0) or 0.0),
+        "drawdown_governor_hard_pct": float(_get("drawdown_governor_hard_pct", 0.0) or 0.0),
+        "drawdown_governor_floor": float(_get("drawdown_governor_floor", 0.0) or 0.0),
         # Tradeable-instrument allowlist vs the scanned universe. On 2026-09-08 the
         # two disagreed and 17 of 19 promoted candidates died at the proposal step
         # ("not in the allowed instrument list") — invisible until someone read the

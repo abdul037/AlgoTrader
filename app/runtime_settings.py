@@ -331,6 +331,10 @@ class AppSettings(BaseSettings):
     confluence_min_close_location: float = 0.62
 
     max_risk_per_trade_pct: float = 1.0
+    # Size auto-proposals from the stop distance so max_risk_per_trade_pct actually
+    # applies to the unattended path (default off = flat default_trade_amount_usd,
+    # which is also the notional cap when this is on).
+    auto_propose_risk_based_sizing: bool = False
     max_daily_loss_usd: float = 50.0
     max_weekly_loss_usd: float = 125.0
     # Count current open (unrealized) losses toward the daily/weekly loss caps so

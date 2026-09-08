@@ -12,6 +12,7 @@ from app.automation.reliability import candidate_propose_drop_reason, proposal_q
 from app.models.approval import ApprovalStatus
 from app.models.execution_queue import ExecutionQueueStatus
 from app.models.workflow import WorkflowTaskResponse
+from app.risk.proposal_sizing import risk_based_proposal_notional
 from app.universe import resolve_universe
 from app.utils.time import utc_now
 
@@ -825,6 +826,28 @@ def refresh_demoted_strategies(service: Any, completed: list[str], errors: list[
             service.run_logs.log("strategy_demote_error", {"error": str(exc)})
 
 
+def _account_equity_usd(service: Any) -> float:
+    """Latest broker-reconciled equity, else the configured paper balance."""
+
+    safety = getattr(getattr(service, "auto_trading", None), "safety", None)
+    latest = None
+    if safety is not None and hasattr(safety, "latest_reconciliation"):
+        with suppress(Exception):
+            latest = safety.latest_reconciliation()
+    if isinstance(latest, dict):
+        raw = latest.get("account_json")
+        account = raw if isinstance(raw, dict) else None
+        if isinstance(raw, str) and raw:
+            with suppress(Exception):
+                account = json.loads(raw)
+        if isinstance(account, dict):
+            with suppress(TypeError, ValueError):
+                equity = float(account.get("equity") or 0.0)
+                if equity > 0:
+                    return equity
+    return float(getattr(service.settings, "paper_account_balance_usd", 100_000.0) or 100_000.0)
+
+
 def auto_propose_candidates(service: Any, response: Any, *, origin: str, notify: bool) -> int:
     """Auto-create (and, when unattended, approve/execute) proposals from scan candidates.
 
@@ -879,15 +902,22 @@ def auto_propose_candidates(service: Any, response: Any, *, origin: str, notify:
                     "Supervised weak-valid paper proposal; not production-qualified. "
                     f"Auto-created from {origin}; Telegram approval is required before execution."
                 )
+            amount_usd, sizing = risk_based_proposal_notional(
+                service.settings,
+                entry_price=getattr(candidate, "entry_price", None) or getattr(candidate, "current_price", None),
+                stop_price=getattr(candidate, "stop_loss", None),
+                equity_usd=_account_equity_usd(service),
+            )
             request = service._approval_adapter.build_proposal_request(
                 candidate,
-                amount_usd=float(getattr(service.settings, "default_trade_amount_usd", 1000.0)),
+                amount_usd=amount_usd,
                 notes=notes,
             )
             proposal_quality = proposal_quality_label(candidate)
             request.metadata = {
                 **dict(getattr(request, "metadata", {}) or {}),
                 **candidate_metadata,
+                "sizing": sizing,
                 "proposal_quality": proposal_quality,
                 "proposal_source": candidate_metadata.get("source") or "scanner_strategy",
                 "proposal_origin": origin,
