@@ -87,6 +87,11 @@ without explicit operator sign-off recorded here.
   rule and every push was skipped. Fixed to `["**", "!**/*.md", "!/docs/**"]` and
   moved it into `railway.json` (`build.watchPatterns`) so it is version-controlled.
   This push carries both the pattern fix and the policy-snapshot change.
+- **18:44 — VERIFIED from the new container's startup log** (deployment `27b1caad`,
+  commit `661106a`): `default_trade_amount_usd=1000`, `max_trade_amount_usd=1000`,
+  `max_open_positions=3`, `max_trades_per_day=6`, `execution_mode=paper`,
+  `enable_real_trading=false`. GOOGL position and bracket unaffected (held at the
+  broker). Notion mirror updated with the same entry.
 - **13:03** Created this file at operator request ("update all the actions you
   are doing"): chose a repo Markdown ledger over Notion because it is
   version-controlled, reviewed by the PR bots, and lives with the code.
