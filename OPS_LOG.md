@@ -82,6 +82,11 @@ without explicit operator sign-off recorded here.
 - **18:40** Shipped `4b52d95`: the startup `execution_policy_effective` log now
   includes `default_trade_amount_usd`, `max_trade_amount_usd`, `max_open_positions`,
   `max_trades_per_day`, so sizing-blocked trades are diagnosable from run_logs.
+- **18:45** Railway SKIPPED the `7b6ade6` code push: the watch pattern I set at 13:02
+  (`/**`) was malformed (gitignore-style needs `**`), so nothing matched the include
+  rule and every push was skipped. Fixed to `["**", "!**/*.md", "!/docs/**"]` and
+  moved it into `railway.json` (`build.watchPatterns`) so it is version-controlled.
+  This push carries both the pattern fix and the policy-snapshot change.
 - **13:03** Created this file at operator request ("update all the actions you
   are doing"): chose a repo Markdown ledger over Notion because it is
   version-controlled, reviewed by the PR bots, and lives with the code.
