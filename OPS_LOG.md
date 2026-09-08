@@ -170,6 +170,18 @@ without explicit operator sign-off recorded here.
 - **19:42** `BACKTEST_SCHEDULER_INTERVAL_SECONDS` 21600 → 1800 (Railway var). At ~1 symbol
   per 180s run, the 25-name universe scores overnight (~12h) instead of ~6 days. The
   interval can go back to 6h once the gate is populated.
+- **19:44 — VERIFIED** interval deploy (`6210f3db`) booted 19:43:31. First refresh with the
+  warm-up fix produced the first non-zero backtest rows since August (34 of 162 rows had
+  trades) — the fold fix works. Task #63 closed.
+- **19:50 — SECOND ENGINE BUG found in those rows and fixed.** Every fold with one trade
+  reported ≈ −82% return even when the trade was profitable: `_close_trade` returns the
+  *position's* net proceeds and both call sites assigned it to `cash` instead of adding
+  it, discarding the uninvested balance (≈83% of the account at 1% risk sizing). Hidden
+  until now because folds never traded and in-sample runs sized all-in. Fix: `cash +=
+  realized` at both close sites; regression test asserts ending cash = initial + Σ pnl
+  for risk-sized trades. The ~160 rows written 19:40–19:50 carry the wrong returns; the
+  30-min refresh overwrites each symbol's summary as it re-runs, and the gate reads the
+  latest summary.
 - **13:03** Created this file at operator request ("update all the actions you
   are doing"): chose a repo Markdown ledger over Notion because it is
   version-controlled, reviewed by the PR bots, and lives with the code.

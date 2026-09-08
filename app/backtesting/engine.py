@@ -180,7 +180,11 @@ class BacktestEngine:
                         exit_reason=exit_action.reason,
                         cost_model=run_config.cost_model,
                     )
-                    cash = realized
+                    # ``realized`` is the net proceeds of the *position*; the
+                    # uninvested balance was already netted out at entry. Adding
+                    # (not assigning) keeps that balance — assigning silently
+                    # discarded it on every partial-size trade.
+                    cash += realized
                     trades.append(trade_record)
                     cost_events.append(cost_event)
                     if warning:
@@ -217,7 +221,7 @@ class BacktestEngine:
                 side=open_trade.side,
                 extended_hours=False,
             )
-            cash, cost_event, trade_record, warning = _close_trade(
+            realized, cost_event, trade_record, warning = _close_trade(
                 open_trade=open_trade,
                 exit_price=exit_price,
                 exit_time=final_time,
@@ -225,6 +229,7 @@ class BacktestEngine:
                 exit_reason="end_of_data",
                 cost_model=run_config.cost_model,
             )
+            cash += realized
             trades.append(trade_record)
             cost_events.append(cost_event)
             if warning:
