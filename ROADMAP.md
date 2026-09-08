@@ -24,7 +24,7 @@ These are permanent guardrails, not goals:
 
 ---
 
-## Current status (as of 2026-09-07)
+## Current status (as of 2026-09-08)
 
 - **Review-team bots wired on (2026-09-07).** The QA/Strategy/Trader/PM review workflow
   had been silently skipping for weeks due to a chain of three issues, all now fixed:
@@ -56,6 +56,27 @@ These are permanent guardrails, not goals:
   booted clean; 0 scheduler errors, events flowing, paper-safe (`enable_real_trading:
   false`, `execution_mode: paper`), near-miss auto-exec on. **0 trades today** — the bot
   was down for the whole morning session; watching for the first trade into the afternoon.
+- **EOD Mon 2026-09-07: 0 autonomous trades.** Infra was healthy 16:50–19:38 UTC; 60
+  promotion attempts, all stopped at hard gates. Dominant blockers were `quote_too_old`
+  (64) and `spread_too_wide` (67) — both artifacts of the single-venue IEX feed (stale
+  last-quote timestamps and IEX-only spreads), not of the strategies. Investigated and
+  rejected "re-fetch the quote before the promotion check": the quote is already fetched
+  immediately before `_market_data_status` (`service_scan.py`), so a re-fetch returns the
+  same stale IEX quote. Applied instead: `MARKET_UNIVERSE_SYMBOLS` trimmed to 25
+  IEX-liquid mega-caps (Railway var) so the scan spends its budget where IEX quotes are
+  fresh and tight. Structural fix remains an operator decision: paid SIP/NBBO feed.
+- **SECOND SILENT STOP (Mon 19:38 → Tue 2026-09-08 12:51 UTC).** Setting the universe
+  variable triggered a Railway redeploy that SIGTERM'd the running container and never
+  started a replacement (the replacement deploy never appeared in the deployment list;
+  `environment-status` showed the service with no deployment). The `ALWAYS` restart
+  policy did not help — it restarts a crashed container, not a deploy that never came
+  up. Market had closed 22 min later so no session was lost, but this is the same
+  failure shape as the 2-day outage. Recovered with a manual `redeploy` at 12:51 UTC
+  before Tuesday's open. Rule from now on: after ANY Railway variable change or push,
+  verify a new deployment reaches SUCCESS and `run_logs` resumes — never assume.
+- **Ops dashboard published (2026-09-07):** a private Claude artifact "AlgoTrader Ops"
+  (blockers chart, shipped ledger, what's next, bots table, where work is recorded).
+  Snapshot, not live; regenerate on request.
 - **Operator follow-up still open:** point `DATABASE_URL` at the Supabase **transaction
   pooler (port 6543)** (same string, `:5432`→`:6543`). The statement-timeout fix stops the
   pool from wedging; 6543 removes the failure class entirely. Needs the DB password
