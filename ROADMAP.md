@@ -74,6 +74,16 @@ These are permanent guardrails, not goals:
   failure shape as the 2-day outage. Recovered with a manual `redeploy` at 12:51 UTC
   before Tuesday's open. Rule from now on: after ANY Railway variable change or push,
   verify a new deployment reaches SUCCESS and `run_logs` resumes — never assume.
+- **CORRECTION (2026-09-08): Mon 2026-09-07 was Labor Day — the market was closed.**
+  All 72 promotion attempts that day carried `quote_too_old`, and recorded spreads
+  were a single frozen Friday quote (AAPL 1023.6 bps, identical for 20 hours). The
+  Monday "blocker" analysis above (quote_too_old / spread_too_wide as IEX artifacts)
+  is therefore void for that day: nothing could have traded. The fixed system has
+  not yet run through an open market; Tue 2026-09-08 13:30 UTC is the first real
+  test. No gates were changed. Also found: the effective auto-exec score floor in
+  the active exploration profile is `PAPER_EXPLORATION_AUTO_EXECUTION_MIN_SCORE=0.15`
+  (typo, effectively open), so `AUTO_EXECUTION_MIN_SCORE` is not the binding gate.
+  Action ledger from now on: `OPS_LOG.md`.
 - **Ops dashboard published (2026-09-07):** a private Claude artifact "AlgoTrader Ops"
   (blockers chart, shipped ledger, what's next, bots table, where work is recorded).
   Snapshot, not live; regenerate on request.
