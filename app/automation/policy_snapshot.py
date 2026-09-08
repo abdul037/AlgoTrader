@@ -62,6 +62,13 @@ def effective_execution_policy(settings: Any) -> dict[str, Any]:
         "screener_batch_deadline_seconds": float(_get("screener_batch_deadline_seconds", 0.0) or 0.0),
         "market_universe_limit": int(_get("market_universe_limit", 0) or 0),
         "alpaca_data_feed": str(_get("alpaca_data_feed", "")),
+        # Position sizing caps (non-secret; the broker step sizes as
+        # floor(min(default_trade_amount, max_trade_amount) / price), so both
+        # decide whether a >$500/share name can trade at all).
+        "default_trade_amount_usd": float(_get("default_trade_amount_usd", 0.0) or 0.0),
+        "max_trade_amount_usd": float(_get("max_trade_amount_usd", 0.0) or 0.0),
+        "max_open_positions": int(_get("max_open_positions", 0) or 0),
+        "max_trades_per_day": int(_get("max_trades_per_day", 0) or 0),
         # A boolean only — never the account number itself.
         "alpaca_expected_account_configured": bool(
             str(_get("alpaca_expected_account_number", "") or "").strip()

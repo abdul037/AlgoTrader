@@ -65,3 +65,16 @@ def test_snapshot_never_leaks_credential_values(tmp_path) -> None:
     assert "PAPER-XYZ" not in serialized
     # ...but the fact that an expected account IS configured is still surfaced.
     assert snapshot["alpaca_expected_account_configured"] is True
+
+
+def test_snapshot_exposes_position_sizing_caps(tmp_path) -> None:
+    # The first blocked live attempt (AMD, 2026-09-08) failed at the broker step
+    # because one share exceeded the per-trade amount; both sizing terms must be
+    # visible from run_logs so that failure mode is diagnosable without app access.
+    snapshot = effective_execution_policy(
+        make_settings(tmp_path, default_trade_amount_usd=1000.0, max_trade_amount_usd=1000.0)
+    )
+
+    assert snapshot["default_trade_amount_usd"] == 1000.0
+    assert snapshot["max_trade_amount_usd"] == 1000.0
+    assert "max_open_positions" in snapshot

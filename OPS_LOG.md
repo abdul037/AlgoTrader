@@ -73,6 +73,15 @@ without explicit operator sign-off recorded here.
   amount is `DEFAULT_TRADE_AMOUNT_USD=500`, so a $501 AMD share still rounds to 0
   shares. The cap is no longer binding; the default request amount is. Raising
   the default to 1000 doubles every trade's size — left for operator decision.
+- **18:37** Operator sign-off: `DEFAULT_TRADE_AMOUNT_USD` raised 500 → 1000 as well
+  (Railway var). Every new proposal now requests $1,000 notional (1 share of
+  anything up to $1,000). Observation: the 18:34 `MAX_TRADE_AMOUNT_USD` change did
+  not produce a deployment on its own; the 18:37 change did (deployment
+  `3a2a07f3`, carrying both values). Same failure shape as Mon 19:38 — variable
+  changes are unreliable deploy triggers on this service; always verify.
+- **18:40** Shipped `4b52d95`: the startup `execution_policy_effective` log now
+  includes `default_trade_amount_usd`, `max_trade_amount_usd`, `max_open_positions`,
+  `max_trades_per_day`, so sizing-blocked trades are diagnosable from run_logs.
 - **13:03** Created this file at operator request ("update all the actions you
   are doing"): chose a repo Markdown ledger over Notion because it is
   version-controlled, reviewed by the PR bots, and lives with the code.
