@@ -127,6 +127,16 @@ without explicit operator sign-off recorded here.
   fixing the recurring `workflow_cadence` 240s timeout, risk-based sizing at 0.5% of
   equity per trade, caps 3→5 open positions and 6→12 trades/day, enabling
   auto-demotion after 20 trades per strategy, daily EOD report. Hard gates unchanged.
+- **19:20 — P0 FINDING while sizing the 'max per day' question.** The walk-forward
+  backtest gate has never measured anything: of ~1,208,139 backtest rows since Aug 1
+  (20 strategies × 196 symbols, 31,942 out-of-sample summaries), **every single one has
+  `number_of_trades = 0`.** Each fold evaluates ~10 daily bars (`bars_evaluated` avg
+  10.2, `fold_count` 37), far too short for any of these strategies to trigger. So there
+  is no measured expectancy for any strategy, the "backtest validated" flag has never
+  been earned, and the scheduler's 180s backtest budget has been producing empty rows
+  for weeks. Task #63 opened: fix fold sizing, assert >0 trades on a trending fixture,
+  re-run for the 25-name universe. This is the top priority — nothing about expected
+  daily return can be estimated until it is fixed.
 - **13:03** Created this file at operator request ("update all the actions you
   are doing"): chose a repo Markdown ledger over Notion because it is
   version-controlled, reviewed by the PR bots, and lives with the code.
