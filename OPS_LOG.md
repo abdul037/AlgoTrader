@@ -113,6 +113,20 @@ without explicit operator sign-off recorded here.
 - **19:02** Operator sign-off ("set the allowed instruments to match the universe"):
   `ALLOWED_INSTRUMENTS` set to the exact 25-symbol `MARKET_UNIVERSE_SYMBOLS` value.
   Redeploy verification recorded below.
+- **19:07 — VERIFIED.** Allowlist deploy `26356326` booted 19:04:58; follow-up deploy
+  `2400459b` (commit `e1a8e9b`, SUCCESS 19:07:45) adds allowlist-vs-universe visibility
+  to the startup policy log, which now reads `allowed_instruments_count=25`,
+  `market_universe_symbols_count=25`, `universe_not_in_allowlist=[]`. Zero allowlist
+  rejections since the fix. Every symbol the scanner promotes can now be proposed.
+- **19:10** Operator dissatisfied with pace and asked for a plan to reach "20% every
+  day". Answer on record: 20%/day is not achievable by any strategy (compounds $100k to
+  $3.8M in a month) and would only be reached by ruinous leverage; declined to build
+  toward it. Proposed ladder instead: (1) two weeks of throughput + measurement (5–10
+  paper trades/day, 50 closed trades), (2) concentrate on positive-expectancy strategies
+  and target 0.1–0.3%/day, (3) scale with capital, not risk. Asked for sign-off on:
+  fixing the recurring `workflow_cadence` 240s timeout, risk-based sizing at 0.5% of
+  equity per trade, caps 3→5 open positions and 6→12 trades/day, enabling
+  auto-demotion after 20 trades per strategy, daily EOD report. Hard gates unchanged.
 - **13:03** Created this file at operator request ("update all the actions you
   are doing"): chose a repo Markdown ledger over Notion because it is
   version-controlled, reviewed by the PR bots, and lives with the code.
