@@ -18,6 +18,7 @@ from app.models.paper import (
     PaperTradeLifecycleRecord,
     PaperTradeRecord,
 )
+from app.paper.broker_ledger import is_broker_backed, sync_broker_backed_positions
 from app.utils.time import utc_now
 
 
@@ -100,7 +101,20 @@ class PaperTradingService:
         )
         return record
 
+    def sync_broker_backed_positions(self, *, limit: int = 500) -> dict[str, int]:
+        """Mirror real Alpaca-paper fills into the ledger (open on entry fill, close on exit fill)."""
+
+        return sync_broker_backed_positions(self, limit=limit)
+
     def refresh_open_positions(self, *, market_data_engine: Any, force_refresh: bool = True) -> dict[str, int]:
+        # Real broker fills first, so a bracket exit at Alpaca lands in the ledger
+        # before the simulator looks at prices. Never let a sync failure block the
+        # simulated-position refresh.
+        synced = {"opened": 0, "closed": 0}
+        try:
+            synced = self.sync_broker_backed_positions()
+        except Exception as exc:  # noqa: BLE001 - ledger mirroring must never wedge the refresh job
+            self.logs.log("paper_broker_ledger_sync_failed", {"error": str(exc)})
         open_positions = self.positions.list(status="open", limit=500)
         closed = 0
         checked = 0
@@ -111,13 +125,20 @@ class PaperTradingService:
             position.current_price = current_price
             position.updated_at = utc_now().isoformat()
             position.unrealized_pnl_usd = round(self._pnl_usd(position, current_price), 2)
-            outcome = self._close_outcome(position, current_price)
+            # Broker-backed rows are only marked-to-market here: the bracket at the
+            # broker owns the exit, and the sync above records it when it fills.
+            outcome = None if is_broker_backed(position) else self._close_outcome(position, current_price)
             if outcome is None:
                 self.positions.update(position)
                 continue
             closed += 1
             self._close_position(position, exit_price=current_price, outcome=outcome)
-        return {"checked": checked, "closed": closed}
+        return {
+            "checked": checked,
+            "closed": closed,
+            "broker_opened": int(synced.get("opened", 0)),
+            "broker_closed": int(synced.get("closed", 0)),
+        }
 
     def summary(self) -> Any:
         open_positions = self.positions.list(status="open", limit=500)
@@ -320,9 +341,16 @@ class PaperTradingService:
                     count += 1
         return count <= 2
 
-    def _close_position(self, position: PaperPositionRecord, *, exit_price: float, outcome: str) -> PaperTradeRecord:
+    def _close_position(
+        self,
+        position: PaperPositionRecord,
+        *,
+        exit_price: float,
+        outcome: str,
+        closed_at: str | None = None,
+    ) -> PaperTradeRecord:
         position.status = "closed"
-        position.closed_at = utc_now().isoformat()
+        position.closed_at = closed_at or utc_now().isoformat()
         position.updated_at = position.closed_at
         position.current_price = exit_price
         realized = round(self._pnl_usd(position, exit_price), 2)
@@ -346,6 +374,7 @@ class PaperTradingService:
             realized_pnl_usd=realized,
             realized_pnl_pct=round((realized / max(position.entry_price * position.quantity, 0.01)) * 100.0, 2),
             opened_at=position.opened_at,
+            closed_at=position.closed_at,
             payload={
                 **dict(position.payload),
                 "realized_r_multiple": self._realized_r_multiple(position, exit_price),
