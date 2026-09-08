@@ -78,3 +78,28 @@ def test_snapshot_exposes_position_sizing_caps(tmp_path) -> None:
     assert snapshot["default_trade_amount_usd"] == 1000.0
     assert snapshot["max_trade_amount_usd"] == 1000.0
     assert "max_open_positions" in snapshot
+
+
+def test_snapshot_flags_universe_symbols_missing_from_the_allowlist(tmp_path) -> None:
+    # 2026-09-08: the scanner used a 25-name universe while ALLOWED_INSTRUMENTS was
+    # still a 6-name list, so most promoted candidates were rejected at the proposal
+    # step. The snapshot must make that disagreement visible at boot.
+    snapshot = effective_execution_policy(
+        make_settings(
+            tmp_path,
+            market_universe_symbols=["AAPL", "META", "INTC"],
+            allowed_instruments=["AAPL", "GOOGL"],
+        )
+    )
+
+    assert snapshot["allowed_instruments_count"] == 2
+    assert snapshot["market_universe_symbols_count"] == 3
+    assert snapshot["universe_not_in_allowlist"] == ["INTC", "META"]
+
+
+def test_snapshot_reports_empty_gap_when_lists_agree(tmp_path) -> None:
+    snapshot = effective_execution_policy(
+        make_settings(tmp_path, market_universe_symbols=["AAPL", "META"], allowed_instruments=["META", "AAPL"])
+    )
+
+    assert snapshot["universe_not_in_allowlist"] == []
