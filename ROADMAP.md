@@ -40,6 +40,18 @@ These are permanent guardrails, not goals:
   (3) `ALLOWED_INSTRUMENTS` aligned to the 25-name universe — it had silently rejected
   17 of 19 promoted candidates at the proposal step. Expect materially more paper
   trades from Wed 2026-09-09.
+- **Aggressive paper plan APPROVED (2026-09-08 19:25 UTC) and the measurement tool
+  fixed.** Operator approved: 1% equity risk per trade with risk-based sizing (was a
+  flat $1,000 that risked ~$5), $12,500 per-position cap, 8 open positions, 15
+  trades/day, $3,000 daily / $8,000 weekly loss stops, cooldown after 4 consecutive
+  losses, drawdown governor on (halves size past 5%). Hard gates unchanged. Same
+  session, P0 found and fixed: the walk-forward backtester had recorded **zero trades
+  in 1.2M runs** because each fold evaluated ~10 bars with no indicator warm-up — no
+  strategy ever had a measured expectancy. Folds now carry train-bar warm-up
+  (`trade_window_start`). Target: ranked per-strategy expectancy for the 25-name
+  universe within 48h, then concentrate on the top 3–4 and add 5m/15m timeframes.
+  Real-money readiness gate (60 days, 100 trades, Sharpe ≥ 1.5, drawdown ≤ 8%,
+  positive expectancy) stays the bar for any live decision.
 - **Review-team bots wired on (2026-09-07).** The QA/Strategy/Trader/PM review workflow
   had been silently skipping for weeks due to a chain of three issues, all now fixed:
   (1) no open PR (the workflow only triggers on `pull_request`) — opened PR #31;
