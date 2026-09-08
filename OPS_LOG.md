@@ -166,6 +166,10 @@ without explicit operator sign-off recorded here.
   0 trades (old) to >0 (new) with every entry inside the test window. 648 tests pass.
   From the next `backtest_gate_refresh` run the gate starts filling with real
   out-of-sample numbers per strategy × symbol.
+- **19:41 — VERIFIED** the backtester-fix deploy (`84440f26`) booted (policy log 19:40:58).
+- **19:42** `BACKTEST_SCHEDULER_INTERVAL_SECONDS` 21600 → 1800 (Railway var). At ~1 symbol
+  per 180s run, the 25-name universe scores overnight (~12h) instead of ~6 days. The
+  interval can go back to 6h once the gate is populated.
 - **13:03** Created this file at operator request ("update all the actions you
   are doing"): chose a repo Markdown ledger over Notion because it is
   version-controlled, reviewed by the PR bots, and lives with the code.
