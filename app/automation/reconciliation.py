@@ -13,6 +13,20 @@ from app.models.institutional import (
 )
 from app.utils.time import utc_now
 
+_LIVE_LEG_STATUSES = {
+    "new",
+    "accepted",
+    "held",
+    "pending_new",
+    "partially_filled",
+    "accepted_for_bidding",
+    "calculated",
+}
+
+
+def _leg_is_live(leg: dict[str, Any]) -> bool:
+    return str(leg.get("status") or "").lower() in _LIVE_LEG_STATUSES
+
 
 class AlpacaReconciliationService:
     """Synchronize Alpaca order state and trip the circuit breaker on unsafe drift."""
@@ -230,7 +244,12 @@ class AlpacaReconciliationService:
                 owned_symbols.add(symbol)
                 self._update_execution(execution, payload)
             legs = list(payload.get("legs") or [])
-            if execution is not None and payload.get("order_class") == "bracket" and len(legs) >= 2:
+            # A bracket only protects while at least one protective leg is still
+            # working at the broker. Counting legs by existence alone reported
+            # GOOGL as protected on 2026-09-09 after its TP had expired and its
+            # stop had been cancelled at the close.
+            live_legs = [leg for leg in legs if _leg_is_live(leg)]
+            if execution is not None and payload.get("order_class") == "bracket" and live_legs:
                 protected_symbols.add(symbol)
             if broker_order_id:
                 self._upsert_order(payload, execution_id=execution_id, parent_order_id=None)
@@ -242,6 +261,8 @@ class AlpacaReconciliationService:
             if symbol not in owned_symbols:
                 issues.append(f"unknown_position:{symbol}")
             if symbol not in protected_symbols:
+                if symbol in owned_symbols and self._flatten_unprotected(symbol, position):
+                    continue
                 issues.append(f"missing_bracket_protection:{symbol}")
 
         return {
@@ -250,6 +271,43 @@ class AlpacaReconciliationService:
             "positions_seen": len(positions),
             "issues": sorted(set(issues)),
         }
+
+    def _flatten_unprotected(self, symbol: str, position: Any) -> bool:
+        """Close an owned position whose protective legs are gone (paper only).
+
+        An unattended bot must never hold a position without a working stop.
+        Rather than tripping the circuit breaker (which halts everything), close
+        the bare position at market and record it; the ledger sync then books the
+        exit from the broker fill. Returns True when the close was submitted.
+        """
+
+        if not bool(getattr(self.settings, "reconciliation_flatten_unprotected_positions", True)):
+            return False
+        if str(getattr(self.settings, "execution_mode", "paper")) != "paper":
+            return False
+        if bool(getattr(self.settings, "enable_real_trading", False)):
+            return False
+        if not hasattr(self.alpaca, "close_position"):
+            return False
+        try:
+            response = self.alpaca.close_position(symbol)
+        except Exception as exc:  # noqa: BLE001 - broker SDK errors must surface as an issue, not crash reconciliation
+            self.logs.log(
+                "unprotected_position_flatten_failed",
+                {"symbol": symbol, "error": str(exc)},
+            )
+            return False
+        self.logs.log(
+            "unprotected_position_flattened",
+            {
+                "symbol": symbol,
+                "quantity": float(getattr(position, "quantity", 0.0) or 0.0),
+                "broker_order_id": str(getattr(response, "order_id", "") or ""),
+                "status": str(getattr(response, "status", "") or ""),
+                "reason": "bracket_legs_no_longer_live",
+            },
+        )
+        return True
 
     def _update_execution(self, execution: Any, payload: dict[str, Any]) -> None:
         status = str(payload.get("status") or "").lower()

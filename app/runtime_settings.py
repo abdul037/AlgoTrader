@@ -342,6 +342,10 @@ class AppSettings(BaseSettings):
     loss_limit_includes_unrealized: bool = True
     max_open_positions: int = 3
     max_trades_per_day: int = 6
+    # Paper-only: an owned position whose bracket legs are no longer live at the
+    # broker is closed at market by reconciliation instead of tripping the
+    # circuit breaker. Never applies when real trading is enabled.
+    reconciliation_flatten_unprotected_positions: bool = True
     per_symbol_position_limit: int = 1
     max_consecutive_losses_before_cooldown: int = 2
     rollout_stage: str = "stage_1_validation"

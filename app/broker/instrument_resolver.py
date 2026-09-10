@@ -41,17 +41,33 @@ class InstrumentResolver:
             raise ValueError(f"Instrument {normalized} is explicitly blocked")
         if normalized not in self.settings.allowed_instruments:
             raise ValueError(f"Instrument {normalized} is not in the allowed instrument list")
-        instrument = DEFAULT_INSTRUMENTS.get(normalized)
-        if instrument is None:
-            raise ValueError(f"Instrument {normalized} is not supported in this version")
-        return instrument
+        return self._catalog_or_equity(normalized)
 
     def list_supported(self) -> list[SupportedInstrument]:
         """Return the supported and allowed instrument list."""
 
         supported: list[SupportedInstrument] = []
         for symbol in self.settings.allowed_instruments:
-            instrument = DEFAULT_INSTRUMENTS.get(symbol)
-            if instrument and symbol not in self.settings.blocked_instruments:
-                supported.append(instrument)
+            normalized = str(symbol).upper().strip()
+            if normalized and normalized not in self.settings.blocked_instruments:
+                supported.append(self._catalog_or_equity(normalized))
         return supported
+
+    @staticmethod
+    def _catalog_or_equity(normalized: str) -> SupportedInstrument:
+        """Catalogued instruments keep their metadata; any other allowlisted
+        ticker is a plain US equity under its own symbol.
+
+        The catalogue exists for the few names that need special handling
+        (asset class, broker symbol mapping). Treating it as an exhaustive
+        whitelist silently rejected every non-catalogued symbol at the proposal
+        step on 2026-09-09 ("not supported in this version") — 15 of 15 that
+        day — even though the operator's allowlist admitted them.
+        """
+
+        instrument = DEFAULT_INSTRUMENTS.get(normalized)
+        if instrument is not None:
+            return instrument
+        if not normalized.replace(".", "").replace("-", "").isalnum():
+            raise ValueError(f"Instrument {normalized} is not a valid ticker symbol")
+        return SupportedInstrument(normalized, normalized, AssetClass.EQUITY)

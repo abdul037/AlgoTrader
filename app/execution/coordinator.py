@@ -475,7 +475,10 @@ class ExecutionCoordinator:
                     qty=int(qty),
                     take_profit_price=float(proposal.order.take_profit),
                     stop_loss_price=float(proposal.order.stop_loss),
-                    time_in_force="day",
+                    # GTC: with "day" the protective legs expire at the close and
+                    # an overnight position is left with no stop (GOOGL, 2026-09-08
+                    # -> its stop was cancelled and the TP expired at 20:00 UTC).
+                    time_in_force="gtc",
                     client_order_id=client_order_id,
                 )
             else:

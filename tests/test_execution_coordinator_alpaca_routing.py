@@ -198,7 +198,8 @@ def test_paper_mode_alpaca_routes_through_alpaca_submit_order(tmp_path) -> None:
     assert order["symbol"] == proposal.order.symbol
     assert order["side"] == "buy"
     assert order["order_type"] == "market"
-    assert order["time_in_force"] == "day"
+    # Bracket legs must survive the close, or an overnight position is unprotected.
+    assert order["time_in_force"] == "gtc"
     assert order["client_order_id"] == queued.client_order_id
     assert order["qty"] == 8
     assert order["order_class"] == "bracket"
