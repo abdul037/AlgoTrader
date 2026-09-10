@@ -12,6 +12,51 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-09-10 (Thu)
+
+- **12:17** Pre-open review of Wednesday (the session ran unattended; the scheduled
+  check-ins fired but their reports were delivered late). Bot healthy the whole time:
+  no reboot since Tue 20:17, events flowing, 0 QueuePool/SIGTERM. **Wednesday result:
+  0 proposals, 0 trades.** Funnel: 59 near-miss + 85 weak-valid promotion attempts,
+  15 candidates entered the proposal step, **15/15 failed** with `Instrument X is not
+  supported in this version` (INTC ×8, AAPL ×3, META ×2, CSCO, MSFT); 2 swing candidates
+  safety-blocked (`strategy_not_production_approved`, correct).
+- **Root cause #1 — hidden second allowlist.** `InstrumentResolver` treats a hardcoded
+  6-name catalogue (NVDA, GOOG, GOOGL, AMD, MU, GOLD) as exhaustive, so widening
+  `ALLOWED_INSTRUMENTS` on Tue only moved the failure one check later. Fixed: catalogued
+  names keep their metadata; any other allowlisted ticker resolves as a plain US equity.
+- **Root cause #2 — GOOGL left unprotected overnight.** Brackets were submitted with
+  `time_in_force=day`: at Tue's close the take-profit leg **expired** and the stop leg was
+  **canceled**, so the 1-share GOOGL position sat all of Wednesday with no stop (it
+  closed ~$330.65, below the $333.24 stop that no longer existed). Reconciliation did not
+  flag it because it counted a bracket as protection if legs merely *existed*. Fixed:
+  brackets are now GTC; reconciliation counts only live legs; in paper mode an owned
+  position with no live protective leg is closed at market and logged
+  (`unprotected_position_flattened`) instead of tripping the circuit breaker
+  (`reconciliation_flatten_unprotected_positions`, default on, never with real trading).
+- **12:52** Shipped all three fixes with tests (657 pass). Push-triggered deploy in
+  progress; verification below. Expected on boot: GOOGL flattened by the first
+  reconciliation, proposals flowing from the 13:30 open.
+- **Overnight backtest coverage (post cash-fix):** all 25 universe symbols scored, 608
+  out-of-sample summaries, 454 with trades; returns sane (annualized −11% … +6%, median
+  ≈0). Per-strategy ranking (avg annualized, median PF, win rate): ema_trend_stack
+  +0.5% / 1.21 / 51%; trend_following +0.3% / 1.11 / 49%; pullback_trend +0.1% / 1.06 /
+  52%; momentum_breakout 0.0% / 0.97 / 46%; ma_crossover −0.2% / 1.05 / 50%; the
+  mean-reversion / RSI families are negative on few trades. Holdout returns slightly
+  negative for all. Honest read: the measured daily-bar edges are marginal; the plan's
+  "concentrate on the top 3–4" now has a data basis (ema_trend_stack, trend_following,
+  pullback_trend) and intraday timeframes are the next lever.
+- **12:57** Armed midday (16:00 UTC) and post-close (20:10 UTC) checks.
+
+## 2026-09-09 (Wed)
+
+- Unattended all day. Health: up since Tue 20:17, 0 errors other than the recurring
+  `workflow_cadence` 240s timeouts (78 that day — still the throughput leak to fix).
+  Backtest refresh ran every 30 min overnight and scored the full universe.
+- **0 proposals / 0 trades** — root causes found and fixed Thu morning (see above).
+  GOOGL held unprotected after its bracket legs died at Tue's close; equity ended the
+  day ≈ $100,056 (−$8.7 vs baseline, all unrealized GOOGL).
+
 ## 2026-09-08 (Tue)
 
 - **12:50** Verified the dashboard publish and found the bot had been DOWN since
