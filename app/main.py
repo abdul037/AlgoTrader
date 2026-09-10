@@ -737,6 +737,30 @@ def create_app(
         except Exception as exc:  # noqa: BLE001 - observability must not break boot
             logger.exception("Failed to log effective execution policy: %s", exc)
 
+        # End-to-end funnel preflight: with THIS configuration, can a candidate
+        # for each universe symbol reach the broker? Logs the first blocker per
+        # symbol so a config mismatch is visible before the open, not after a
+        # lost session. Diagnostic only; never blocks boot.
+        try:
+            from app.automation.funnel_preflight import run_funnel_preflight
+
+            report = run_funnel_preflight(
+                app_settings,
+                automation=app.state.automation_service,
+                alpaca=app.state.alpaca_client,
+            )
+            run_log_repository.log("funnel_preflight", report)
+            if report["global_blockers"] or report["blocked_symbols"]:
+                logger.warning(
+                    "Funnel preflight: %s/%s symbols open, global=%s, blockers=%s",
+                    report["open_symbols"],
+                    report["universe_size"],
+                    report["global_blockers"],
+                    report["blocker_histogram"],
+                )
+        except Exception as exc:  # noqa: BLE001 - observability must not break boot
+            logger.exception("Funnel preflight failed: %s", exc)
+
         # Real-time order fill/exit stream (optional; sweep is the backstop).
         if (
             app_settings.alpaca_trade_stream_enabled
