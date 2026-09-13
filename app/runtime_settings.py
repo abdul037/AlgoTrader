@@ -346,6 +346,13 @@ class AppSettings(BaseSettings):
     # broker is closed at market by reconciliation instead of tripping the
     # circuit breaker. Never applies when real trading is enabled.
     reconciliation_flatten_unprotected_positions: bool = True
+    # Paper-only self-healing: when the circuit breaker (not an operator) tripped
+    # the kill switch, the scheduler keeps probing reconciliation and resumes
+    # automation once the broker state is clean again. Never applies when real
+    # trading is enabled, never overrides KILL_SWITCH_ENABLED or a manual pause.
+    paper_auto_recover_circuit_breaker: bool = True
+    paper_auto_recover_probe_interval_seconds: int = 600
+    paper_auto_recover_max_resumes_per_day: int = 3
     per_symbol_position_limit: int = 1
     max_consecutive_losses_before_cooldown: int = 2
     rollout_stage: str = "stage_1_validation"

@@ -25,19 +25,32 @@ from app.storage.repositories import (
 )
 from tests.conftest import make_settings
 
+QTY_HELD_ERROR = (
+    '{"available":"0","code":40310000,"existing_qty":"1","held_for_orders":"1",'
+    '"message":"insufficient qty available for order (requested: 1, available: 0)","symbol":"GOOGL"}'
+)
+
 
 class BrokerWithDeadBracket:
-    def __init__(self, *, leg_statuses: tuple[str, str]):
+    def __init__(
+        self,
+        *,
+        leg_statuses: tuple[str, str],
+        extra_orders: list[dict] | None = None,
+        close_error: Exception | None = None,
+    ):
         self.account_number = "PAPER-1"
         self.closed: list[str] = []
         self.leg_statuses = leg_statuses
+        self.extra_orders = list(extra_orders or [])
+        self.close_error = close_error
 
     def get_account_identity(self):
         return {"account_number": self.account_number, "trading_blocked": False, "equity": 100000.0, "cash": 99660.0}
 
     def get_all_orders(self):
         tp_status, stop_status = self.leg_statuses
-        return [
+        orders = [
             SimpleNamespace(
                 broker_order_id="parent-googl",
                 response_payload={
@@ -56,6 +69,11 @@ class BrokerWithDeadBracket:
                 },
             )
         ]
+        orders.extend(
+            SimpleNamespace(broker_order_id=payload["broker_order_id"], response_payload=payload)
+            for payload in self.extra_orders
+        )
+        return orders
 
     def get_portfolio(self):
         return SimpleNamespace(
@@ -63,6 +81,8 @@ class BrokerWithDeadBracket:
         )
 
     def close_position(self, symbol: str):
+        if self.close_error is not None:
+            raise self.close_error
         self.closed.append(symbol)
         return SimpleNamespace(order_id="close-1", status="submitted")
 
@@ -153,6 +173,56 @@ def test_flatten_is_off_when_disabled_and_the_breaker_still_trips(tmp_path) -> N
 
     assert broker.closed == []
     assert "missing_bracket_protection:GOOGL" in result["issues"]
+    assert automation.status().kill_switch_enabled is True
+
+
+def test_pending_close_order_means_closing_in_flight_not_unprotected(tmp_path) -> None:
+    # 2026-09-10 13:06 UTC: the previous boot's pre-market flatten was still
+    # pending_new; the next sweep must not flatten again nor raise an issue.
+    pending_close = {
+        "broker_order_id": "close-pending",
+        "symbol": "GOOGL",
+        "side": "sell",
+        "type": "market",
+        "qty": 1.0,
+        "status": "pending_new",
+    }
+    broker = BrokerWithDeadBracket(leg_statuses=("expired", "canceled"), extra_orders=[pending_close])
+    service, automation, logs = _service(tmp_path, broker)
+
+    result = service.reconcile()
+
+    assert result["status"] == "ok"
+    assert result["issues"] == []
+    assert broker.closed == []
+    assert "unprotected_position_closing_in_flight" in _events(logs)
+    assert automation.status().kill_switch_enabled is False
+
+
+def test_flatten_rejected_because_qty_is_held_is_deferred_not_a_breaker(tmp_path) -> None:
+    # Alpaca 40310000: the share is committed to a working order already, so
+    # the position is not bare. The old code turned this into
+    # missing_bracket_protection and killed automation for three sessions.
+    broker = BrokerWithDeadBracket(leg_statuses=("expired", "canceled"), close_error=RuntimeError(QTY_HELD_ERROR))
+    service, automation, logs = _service(tmp_path, broker)
+
+    result = service.reconcile()
+
+    assert result["status"] == "ok"
+    assert "missing_bracket_protection:GOOGL" not in result["issues"]
+    assert "unprotected_position_flatten_deferred" in _events(logs)
+    assert "unprotected_position_flatten_failed" not in _events(logs)
+    assert automation.status().kill_switch_enabled is False
+
+
+def test_other_flatten_errors_still_raise_the_issue(tmp_path) -> None:
+    broker = BrokerWithDeadBracket(leg_statuses=("expired", "canceled"), close_error=RuntimeError("connection reset"))
+    service, automation, logs = _service(tmp_path, broker)
+
+    result = service.reconcile()
+
+    assert "missing_bracket_protection:GOOGL" in result["issues"]
+    assert "unprotected_position_flatten_failed" in _events(logs)
     assert automation.status().kill_switch_enabled is True
 
 

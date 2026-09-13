@@ -28,6 +28,19 @@ def _leg_is_live(leg: dict[str, Any]) -> bool:
     return str(leg.get("status") or "").lower() in _LIVE_LEG_STATUSES
 
 
+# Alpaca rejects a close while the shares are already committed to a working
+# order ("insufficient qty available for order", code 40310000). That means the
+# position is *not* bare: a stop, a limit or an earlier close is live on it.
+_QTY_HELD_MARKERS = ("insufficient qty available", "40310000", "held_for_orders")
+
+
+def _closing_side(position: Any) -> str:
+    """The order side that reduces ``position`` (sell for a long, buy for a short)."""
+
+    quantity = float(getattr(position, "quantity", 0.0) or 0.0)
+    return "buy" if quantity < 0 else "sell"
+
+
 class AlpacaReconciliationService:
     """Synchronize Alpaca order state and trip the circuit breaker on unsafe drift."""
 
@@ -233,6 +246,11 @@ class AlpacaReconciliationService:
         }
         owned_symbols: set[str] = set()
         protected_symbols: set[str] = set()
+        # symbol -> sides with a live top-level order (a market close, a stop, a
+        # limit). Shares committed to such an order are not bare: on 2026-09-10 a
+        # pre-market flatten was still pending when the next sweep tried to
+        # flatten again, Alpaca rejected it (qty held) and the breaker tripped.
+        live_order_sides: dict[str, set[str]] = {}
 
         for order in orders:
             payload = dict(order.response_payload or {})
@@ -251,6 +269,8 @@ class AlpacaReconciliationService:
             live_legs = [leg for leg in legs if _leg_is_live(leg)]
             if execution is not None and payload.get("order_class") == "bracket" and live_legs:
                 protected_symbols.add(symbol)
+            if symbol and _leg_is_live(payload):
+                live_order_sides.setdefault(symbol, set()).add(str(payload.get("side") or "").lower())
             if broker_order_id:
                 self._upsert_order(payload, execution_id=execution_id, parent_order_id=None)
             for leg in legs:
@@ -261,6 +281,14 @@ class AlpacaReconciliationService:
             if symbol not in owned_symbols:
                 issues.append(f"unknown_position:{symbol}")
             if symbol not in protected_symbols:
+                if _closing_side(position) in live_order_sides.get(symbol, set()):
+                    # A working reducing order (usually our own flatten waiting
+                    # for the open) already commits the shares: closing in flight.
+                    self.logs.log(
+                        "unprotected_position_closing_in_flight",
+                        {"symbol": symbol, "quantity": float(getattr(position, "quantity", 0.0) or 0.0)},
+                    )
+                    continue
                 if symbol in owned_symbols and self._flatten_unprotected(symbol, position):
                     continue
                 issues.append(f"missing_bracket_protection:{symbol}")
@@ -292,9 +320,19 @@ class AlpacaReconciliationService:
         try:
             response = self.alpaca.close_position(symbol)
         except Exception as exc:  # noqa: BLE001 - broker SDK errors must surface as an issue, not crash reconciliation
+            message = str(exc)
+            if any(marker in message.lower() for marker in _QTY_HELD_MARKERS):
+                # The shares are already committed to a working order at the
+                # broker, so the position is being closed or is protected after
+                # all. Not a breaker condition; the next sweep sees the outcome.
+                self.logs.log(
+                    "unprotected_position_flatten_deferred",
+                    {"symbol": symbol, "reason": "qty_held_by_working_order", "error": message},
+                )
+                return True
             self.logs.log(
                 "unprotected_position_flatten_failed",
-                {"symbol": symbol, "error": str(exc)},
+                {"symbol": symbol, "error": message},
             )
             return False
         self.logs.log(

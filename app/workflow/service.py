@@ -7,6 +7,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.automation.auto_recover import try_auto_recover
 from app.execution.interfaces import SignalApprovalAdapter
 from app.models.workflow import WorkflowBucketStatus, WorkflowStatusResponse, WorkflowTaskResponse
 from app.universe import resolve_universe
@@ -98,6 +99,8 @@ class SignalWorkflowService:
         summary = {"alerts_sent": 0, "closed_signals": 0, "ledger_cycles": 0, "buckets_run": 0}
         if self.automation is not None:
             blockers = self.automation.scan_blockers()
+            if blockers and try_auto_recover(self, blockers):  # paper-only breaker self-healing
+                blockers = self.automation.scan_blockers()
             if blockers:
                 self.run_logs.log("workflow_scheduler_paused", {"blockers": blockers})
                 for bucket_name in self.SCAN_BUCKETS:
@@ -115,12 +118,9 @@ class SignalWorkflowService:
         if not self.settings.screener_scheduler_enabled:
             return summary
 
-        # Budget-aware dispatch: each bucket runs a full universe scan bounded by
-        # its own batch deadline, so several buckets coming due together (a market
-        # open/close burst) can sum past the worker's per-job wall-clock timeout,
-        # abandoning the whole tick. Instead, stop starting new buckets once the
-        # elapsed time nears a soft budget and let the next tick (seconds later)
-        # pick up the rest — _bucket_due keeps them due until they actually run.
+        # Budget-aware dispatch: buckets coming due together (open/close burst) can
+        # sum past the worker's per-job timeout, so stop starting new ones once the
+        # soft budget is spent; _bucket_due keeps the rest due for the next tick.
         soft_budget = self._cadence_soft_budget_seconds()
         started_at = time.monotonic()
         deferred: list[str] = []
