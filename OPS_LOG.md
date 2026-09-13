@@ -12,6 +12,50 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-09-13 (Sun)
+
+- **Incident review — why nothing traded Thu/Fri.** The boot-time funnel preflight
+  (shipped Thu, first run 13:16:57 UTC) reported all 25 universe symbols open but two
+  global blockers: `automation_kill_switch_enabled` and `automation_paused`. Trace:
+  Thu **13:06:20** (pre-market) reconciliation saw GOOGL with no live bracket legs and
+  tried to flatten it while the *previous boot's* flatten (12:56:37) was still
+  `pending_new`; Alpaca rejected the duplicate (`40310000 insufficient qty available…
+  held_for_orders=1`). The rejection was recorded as `missing_bracket_protection:GOOGL`,
+  the circuit breaker tripped, the kill switch + pause were persisted in `runtime_state`,
+  and the emergency stop cancelled 1 order / closed 1 position. The 13:16 boot repeated
+  the exact sequence. Nothing clears that state, so the scheduler logged
+  `workflow_scheduler_paused` every minute from Thu 13:17 through Sun (≈4,300 events).
+  Backtests kept running (they are not gated). **Thu/Fri: 0 proposals, 0 trades.**
+- **Fix pushed `2efc6de`** (674 tests pass; 4 known sandbox-only failures): (1) a position
+  with a live reducing order at the broker is "closing in flight", not unprotected — no
+  re-flatten, no issue (`unprotected_position_closing_in_flight`); (2) a flatten rejected
+  because the shares are already committed is deferred (`unprotected_position_flatten_deferred`),
+  not a breaker — other flatten errors still raise the issue; (3) **paper-only self-healing**
+  (`app/automation/auto_recover.py`): while the breaker is tripped the scheduler re-probes
+  reconciliation every 10 min and, once clean, clears the breaker and resumes (max 3/day,
+  `automation_auto_recover_probe` / `automation_auto_resumed`). It never overrides an
+  operator pause, a manual kill switch, `KILL_SWITCH_ENABLED`, an account mismatch, a
+  broker trading block, or real trading. Settings: `PAPER_AUTO_RECOVER_CIRCUIT_BREAKER`
+  (on), `PAPER_AUTO_RECOVER_PROBE_INTERVAL_SECONDS=600`, `PAPER_AUTO_RECOVER_MAX_RESUMES_PER_DAY=3`.
+  Safety note for the operator: the breaker itself is unchanged; only a *false* trip on a
+  close already in flight is prevented, and recovery requires a clean reconciliation.
+- **09:25–09:28 Deployed and verified.** Deployment `29b609e2` SUCCESS 09:27:50. Boot
+  preflight still showed the two blockers (state persisted from Thursday); the first
+  scheduler tick probed reconciliation at 09:27:39 (`orders_seen=31, positions_seen=0,
+  issues=[]`), cleared the breaker and **auto-resumed at 09:28:29**
+  (`automation_auto_resumed`, resume 1/3 today). Scheduler running again: maintenance,
+  ledger cycle, open-signal check, backtests. GOOGL had been closed by Thursday's emergency
+  stop at the open; the broker ledger booked it on resume: **GOOGL 1 sh, entry 338.75 →
+  exit 328.94, realized −$9.81 (`broker_close`)**. Account flat, equity **$100,055.06**
+  (−$9.85 vs the $100,064.91 baseline; the only closed trade to date).
+- Next: Monday 2026-09-14 pre-open check armed for 13:20 UTC (health, resumed state,
+  0 blockers in the boot preflight, proposals from the 13:30 open).
+
+## 2026-09-12 (Sat) / 2026-09-11 (Fri)
+
+- Paused all of Friday by the persisted kill switch (see 09-13). **0 proposals, 0 trades.**
+  App healthy otherwise; the 30-min backtest refresh kept scoring the universe.
+
 ## 2026-09-10 (Thu)
 
 - **12:17** Pre-open review of Wednesday (the session ran unattended; the scheduled
@@ -47,6 +91,13 @@ without explicit operator sign-off recorded here.
   "concentrate on the top 3–4" now has a data basis (ema_trend_stack, trend_following,
   pullback_trend) and intraday timeframes are the next lever.
 - **12:57** Armed midday (16:00 UTC) and post-close (20:10 UTC) checks.
+- **13:06 / 13:16** Circuit breaker tripped twice on a false `missing_bracket_protection:GOOGL`
+  (duplicate flatten while the first was pending) — automation paused for the rest of the
+  week. Full trace and fix under 2026-09-13.
+- **13:14–13:17** Shipped the boot-time funnel preflight (`207c6d9`, deployment `10b83c39`
+  SUCCESS). First report: 25/25 symbols open, sizing cap $12,500, global blockers = the
+  kill switch + pause above. It did its job: the blocker was visible in `run_logs` at boot.
+- **Thursday result: 0 proposals, 0 trades** (paused from 13:06).
 
 ## 2026-09-09 (Wed)
 

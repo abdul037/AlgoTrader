@@ -24,8 +24,21 @@ These are permanent guardrails, not goals:
 
 ---
 
-## Current status (as of 2026-09-08)
+## Current status (as of 2026-09-13)
 
+- **Three sessions lost to a persisted kill switch (Thu 2026-09-10 13:06 → Sun 09-13).**
+  A pre-market duplicate flatten of the unprotected GOOGL share was rejected by Alpaca
+  (shares already held by the first flatten), reconciliation recorded it as
+  `missing_bracket_protection`, the circuit breaker tripped, and the kill switch sat in
+  `runtime_state` with nothing to clear it: Thu/Fri 0 proposals, 0 trades. The boot-time
+  funnel preflight shipped that morning exposed the blocker in `run_logs`. Fixed in
+  `2efc6de`: a position with a live reducing order is "closing in flight" (no re-flatten,
+  no issue); a qty-held rejection is deferred, not a breaker; and a **paper-only
+  self-healing loop** re-probes reconciliation every 10 min while the breaker is tripped
+  and resumes once clean (max 3/day, never over an operator pause / manual kill switch /
+  `KILL_SWITCH_ENABLED` / account mismatch / real trading). Lesson recorded: any safety
+  state that persists across deploys needs an owner that clears it, or the unattended
+  bot dies silently. Details: `OPS_LOG.md` 2026-09-13.
 - **🎉 FIRST AUTONOMOUS PAPER TRADE (2026-09-08 17:00:50 UTC).** GOOGL buy 1 @ $338.75,
   `opening_range_breakout_retest`, Alpaca paper bracket (stop $333.24 / target $349.39),
   reconciliation clean. The unattended pipeline is end-to-end proven: scan → near-miss /
