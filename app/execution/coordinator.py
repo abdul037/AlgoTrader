@@ -11,10 +11,12 @@ from typing import Any
 
 from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 
+from app.broker import crypto as crypto_symbols
 from app.broker.router import BrokerRouter, NoBrokerForAssetClass
 from app.models.approval import ApprovalStatus
 from app.models.execution import ExecutionRecord, ExecutionStatus
 from app.models.execution_queue import ExecutionQueueRecord, ExecutionQueueStatus
+from app.models.trade import AssetClass
 from app.risk.context import build_risk_context
 from app.risk.guardrails import RiskManager
 from app.risk.volatility_target import daily_drawdown_pct, drawdown_governor_multiplier
@@ -458,13 +460,32 @@ class ExecutionCoordinator:
                 float(proposal.order.amount_usd),
                 float(getattr(self.settings, "max_trade_amount_usd", 1000.0)),
             )
-            if broker_name == "alpaca":
+            order_asset_class = getattr(proposal.order, "asset_class", None)
+            is_crypto = (
+                order_asset_class == AssetClass.CRYPTO
+                or crypto_symbols.is_crypto_symbol(proposal.order.symbol)
+            )
+            if broker_name == "alpaca" and not is_crypto:
                 qty = math.floor(capped_amount / max(float(quote_price), 0.01))
                 if qty < 1:
                     raise ValueError("one_share_exceeds_max_trade_amount")
             else:
+                # Crypto (and non-Alpaca brokers) trade fractional quantities.
                 qty = capped_amount / max(float(quote_price), 0.01)
-            if (
+            if is_crypto and broker_name == "alpaca" and hasattr(broker, "submit_crypto_protected_order"):
+                # Alpaca has no crypto bracket orders: entry + separate stop,
+                # backed by the reconciliation auto-flatten of any unprotected
+                # owned position. Crypto is exempt from the regular-hours gate.
+                if qty <= 0:
+                    raise ValueError("crypto_notional_below_min_order")
+                broker_execution = broker.submit_crypto_protected_order(
+                    symbol=proposal.order.symbol,
+                    qty=qty,
+                    stop_loss_price=float(proposal.order.stop_loss),
+                    take_profit_price=float(proposal.order.take_profit) if proposal.order.take_profit else None,
+                    client_order_id=client_order_id,
+                )
+            elif (
                 broker_name == "alpaca"
                 and bool(getattr(self.settings, "alpaca_require_bracket_orders", True))
                 and hasattr(broker, "submit_bracket_order")

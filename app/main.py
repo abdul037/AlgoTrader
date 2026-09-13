@@ -237,6 +237,7 @@ def create_app(
             etoro_client=broker,
             broker_for_equities=app_settings.broker_for_equities,
             broker_for_non_equities=app_settings.broker_for_non_equities,
+            broker_for_crypto=app_settings.broker_for_crypto,
         )
     if market_data_client is None:
         from app.broker.etoro_market_data import EtoroMarketDataClient

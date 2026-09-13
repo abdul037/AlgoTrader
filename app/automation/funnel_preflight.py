@@ -22,6 +22,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from app.broker import crypto as crypto_symbols
 from app.broker.instrument_resolver import InstrumentResolver
 from app.risk.proposal_sizing import risk_based_proposal_notional
 from app.universe import resolve_universe
@@ -134,7 +135,15 @@ def _first_symbol_blocker(
     except ValueError as exc:
         return f"instrument:{exc}", info
     # 2. Broker asset support (best effort; skipped when no client is wired).
-    if alpaca is not None and hasattr(alpaca, "is_supported_equity"):
+    #    Crypto pairs are checked against crypto support, not equity support.
+    if crypto_symbols.is_crypto_symbol(symbol):
+        if alpaca is not None and hasattr(alpaca, "is_supported_crypto"):
+            try:
+                if not alpaca.is_supported_crypto(symbol):
+                    return "symbol_not_supported_by_alpaca", info
+            except Exception as exc:  # noqa: BLE001 - a broker hiccup is not a config blocker
+                info["alpaca_asset_check_error"] = str(exc)
+    elif alpaca is not None and hasattr(alpaca, "is_supported_equity"):
         try:
             if not alpaca.is_supported_equity(symbol):
                 return "symbol_not_supported_by_alpaca", info

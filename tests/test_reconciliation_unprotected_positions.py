@@ -199,6 +199,30 @@ def test_pending_close_order_means_closing_in_flight_not_unprotected(tmp_path) -
     assert automation.status().kill_switch_enabled is False
 
 
+def test_live_stop_order_protects_a_position_without_a_bracket(tmp_path) -> None:
+    # Crypto has no native bracket: a live stop-limit sell is what protects the
+    # position. The dead bracket legs must not cause a flatten when a working
+    # protective stop exists.
+    protective_stop = {
+        "broker_order_id": "stop-1",
+        "symbol": "GOOGL",
+        "side": "sell",
+        "type": "stop_limit",
+        "qty": 1.0,
+        "status": "new",
+    }
+    broker = BrokerWithDeadBracket(leg_statuses=("expired", "canceled"), extra_orders=[protective_stop])
+    service, automation, logs = _service(tmp_path, broker)
+
+    result = service.reconcile()
+
+    assert result["status"] == "ok"
+    assert result["issues"] == []
+    assert broker.closed == []
+    assert "unprotected_position_closing_in_flight" not in _events(logs)
+    assert automation.status().kill_switch_enabled is False
+
+
 def test_flatten_rejected_because_qty_is_held_is_deferred_not_a_breaker(tmp_path) -> None:
     # Alpaca 40310000: the share is committed to a working order already, so
     # the position is not bare. The old code turned this into

@@ -10,6 +10,7 @@ from app.automation.reliability import (
     auto_approval_tier_blockers,
     proposal_quality_label,
 )
+from app.broker import crypto as crypto_symbols
 from app.models.approval import ApprovalDecisionRequest
 from app.models.execution import ExecutionStatus
 from app.screener.profiles import effective_auto_execution_min_score
@@ -91,7 +92,14 @@ class PaperAutoTradingService:
         regular_hours_required = bool(getattr(self.settings, "auto_execution_regular_hours_only", True))
         if paper_exploration:
             regular_hours_required = bool(getattr(self.settings, "paper_exploration_require_regular_hours", True))
-        if regular_hours_required and (
+        # Crypto trades 24/7, so it is exempt from the regular-hours gate (and
+        # only that gate). Every other hard gate still applies to crypto.
+        is_crypto = (
+            bool(getattr(self.settings, "crypto_trading_enabled", False))
+            and bool(getattr(self.settings, "crypto_regular_hours_exempt", True))
+            and crypto_symbols.is_crypto_symbol(symbol)
+        )
+        if regular_hours_required and not is_crypto and (
             self.alpaca is None or not self.alpaca.is_regular_market_open()
         ):
             blockers.append("outside_regular_market_hours")

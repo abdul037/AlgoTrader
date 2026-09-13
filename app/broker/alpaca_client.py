@@ -14,8 +14,10 @@ from typing import Any
 import pandas as pd
 from alpaca.common.exceptions import APIError
 from alpaca.data.enums import DataFeed
-from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.historical import CryptoHistoricalDataClient, StockHistoricalDataClient
 from alpaca.data.requests import (
+    CryptoBarsRequest,
+    CryptoLatestQuoteRequest,
     StockBarsRequest,
     StockLatestQuoteRequest,
     StockLatestTradeRequest,
@@ -28,11 +30,13 @@ from alpaca.trading.requests import (
     GetOrdersRequest,
     LimitOrderRequest,
     MarketOrderRequest,
+    StopLimitOrderRequest,
     StopLossRequest,
     StopOrderRequest,
     TakeProfitRequest,
 )
 
+from app.broker import crypto as crypto_symbols
 from app.broker.etoro_client import BrokerClient
 from app.live_signal_schema import MarketQuote
 from app.models.execution import (
@@ -78,6 +82,12 @@ class AlpacaClient(BrokerClient):
             api_key=api_key,
             secret_key=secret_key,
             url_override=data_base_url,
+        )
+        # Crypto uses a separate historical client and its own request types;
+        # it shares the same keys and trades 24/7.
+        self.crypto_data_client = CryptoHistoricalDataClient(
+            api_key=api_key,
+            secret_key=secret_key,
         )
 
     def get_portfolio(self) -> PortfolioSummary:
@@ -153,6 +163,48 @@ class AlpacaClient(BrokerClient):
             and status in {"", "active"}
         )
 
+    def is_supported_crypto(self, symbol: str) -> bool:
+        """Return whether Alpaca currently exposes the symbol as a tradable crypto pair."""
+
+        if not crypto_symbols.is_crypto_symbol(symbol):
+            return False
+        asset = self.trading_client.get_asset(crypto_symbols.to_alpaca_symbol(symbol))
+        asset_class = _enum_value(
+            getattr(asset, "asset_class", getattr(asset, "class", ""))
+        ).lower()
+        status = _enum_value(getattr(asset, "status", "")).lower()
+        return (
+            bool(getattr(asset, "tradable", False))
+            and asset_class in {"crypto"}
+            and status in {"", "active"}
+        )
+
+    def _get_crypto_quote(self, symbol: str) -> MarketQuote:
+        pair = crypto_symbols.to_alpaca_symbol(symbol)
+        response = self.crypto_data_client.get_crypto_latest_quote(
+            CryptoLatestQuoteRequest(symbol_or_symbols=pair)
+        )
+        quote = _extract_symbol_payload(response, pair)
+        bid = _to_float(getattr(quote, "bid_price", getattr(quote, "bp", None)))
+        ask = _to_float(getattr(quote, "ask_price", getattr(quote, "ap", None)))
+        mid = None
+        if bid and ask:
+            mid = round((bid + ask) / 2.0, 8)
+        timestamp = getattr(quote, "timestamp", None) or getattr(quote, "t", None)
+        return MarketQuote(
+            symbol=pair,
+            bid=bid,
+            ask=ask,
+            last_execution=mid if mid is not None else (ask or bid),
+            timestamp=_iso_timestamp(timestamp),
+            source="alpaca_crypto",
+            is_primary=True,
+            used_fallback=False,
+            from_cache=False,
+            quote_derived_from_history=False,
+            data_age_seconds=_data_age_seconds(timestamp),
+        )
+
     def get_asset_capabilities(self, symbol: str) -> dict[str, Any]:
         """Return Alpaca's current asset-level trading and shortability flags."""
 
@@ -192,6 +244,8 @@ class AlpacaClient(BrokerClient):
 
         del force_refresh, timeframe
         normalized = symbol.upper().strip()
+        if crypto_symbols.is_crypto_symbol(normalized):
+            return self._get_crypto_quote(normalized)
         feed = self._data_feed()
         quote_response = self.data_client.get_stock_latest_quote(
             StockLatestQuoteRequest(symbol_or_symbols=normalized, feed=feed)
@@ -231,6 +285,16 @@ class AlpacaClient(BrokerClient):
         """Call StockHistoricalDataClient.get_stock_bars and return normalized OHLCV."""
 
         normalized = symbol.upper().strip()
+        if crypto_symbols.is_crypto_symbol(normalized):
+            pair = crypto_symbols.to_alpaca_symbol(normalized)
+            request = CryptoBarsRequest(
+                symbol_or_symbols=pair,
+                timeframe=_to_timeframe(timeframe),
+                start=start,
+                end=end,
+            )
+            response = self.crypto_data_client.get_crypto_bars(request)
+            return _bars_to_frame(response, pair)
         request = StockBarsRequest(
             symbol_or_symbols=normalized,
             timeframe=_to_timeframe(timeframe),
@@ -349,6 +413,88 @@ class AlpacaClient(BrokerClient):
                 client_order_id=client_order_id,
                 request=request,
             )
+
+    def submit_crypto_protected_order(
+        self,
+        *,
+        symbol: str,
+        qty: float,
+        stop_loss_price: float,
+        take_profit_price: float | None = None,
+        client_order_id: str | None = None,
+    ) -> ExecutionRecord:
+        """Open a long crypto position and immediately protect it with a stop.
+
+        Alpaca has no native bracket (OCO/OTO) orders for crypto, so protection
+        is a separate stop-limit sell for the full quantity, submitted right
+        after the entry fills. Crypto is long-only and requires GTC. If the
+        protective order cannot be placed, the position is left for the
+        reconciliation sweep, which flattens any owned position without a live
+        protective order — so a naked crypto position never persists.
+        """
+
+        pair = crypto_symbols.to_alpaca_symbol(symbol)
+        quantity = float(qty)
+        if quantity <= 0:
+            raise ValueError("Crypto order quantity must be positive")
+        if float(stop_loss_price) <= 0:
+            raise ValueError("Crypto stop-loss price must be positive")
+        entry_request = MarketOrderRequest(
+            symbol=pair,
+            qty=quantity,
+            side=OrderSide.BUY,
+            type=OrderType.MARKET,
+            time_in_force=TimeInForce.GTC,
+            client_order_id=client_order_id,
+        )
+        try:
+            entry_order = self.trading_client.submit_order(entry_request)
+        except Exception as exc:  # noqa: BLE001
+            return self._handle_order_error(
+                exc, symbol=pair, side="buy", qty=quantity,
+                client_order_id=client_order_id, request=entry_request,
+            )
+        entry_record = _execution_record(entry_order, paper=self.paper, request=entry_request)
+
+        # Protective stop-limit sell for the full quantity. Limit sits a touch
+        # below the stop so a fast move still fills.
+        stop = round(float(stop_loss_price), 2)
+        limit = round(stop * 0.995, 2)
+        protective_status = "not_submitted"
+        protective_order_id = None
+        try:
+            protective = self.trading_client.submit_order(
+                StopLimitOrderRequest(
+                    symbol=pair,
+                    qty=quantity,
+                    side=OrderSide.SELL,
+                    time_in_force=TimeInForce.GTC,
+                    stop_price=stop,
+                    limit_price=limit,
+                    client_order_id=(f"{client_order_id}-stop" if client_order_id else None),
+                )
+            )
+            protective_order_id = str(getattr(protective, "id", "") or "")
+            protective_status = str(_enum_value(getattr(protective, "status", "")) or "submitted")
+            logger.info(
+                "alpaca_crypto_protective_order_submitted",
+                extra=_order_log_fields(symbol=pair, side="sell", qty=quantity,
+                                        broker_order_id=protective_order_id, status=protective_status),
+            )
+        except Exception as exc:  # noqa: BLE001 - protection failure must not raise; auto-flatten is the net
+            protective_status = f"error:{exc}"
+            logger.warning("alpaca_crypto_protective_order_failed", extra={"symbol": pair, "error": str(exc)})
+
+        payload = dict(entry_record.response_payload or {})
+        payload.update({
+            "asset_class": "crypto",
+            "protective_order_id": protective_order_id,
+            "protective_status": protective_status,
+            "stop_loss_price": stop,
+            "take_profit_price": float(take_profit_price) if take_profit_price else None,
+        })
+        entry_record.response_payload = payload
+        return entry_record
 
     def cancel_order(self, broker_order_id: str) -> bool:
         """Call TradingClient.cancel_order_by_id for one broker order."""

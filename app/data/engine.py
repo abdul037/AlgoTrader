@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import sleep, time
 from typing import Any
 
 import pandas as pd
 
+from app.broker import crypto as crypto_symbols
 from app.broker.etoro_rate_limit import EToroRateLimitError
+from app.data.market_data import MarketDataService
 from app.live_signal_schema import MarketQuote
 from app.runtime_settings import AppSettings
-from app.data.market_data import MarketDataService
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +217,10 @@ class MarketDataEngine:
 
         if provider == "yfinance":
             config = TIMEFRAME_CONFIG[timeframe]
-            yf_symbol = symbol.replace(".", "-")
+            if crypto_symbols.is_crypto_symbol(symbol):
+                yf_symbol = crypto_symbols.to_yfinance_symbol(symbol)
+            else:
+                yf_symbol = symbol.replace(".", "-")
             frame = self.history_service.load_yfinance(
                 yf_symbol,
                 period=config["period"],
@@ -382,7 +386,7 @@ class MarketDataEngine:
 
     @staticmethod
     def _history_window(timeframe: str, bars: int) -> tuple[datetime, datetime]:
-        end = datetime.now(timezone.utc)
+        end = datetime.now(UTC)
         if timeframe == "1d":
             lookback_days = max(10, int(bars * 3))
         elif timeframe == "1h":

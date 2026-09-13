@@ -529,6 +529,7 @@ class AppSettings(BaseSettings):
     execution_mode: Literal["paper", "live"] = "paper"
     broker_for_equities: Literal["alpaca", "etoro", "none"] = "alpaca"
     broker_for_non_equities: Literal["alpaca", "etoro", "none"] = "etoro"
+    broker_for_crypto: Literal["alpaca", "etoro", "none"] = "alpaca"
     paper_broker: Literal["alpaca", "self_simulated"] = "alpaca"
     paper_simulated_fallback_enabled: bool = False
     kill_switch_auto_close_positions: bool = False
@@ -616,6 +617,21 @@ class AppSettings(BaseSettings):
     blocked_instruments: list[str] = Field(
         default_factory=lambda: ["OIL", "NATGAS", "SILVER"]
     )
+
+    # Crypto is additive to the equities pipeline and trades 24/7. It is routed
+    # to Alpaca (paper), sized like equities, and — because Alpaca has no native
+    # bracket orders for crypto — protected by a separate stop order plus the
+    # reconciliation auto-flatten of any position left without live protection.
+    # The equity path and every hard risk gate are unchanged; crypto is only
+    # exempt from the regular-hours gate (that is the point of 24/7).
+    # Default off in code; enabled in production via CRYPTO_TRADING_ENABLED=true
+    # so every existing test and scan keeps its equity-only universe unless the
+    # operator explicitly turns crypto on.
+    crypto_trading_enabled: bool = False
+    crypto_symbols: list[str] = Field(
+        default_factory=lambda: ["BTC/USD", "ETH/USD", "SOL/USD", "LTC/USD", "LINK/USD", "AVAX/USD"]
+    )
+    crypto_regular_hours_exempt: bool = True
 
     default_equity_leverage: int = 1
     max_equity_leverage: int = 5

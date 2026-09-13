@@ -246,11 +246,15 @@ class AlpacaReconciliationService:
         }
         owned_symbols: set[str] = set()
         protected_symbols: set[str] = set()
-        # symbol -> sides with a live top-level order (a market close, a stop, a
-        # limit). Shares committed to such an order are not bare: on 2026-09-10 a
+        # symbol -> sides with a live *market* reducing order (an in-flight
+        # close). Shares committed to such an order are not bare: on 2026-09-10 a
         # pre-market flatten was still pending when the next sweep tried to
         # flatten again, Alpaca rejected it (qty held) and the breaker tripped.
-        live_order_sides: dict[str, set[str]] = {}
+        live_close_sides: dict[str, set[str]] = {}
+        # symbol -> sides with a live protective (stop / stop_limit / limit)
+        # reducing order. Crypto has no native bracket, so its stop-limit sell is
+        # what protects the position; a live one means "protected".
+        live_protective_sides: dict[str, set[str]] = {}
 
         for order in orders:
             payload = dict(order.response_payload or {})
@@ -270,7 +274,12 @@ class AlpacaReconciliationService:
             if execution is not None and payload.get("order_class") == "bracket" and live_legs:
                 protected_symbols.add(symbol)
             if symbol and _leg_is_live(payload):
-                live_order_sides.setdefault(symbol, set()).add(str(payload.get("side") or "").lower())
+                side = str(payload.get("side") or "").lower()
+                order_type = str(payload.get("order_type") or payload.get("type") or "").lower()
+                if order_type in {"stop", "stop_limit", "stop-limit", "limit", "trailing_stop"}:
+                    live_protective_sides.setdefault(symbol, set()).add(side)
+                else:
+                    live_close_sides.setdefault(symbol, set()).add(side)
             if broker_order_id:
                 self._upsert_order(payload, execution_id=execution_id, parent_order_id=None)
             for leg in legs:
@@ -281,9 +290,14 @@ class AlpacaReconciliationService:
             if symbol not in owned_symbols:
                 issues.append(f"unknown_position:{symbol}")
             if symbol not in protected_symbols:
-                if _closing_side(position) in live_order_sides.get(symbol, set()):
-                    # A working reducing order (usually our own flatten waiting
-                    # for the open) already commits the shares: closing in flight.
+                closing_side = _closing_side(position)
+                if closing_side in live_protective_sides.get(symbol, set()):
+                    # A live stop / limit reducing order protects the position.
+                    # This is how crypto positions are protected (no bracket).
+                    continue
+                if closing_side in live_close_sides.get(symbol, set()):
+                    # A working market reducing order (usually our own flatten
+                    # waiting for the open) already commits the shares.
                     self.logs.log(
                         "unprotected_position_closing_in_flight",
                         {"symbol": symbol, "quantity": float(getattr(position, "quantity", 0.0) or 0.0)},

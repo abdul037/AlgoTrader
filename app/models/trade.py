@@ -20,6 +20,7 @@ class AssetClass(str, Enum):
 
     EQUITY = "equity"
     GOLD = "gold"
+    CRYPTO = "crypto"
     UNKNOWN = "unknown"
 
 
