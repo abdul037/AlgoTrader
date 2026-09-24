@@ -44,6 +44,24 @@ def scan_universe(
 ) -> ScreenerRunResponse:
     universe = [symbol.upper() for symbol in (symbols or resolve_universe(service.settings))]
     scan_timeframes = [timeframe.lower() for timeframe in (timeframes or service.settings.screener_default_timeframes)]
+    # Rotating scan cursor. The per-symbol data fetch is slow enough that a
+    # scheduled scan routinely hits its wall-clock deadline after only the first
+    # handful of symbols. With a fixed order the tail of the universe -- notably
+    # the crypto pairs appended last -- was never reached, so it never produced a
+    # candidate or a trade (crypto: 0 trades in the first week live). Start each
+    # scan of a given task where the previous one stopped, so the whole universe
+    # -- crypto included -- is covered over successive scans instead of only the
+    # first few names each time. Crypto is rotated alongside equities so neither
+    # can starve the other.
+    scan_offset = 0
+    rotate_universe = symbols is None and len(universe) > 1
+    if rotate_universe:
+        cursors = getattr(service, "_scan_cursors", None)
+        if cursors is None:
+            cursors = {}
+            service._scan_cursors = cursors
+        scan_offset = int(cursors.get(scan_task, 0)) % len(universe)
+        universe = universe[scan_offset:] + universe[:scan_offset]
     requested_spec_keys = _normalize_spec_keys(strategy_spec_keys)
     candidates: list[Any] = []
     errors: list[str] = []
@@ -908,6 +926,10 @@ def scan_universe(
         item.model_copy(update={"rank": index + 1})
         for index, item in enumerate(ranked[:top_k])
     ]
+    # Advance the rotating cursor so the next scan of this task begins on the
+    # symbols this one did not reach, sweeping the whole universe over time.
+    if rotate_universe:
+        service._scan_cursors[scan_task] = (scan_offset + max(evaluated_symbols, 1)) % len(universe)
     expected_strategy_runs = 0
     for timeframe in scan_timeframes:
         expected_strategy_runs += len(_strategy_specs_for_timeframe(service, timeframe, requested_spec_keys)) * len(universe)
