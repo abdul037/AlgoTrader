@@ -12,6 +12,7 @@ from app.execution.interfaces import SignalApprovalAdapter
 from app.models.workflow import WorkflowBucketStatus, WorkflowStatusResponse, WorkflowTaskResponse
 from app.universe import resolve_universe
 from app.utils.time import utc_now
+from app.workflow.crypto_scan import crypto_bucket_enabled, crypto_scan_due, run_crypto_scan
 from app.workflow.operations import (
     candidate_with_ledger_outcome,
     check_open_signals_impl,
@@ -50,7 +51,7 @@ class SignalWorkflowService:
     """Coordinate scheduled scans, tracked open signals, and daily summaries."""
 
     LedgerRecordingError = LedgerRecordingError
-    SCAN_BUCKETS = ("premarket_scan", "market_open_scan", "intraday_rotation", "swing_hourly", "end_of_day_scan")
+    SCAN_BUCKETS = ("premarket_scan", "market_open_scan", "intraday_rotation", "swing_hourly", "end_of_day_scan", "crypto_rotation")
     SCHEDULER_BUCKETS = (*SCAN_BUCKETS, "maintenance")
 
     def __init__(
@@ -371,6 +372,7 @@ class SignalWorkflowService:
             "premarket_scan": lambda: self.run_premarket_scan(notify=notify, force_refresh=force_refresh),
             "market_open_scan": lambda: self.run_market_open_scan(notify=notify, force_refresh=force_refresh),
             "intraday_rotation": lambda: self.run_intraday_scan(notify=notify, force_refresh=force_refresh),
+            "crypto_rotation": lambda: run_crypto_scan(self, notify=notify, force_refresh=force_refresh),
             "swing_hourly": lambda: self.run_swing_scan(notify=notify, force_refresh=force_refresh),
             "end_of_day_scan": lambda: self.run_end_of_day_scan(notify=notify, force_refresh=force_refresh),
             "maintenance": lambda: self.run_maintenance(notify=notify),
@@ -384,17 +386,8 @@ class SignalWorkflowService:
         return [self._bucket_status(name) for name in self.SCHEDULER_BUCKETS]
 
     def status(self) -> WorkflowStatusResponse:
-        state_keys = [
-            "workflow:last_premarket_scan_at",
-            "workflow:last_market_open_scan_at",
-            "workflow:last_intelligent_scan_at",
-            "workflow:last_swing_scan_at",
-            "workflow:last_intraday_scan_at",
-            "workflow:last_end_of_day_scan_at",
-            "workflow:last_open_signal_check_at",
-            "workflow:last_ledger_cycle_at",
-            "workflow:last_daily_summary_at",
-        ]
+        _scan_keys = ("premarket_scan", "market_open_scan", "intelligent_scan", "swing_scan", "intraday_scan", "end_of_day_scan", "open_signal_check", "ledger_cycle", "daily_summary")
+        state_keys = [f"workflow:last_{name}_at" for name in _scan_keys]
         state = self._runtime_state_get_many(state_keys)
         return WorkflowStatusResponse(
             scheduler_enabled=bool(self.settings.screener_scheduler_enabled),
@@ -761,6 +754,8 @@ class SignalWorkflowService:
             return self._named_scan_due("workflow:last_market_open_scan_at", True, self.settings.market_open_scan_time_local)
         if bucket_name == "intraday_rotation":
             return self._intraday_scan_due()
+        if bucket_name == "crypto_rotation":
+            return crypto_scan_due(self)
         if bucket_name == "swing_hourly":
             return self._swing_scan_due()
         if bucket_name == "end_of_day_scan":
@@ -880,6 +875,8 @@ class SignalWorkflowService:
             return bool(getattr(self.settings, "market_open_scan_enabled", False))
         if bucket_name == "intraday_rotation":
             return bool(getattr(self.settings, "intraday_repeated_scan_enabled", False))
+        if bucket_name == "crypto_rotation":
+            return crypto_bucket_enabled(self)
         if bucket_name == "swing_hourly":
             return int(getattr(self.settings, "swing_scan_interval_minutes", 0) or 0) > 0
         if bucket_name == "end_of_day_scan":

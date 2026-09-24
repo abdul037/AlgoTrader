@@ -8,6 +8,7 @@ import pandas as pd
 
 from app.live_signal_schema import LiveSignalSnapshot, MarketQuote, SignalState
 from app.models.screener import ScreenerRunResponse
+from app.workflow.crypto_scan import crypto_scan_due, crypto_scan_symbols, run_crypto_scan
 from app.workflow.operations import auto_propose_candidates
 from app.workflow.service import SignalWorkflowService
 from tests.conftest import make_settings
@@ -511,6 +512,63 @@ def test_maintenance_runs_rl_policy_training_and_proposal_when_enabled(tmp_path)
     assert "rl_policy_proposal_queued" in result.detail
 
 
+def test_crypto_scan_bucket_is_24_7_and_scans_only_crypto(tmp_path) -> None:
+    screener = FakeMarketScreener([])
+    workflow = SignalWorkflowService(
+        settings=make_settings(
+            tmp_path,
+            screener_scheduler_enabled=True,
+            crypto_trading_enabled=True,
+            crypto_symbols=["BTC/USD", "ETH/USD"],
+            crypto_scan_interval_minutes=10,
+            ledger_enabled=False,
+            ledger_cycle_enabled=False,
+        ),
+        market_screener=screener,
+        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="BTC/USD", last_execution=50000.0)),
+        notifier=FakeNotifier(),
+        tracked_signals=FakeTrackedSignals(),
+        alert_history=FakeAlertHistory(),
+        runtime_state=FakeState(),
+        run_logs=FakeLogs(),
+    )
+
+    # Enabled and due out of the box, and never gated on a market day/hour
+    # (the method must not consult is_market_day at all).
+    assert workflow._bucket_enabled("crypto_rotation") is True
+    assert crypto_scan_due(workflow) is True
+    assert crypto_scan_symbols(workflow) == ["BTC/USD", "ETH/USD"]
+
+    run_crypto_scan(workflow, notify=False)
+
+    # The crypto bucket scans crypto only -- never equities.
+    assert screener.calls, "crypto scan should have invoked the screener"
+    scanned = screener.calls[-1]
+    assert set(scanned.get("symbols") or []) == {"BTC/USD", "ETH/USD"}
+
+
+def test_crypto_scan_bucket_disabled_when_crypto_off(tmp_path) -> None:
+    workflow = SignalWorkflowService(
+        settings=make_settings(
+            tmp_path,
+            screener_scheduler_enabled=True,
+            crypto_trading_enabled=False,
+            crypto_symbols=["BTC/USD"],
+            ledger_enabled=False,
+            ledger_cycle_enabled=False,
+        ),
+        market_screener=FakeMarketScreener([]),
+        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="BTC/USD", last_execution=50000.0)),
+        notifier=FakeNotifier(),
+        tracked_signals=FakeTrackedSignals(),
+        alert_history=FakeAlertHistory(),
+        runtime_state=FakeState(),
+        run_logs=FakeLogs(),
+    )
+    assert workflow._bucket_enabled("crypto_rotation") is False
+    assert workflow._bucket_due("crypto_rotation") is False
+
+
 def test_scheduled_tasks_skip_scans_when_automation_paused(tmp_path) -> None:
     screener = FakeMarketScreener([])
     logs = FakeLogs()
@@ -608,7 +666,7 @@ def test_cadence_defers_buckets_once_soft_budget_is_reached(tmp_path, monkeypatc
     assert summary["buckets_run"] == 2
     deferred_events = [payload for event, payload in logs.items if event == "workflow_cadence_deferred"]
     assert len(deferred_events) == 1
-    assert deferred_events[0]["deferred_buckets"] == ["intraday_rotation", "swing_hourly", "end_of_day_scan"]
+    assert deferred_events[0]["deferred_buckets"] == ["intraday_rotation", "swing_hourly", "end_of_day_scan", "crypto_rotation"]
 
 
 def test_cadence_runs_all_buckets_when_budget_disabled(tmp_path, monkeypatch) -> None:

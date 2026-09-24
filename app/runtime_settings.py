@@ -632,6 +632,11 @@ class AppSettings(BaseSettings):
         default_factory=lambda: ["BTC/USD", "ETH/USD", "SOL/USD", "LTC/USD", "LINK/USD", "AVAX/USD"]
     )
     crypto_regular_hours_exempt: bool = True
+    # Crypto trades 24/7, but every equity scan bucket is gated to US market
+    # hours, so without a dedicated bucket crypto is only scanned mid-session.
+    # This bucket scans the crypto pairs on a fixed interval around the clock.
+    crypto_scan_interval_minutes: int = 10
+    crypto_scan_timeframes: list[str] = Field(default_factory=lambda: ["15m", "1h"])
 
     default_equity_leverage: int = 1
     max_equity_leverage: int = 5
