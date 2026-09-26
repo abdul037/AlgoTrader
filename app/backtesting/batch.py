@@ -248,11 +248,17 @@ class BatchBacktestService:
         )
         per_fold_trades: list[list[dict]] = []
         per_fold_metrics: list[dict] = []
+        # Folds run through a repo-less engine, like the holdout: each fold used
+        # to be persisted as its own row (~37 per run, every 30 min), which grew
+        # the table to 1.4M rows, slowed every lookup, and made the
+        # expectancy baseline average ~10-bar fold slices instead of the real
+        # OOS aggregate. Only the aggregate walk_forward_oos row is persisted.
+        fold_engine = BacktestEngine(config=engine.config)
         for window in splitter.split(history):
             # Feed the train bars as indicator warm-up but evaluate only the
             # test window: a 14-day fold alone (~10 daily bars) is below every
             # strategy's warm-up, which is why 1.2M fold runs produced 0 trades.
-            fold_result = engine.run(
+            fold_result = fold_engine.run(
                 symbol=symbol,
                 strategy=strategy,
                 data=_with_warmup(window),
