@@ -156,6 +156,7 @@ CREATE TABLE IF NOT EXISTS backtests (
     metrics_json TEXT NOT NULL,
     trades_json TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_backtests_symbol_strategy_completed ON backtests(symbol, strategy_name, completed_at); CREATE INDEX IF NOT EXISTS idx_backtests_completed_at ON backtests(completed_at);
 
 CREATE TABLE IF NOT EXISTS signals (
     id TEXT PRIMARY KEY,
@@ -248,7 +249,7 @@ CREATE TABLE IF NOT EXISTS scan_decisions (
 
 CREATE INDEX IF NOT EXISTS idx_scan_decisions_symbol ON scan_decisions(symbol);
 CREATE INDEX IF NOT EXISTS idx_scan_decisions_status ON scan_decisions(status);
-CREATE INDEX IF NOT EXISTS idx_scan_decisions_lookup ON scan_decisions(symbol, strategy_name, timeframe, created_at);
+CREATE INDEX IF NOT EXISTS idx_scan_decisions_lookup ON scan_decisions(symbol, strategy_name, timeframe, created_at); CREATE INDEX IF NOT EXISTS idx_scan_decisions_created_at ON scan_decisions(created_at);
 
 CREATE TABLE IF NOT EXISTS paper_positions (
     id TEXT PRIMARY KEY,
@@ -821,8 +822,7 @@ CREATE TABLE IF NOT EXISTS rl_policy_proposals (
 
 CREATE INDEX IF NOT EXISTS idx_rl_policy_proposals_created
 ON rl_policy_proposals(created_at);
-CREATE INDEX IF NOT EXISTS idx_rl_policy_proposals_status
-ON rl_policy_proposals(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_rl_policy_proposals_status ON rl_policy_proposals(status, created_at);
 """
 
 
