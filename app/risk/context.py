@@ -19,8 +19,10 @@ def build_risk_context(settings: Any, broker: Any, executions_repo: Any) -> Risk
 
     start_of_day = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
     trades_today = executions_repo.count_since(start_of_day)
-    daily_pnl, _daily_loss_streak = executions_repo.daily_loss_stats()
-    consecutive_losses = executions_repo.consecutive_losses()
+    # The loss-streak cooldown is per trading day (operator sign-off 2026-09-27).
+    # The all-history streak never reset: a halted bot can't book the win that
+    # would clear it, which locked trading out from 2026-09-16 onward.
+    daily_pnl, consecutive_losses = executions_repo.daily_loss_stats()
     weekly_pnl = executions_repo.period_realized_pnl(days=7)
 
     if settings.execution_mode == "paper" and getattr(settings, "paper_broker", "") == "self_simulated":

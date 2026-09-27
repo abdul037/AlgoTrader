@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.risk.position_sizing import calculate_position_size
+from app.risk.rules import effective_max_risk_per_trade_pct
 
 
 def risk_based_proposal_notional(
@@ -41,7 +42,9 @@ def risk_based_proposal_notional(
         return flat, {**details, "fallback_reason": "unparseable_inputs"}
     if entry <= 0 or stop <= 0 or entry == stop or equity <= 0:
         return flat, {**details, "fallback_reason": "missing_entry_stop_or_equity"}
-    risk_pct = float(getattr(settings, "max_risk_per_trade_pct", 1.0) or 1.0)
+    # Size to the cap the hard gate enforces, not just max_risk_per_trade_pct.
+    live = str(getattr(settings, "execution_mode", "paper")) == "live"
+    risk_pct = effective_max_risk_per_trade_pct(settings, live=live)
     sized = calculate_position_size(
         account_balance=equity,
         risk_pct=risk_pct,

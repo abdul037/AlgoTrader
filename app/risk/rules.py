@@ -33,3 +33,21 @@ def estimate_risk_amount(entry_price: float, stop_loss: float, amount_usd: float
     stop_distance_pct = abs(entry_price - stop_loss) / entry_price
     notional = amount_usd * leverage
     return notional * stop_distance_pct
+
+
+def effective_max_risk_per_trade_pct(settings: object, *, live: bool = False) -> float:
+    """Per-trade risk cap the hard gate enforces; sizers must size to the same number.
+
+    Mirrors the cap in ``RiskGuardrails``: with institutional portfolio controls
+    on, it tightens to the future-paper (or micro-live) limit. Sizing to
+    ``max_risk_per_trade_pct`` alone produced proposals the gate then rejected
+    ("Estimated trade risk 0.53-1.00% exceeds the 0.50% cap").
+    """
+
+    cap = float(getattr(settings, "max_risk_per_trade_pct", 1.0) or 1.0)
+    if bool(getattr(settings, "institutional_portfolio_controls_enabled", False)):
+        name = "portfolio_micro_live_max_risk_per_trade_pct" if live else "portfolio_future_max_risk_per_trade_pct"
+        tighter = getattr(settings, name, None)
+        if tighter is not None:
+            cap = min(cap, float(tighter))
+    return cap
