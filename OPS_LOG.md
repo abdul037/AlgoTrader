@@ -12,6 +12,36 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-09-27 (Sun) — covers 2026-09-14 → 09-27
+
+- **Account state:** flat, equity $99,607.60. Last trade 09-15; the 5 trades of the
+  aggressive run net **-$447.38** (NFLX price feed verified correct — ~10:1 split).
+- **Why stocks stopped trading after 09-15 (diagnosed 09-27).** 170 `auto_proposal_failed`
+  + 10 `auto_proposal_safety_blocked` since 09-16:
+  - 133× "Trading halted after 4 consecutive losses today" — **bug**: the cooldown read
+    the *all-history* loss streak. Only a win resets it and a halted bot cannot trade, so
+    the 09-15 streak was a permanent lockout.
+  - 37× "Estimated trade risk 0.53–1.00% exceeds the 0.50% cap" — sizers sized to
+    `MAX_RISK_PER_TRADE_PCT` (1.0%) while `INSTITUTIONAL_PORTFOLIO_CONTROLS_ENABLED`
+    tightens the gate to `portfolio_future_max_risk_per_trade_pct` (0.5%).
+  - 10× `strategy_not_production_approved` (AMZN/MSFT/NVDA, swing_scan) — open, to investigate.
+  - Scan-level rejections are dominated by `relative_volume_too_low` (quiet market; floor unchanged).
+- **Operator sign-off 09-27:** (1) loss-streak cooldown resets each trading day (still
+  halts for the rest of the day at 4); (2) option (a) — size trades to the gate's
+  effective cap (0.5% paper, 0.1% live) rather than raising the cap. Rationale: keep
+  per-trade losses small ahead of any future real-money stage.
+- **Fix `40b6f05`** (713 tests pass): shared `effective_max_risk_per_trade_pct()` used by
+  the auto-proposal sizer and `TraderService`; `build_risk_context` uses today's streak.
+  Hard gates unchanged.
+- **Also shipped this period:** `a920bab`/`22b05ad` crypto on Alpaca paper, 24/7 bucket
+  (operator sign-off; now parked — "stocks first"); `4133195` rotating scan cursor so the
+  whole universe is covered; `b63b8cf` backtest/scan-decision indexes (lookup 6070ms→6ms,
+  recent read ~11.8s→102ms; built CONCURRENTLY in prod first); `acee004` stop persisting
+  per-fold backtest rows (~37/run, table had 1.45M rows) and read the expectancy baseline
+  from the OOS aggregate.
+- **Next:** verify Mon 09-28 US session — proposals pass risk validation, scans evaluate
+  more symbols per run, trades execute with brackets.
+
 ## 2026-09-13 (Sun)
 
 - **Incident review — why nothing traded Thu/Fri.** The boot-time funnel preflight
