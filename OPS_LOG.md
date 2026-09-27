@@ -39,6 +39,10 @@ without explicit operator sign-off recorded here.
   recent read ~11.8s→102ms; built CONCURRENTLY in prod first); `acee004` stop persisting
   per-fold backtest rows (~37/run, table had 1.45M rows) and read the expectancy baseline
   from the OOS aggregate.
+- **09:14 Deployed and verified.** Deployment `af731500` SUCCESS; boot preflight 31/31 symbols
+  open, **0 global blockers**; paper-only policy confirmed; reconciliation clean (0 positions).
+  `workflow_cadence` 240s timeouts down from 206/day (09-25) to 2 since boot after the 09-26
+  indexes — watching. Notion mirror updated.
 - **Next:** verify Mon 09-28 US session — proposals pass risk validation, scans evaluate
   more symbols per run, trades execute with brackets.
 
