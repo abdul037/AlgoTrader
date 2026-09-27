@@ -18,7 +18,7 @@ def test_flat_default_when_disabled(tmp_path) -> None:
 
 
 def test_sizes_to_risk_pct_of_equity(tmp_path) -> None:
-    # 1% of $100k = $1,000 risk budget; a 2% stop -> $50,000 notional, under a $60k cap.
+    # 1% of $100k less the 2% sizing headroom = $980 risk; a 2% stop -> $49,000 notional.
     settings = make_settings(
         tmp_path,
         auto_propose_risk_based_sizing=True,
@@ -31,10 +31,10 @@ def test_sizes_to_risk_pct_of_equity(tmp_path) -> None:
         settings, entry_price=100.0, stop_price=98.0, equity_usd=100_000.0
     )
 
-    assert amount == 50_000.0
+    assert amount == 49_000.0
     assert details["sizing_mode"] == "risk_based"
     assert details["capped"] is False
-    assert details["effective_risk_usd"] == 1000.0
+    assert details["effective_risk_usd"] == 980.0
 
 
 def test_notional_cap_bounds_tight_stops(tmp_path) -> None:

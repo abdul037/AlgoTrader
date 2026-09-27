@@ -42,7 +42,21 @@ def test_risk_based_proposal_fits_under_the_gate_cap() -> None:
     risk_pct = estimate_risk_amount(entry, stop, amount, 1) / equity * 100.0
     assert details["sizing_mode"] == "risk_based"
     assert risk_pct <= effective_max_risk_per_trade_pct(settings)
-    assert risk_pct > 0.49  # still uses the whole budget
+    assert risk_pct > 0.48  # still uses nearly the whole budget
+
+
+def test_wide_stop_sizes_never_round_over_the_cap() -> None:
+    # QA review 2026-09-27: sizing to exactly 0.50% rounded to 0.50000005% on
+    # about half of wide-stop trades, which the strict gate rejected.
+    settings = _settings()
+    cap = effective_max_risk_per_trade_pct(settings)
+    for equity in (99_607.60, 100_055.06, 87_321.19):
+        for entry_cents in range(1_000, 60_000, 137):
+            entry = entry_cents / 100.0
+            for stop_pct in (0.01, 0.045, 0.08, 0.12):
+                stop = round(entry * (1 - stop_pct), 2)
+                amount, _ = risk_based_proposal_notional(settings, entry_price=entry, stop_price=stop, equity_usd=equity)
+                assert estimate_risk_amount(entry, stop, amount, 1) / equity * 100.0 <= cap
 
 
 class _Executions:

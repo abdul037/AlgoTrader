@@ -10,7 +10,7 @@ from app.models.signal import Signal, SignalAction
 from app.risk.context import build_risk_context
 from app.risk.guardrails import RiskManager
 from app.risk.position_sizing import calculate_position_size
-from app.risk.rules import effective_max_risk_per_trade_pct
+from app.risk.rules import sizing_risk_pct
 from app.runtime_settings import AppSettings
 from app.storage.repositories import ExecutionRepository, RunLogRepository
 from app.utils.time import utc_now
@@ -56,7 +56,7 @@ class TraderService:
             if signal.price and signal.stop_loss:
                 sizing = calculate_position_size(
                     account_balance=max(balance.equity, balance.cash_balance, 1.0),
-                    risk_pct=effective_max_risk_per_trade_pct(
+                    risk_pct=sizing_risk_pct(
                         self.settings, live=self.settings.execution_mode == "live"
                     ),
                     entry_price=signal.price,

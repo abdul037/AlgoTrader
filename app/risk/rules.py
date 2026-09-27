@@ -51,3 +51,15 @@ def effective_max_risk_per_trade_pct(settings: object, *, live: bool = False) ->
         if tighter is not None:
             cap = min(cap, float(tighter))
     return cap
+
+
+# Size a hair under the gate: rounding the notional half-up, or equity drifting
+# between proposal and the execution-time re-check, otherwise lands sizes at
+# 0.50000005% and the strict ``risk_pct > cap`` gate rejects about half of them.
+SIZING_HEADROOM = 0.98
+
+
+def sizing_risk_pct(settings: object, *, live: bool = False) -> float:
+    """Risk budget sizers use: the enforced cap less a small headroom."""
+
+    return effective_max_risk_per_trade_pct(settings, live=live) * SIZING_HEADROOM
