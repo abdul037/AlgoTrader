@@ -378,7 +378,7 @@ class ExecutionRepository:
             filled_at = next(
                 (
                     leg.get("filled_at")
-                    for leg in list(broker_execution.get("legs") or [])
+                    for leg in [*(broker_execution.get("legs") or []), dict(payload.get("exit_fill") or {})]
                     if str(leg.get("status") or "").lower() == "filled" and leg.get("filled_at")
                 ),
                 row["updated_at"],

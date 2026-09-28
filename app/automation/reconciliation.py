@@ -244,6 +244,21 @@ class AlpacaReconciliationService:
             for item in self.executions.list(limit=2000)
             if item.broker_order_id
         }
+        # Filled standalone sells (reconciliation flattens, manual closes) that
+        # close an execution whose bracket legs never filled. Without them the
+        # loss never reaches realized_pnl_usd, so the daily-loss cap and the
+        # loss-streak cooldown can't see it (QA review 2026-09-27).
+        standalone_exits: dict[str, list[dict[str, Any]]] = {}
+        for order in orders:
+            exit_payload = dict(order.response_payload or {})
+            if (
+                str(order.broker_order_id or "") not in executions_by_order
+                and str(exit_payload.get("side") or "").lower() == "sell"
+                and str(exit_payload.get("status") or "").lower() == "filled"
+                and not exit_payload.get("legs")
+                and exit_payload.get("filled_at")
+            ):
+                standalone_exits.setdefault(str(exit_payload.get("symbol") or "").upper(), []).append(exit_payload)
         owned_symbols: set[str] = set()
         protected_symbols: set[str] = set()
         # symbol -> sides with a live *market* reducing order (an in-flight
@@ -264,13 +279,15 @@ class AlpacaReconciliationService:
             symbol = str(payload.get("symbol") or "").upper()
             if execution is not None:
                 owned_symbols.add(symbol)
-                self._update_execution(execution, payload)
+                self._update_execution(execution, payload, standalone_exits.get(symbol))
             legs = list(payload.get("legs") or [])
             # A bracket only protects while at least one protective leg is still
             # working at the broker. Counting legs by existence alone reported
             # GOOGL as protected on 2026-09-09 after its TP had expired and its
             # stop had been cancelled at the close.
-            live_legs = [leg for leg in legs if _leg_is_live(leg)]
+            # Only a live *stop* leg caps the loss: a bracket whose take-profit is
+            # still working but whose stop was cancelled is not protected.
+            live_legs = [leg for leg in legs if _leg_is_live(leg) and "stop" in str(leg.get("type") or "").lower()]
             if execution is not None and payload.get("order_class") == "bracket" and live_legs:
                 protected_symbols.add(symbol)
             if symbol and _leg_is_live(payload):
@@ -361,7 +378,9 @@ class AlpacaReconciliationService:
         )
         return True
 
-    def _update_execution(self, execution: Any, payload: dict[str, Any]) -> None:
+    def _update_execution(
+        self, execution: Any, payload: dict[str, Any], exit_orders: list[dict[str, Any]] | None = None
+    ) -> None:
         status = str(payload.get("status") or "").lower()
 
         # Execution quality: signed slippage of the fill vs the decision price.
@@ -392,6 +411,13 @@ class AlpacaReconciliationService:
         elif status in {"canceled", "cancelled", "expired", "rejected"}:
             execution.status = ExecutionStatus.CANCELED if status.startswith("cancel") else ExecutionStatus.FAILED
         execution.realized_pnl_usd = self._realized_pnl(payload)
+        exit_fill = None if execution.realized_pnl_usd else AlpacaReconciliationService._standalone_exit(payload, exit_orders)
+        if exit_fill is not None:
+            entry_qty = float(payload.get("filled_qty") or 0.0)
+            exit_qty = min(entry_qty, float(exit_fill.get("filled_qty") or 0.0))
+            entry_price = float(payload.get("filled_avg_price") or 0.0)
+            execution.realized_pnl_usd = round((float(exit_fill["filled_avg_price"]) - entry_price) * exit_qty, 2)
+            execution.response_payload["exit_fill"] = {**exit_fill, "legs": [], "status": "filled"}
         execution.updated_at = utc_now().isoformat()
         self.executions.update(execution)
         if self.learning is not None:
@@ -421,6 +447,22 @@ class AlpacaReconciliationService:
         if legs:
             return "protective_order_change"
         return "reconciled"
+
+    @staticmethod
+    def _standalone_exit(payload: dict[str, Any], exit_orders: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+        """Earliest filled standalone sell after a filled long entry with no filled leg."""
+
+        entry_at = str(payload.get("filled_at") or "")
+        if not exit_orders or not entry_at or float(payload.get("filled_qty") or 0.0) <= 0:
+            return None
+        if str(payload.get("side") or "").lower() != "buy" or float(payload.get("filled_avg_price") or 0.0) <= 0:
+            return None
+        candidates = [
+            item
+            for item in exit_orders
+            if str(item.get("filled_at") or "") > entry_at and float(item.get("filled_avg_price") or 0.0) > 0
+        ]
+        return min(candidates, key=lambda item: str(item.get("filled_at"))) if candidates else None
 
     @staticmethod
     def _realized_pnl(payload: dict[str, Any]) -> float:

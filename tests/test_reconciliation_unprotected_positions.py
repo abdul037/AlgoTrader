@@ -9,6 +9,7 @@ still *existed* in the order payload.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 
 from app.automation.reconciliation import AlpacaReconciliationService
@@ -23,6 +24,7 @@ from app.storage.repositories import (
     RuntimeStateRepository,
     SafetyStateRepository,
 )
+from app.utils.time import utc_now
 from tests.conftest import make_settings
 
 QTY_HELD_ERROR = (
@@ -44,6 +46,7 @@ class BrokerWithDeadBracket:
         self.leg_statuses = leg_statuses
         self.extra_orders = list(extra_orders or [])
         self.close_error = close_error
+        self.entry_filled_at = (utc_now() - timedelta(hours=2)).isoformat()
 
     def get_account_identity(self):
         return {"account_number": self.account_number, "trading_blocked": False, "equity": 100000.0, "cash": 99660.0}
@@ -60,6 +63,7 @@ class BrokerWithDeadBracket:
                     "qty": 1.0,
                     "filled_qty": 1.0,
                     "filled_avg_price": 338.75,
+                    "filled_at": self.entry_filled_at,
                     "order_class": "bracket",
                     "status": "filled",
                     "legs": [
@@ -258,3 +262,62 @@ def test_flatten_never_runs_with_real_trading_enabled(tmp_path) -> None:
 
     assert broker.closed == []
     assert "missing_bracket_protection:GOOGL" in result["issues"]
+
+
+def test_flatten_fill_books_realized_loss_for_the_loss_gates(tmp_path) -> None:
+    # QA review 2026-09-27: a flatten is a standalone sell, not a bracket leg, so
+    # its loss never reached realized_pnl_usd and the daily-loss cap and the
+    # loss-streak cooldown could not see it.
+    flatten_fill = {
+        "broker_order_id": "close-1",
+        "symbol": "GOOGL",
+        "side": "sell",
+        "qty": 1.0,
+        "filled_qty": 1.0,
+        "filled_avg_price": 328.94,
+        "status": "filled",
+        "legs": [],
+        "filled_at": (utc_now() - timedelta(hours=1)).isoformat(),
+    }
+    broker = BrokerWithDeadBracket(leg_statuses=("expired", "canceled"), extra_orders=[flatten_fill])
+    service, _automation, _logs = _service(tmp_path, broker)
+
+    service.reconcile()
+
+    executions = service.executions
+    assert executions.get("exec_googl").realized_pnl_usd == -9.81
+    daily_pnl, streak = executions.daily_loss_stats()
+    assert daily_pnl == -9.81
+    assert streak == 1
+
+
+def test_standalone_sell_before_the_entry_fill_is_not_its_exit(tmp_path) -> None:
+    earlier_sell = {
+        "broker_order_id": "old-close",
+        "symbol": "GOOGL",
+        "side": "sell",
+        "filled_qty": 1.0,
+        "filled_avg_price": 300.0,
+        "status": "filled",
+        "legs": [],
+        "filled_at": (utc_now() - timedelta(days=3)).isoformat(),
+    }
+    broker = BrokerWithDeadBracket(leg_statuses=("expired", "canceled"), extra_orders=[earlier_sell])
+    service, _automation, _logs = _service(tmp_path, broker)
+
+    service.reconcile()
+
+    assert service.executions.get("exec_googl").realized_pnl_usd == 0
+
+
+def test_live_take_profit_with_cancelled_stop_is_not_protected(tmp_path) -> None:
+    # QA review 2026-09-27: any live leg used to count, so a working TP with a
+    # cancelled stop left the position with no loss cap.
+    broker = BrokerWithDeadBracket(leg_statuses=("new", "canceled"))
+    service, automation, _logs = _service(tmp_path, broker)
+
+    result = service.reconcile()
+
+    assert broker.closed == ["GOOGL"]
+    assert "missing_bracket_protection:GOOGL" not in result["issues"]
+    assert automation.status().kill_switch_enabled is False
