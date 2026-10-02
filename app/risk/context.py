@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.risk.guardrails import RiskContext
+from app.risk.rules import effective_max_risk_per_trade_pct
 from app.risk.sectors import correlation_bucket_for_symbol, sector_for_symbol
 from app.utils.time import utc_now
 
@@ -45,7 +47,7 @@ def build_risk_context(settings: Any, broker: Any, executions_repo: Any) -> Risk
     # per-trade risk budget. This never under-estimates portfolio heat, which is
     # the safe direction for an aggregate risk cap.
     per_position_risk_usd = account_balance * (
-        float(getattr(settings, "max_risk_per_trade_pct", 0.0) or 0.0) / 100.0
+        effective_max_risk_per_trade_pct(settings, live=settings.execution_mode == "live") / 100.0
     )
     positions_by_symbol: dict[str, int] = {}
     exposure_by_symbol_pct: dict[str, float] = {}
@@ -87,6 +89,35 @@ def build_risk_context(settings: Any, broker: Any, executions_repo: Any) -> Risk
         correlated_exposure_pct=max(exposure_by_correlation_bucket_pct.values(), default=0.0),
         consecutive_losses_today=consecutive_losses,
         trades_today=trades_today,
+        recently_stopped_symbols=recently_stopped_symbols(settings, executions_repo),
         open_trade_risks_usd=[per_position_risk_usd] * len(portfolio.positions),
         mode="paper" if settings.execution_mode == "paper" else settings.etoro_account_mode,
     )
+
+
+def recently_stopped_symbols(settings: Any, executions_repo: Any) -> list[str]:
+    """Symbols whose most recent closed trade lost money within the re-entry cooldown."""
+
+    minutes = int(getattr(settings, "reentry_cooldown_minutes_after_loss", 0) or 0)
+    if minutes <= 0 or not hasattr(executions_repo, "list"):
+        return []
+    cutoff = utc_now() - timedelta(minutes=minutes)
+    latest_exit: dict[str, tuple[datetime, float]] = {}
+    for execution in executions_repo.list(limit=200):
+        pnl = float(getattr(execution, "realized_pnl_usd", 0.0) or 0.0)
+        symbol = str((execution.request_payload or {}).get("symbol") or "").upper()
+        if not pnl or not symbol:
+            continue
+        payload = dict(execution.response_payload or {})
+        fills = [
+            leg.get("filled_at")
+            for leg in [*(dict(payload.get("broker_execution") or {}).get("legs") or []), dict(payload.get("exit_fill") or {})]
+            if str(leg.get("status") or "").lower() == "filled" and leg.get("filled_at")
+        ]
+        if not fills:
+            continue
+        exited = datetime.fromisoformat(str(max(fills)).replace("Z", "+00:00"))
+        exited = exited if exited.tzinfo else exited.replace(tzinfo=UTC)
+        if symbol not in latest_exit or exited > latest_exit[symbol][0]:
+            latest_exit[symbol] = (exited, pnl)
+    return sorted(symbol for symbol, (exited, pnl) in latest_exit.items() if pnl < 0 and exited >= cutoff)

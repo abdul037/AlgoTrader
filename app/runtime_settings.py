@@ -526,6 +526,13 @@ class AppSettings(BaseSettings):
     strategy_health_rolling_trades: int = 30
     reconciliation_failures_before_kill_switch: int = 3
     execution_max_entry_drift_bps: float = 35.0
+    # Reward:risk re-checked at the live quote just before submit. Entry drift ate
+    # AAPL's edge on 2026-09-28 (1.20 at proposal, 0.69 at fill); never pay more
+    # risk than the target pays.
+    execution_min_reward_to_risk_at_quote: float = 1.0
+    # Block a new entry on a symbol whose last trade closed at a loss this recently
+    # (2026-09-28: NVDA re-bought 1h43m after a stop and stopped again). 0 = off.
+    reentry_cooldown_minutes_after_loss: int = 240
     execution_mode: Literal["paper", "live"] = "paper"
     broker_for_equities: Literal["alpaca", "etoro", "none"] = "alpaca"
     broker_for_non_equities: Literal["alpaca", "etoro", "none"] = "etoro"

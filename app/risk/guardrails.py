@@ -30,6 +30,8 @@ class RiskContext(BaseModel):
     portfolio_drawdown_pct: float = 0.0
     consecutive_losses_today: int = 0
     trades_today: int = 0
+    recently_stopped_symbols: list[str] = Field(default_factory=list)
+    """Symbols whose last trade closed at a loss inside the re-entry cooldown."""
     open_trade_risks_usd: list[float] = Field(default_factory=list)
     """Per-trade dollar risk (entry->stop) of each currently open position. Summed
     into portfolio heat and checked against ``portfolio_max_heat_pct``."""
@@ -75,6 +77,11 @@ class RiskManager:
         symbol_positions = int(context.positions_by_symbol.get(order.symbol.upper(), 0))
         if symbol_positions >= self.settings.per_symbol_position_limit:
             reasons.append("Per-symbol position limit reached")
+
+        # 2026-09-28: NVDA was re-bought 1h43m after its stop by another strategy
+        # and stopped again. A fresh stop-out is evidence against the setup.
+        if order.symbol.upper() in context.recently_stopped_symbols:
+            reasons.append(f"Re-entry cooldown after a losing exit on {order.symbol.upper()}")
 
         # An unattended bot must react to a large OPEN loss, not just realized
         # PnL. Count current open losses toward the caps (open gains never mask a

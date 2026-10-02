@@ -225,7 +225,11 @@ class ExecutionCoordinator:
         self._apply_drawdown_governor(proposal, risk_context)
 
         if broker_name == "alpaca" and bool(getattr(self.settings, "alpaca_require_bracket_orders", True)):
-            bracket_reasons = self._alpaca_bracket_reasons(proposal, quote_price)
+            # The paper-only manual smoke path already bypasses drift; drift is what moves R:R.
+            min_rr = 0.0 if self._can_bypass_entry_drift_for_smoke(proposal) else float(
+                getattr(self.settings, "execution_min_reward_to_risk_at_quote", 0.0) or 0.0
+            )
+            bracket_reasons = self._alpaca_bracket_reasons(proposal, quote_price, min_rr)
             if bracket_reasons:
                 record.status = ExecutionQueueStatus.BLOCKED
                 record.ready_for_execution = False
@@ -629,7 +633,7 @@ class ExecutionCoordinator:
         )
 
     @staticmethod
-    def _alpaca_bracket_reasons(proposal: Any, quote_price: float) -> list[str]:
+    def _alpaca_bracket_reasons(proposal: Any, quote_price: float, min_reward_to_risk: float = 0.0) -> list[str]:
         order = proposal.order
         reasons: list[str] = []
         if str(getattr(order.side, "value", order.side)).lower() != "buy":
@@ -642,6 +646,10 @@ class ExecutionCoordinator:
             reasons.append("stop_loss_not_below_entry")
         if order.take_profit is not None and float(order.take_profit) <= float(quote_price):
             reasons.append("take_profit_not_above_entry")
+        if not reasons and min_reward_to_risk > 0:
+            risk = float(quote_price) - float(order.stop_loss)
+            if (float(order.take_profit) - float(quote_price)) / risk < min_reward_to_risk:
+                reasons.append("reward_to_risk_below_min_at_quote")
         return reasons
 
     @staticmethod
