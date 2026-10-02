@@ -12,6 +12,45 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-09-28 (Mon) → 2026-10-02 (Fri pre-open)
+
+- **Shipped before the 09-28 open:** `7ad434f` (size 2% under the enforced 0.5% cap, deploy
+  SUCCESS 12:34 UTC) and `2575a1b` (book flatten-close P&L for the loss gates; bracket counts as
+  protected only with a live stop leg). Crypto trading switched OFF 09-27 16:43
+  (`CRYPTO_TRADING_ENABLED=false`) after the QA Bot found it can trip the breaker on the first
+  fill (Alpaca `BTCUSD` position vs `BTC/USD` order) and its stop losses bypass the loss gates.
+- **Trading resumed — 10 executions 09-28..10-01**, all with Alpaca brackets; every exit was a
+  bracket leg (no flattens):
+
+  | Day | Symbol | Qty | Entry | Exit | P&L |
+  |---|---|---|---|---|---|
+  | 09-28 | NVDA | 53 | 232.36 | stop 229.23 | -165.66 |
+  | 09-28 | AAPL | 36 | 342.53 | stop 340.17 | -84.98 |
+  | 09-28 | NVDA | 53 | 232.01 | stop 228.47 | -187.35 |
+  | 09-28 | META | 17 | 724.91 | stop 715.33 | -162.86 |
+  | 09-29 | INTC | 107 | 116.30 | target 121.40 | **+545.71** |
+  | 09-29 | QQQ | 16 | 739.19 | stop 736.70 | -39.84 |
+  | 09-29 | COST | 13 | 922.67 | stop 913.10 | -124.42 |
+  | 10-01 | IWM | 44 | 278.06 | open | +82.72 unrl |
+  | 10-01 | CSCO | 114 | 108.70 | open | +28.73 unrl |
+  | 10-01 | NVDA | 22 | 230.38 | open (swing, stop 208.94) | +31.90 unrl |
+
+  Closed: 7 trades, 1 win / 6 losses, **net -$219.40**. Open +$143.35 unrealized. Equity
+  **$99,531.02** (10-02 05:58 reconciliation, 3 positions, 0 issues) vs $99,607.60 on 09-27.
+  Largest loss $187 (0.19% of equity), inside the ~$490 per-trade budget; stops held.
+- **09-28:** four losses → the per-day cooldown halted new entries for the rest of the day and
+  cleared on 09-29, as signed off.
+- **Remaining blocker — portfolio gross-exposure cap.** 74 `auto_proposal_failed` since 09-28,
+  nearly all "Projected gross exposure exceeds the portfolio limit"
+  (`PORTFOLIO_MAX_GROSS_EXPOSURE_PCT` default 30%). At ~$12.4k per position, 3 positions fill
+  it, so `MAX_OPEN_POSITIONS=8` is unreachable. This is a portfolio risk gate: **not changed;
+  needs operator sign-off.**
+- **Flagged:** AAPL 09-28 filled at 342.53 with target 344.16 / stop 340.17 — realized
+  reward:risk 0.69 after entry drift (planned R:R passed the gate at the proposed price).
+  The entry-drift check let it through; to investigate.
+- `strategy_not_production_approved` still blocks some swing proposals (9 since 09-28);
+  `workflow_cadence` 240s timeouts persist (236 since 09-28).
+
 ## 2026-09-27 (Sun) — covers 2026-09-14 → 09-27
 
 - **Account state:** flat, equity $99,607.60. Last trade 09-15; the 5 trades of the
