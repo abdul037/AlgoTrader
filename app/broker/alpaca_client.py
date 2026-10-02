@@ -149,6 +149,12 @@ class AlpacaClient(BrokerClient):
 
         return bool(getattr(self.trading_client.get_clock(), "is_open", False))
 
+    def market_clock(self) -> tuple[bool, datetime | None]:
+        """Return (is_open, next_close) from Alpaca's clock (handles half-days)."""
+
+        clock = self.trading_client.get_clock()
+        return bool(getattr(clock, "is_open", False)), getattr(clock, "next_close", None)
+
     def is_supported_equity(self, symbol: str) -> bool:
         """Return whether Alpaca currently exposes the symbol as a tradable US equity."""
 

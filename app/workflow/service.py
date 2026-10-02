@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.automation.auto_recover import try_auto_recover
+from app.automation.intraday_exit import flatten_intraday_before_close
 from app.execution.interfaces import SignalApprovalAdapter
 from app.models.workflow import WorkflowBucketStatus, WorkflowStatusResponse, WorkflowTaskResponse
 from app.universe import resolve_universe
@@ -98,6 +99,7 @@ class SignalWorkflowService:
 
     def run_scheduled_tasks(self) -> dict[str, int]:
         summary = {"alerts_sent": 0, "closed_signals": 0, "ledger_cycles": 0, "buckets_run": 0}
+        flatten_intraday_before_close(self)  # risk-reducing, so it runs even while paused
         if self.automation is not None:
             blockers = self.automation.scan_blockers()
             if blockers and try_auto_recover(self, blockers):  # paper-only breaker self-healing
