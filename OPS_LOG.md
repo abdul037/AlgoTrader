@@ -12,6 +12,35 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-10-02 (Fri) — Review Team meeting (first since 09-07)
+
+Convened locally over the 31 unreviewed commits (`0a12efe..2575a1b`) plus the week's trades.
+- 🧪 **QA — BLOCK (crypto); equity fixes OK.** Crypto breaker trip on the first fill
+  (`BTCUSD` position vs `BTC/USD` order) and crypto/flatten losses invisible to the loss gates.
+  Acted: crypto OFF 09-27; `7ad434f` sizing headroom; `2575a1b` flatten P&L + live-stop-only
+  protection. Open nits: heat estimate assumes 1%/position; dead `consecutive_losses()`.
+- 📈 **Financial Strategy — LIKELY HARMS EDGE.** 9 of 10 executions came from intraday
+  strategies (vwap_reclaim 5m, intraday_vwap_trend 15m, rsi_reversal 15m,
+  anchored_vwap_pullback_continuation 5m, relative_volume_reclaim_continuation 5m) with **no
+  walk-forward OOS evidence at all** — the walk-forward runs only on 1d. Exploration mode skips
+  the backtest gate (`PAPER_EXPLORATION_REQUIRE_BACKTEST_VALIDATED=false`). Best measured 1d
+  OOS edge (`regime_filtered_mean_reversion`, +$31/trade over 465) is not being traded; several
+  approved 1d strategies lose OOS. `strategy_not_production_approved` actually means "no
+  exploration approval row". Backtester diffs judged sound.
+- 💹 **Trader — RISK CONCERNS.** Slippage fine (≤20 bps, stop slip ≤0.08R). Findings:
+  no reward:risk re-check at the fill price (AAPL 1.20 at proposal → 0.69 at fill; drift gate
+  is a flat 35 bps, not relative to the stop); no same-symbol re-entry cooldown after a stop
+  (NVDA re-bought 1h43m later); intraday strategies held overnight with intraday stops
+  (INTC 2 days, COST overnight); stops 0.3–1.5% are inside 5m noise (6/7 stopped); the $12.5k
+  notional cap, not the 0.5% budget, sets risk ($40–$248/trade) — judge strategies in R.
+  Keep the 30% gross cap. Its top finding (loss gates blind on 09-28) was **checked and
+  rejected**: limit is 4 losses, only 2 had closed at 16:29.
+- 📋 **PM — HOLD on scaling; keep paper running.** Tightening fixes (no sign-off needed):
+  R:R re-check at the live quote, same-symbol re-entry cooldown, flatten intraday trades
+  before the close. Needs operator decision: require OOS evidence before a strategy
+  auto-trades (would pause all intraday strategies until intraday walk-forward exists).
+  Keep 30% gross cap and crypto OFF.
+
 ## 2026-09-28 (Mon) → 2026-10-02 (Fri pre-open)
 
 - **Shipped before the 09-28 open:** `7ad434f` (size 2% under the enforced 0.5% cap, deploy
@@ -38,8 +67,10 @@ without explicit operator sign-off recorded here.
   Closed: 7 trades, 1 win / 6 losses, **net -$219.40**. Open +$143.35 unrealized. Equity
   **$99,531.02** (10-02 05:58 reconciliation, 3 positions, 0 issues) vs $99,607.60 on 09-27.
   Largest loss $187 (0.19% of equity), inside the ~$490 per-trade budget; stops held.
-- **09-28:** four losses → the per-day cooldown halted new entries for the rest of the day and
-  cleared on 09-29, as signed off.
+- **09-28 (corrected 10-02):** the 4th loss closed at 19:50 UTC, ten minutes before the bell, so
+  the per-day cooldown (4 losses) never had to block anything. The 16:29 NVDA/META entries were
+  correctly allowed: 2 losses (-$250) at that point, well inside the 4-loss / $3,000 limits. An
+  earlier version of this line claimed the cooldown halted entries — that was unverified.
 - **Remaining blocker — portfolio gross-exposure cap.** 74 `auto_proposal_failed` since 09-28,
   nearly all "Projected gross exposure exceeds the portfolio limit"
   (`PORTFOLIO_MAX_GROSS_EXPOSURE_PCT` default 30%). At ~$12.4k per position, 3 positions fill
