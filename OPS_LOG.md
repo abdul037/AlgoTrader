@@ -40,6 +40,20 @@ Convened locally over the 31 unreviewed commits (`0a12efe..2575a1b`) plus the we
   before the close. Needs operator decision: require OOS evidence before a strategy
   auto-trades (would pause all intraday strategies until intraday walk-forward exists).
   Keep 30% gross cap and crypto OFF.
+- **Operator decision 10-02: "Keep exploring for now."** Intraday strategies keep trading on
+  paper without OOS evidence; judged strictly on live results; intraday walk-forward to be
+  built, then `PAPER_EXPLORATION_REQUIRE_BACKTEST_VALIDATED` turned on once it exists.
+- **Shipped 10-02** (726 tests pass):
+  - `b78db7f` (live 07:59 UTC) — reward:risk re-checked at the live quote before submit
+    (`EXECUTION_MIN_REWARD_TO_RISK_AT_QUOTE=1.0`); re-entry cooldown after a losing exit
+    (`REENTRY_COOLDOWN_MINUTES_AFTER_LOSS=240`); fixed a calendar-expired test fixture.
+    Also: the portfolio-heat *estimate* now assumes the enforced 0.5% per open position instead
+    of 1%. That admits more positions under the unchanged 6% heat cap (it is not purely a
+    tightening, contrary to the commit message); no practical effect while the 30% gross cap
+    holds the book at ~3 positions.
+  - `0ac8b99` — intraday-timeframe positions closed in the last 10 min of the session
+    (`INTRADAY_FLATTEN_MINUTES_BEFORE_CLOSE=10`, Alpaca clock); 1d+ swing positions keep GTC
+    brackets. First live run: today's close (IWM 15m and CSCO 5m are open from 10-01).
 
 ## 2026-09-28 (Mon) → 2026-10-02 (Fri pre-open)
 
