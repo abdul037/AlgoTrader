@@ -46,6 +46,15 @@ without explicit operator sign-off recorded here.
   1800 → **300** (weekend only, market closed). The variable change did not trigger a deploy
   (again); manual redeploy of `b6def479` (code `e3c34b5`) → `a4d6ebb9`. **Restore to 1800**
   armed for Sun 10-04 22:00 UTC, before Monday's open, with a Phase 1 completion check.
+- **Operator: "build Phase 2, 3 and 4."** `6f9378a` — built, not switched on:
+  - Phase 2: pooled per-strategy OOS evidence verdicts (≥40 OOS trades, positive expectancy
+    after costs, ≥10 holdout trades with positive holdout expectancy). Gate
+    `REQUIRE_STRATEGY_OOS_EVIDENCE` **OFF** pending the operator's decision on the Phase 1 table.
+  - Phase 3: go-live readiness tracker (≥50 trades, PF ≥1.3, max DD <3%, 4 clean weeks) + R
+    scorecard, refreshed every 30 min; `GET /performance/go-live-readiness`. **Auto-demotion now
+    enforced** (`STRATEGY_AUTO_DEMOTE_ENABLED` default true; needs 20+ live trades per strategy).
+  - Phase 4: live mode additionally locked behind readiness met + micro-live cap ≤0.1% + an exact
+    operator acknowledgement phrase. `ENABLE_REAL_TRADING` untouched (false).
 
 ## 2026-10-02 (Fri) — session results (checked 10-03)
 
