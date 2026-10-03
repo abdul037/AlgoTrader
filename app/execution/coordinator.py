@@ -19,6 +19,7 @@ from app.models.execution_queue import ExecutionQueueRecord, ExecutionQueueStatu
 from app.models.trade import AssetClass
 from app.risk.context import build_risk_context
 from app.risk.guardrails import RiskManager
+from app.risk.market_direction import market_direction_reasons
 from app.risk.volatility_target import daily_drawdown_pct, drawdown_governor_multiplier
 from app.utils.time import utc_now
 
@@ -169,6 +170,14 @@ class ExecutionCoordinator:
                 symbol=proposal.order.symbol,
             ),
             *self._quote_validation_reasons(quote, expected_broker=broker_name),
+            *market_direction_reasons(
+                self.settings,
+                self.market_data,
+                symbol=proposal.order.symbol,
+                timeframe=timeframe,
+                side=str(getattr(proposal.order.side, "value", proposal.order.side)),
+                logs=self.logs,
+            ),
         ]
         start_of_day = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
         if self.executions.count_since(start_of_day) >= int(getattr(self.settings, "max_trades_per_day", 999999)):

@@ -326,3 +326,22 @@ def test_kill_switch_does_not_auto_close_in_live_without_confirmation_flag(tmp_p
     assert alpaca.cancel_all_calls == 1
     assert alpaca.close_all_calls == 0
     assert "kill_switch_emergency_stop" in log_events(app)
+
+
+def test_falling_market_blocks_intraday_entry_before_submit(tmp_path, monkeypatch) -> None:
+    import app.execution.coordinator as coordinator_module
+
+    app, alpaca, _, queued = queued_app(tmp_path / "market_direction")
+    seen: dict = {}
+
+    def falling(settings, market_data, *, symbol, timeframe, side, logs=None):
+        seen.update(symbol=symbol, side=side)
+        return ["market_direction_down:SPY:-0.60%"]
+
+    monkeypatch.setattr(coordinator_module, "market_direction_reasons", falling)
+    result = app.state.execution_coordinator.process_queue_item(queued.id)
+
+    assert result.status == ExecutionQueueStatus.BLOCKED
+    assert "market_direction_down:SPY" in result.validation_reason
+    assert alpaca.submitted_orders == []
+    assert seen == {"symbol": "NVDA", "side": "buy"}

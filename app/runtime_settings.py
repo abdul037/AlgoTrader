@@ -540,6 +540,9 @@ class AppSettings(BaseSettings):
     intraday_flatten_minutes_before_close: float = 10.0
     # New entries allowed per correlation bucket (e.g. tech_complex) per day. 0 = off.
     max_daily_entries_per_correlation_bucket: int = 2
+    # Block new intraday longs while SPY (and QQQ for tech) is below today's VWAP
+    # and down at least this % from the prior close. 0 = off. See app/risk/market_direction.py.
+    market_direction_min_drop_pct: float = 0.3
     # Live stop-width floor in prior-session ATRs (widens stop and target, keeping
     # R:R; sizing keeps $ risk constant). 0 = off until the intraday walk-forward
     # shows a floor improves out-of-sample expectancy. Backtests use the same value.
