@@ -32,6 +32,16 @@ without explicit operator sign-off recorded here.
   computed over a whole frame). Backtest cursor can resume mid-symbol. 745 tests pass.
 - Pending: confirm prod produces 5m/15m OOS rows (check armed 19:08 UTC); per-strategy
   intraday report once rows accumulate.
+- **18:30 verified:** intraday walk-forward producing in prod — 16 × 15m + 2 × 5m OOS rows and
+  54 variant results in the first hour; mid-symbol resume working (start_unit 26 → 38). Full
+  universe ≈ 30 h at a 180 s pass every 30 min → table by Mon evening.
+- **Plan agreed (operator):** Phase 1 evidence (now) → Phase 2 trade only passing strategies +
+  market-direction filter → Phase 3 prove in paper (50+ trades, total wins ≥ 1.3× total losses,
+  max drawdown < 3%, 4 clean weeks) → Phase 4 micro-live only on operator decision.
+- `e3c34b5` **market-direction filter** (operator: "yes, build it"): new intraday buys blocked
+  while SPY (and QQQ for tech) is below today's VWAP and ≥0.3% below the prior close
+  (`MARKET_DIRECTION_MIN_DROP_PCT=0.3`). Swing entries exempt; missing data never blocks (logged).
+  753 tests pass. Live verification armed Mon 10-05 14:20 UTC (data reachability for SPY/QQQ 5m).
 
 ## 2026-10-02 (Fri) — session results (checked 10-03)
 
