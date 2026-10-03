@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from app.config import AppSettings
 from app.models.execution import AccountSummary, BrokerOrderResponse, PortfolioSummary
 
@@ -76,3 +78,14 @@ def make_settings(tmp_path: Path, **overrides) -> AppSettings:
     }
     defaults.update(overrides)
     return AppSettings(**defaults)
+
+
+@pytest.fixture
+def go_live_locks_open(monkeypatch):
+    """For tests of live-mode *routing* only: bypass the Phase 4 go-live locks
+    (readiness bar, micro-live cap, operator acknowledgement). The locks
+    themselves are covered in tests/test_go_live_guard.py."""
+
+    from app.automation.service import AutomationService
+
+    monkeypatch.setattr(AutomationService, "_go_live_guard_blockers", lambda self: [])

@@ -175,3 +175,28 @@ def test_paper_exploration_can_require_backtest_validation(tmp_path):
 
     assert "candidate_not_backtest_validated" in blockers
     assert "strategy_not_production_approved" not in blockers
+
+
+def test_phase2_evidence_gate_blocks_proposals_only_when_enabled(tmp_path):
+    import json
+
+    from app.performance.strategy_evidence import VERDICTS_KEY
+
+    service = _service(
+        tmp_path,
+        operation_mode="unattended",
+        strategy_approved=False,
+        strategy_paper_approved=True,
+        rollout_ready=False,
+        exploration_enabled=True,
+        bypass_production_approval=True,
+    )
+    state = {VERDICTS_KEY: json.dumps({"verdicts": {"swing_trend:15m": {"passed": True}}})}
+    service.runtime_state = SimpleNamespace(get=state.get)
+    passing = SimpleNamespace(**{**vars(_candidate()), "timeframe": "15m"})
+    failing = SimpleNamespace(**{**vars(_candidate()), "timeframe": "5m"})
+
+    assert service.candidate_proposal_blockers(failing) == []  # gate off by default
+    service.settings.require_strategy_oos_evidence = True
+    assert service.candidate_proposal_blockers(passing) == []
+    assert service.candidate_proposal_blockers(failing) == ["strategy_lacks_oos_evidence"]

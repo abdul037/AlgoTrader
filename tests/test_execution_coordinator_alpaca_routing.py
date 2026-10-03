@@ -228,7 +228,7 @@ def test_paper_mode_self_simulated_uses_existing_paper_service(tmp_path) -> None
     assert execution.response_payload["broker"] == "self_simulated"
 
 
-def test_live_mode_routes_through_alpaca_for_equity_proposal(tmp_path) -> None:
+def test_live_mode_routes_through_alpaca_for_equity_proposal(tmp_path, go_live_locks_open) -> None:
     app, alpaca, _, queued = queued_app(
         tmp_path,
         execution_mode="live",

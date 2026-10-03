@@ -824,6 +824,28 @@ def refresh_demoted_strategies(service: Any, completed: list[str], errors: list[
         errors.append(f"strategy_demote_refresh:{exc}")
         with suppress(Exception):
             service.run_logs.log("strategy_demote_error", {"error": str(exc)})
+    refresh_phase_gates(service, completed, errors)
+
+
+def refresh_phase_gates(service: Any, completed: list[str], errors: list[str]) -> None:
+    """Phase 2/3 bookkeeping, every 30 min: pooled OOS strategy evidence verdicts and
+    the go-live readiness report. Both only report unless their gates are enabled."""
+
+    from app.performance.go_live_readiness import refresh_readiness
+    from app.performance.strategy_evidence import refresh_verdicts
+
+    if not service._is_due("phase_gates:last_run_at", 30):
+        return
+    service.runtime_state.set("phase_gates:last_run_at", utc_now().isoformat())
+    backtests = getattr(service.market_screener, "backtests", None)
+    try:
+        if backtests is not None:
+            refresh_verdicts(backtests.db, service.settings, service.runtime_state, service.run_logs)
+            completed.append("strategy_evidence_refresh")
+        refresh_readiness(service.run_logs.db, service.settings, service.runtime_state, service.run_logs)
+        completed.append("go_live_readiness_refresh")
+    except Exception as exc:  # noqa: BLE001 - maintenance continues after failures
+        errors.append(f"phase_gates_refresh:{exc}")
 
 
 def _account_equity_usd(service: Any) -> float:

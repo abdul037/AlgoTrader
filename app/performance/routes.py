@@ -20,6 +20,34 @@ def _require_control_token(request: Request) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Control token required")
 
 
+@router.get("/go-live-readiness")
+def go_live_readiness(request: Request):
+    """Phase 2/3/4 status: pooled strategy evidence verdicts and the go-live bar."""
+
+    import json
+
+    from app.performance.go_live_readiness import READINESS_KEY
+    from app.performance.strategy_evidence import VERDICTS_KEY
+    from app.storage.repositories import RuntimeStateRepository
+
+    _require_control_token(request)
+    state = RuntimeStateRepository(request.app.state.db)
+    settings = request.app.state.settings
+
+    def _read(key: str) -> dict[str, Any]:
+        try:
+            return json.loads(state.get(key) or "{}")
+        except (TypeError, ValueError):
+            return {}
+
+    return {
+        "evidence_gate_enforced": bool(getattr(settings, "require_strategy_oos_evidence", False)),
+        "strategy_evidence": _read(VERDICTS_KEY),
+        "readiness": _read(READINESS_KEY),
+        "real_trading_enabled": bool(getattr(settings, "enable_real_trading", False)),
+    }
+
+
 @router.get("/weekly-target-readiness")
 def weekly_target_readiness(request: Request):
     _require_control_token(request)

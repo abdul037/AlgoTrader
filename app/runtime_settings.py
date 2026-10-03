@@ -382,10 +382,9 @@ class AppSettings(BaseSettings):
     stage1_decay_min_trades: int = 20
     # Close the profit loop: when true, a strategy that decays to a `demote`
     # verdict (non-positive live expectancy over stage1_decay_min_trades closed
-    # trades) is automatically dropped from the live scan rotation. Default OFF
-    # = observe-only: the demote set is computed and logged each cycle but
-    # selection is unchanged, so it never removes a strategy until you trust it.
-    strategy_auto_demote_enabled: bool = False
+    # trades) is automatically dropped from the live scan rotation. Enforced since
+    # 2026-10-03 (operator plan, Phase 3 step 7); set false for observe-only.
+    strategy_auto_demote_enabled: bool = True
     # Calibrate the backtest cost model to live IEX fill quality: when true, the
     # batch backtester replaces its conservative default slippage_bps with the
     # median realized slippage measured from live fills (>= min_fills samples,
@@ -543,6 +542,21 @@ class AppSettings(BaseSettings):
     # Block new intraday longs while SPY (and QQQ for tech) is below today's VWAP
     # and down at least this % from the prior close. 0 = off. See app/risk/market_direction.py.
     market_direction_min_drop_pct: float = 0.3
+    # Phase 2 (operator plan 2026-10-03): only strategies with pooled walk-forward OOS
+    # evidence create proposals. OFF until the operator decides on the Phase 1 table.
+    require_strategy_oos_evidence: bool = False
+    strategy_evidence_lookback_days: int = 7
+    strategy_evidence_min_trades: int = 40
+    strategy_evidence_min_holdout_trades: int = 10
+    # Phase 3 go-live readiness bar (see app/performance/go_live_readiness.py).
+    go_live_phase3_start_date: str = ""
+    go_live_min_closed_trades: int = 50
+    go_live_min_profit_factor: float = 1.3
+    go_live_max_drawdown_pct: float = 3.0
+    go_live_min_clean_weeks: int = 4
+    # Phase 4: live trading also requires this exact operator-set phrase
+    # (app/automation/service.py LIVE_OPERATOR_ACKNOWLEDGEMENT). Never set by code.
+    live_operator_acknowledgement: str = ""
     # Live stop-width floor in prior-session ATRs (widens stop and target, keeping
     # R:R; sizing keeps $ risk constant). 0 = off until the intraday walk-forward
     # shows a floor improves out-of-sample expectancy. Backtests use the same value.

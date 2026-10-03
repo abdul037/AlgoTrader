@@ -178,6 +178,15 @@ class PaperAutoTradingService:
             and not self._paper_exploration_strategy_approved(strategy)
         ):
             blockers.append("strategy_not_production_approved")
+        # Phase 2: only strategies with pooled out-of-sample evidence create
+        # proposals (when enabled); the rest stay scanned/tracked as shadow signals.
+        from app.performance.strategy_evidence import evidence_blocker
+
+        evidence = evidence_blocker(
+            self.settings, self.runtime_state, strategy=strategy, timeframe=getattr(candidate, "timeframe", None)
+        )
+        if strategy and evidence:
+            blockers.append(evidence)
         return blockers
 
     def _paper_exploration_strategy_approved(self, strategy: str) -> bool:
