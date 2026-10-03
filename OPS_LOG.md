@@ -12,6 +12,27 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-10-03 (Sat) — loss analysis and three follow-ups (operator: "do all three")
+
+- **Why the losses (all-time realized -$369.82, 18 trades):** 4 wins +$984 (avg $246) vs 14
+  losses -$1,354 (avg $97). Win/loss size 2.5x → break-even win rate ~29%; actual 22%.
+  09-28 alone (4 tech longs, one down day) = 44% of losses; NFLX 09-14 = 25%. Overnight holds
+  netted **+$784** (INTC, IWM, CSCO, COST) — the new close-before-the-bell rule would have cut
+  them; flagged as an open question, now measured by the hold_overnight backtest variant.
+- **Correction:** stops were *not* inside bar noise — they were 1.6–4.4x the 5m/15m bar ATR
+  (NVDA 3.5x, AAPL 4.4x, META 1.6x). The mismatch is vs. a multi-hour hold / the day's range.
+  So the stop floor ships as a measured backtest variant, live floor OFF until evidence.
+- `c1c913c` **daily cap of 2 entries per correlation bucket** (`MAX_DAILY_ENTRIES_PER_CORRELATION_BUCKET=2`);
+  QQQ/CSCO → tech_complex, SPY/IWM/DIA → broad_market (also tightens the correlated-exposure cap).
+- `0210f0b` **intraday walk-forward**: 5m/15m fold plan (~120 days, 7-day folds, 14-day holdout),
+  scheduler timeframes 1d,15m,5m; backtest closes intraday trades at the session end (mirrors
+  live); variants hold_overnight / stop_floor_0.5 / stop_floor_1.0 logged to run_logs only
+  (never gate rows). Engine 18x faster (5m run 158 s → 8.7 s, identical trades) via a causal
+  indicator prefix cache; opening range made causal (it filled bars 1–4 from bars 2–5 when
+  computed over a whole frame). Backtest cursor can resume mid-symbol. 745 tests pass.
+- Pending: confirm prod produces 5m/15m OOS rows (check armed 19:08 UTC); per-strategy
+  intraday report once rows accumulate.
+
 ## 2026-10-02 (Fri) — session results (checked 10-03)
 
 - Deploy `0ac8b99` SUCCESS 10:42 UTC (intraday close-before-bell live for the session).
