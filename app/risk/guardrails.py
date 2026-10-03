@@ -31,6 +31,7 @@ class RiskContext(BaseModel):
     consecutive_losses_today: int = 0
     trades_today: int = 0
     recently_stopped_symbols: list[str] = Field(default_factory=list)
+    entries_today_by_correlation_bucket: dict[str, int] = Field(default_factory=dict)
     """Symbols whose last trade closed at a loss inside the re-entry cooldown."""
     open_trade_risks_usd: list[float] = Field(default_factory=list)
     """Per-trade dollar risk (entry->stop) of each currently open position. Summed
@@ -82,6 +83,15 @@ class RiskManager:
         # and stopped again. A fresh stop-out is evidence against the setup.
         if order.symbol.upper() in context.recently_stopped_symbols:
             reasons.append(f"Re-entry cooldown after a losing exit on {order.symbol.upper()}")
+
+        # 2026-09-28: four tech longs (NVDA, AAPL, NVDA, META) opened on one down
+        # day all stopped out (-$601). Open-exposure caps never saw them together
+        # because the first two had closed before the next two opened.
+        bucket_cap = int(getattr(self.settings, "max_daily_entries_per_correlation_bucket", 0) or 0)
+        bucket = correlation_bucket_for_symbol(order.symbol)
+        bucket_entries = context.entries_today_by_correlation_bucket.get(bucket, 0)
+        if bucket_cap > 0 and bucket != "unclassified" and bucket_entries >= bucket_cap:
+            reasons.append(f"Daily entry cap of {bucket_cap} reached for the {bucket} group")
 
         # An unattended bot must react to a large OPEN loss, not just realized
         # PnL. Count current open losses toward the caps (open gains never mask a

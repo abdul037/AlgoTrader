@@ -536,6 +536,8 @@ class AppSettings(BaseSettings):
     # Close intraday-timeframe positions this many minutes before the bell (paper);
     # swing (1d+) positions keep their GTC brackets. 0 = off.
     intraday_flatten_minutes_before_close: float = 10.0
+    # New entries allowed per correlation bucket (e.g. tech_complex) per day. 0 = off.
+    max_daily_entries_per_correlation_bucket: int = 2
     execution_mode: Literal["paper", "live"] = "paper"
     broker_for_equities: Literal["alpaca", "etoro", "none"] = "alpaca"
     broker_for_non_equities: Literal["alpaca", "etoro", "none"] = "etoro"

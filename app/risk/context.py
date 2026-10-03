@@ -90,6 +90,7 @@ def build_risk_context(settings: Any, broker: Any, executions_repo: Any) -> Risk
         consecutive_losses_today=consecutive_losses,
         trades_today=trades_today,
         recently_stopped_symbols=recently_stopped_symbols(settings, executions_repo),
+        entries_today_by_correlation_bucket=entries_today_by_bucket(executions_repo, start_of_day),
         open_trade_risks_usd=[per_position_risk_usd] * len(portfolio.positions),
         mode="paper" if settings.execution_mode == "paper" else settings.etoro_account_mode,
     )
@@ -121,3 +122,25 @@ def recently_stopped_symbols(settings: Any, executions_repo: Any) -> list[str]:
         if symbol not in latest_exit or exited > latest_exit[symbol][0]:
             latest_exit[symbol] = (exited, pnl)
     return sorted(symbol for symbol, (exited, pnl) in latest_exit.items() if pnl < 0 and exited >= cutoff)
+
+
+_LIVE_ENTRY_STATUSES = {"filled", "submitted", "partially_filled", "accepted", "new", "pending_new"}
+
+
+def entries_today_by_bucket(executions_repo: Any, start_of_day: datetime) -> dict[str, int]:
+    """Count today's entries (placed or filled, not failed) per correlation bucket."""
+
+    if not hasattr(executions_repo, "list"):
+        return {}
+    since = start_of_day.astimezone(UTC).isoformat()
+    counts: dict[str, int] = {}
+    for execution in executions_repo.list(limit=200):
+        if str(getattr(execution, "created_at", "") or "") < since:
+            continue
+        if str(getattr(execution, "status", "") or "").lower() not in _LIVE_ENTRY_STATUSES:
+            continue
+        symbol = str((execution.request_payload or {}).get("symbol") or "").upper()
+        if symbol:
+            bucket = correlation_bucket_for_symbol(symbol)
+            counts[bucket] = counts.get(bucket, 0) + 1
+    return counts
