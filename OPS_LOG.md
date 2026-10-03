@@ -42,6 +42,10 @@ without explicit operator sign-off recorded here.
   while SPY (and QQQ for tech) is below today's VWAP and ≥0.3% below the prior close
   (`MARKET_DIRECTION_MIN_DROP_PCT=0.3`). Swing entries exempt; missing data never blocks (logged).
   753 tests pass. Live verification armed Mon 10-05 14:20 UTC (data reachability for SPY/QQQ 5m).
+- **19:02 Operator: "speed it up for the weekend."** `BACKTEST_SCHEDULER_INTERVAL_SECONDS`
+  1800 → **300** (weekend only, market closed). The variable change did not trigger a deploy
+  (again); manual redeploy of `b6def479` (code `e3c34b5`) → `a4d6ebb9`. **Restore to 1800**
+  armed for Sun 10-04 22:00 UTC, before Monday's open, with a Phase 1 completion check.
 
 ## 2026-10-02 (Fri) — session results (checked 10-03)
 
