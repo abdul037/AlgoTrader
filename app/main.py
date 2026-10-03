@@ -611,10 +611,12 @@ def create_app(
                 limit = app_settings.backtest_scheduler_symbol_limit or None
                 universe_size = len(resolve_universe(app_settings, limit=limit))
                 cursor_key = "backtest_gate_refresh:cursor"
+                unit_key = "backtest_gate_refresh:unit"
                 try:
                     cursor = int(runtime_state_repository.get(cursor_key) or "0")
+                    unit = int(runtime_state_repository.get(unit_key) or "0")
                 except (TypeError, ValueError):
-                    cursor = 0
+                    cursor, unit = 0, 0
                 summary = app.state.batch_backtest_service.run(
                     timeframes=list(app_settings.backtest_scheduler_timeframes) or ["1d"],
                     limit=limit,
@@ -623,11 +625,17 @@ def create_app(
                         float(app_settings.backtest_scheduler_deadline_seconds), 1.0
                     ),
                     start_offset=cursor,
+                    start_unit=unit,
                 )
                 covered = int(getattr(summary, "symbols_evaluated", 0) or 0)
+                mid_symbol = bool(getattr(summary, "stopped_mid_symbol", False))
+                resume = int(getattr(summary, "resume_unit", 0) or 0) if mid_symbol else 0
                 if universe_size > 0:
-                    next_cursor = (cursor + max(covered, 1)) % universe_size
+                    # Stopped mid-symbol: stay on it and resume at that strategy.
+                    advance = covered - 1 if mid_symbol else max(covered, 1)
+                    next_cursor = (cursor + advance) % universe_size
                     runtime_state_repository.set(cursor_key, str(next_cursor))
+                    runtime_state_repository.set(unit_key, str(resume))
 
             jobs.append(
                 ScheduledJob(

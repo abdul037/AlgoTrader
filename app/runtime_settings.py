@@ -201,7 +201,9 @@ class AppSettings(BaseSettings):
     # out-of-sample summary exists to validate against.
     backtest_scheduler_enabled: bool = False
     backtest_scheduler_interval_seconds: int = 21600
-    backtest_scheduler_timeframes: list[str] = Field(default_factory=lambda: ["1d"])
+    # 15m/5m added 2026-10-03 so the intraday strategies (most live trades) get
+    # walk-forward OOS evidence; see app/backtesting/intraday_plan.py.
+    backtest_scheduler_timeframes: list[str] = Field(default_factory=lambda: ["1d", "15m", "5m"])
     backtest_scheduler_symbol_limit: int = 0
     # Soft per-run wall-clock budget for the batch backtester. A full-universe
     # walk-forward pass cannot finish inside the scheduler's hard job cap
@@ -538,6 +540,20 @@ class AppSettings(BaseSettings):
     intraday_flatten_minutes_before_close: float = 10.0
     # New entries allowed per correlation bucket (e.g. tech_complex) per day. 0 = off.
     max_daily_entries_per_correlation_bucket: int = 2
+    # Live stop-width floor in prior-session ATRs (widens stop and target, keeping
+    # R:R; sizing keeps $ risk constant). 0 = off until the intraday walk-forward
+    # shows a floor improves out-of-sample expectancy. Backtests use the same value.
+    min_stop_session_atr_multiple: float = 0.0
+    # Intraday walk-forward plan (see app/backtesting/intraday_plan.py).
+    walk_forward_intraday_lookback_days: int = 120
+    walk_forward_intraday_train_days: int = 5
+    walk_forward_intraday_test_days: int = 7
+    walk_forward_intraday_step_days: int = 7
+    walk_forward_intraday_embargo_days: int = 1
+    walk_forward_intraday_holdout_days: int = 14
+    walk_forward_intraday_variants: list[str] = Field(
+        default_factory=lambda: ["hold_overnight", "stop_floor_0.5", "stop_floor_1.0"]
+    )
     execution_mode: Literal["paper", "live"] = "paper"
     broker_for_equities: Literal["alpaca", "etoro", "none"] = "alpaca"
     broker_for_non_equities: Literal["alpaca", "etoro", "none"] = "etoro"
@@ -733,6 +749,7 @@ class AppSettings(BaseSettings):
         "paper_near_miss_allowed_reasons",
         "paper_supervised_weak_valid_allowed_reasons",
         "paper_strategy_weak_signal_allowed_strategies",
+        "walk_forward_intraday_variants",
         mode="before",
     )
     @classmethod
@@ -750,6 +767,7 @@ class AppSettings(BaseSettings):
             "paper_near_miss_allowed_reasons",
             "paper_supervised_weak_valid_allowed_reasons",
             "paper_strategy_weak_signal_allowed_strategies",
+            "walk_forward_intraday_variants",
         }
         normalize = str.lower if info.field_name in lowercase_fields else str.upper
         if value is None:

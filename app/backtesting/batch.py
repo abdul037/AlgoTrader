@@ -16,12 +16,19 @@ that still want an in-sample pass can set ``walk_forward=False``.
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from math import isfinite
 from typing import Any
 
 import pandas as pd
 
 from app.backtesting.engine import BacktestEngine, EngineConfig
+from app.backtesting.intraday_plan import (
+    history_bars_for,
+    intraday_variants,
+    is_intraday,
+    splitter_for,
+)
 from app.backtesting.metrics import bars_per_year_for, leakage_tripwire_triggered
 from app.backtesting.strategy_selection import strategy_kwargs_for, strategy_specs_for
 from app.backtesting.walk_forward import WalkForwardSplitter, aggregate_out_of_sample
@@ -79,6 +86,7 @@ class BatchBacktestService:
         walk_forward: bool = True,
         deadline_seconds: float | None = None,
         start_offset: int = 0,
+        start_unit: int = 0,
     ) -> BatchBacktestSummary:
         universe = [symbol.upper() for symbol in (symbols or resolve_universe(self.settings, limit=limit))]
         # Rotate the start so successive scheduled runs sweep the whole universe
@@ -97,6 +105,12 @@ class BatchBacktestService:
         started_at = time.monotonic()
         symbols_covered = 0
         truncated = False
+        # Resume inside the first symbol: one symbol's intraday sweep (strategies x
+        # variants) can exceed a pass's deadline, and advancing by whole symbols
+        # would then never reach its later strategies.
+        skip_units = max(int(start_unit or 0), 0)
+        resume_unit = 0
+        stopped_mid_symbol = False
 
         for symbol in universe:
             if (
@@ -110,12 +124,17 @@ class BatchBacktestService:
             # Count the symbol as covered as soon as it is attempted so the
             # rotation cursor always advances past a slow or failing symbol.
             symbols_covered += 1
+            unit = 0
             for timeframe in scan_timeframes:
+                specs = list(strategy_specs_for(self.settings, timeframe=timeframe, requested=requested))
+                if unit + len(specs) <= skip_units:
+                    unit += len(specs)
+                    continue
                 try:
                     history = self.market_data.get_history(
                         symbol,
                         timeframe=timeframe,
-                        bars=520 if timeframe == "1w" else 500 if timeframe == "1d" else 350,
+                        bars=history_bars_for(timeframe, self.settings),
                         provider=provider,
                         force_refresh=force_refresh,
                     )
@@ -127,15 +146,26 @@ class BatchBacktestService:
                     initial_cash=initial_cash,
                     risk_per_trade_pct=float(getattr(self.settings, "max_risk_per_trade_pct", 1.0)),
                     bars_per_year=bars_per_year_for(timeframe),
+                    # Mirror live: intraday positions are closed before the bell,
+                    # and any live stop-width floor applies in the backtest too.
+                    flatten_at_session_end=is_intraday(timeframe)
+                    and float(getattr(self.settings, "intraday_flatten_minutes_before_close", 0) or 0) > 0,
+                    min_stop_session_atr_multiple=float(
+                        getattr(self.settings, "min_stop_session_atr_multiple", 0.0) or 0.0
+                    ),
                 )
                 engine = BacktestEngine(self.backtests, config=engine_config)
 
-                for spec in strategy_specs_for(self.settings, timeframe=timeframe, requested=requested):
+                for spec in specs:
+                    unit += 1
+                    if unit <= skip_units:
+                        continue
                     if (
                         deadline_seconds is not None
                         and deadline_seconds > 0
                         and (time.monotonic() - started_at) >= deadline_seconds
                     ):
+                        resume_unit, stopped_mid_symbol = unit - 1, True
                         # A single symbol's full strategy sweep can itself exceed
                         # the scheduler's hard job cap, so the top-of-symbol check
                         # alone is not enough — it would be killed mid-symbol and
@@ -169,6 +199,8 @@ class BatchBacktestService:
                         errors.append(f"{symbol} {timeframe} {spec.name}: {exc}")
                         continue
                     results.append(summary)
+                    if walk_forward and is_intraday(timeframe):
+                        self._run_variants(engine_config, symbol, strategy, history, timeframe, provider, summary)
                     triggered, reason = leakage_tripwire_triggered(summary)
                     if triggered:
                         tripwires.append(
@@ -176,6 +208,7 @@ class BatchBacktestService:
                         )
                 if truncated:
                     break
+            skip_units = 0
             if truncated:
                 break
 
@@ -190,6 +223,8 @@ class BatchBacktestService:
             aggregate_metrics=aggregate,
             audit_rankings=self._audit_rankings(results, errors + tripwires),
             errors=errors + tripwires,
+            resume_unit=resume_unit,
+            stopped_mid_symbol=stopped_mid_symbol,
         )
         self.logs.log(
             "batch_backtest_run",
@@ -197,6 +232,9 @@ class BatchBacktestService:
                 "universe": len(universe),
                 "symbols_covered": symbols_covered,
                 "start_offset": start_offset,
+                "start_unit": start_unit,
+                "resume_unit": resume_unit,
+                "stopped_mid_symbol": stopped_mid_symbol,
                 "truncated": truncated,
                 "timeframes": scan_timeframes,
                 "strategy_runs": run_count,
@@ -218,6 +256,7 @@ class BatchBacktestService:
         timeframe: str,
         provider: str | None,
         walk_forward: bool,
+        persist: bool = True,
     ) -> dict[str, Any]:
         """Run a single strategy either in-sample or via walk-forward folds."""
 
@@ -239,13 +278,7 @@ class BatchBacktestService:
                 **result.metrics,
             }
 
-        splitter = WalkForwardSplitter(
-            train_days=int(getattr(self.settings, "walk_forward_train_days", 180)),
-            test_days=int(getattr(self.settings, "walk_forward_test_days", 14)),
-            step_days=int(getattr(self.settings, "walk_forward_step_days", 14)),
-            embargo_days=int(getattr(self.settings, "walk_forward_embargo_days", 1)),
-            holdout_days=int(getattr(self.settings, "walk_forward_holdout_days", 28)),
-        )
+        splitter = splitter_for(timeframe, self.settings)
         per_fold_trades: list[list[dict]] = []
         per_fold_metrics: list[dict] = []
         # Folds run through a repo-less engine, like the holdout: each fold used
@@ -275,7 +308,7 @@ class BatchBacktestService:
         aggregated = aggregate_out_of_sample(
             per_fold_trades,
             per_fold_metrics,
-            test_days=int(getattr(self.settings, "walk_forward_test_days", 14)),
+            test_days=splitter.test_days,
         )
         metrics = aggregated["metrics"]
         metrics["out_of_sample"] = True
@@ -297,7 +330,7 @@ class BatchBacktestService:
         metrics.update(self._evaluate_holdout(engine, symbol, strategy, history, splitter, file_path))
 
         completed_at = utc_now().isoformat()
-        if self.backtests is not None:
+        if persist and self.backtests is not None:
             self.backtests.create(
                 backtest_id=generate_id("bt"),
                 symbol=symbol.upper(),
@@ -317,6 +350,49 @@ class BatchBacktestService:
             "fold_count": aggregated["metrics"].get("fold_count", 0),
             **metrics,
         }
+
+    def _run_variants(
+        self,
+        base_config: EngineConfig,
+        symbol: str,
+        strategy: Any,
+        history: Any,
+        timeframe: str,
+        provider: str | None,
+        baseline: dict[str, Any],
+    ) -> None:
+        """Score intraday variants (overnight holds, stop-width floors) on the same
+        folds. Logged to run_logs only: a persisted OOS row would be picked up by
+        get_latest_summary as the strategy's backtest and could gate live trading."""
+
+        for name, overrides in intraday_variants(self.settings):
+            try:
+                variant = self._run_strategy(
+                    engine=BacktestEngine(config=replace(base_config, **overrides)),
+                    symbol=symbol,
+                    strategy=strategy,
+                    history=history.copy(),
+                    timeframe=timeframe,
+                    provider=provider,
+                    walk_forward=True,
+                    persist=False,
+                )
+            except Exception as exc:  # noqa: BLE001 - a variant failure never breaks the gate refresh
+                self.logs.log("backtest_variant_failed", {"symbol": symbol, "variant": name, "error": str(exc)})
+                continue
+            keys = ("number_of_trades", "win_rate", "profit_factor", "expectancy_usd", "total_return_pct",
+                    "max_drawdown_pct", "fold_count", "holdout_trades", "holdout_expectancy_usd")
+            self.logs.log(
+                "backtest_variant_result",
+                {
+                    "symbol": symbol.upper(),
+                    "strategy_name": strategy.name,
+                    "timeframe": timeframe,
+                    "variant": name,
+                    "variant_metrics": {key: variant.get(key) for key in keys},
+                    "baseline_metrics": {key: baseline.get(key) for key in keys},
+                },
+            )
 
     @staticmethod
     def _fold_frame_with_warmup(window: Any) -> Any:
