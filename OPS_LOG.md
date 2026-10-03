@@ -12,6 +12,23 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-10-02 (Fri) — session results (checked 10-03)
+
+- Deploy `0ac8b99` SUCCESS 10:42 UTC (intraday close-before-bell live for the session).
+- **IWM** (15m) hit its target at the open, 282.45 → **+$193.15**. **CSCO** (5m) hit its target
+  at the open, 110.18 → **+$168.72**. Both were the overnight carries from 10-01 and gapped
+  in our favour; they closed on their brackets before the flatten window.
+- **AMZN** (15m, anchored_vwap_pullback_continuation) entered 13:42 @ 252.70 ×49; **closed by
+  the new intraday flatten at 19:51 UTC** (8.6 min to close) @ 251.61 → **-$53.41**. First
+  live run of `intraday_exit`: legs cancelled, market close filled, reconciliation booked the
+  loss via `exit_fill` (so the loss gates saw it) — verified.
+- **TSLA** (1d, ema_trend_stack) entered 17:00 @ 372.29 ×18 — swing, holds over the weekend
+  with its GTC bracket. **NVDA** (1d) still open with its bracket.
+- No `reward_to_risk_below_min_at_quote` or re-entry-cooldown blocks fired. 30 proposals
+  blocked, nearly all by the 30% gross-exposure cap.
+- **Friday realized: +$308.46.** All-time realized: **-$369.82** over 18 closed trades
+  (4 wins / 14 losses). Open: NVDA +$78.54, TSLA -$30.60. Equity **$99,743.01** (10-03).
+
 ## 2026-10-02 (Fri) — Review Team meeting (first since 09-07)
 
 Convened locally over the 31 unreviewed commits (`0a12efe..2575a1b`) plus the week's trades.
