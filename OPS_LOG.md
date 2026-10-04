@@ -66,6 +66,14 @@ without explicit operator sign-off recorded here.
   AlgoBot's $10,000, so a $50 mirror trade (0.5%) puts about **$2.50** of the operator's $500 to work. The
   $25 daily loss stop is measured on the $10,000 base. Sizing decision is put to the operator; caps are
   unchanged. The operator confirmed the keys are from AlgoBot, Real environment, with Write permission.
+- **Operator: "yes, build the 10% sizing and deploy."** `515855a`: each mirror position is **10% of the eToro
+  equity last read by reconcile** (was a fixed $50). With AlgoBot at $10,000 that is $1,000, about **$50 of the
+  operator's $500 copy**. Hard caps in code: ≤10% of equity and ≤$1,000 per position; a 5% daily equity-drop
+  stop (≈$25 on the copy; replaces the $25 fixed stop); no trade while equity is unknown or below eToro's $10
+  minimum; 2 new/day, 3 open and one 2x test unchanged. Setting `ETORO_LIVE_TRADE_AMOUNT_USD` replaced by
+  `ETORO_LIVE_TRADE_PCT_OF_EQUITY` (default 10, capped at 10). 779 tests pass. Deploy `cb22b99b` **SUCCESS
+  12:54 UTC**; stored equity basis is $10,000. Operator advised to **Keep Copying**: stopping the copy doesn't
+  stop the bot, it only stops the $500 following it. First possible mirrored trade: Mon 10-05 13:30 UTC.
 - Recommendation to operator: (a) turn on REQUIRE_STRATEGY_OOS_EVIDENCE (trade the 9 daily strategies
   only; intraday become shadow signals); (b) keep the intraday close rule; (c) no live stop floor
   (intraday won't trade anyway). Awaiting sign-off.
