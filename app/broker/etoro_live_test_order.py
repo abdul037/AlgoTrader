@@ -3,7 +3,8 @@
 US stocks are closed at the weekend, so the operator asked to prove the eToro
 live chain on crypto: one small real position in the AlgoBot account, copied in
 proportion into the operator's $500, closed by the bot's usual bracket.
-Operator choices: ETH, $200 in AlgoBot (about $10 of the copy), exit "based on
+Operator choices: ETH, $1,000 in AlgoBot (about $50 of the copy; first asked
+$200 / $10, then "increase the copy value from 10 to 50$"), exit "based on
 the strategy and profit made" -- stop ``STOP_ATR_MULT`` x daily ATR(14) below
 the entry, target ``REWARD_TO_RISK`` x that distance above, both held by eToro,
 plus a ``MAX_HOLD_DAYS`` time stop.
@@ -26,7 +27,8 @@ from app.utils.time import utc_now
 
 REQUEST_KEY = "etoro_live:test_order_request"
 TEST_STATE_KEY = "etoro_live:test_order"
-HARD_MAX_TEST_ORDER_USD = 200.0
+HARD_MAX_TEST_ORDER_USD = 1_000.0  # same per-position backstop as the live mirror
+MAX_TEST_PCT_OF_EQUITY = 10.0  # same share of the AlgoBot balance as a mirror trade
 ALLOWED_TEST_SYMBOLS = frozenset({"ETH", "BTC"})
 ATR_PERIOD = 14
 STOP_ATR_MULT = 1.5  # same multiple as the live signal ATR stop
@@ -113,6 +115,12 @@ class EtoroLiveTestOrder:
     def _open(self, request: dict[str, Any]) -> dict[str, Any]:
         symbol = str(request.get("symbol") or "").upper().strip()
         amount = min(float(request.get("amount_usd") or 0.0), HARD_MAX_TEST_ORDER_USD)
+        with suppress(Exception):
+            equity = json.loads(self.mirror.state.get("etoro_live:state") or "{}").get(
+                "last_equity"
+            )
+            if equity:
+                amount = min(amount, round(float(equity) * MAX_TEST_PCT_OF_EQUITY / 100.0, 2))
         test: dict[str, Any] = {
             "symbol": symbol,
             "amount_usd": amount,

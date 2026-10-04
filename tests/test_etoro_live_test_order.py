@@ -146,7 +146,16 @@ def test_amount_is_hard_capped(tmp_path) -> None:
     _request(state, amount=5_000)
     tester, _ = _tester(tmp_path, client=client, state=state)
     tester.run()
-    assert client.posted[0][2]["Amount"] == HARD_MAX_TEST_ORDER_USD
+    assert client.posted[0][2]["Amount"] == HARD_MAX_TEST_ORDER_USD == 1_000.0
+
+
+def test_amount_never_exceeds_10_pct_of_the_algobot_balance(tmp_path) -> None:
+    client, state = _Client(), _State()
+    state.set("etoro_live:state", json.dumps({"last_equity": 5_000.0}))
+    _request(state, amount=1_000)
+    tester, _ = _tester(tmp_path, client=client, state=state)
+    tester.run()
+    assert client.posted[0][2]["Amount"] == 500.0
 
 
 def test_each_lock_blocks_and_nothing_is_sent(tmp_path) -> None:

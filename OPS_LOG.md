@@ -85,6 +85,9 @@ without explicit operator sign-off recorded here.
   failed test is logged and never halts the mirror. Positions are now closed by position id
   (`close_position_by_id`), so the mirror's unprotected-position close also works for non-equity
   instruments. eToro's crypto fee is about 1% a side. 790 tests pass.
+- **Operator: "Increase the copy value from 10 to 50$."** Before any order was sent (the $200 request was never
+  written; its scheduled trigger was cancelled), the test cap was raised to **$1,000 in AlgoBot (≈$50 of the copy)**,
+  also capped at 10% of the AlgoBot balance, the same per-trade limits as the live mirror. 32 related tests pass.
 - Recommendation to operator: (a) turn on REQUIRE_STRATEGY_OOS_EVIDENCE (trade the 9 daily strategies
   only; intraday become shadow signals); (b) keep the intraday close rule; (c) no live stop floor
   (intraday won't trade anyway). (a) signed off and enforcing since 11:36 UTC (see above); (b) and (c)
