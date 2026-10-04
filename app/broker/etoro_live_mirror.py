@@ -280,7 +280,7 @@ class EtoroLiveMirrorService:
             if not symbol:
                 continue
             try:
-                self.client.close_position(symbol)
+                self.client.close_position_by_id(int(item["positionID"]), int(item.get("instrumentID") or 0))
                 closed.append(symbol)
             except Exception as exc:  # noqa: BLE001
                 self._halt(f"close_unprotected_failed:{symbol}:{exc}")

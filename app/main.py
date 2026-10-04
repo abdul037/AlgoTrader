@@ -462,6 +462,12 @@ def create_app(
         run_logs=run_log_repository,
         notifier=app.state.telegram_notifier,
     )
+    from app.broker.etoro_live_test_order import EtoroLiveTestOrder
+
+    app.state.execution_coordinator.etoro_live_test_order = EtoroLiveTestOrder(
+        mirror=app.state.execution_coordinator.etoro_live_mirror,
+        bars=getattr(alpaca_client, "get_bars", None),
+    )
     app.state.safety_state_repository = safety_state_repository
     app.state.broker_order_repository = broker_order_repository
     app.state.broker_position_repository = broker_position_repository

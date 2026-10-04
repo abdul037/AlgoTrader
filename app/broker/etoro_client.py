@@ -218,17 +218,25 @@ class EToroClient(BrokerClient):
         )
         if position is None:
             raise ValueError(f"No open position found for {instrument.symbol}")
+        return self.close_position_by_id(position.position_id, broker_instrument["instrument_id"])
 
-        payload = {
-            "InstrumentID": broker_instrument["instrument_id"],
-            "UnitsToDeduct": None,
-        }
+    def close_position_by_id(self, position_id: int, instrument_id: int) -> BrokerOrderResponse:
+        """Close one eToro position by its ids (no symbol lookup, so it also works for
+        instruments outside the equity allowlist, e.g. a crypto test position)."""
+
+        self._ensure_order_mode_allowed()
+        if self.settings.broker_simulation_enabled:
+            return BrokerOrderResponse(
+                order_id=generate_id("sim_close"),
+                status="simulated_closed",
+                mode=self.settings.etoro_account_mode,
+                message=f"Simulated close request for position {position_id}",
+                raw_response={"position_id": position_id},
+            )
         response = self._request(
             "POST",
-            self._trading_execution_path(
-                f"market-close-orders/positions/{position.position_id}"
-            ),
-            json_body=payload,
+            self._trading_execution_path(f"market-close-orders/positions/{position_id}"),
+            json_body={"InstrumentID": instrument_id, "UnitsToDeduct": None},
         )
         order_for_close = response.get("orderForClose", {})
         return BrokerOrderResponse(

@@ -828,12 +828,13 @@ def refresh_demoted_strategies(service: Any, completed: list[str], errors: list[
 
 
 def refresh_phase_gates(service: Any, completed: list[str], errors: list[str]) -> None:
-    """Phase 2/3 bookkeeping, every 30 min: pooled OOS strategy evidence verdicts and
-    the go-live readiness report. Both only report unless their gates are enabled."""
+    """Phase 2/3 bookkeeping every 30 min (evidence verdicts, readiness, eToro reconcile)."""
 
+    from app.broker.etoro_live_test_order import run_from_maintenance
     from app.performance.go_live_readiness import refresh_readiness
     from app.performance.strategy_evidence import refresh_verdicts
 
+    run_from_maintenance(service, completed)  # every tick: one-off eToro live test order, if requested
     if not service._is_due("phase_gates:last_run_at", 30):
         return
     service.runtime_state.set("phase_gates:last_run_at", utc_now().isoformat())

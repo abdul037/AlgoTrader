@@ -64,7 +64,8 @@ class _Client:
             account=SimpleNamespace(equity=self.equity), positions=self.positions
         )
 
-    def close_position(self, symbol):
+    def close_position_by_id(self, position_id, instrument_id):
+        symbol = {p.position_id: p.symbol for p in self.positions}[position_id]
         self.closed.append(symbol)
 
 

@@ -74,6 +74,17 @@ without explicit operator sign-off recorded here.
   `ETORO_LIVE_TRADE_PCT_OF_EQUITY` (default 10, capped at 10). 779 tests pass. Deploy `cb22b99b` **SUCCESS
   12:54 UTC**; stored equity basis is $10,000. Operator advised to **Keep Copying**: stopping the copy doesn't
   stop the bot, it only stops the $500 following it. First possible mirrored trade: Mon 10-05 13:30 UTC.
+- **Operator: skip the Notion mirror for now** (the repo log stays the source of truth).
+- **Operator asked for a weekend eToro live test on crypto.** Correction given: crypto is OFF on the main
+  bot since 09-27, so there were no ETH/BTC trades to copy, and the eToro client only resolved US equities.
+  Operator choices: **ETH, $200 in AlgoBot (≈$10 of the $500 copy), close "based on the strategy and profit
+  made"**. Built `app/broker/etoro_live_test_order.py`: a one-shot request row
+  (`etoro_live:test_order_request`) makes the bot place one 1x ETH buy with stop = entry − 1.5× daily ATR(14)
+  (clamped 1–10%) and target = 2R, both held by eToro, plus a 7-day time stop. The same live-mirror locks apply
+  (enabled, acknowledgement, not halted, real client). Hard cap $200, ETH/BTC only, one test at a time. A
+  failed test is logged and never halts the mirror. Positions are now closed by position id
+  (`close_position_by_id`), so the mirror's unprotected-position close also works for non-equity
+  instruments. eToro's crypto fee is about 1% a side. 790 tests pass.
 - Recommendation to operator: (a) turn on REQUIRE_STRATEGY_OOS_EVIDENCE (trade the 9 daily strategies
   only; intraday become shadow signals); (b) keep the intraday close rule; (c) no live stop floor
   (intraday won't trade anyway). (a) signed off and enforcing since 11:36 UTC (see above); (b) and (c)
