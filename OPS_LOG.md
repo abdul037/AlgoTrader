@@ -12,6 +12,24 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-10-04 (Sun) — Phase 1 complete (25/25 symbols, 5m + 15m + 1d)
+
+- **Pooled walk-forward OOS verdicts:** 9 strategies pass, **all daily (1d)**: momentum_breakout
+  (+$5.99/trade, 279 trades), ma_crossover (+$4.41), ema_trend_stack (+$3.28),
+  relative_strength_momentum (+$2.65), atr_donchian_trend_breakout (+$2.28), trend_following (+$1.89),
+  pullback_trend (+$1.64), etf_mega_cap_relative_strength_rotation (+$1.64),
+  regime_aligned_trend_continuation (+$0.78); each over 31 symbols, holdout positive (14–25 trades).
+- **Every intraday (5m/15m) strategy fails**: expectancy −$5 to −$37/trade over 100–1,400 OOS trades,
+  holdout negative too. Best: rsi_reversal 15m +$0.37 but holdout −$0.98.
+- **Variants (pooled, latest per symbol/strategy):**
+  - hold_overnight is **worse** than closing at the bell: 15m −$11.56 vs −$8.35/trade; 5m −$13.46 vs
+    −$9.49. Keep the close-before-the-bell rule.
+  - stop floors help but don't rescue the intraday strategies: 1.0× session ATR → 15m −$5.28,
+    5m −$5.17/trade (vs −$8.35 / −$9.49); still negative.
+- Recommendation to operator: (a) turn on REQUIRE_STRATEGY_OOS_EVIDENCE (trade the 9 daily strategies
+  only; intraday become shadow signals); (b) keep the intraday close rule; (c) no live stop floor
+  (intraday won't trade anyway). Awaiting sign-off.
+
 ## 2026-10-03 (Sat) — loss analysis and three follow-ups (operator: "do all three")
 
 - **Why the losses (all-time realized -$369.82, 18 trades):** 4 wins +$984 (avg $246) vs 14
