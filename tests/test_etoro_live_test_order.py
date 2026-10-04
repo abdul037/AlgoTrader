@@ -257,12 +257,63 @@ def test_no_position_after_grace_is_reported(tmp_path) -> None:
 
 
 def test_maintenance_hook_survives_errors(tmp_path) -> None:
-    logs = _Logs()
+    tester, logs = _tester(tmp_path)
     boom = SimpleNamespace(run=lambda: (_ for _ in ()).throw(RuntimeError("db down")))
-    service = SimpleNamespace(
-        auto_trading=SimpleNamespace(execution=SimpleNamespace(etoro_live_test_order=boom)),
-        run_logs=logs,
-    )
+    execution = SimpleNamespace(etoro_live_test_order=boom, etoro_live_mirror=tester.mirror)
+    service = SimpleNamespace(auto_trading=SimpleNamespace(execution=execution), run_logs=logs)
     completed: list[str] = []
-    run_from_maintenance(service, completed)
-    assert completed == [] and logs.events[-1][0] == "etoro_live_test_order_error"
+    run_from_maintenance(service, completed)  # no guard wired -> fallback runs, error isolated
+    assert completed == [] and logs.events[-1][0] == "etoro_live_guard_error"
+    assert logs.events[-1][1]["step"] == "etoro_live_test_order"
+
+
+def test_bad_amount_is_recorded_as_failed(tmp_path) -> None:
+    client, state = _Client(), _State()
+    state.set(REQUEST_KEY, json.dumps({"symbol": "ETH", "amount_usd": "50$"}))
+    tester, _ = _tester(tmp_path, client=client, state=state)
+    assert tester.run()["reason"] == "bad_amount_usd" and client.posted == []
+
+
+def test_unclear_order_result_keeps_watching(tmp_path) -> None:
+    client, state = _Client(), _State()
+
+    def timeout(method, path, *, json_body=None, params=None):
+        raise RuntimeError("Broker request failed: timed out")
+
+    client._request = timeout
+    _request(state)
+    tester, logs = _tester(tmp_path, client=client, state=state)
+    test = tester.run()
+    assert test["status"] == "open" and "timed out" in test["open_error"]
+    assert logs.events[-1][0] == "etoro_live_test_order_uncertain"
+
+
+def test_order_saved_before_it_is_sent(tmp_path) -> None:
+    client, state = _Client(), _State()
+    seen = []
+    original = client._request
+
+    def spy(method, path, *, json_body=None, params=None):
+        seen.append(json.loads(state.get(TEST_STATE_KEY))["status"])
+        return original(method, path, json_body=json_body, params=params)
+
+    client._request = spy
+    _request(state)
+    tester, _ = _tester(tmp_path, client=client, state=state)
+    tester.run()
+    assert seen == ["open"]
+
+
+def test_finished_elsewhere_is_not_overwritten(tmp_path) -> None:
+    client, state = _Client(), _State()
+    _request(state)
+    tester, logs = _tester(tmp_path, client=client, state=state)
+    tester.run()
+    client.positions = [{"positionID": 9, "instrumentID": 100001, "stopLossRate": 1_910.0}]
+    tester.run()
+    finished = json.loads(state.get(TEST_STATE_KEY))
+    finished["status"] = "closed"  # the other container finished it meanwhile
+    state.set(TEST_STATE_KEY, json.dumps(finished))
+    client.positions = []
+    assert tester._finish(dict(finished, status="open"), "x")["status"] == "closed"
+    assert not any(e == "etoro_live_test_order_closed" for e, _ in logs.events)

@@ -565,6 +565,7 @@ class AppSettings(BaseSettings):
     etoro_live_user_key: str = ""
     etoro_live_acknowledgement: str = ""
     etoro_live_trade_pct_of_equity: float = 10.0  # hard-capped at 10% / $1,000 in code
+    etoro_live_guard_interval_seconds: int = 60  # backup stop / test watch cadence (min 10)
     # Live stop-width floor in prior-session ATRs (widens stop and target, keeping
     # R:R; sizing keeps $ risk constant). 0 = off until the intraday walk-forward
     # shows a floor improves out-of-sample expectancy. Backtests use the same value.

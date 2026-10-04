@@ -462,12 +462,9 @@ def create_app(
         run_logs=run_log_repository,
         notifier=app.state.telegram_notifier,
     )
-    from app.broker.etoro_live_test_order import EtoroLiveTestOrder
+    from app.broker.etoro_live_guard import attach_live_guard
 
-    app.state.execution_coordinator.etoro_live_test_order = EtoroLiveTestOrder(
-        mirror=app.state.execution_coordinator.etoro_live_mirror,
-        bars=getattr(alpaca_client, "get_bars", None),
-    )
+    attach_live_guard(app.state.execution_coordinator, settings=app_settings, bars=getattr(alpaca_client, "get_bars", None))
     app.state.safety_state_repository = safety_state_repository
     app.state.broker_order_repository = broker_order_repository
     app.state.broker_position_repository = broker_position_repository
@@ -745,6 +742,7 @@ def create_app(
         worker = app.state.build_scheduler_worker()
         worker.start()
         app.state.scheduler_worker = worker
+        app.state.execution_coordinator.etoro_live_guard.start()  # backup stops, every minute
         logger.info(
             "Scheduler worker started with %d jobs", len(worker.jobs)
         )
@@ -809,6 +807,7 @@ def create_app(
     def shutdown_tasks() -> None:
         worker = getattr(app.state, "scheduler_worker", None)
         if worker is not None:
+            app.state.execution_coordinator.etoro_live_guard.stop()  # before the scheduler
             worker.stop()
         stream = getattr(app.state, "alpaca_trade_stream", None)
         if stream is not None:

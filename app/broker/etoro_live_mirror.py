@@ -35,7 +35,9 @@ mirror's own client gets a private settings copy with real mode enabled.
 
 from __future__ import annotations
 
+import functools
 import json
+import threading
 from contextlib import suppress
 from typing import Any
 
@@ -104,6 +106,17 @@ def client_problem(client: Any | None) -> str | None:
     return None
 
 
+def _serialized(method: Any) -> Any:
+    """Run a mirror method under the mirror's lock."""
+
+    @functools.wraps(method)
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        with self.lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class EtoroLiveMirrorService:
     """Mirror qualifying Alpaca paper entries into small, capped eToro live positions."""
 
@@ -121,6 +134,9 @@ class EtoroLiveMirrorService:
         self.state = runtime_state
         self.logs = run_logs
         self.notifier = notifier
+        # One lock for every live-eToro state change: entries (execution thread), reconcile
+        # (scheduler) and the guard thread's test order / backup stops.
+        self.lock = threading.RLock()
 
     # -- gates -----------------------------------------------------------------
     def blockers(self, proposal: Any, primary_broker: str) -> list[str]:
@@ -201,6 +217,7 @@ class EtoroLiveMirrorService:
         return round(min(float(equity) * pct / 100.0, HARD_MAX_TRADE_USD), 2)
 
     # -- mirror ----------------------------------------------------------------
+    @_serialized
     def mirror(
         self, *, proposal: Any, primary_execution: Any, primary_broker: str
     ) -> dict[str, Any] | None:
@@ -269,6 +286,7 @@ class EtoroLiveMirrorService:
         return record
 
     # -- reconcile (maintenance) -----------------------------------------------
+    @_serialized
     def reconcile(self) -> dict[str, Any] | None:
         """Refresh equity and open positions; close any live position left without a stop loss."""
 

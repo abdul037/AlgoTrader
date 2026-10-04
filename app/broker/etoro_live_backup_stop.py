@@ -14,6 +14,8 @@ crypto test keeps its stop in its own state and calls ``fresh_rate`` directly.
 from __future__ import annotations
 
 import json
+import time
+from contextlib import nullcontext
 from datetime import timedelta
 from typing import Any
 
@@ -21,6 +23,7 @@ from app.utils.time import utc_now
 
 STOPS_KEY = "etoro_live:intended_stops"
 UNSEEN_GRACE_MINUTES = 30  # an entry with no matching position after this is dropped
+CLOSE_RECHECK_SECONDS = 3.0
 
 
 def fresh_rate(client: Any, symbol: str) -> float | None:
@@ -43,6 +46,18 @@ def remember_stop(mirror: Any, symbol: str, stop: float | None, instrument_id: i
 
     if stop is None:
         return
+    with _lock(mirror):
+        _remember(mirror, symbol, stop, instrument_id)
+
+
+def check_backup_stops(mirror: Any) -> list[dict[str, Any]] | None:
+    """Close any mirrored position whose fresh price is at or below its intended stop."""
+
+    with _lock(mirror):
+        return _check(mirror)
+
+
+def _remember(mirror: Any, symbol: str, stop: float, instrument_id: int | None) -> None:
     stops = _load(mirror)
     stops[symbol.upper()] = {
         "stop": float(stop),
@@ -52,9 +67,7 @@ def remember_stop(mirror: Any, symbol: str, stop: float | None, instrument_id: i
     _save(mirror, stops)
 
 
-def check_backup_stops(mirror: Any) -> list[dict[str, Any]] | None:
-    """Close any mirrored position whose fresh price is at or below its intended stop."""
-
+def _check(mirror: Any) -> list[dict[str, Any]] | None:
     from app.broker.etoro_live_mirror import client_problem
 
     stops = _load(mirror)
@@ -94,17 +107,59 @@ def check_backup_stops(mirror: Any) -> list[dict[str, Any]] | None:
                 client.close_position_by_id(int(position["positionID"]), int(instrument_id))
                 record["position_ids"].append(position["positionID"])
         except Exception as exc:  # noqa: BLE001 - stop new risk, ask for a manual close
-            remaining[symbol] = info
-            mirror.logs.log("etoro_live_backup_stop_close_failed", {**record, "error": str(exc)})
-            mirror._halt(f"backup_stop_close_failed:{symbol}:{exc}")
-            continue
+            if not _still_open(client, int(instrument_id)):  # e.g. the old container closed it
+                record["closed_elsewhere"] = True
+            else:
+                remaining[symbol] = info
+                mirror.logs.log(
+                    "etoro_live_backup_stop_close_failed", {**record, "error": str(exc)}
+                )
+                mirror._halt(f"backup_stop_close_failed:{symbol}:{exc}")
+                continue
         mirror.logs.log("etoro_live_backup_stop_closed", record)
         mirror._notify(
             f"eToro LIVE backup stop: closed {symbol} at about {rate:,.2f} (stop {info['stop']:,.2f})."
         )
         closed.append(record)
-    _save(mirror, remaining)
+    # Merge, don't overwrite: another container (deploy overlap) or the execution thread may
+    # have recorded a stop since the snapshot. Drop only what this pass closed or aged out.
+    current = _load(mirror)
+    for symbol in set(stops) - set(remaining):
+        current.pop(symbol, None)
+    for symbol, info in remaining.items():
+        if symbol in current and info.get("instrument_id"):
+            current[symbol]["instrument_id"] = info["instrument_id"]
+    _save(mirror, current)
     return closed
+
+
+def _still_open(client: Any, instrument_id: int) -> bool:
+    """After a failed close: is a position in ``instrument_id`` still open?
+
+    Fails closed: an error or a malformed/partial portfolio read counts as "still open",
+    so the stop is kept and the operator is alerted. If it still looks open, re-read once
+    after ``CLOSE_RECHECK_SECONDS`` -- during a deploy overlap the other container's close
+    may still be pending.
+    """
+
+    for attempt in range(2):
+        if attempt:
+            time.sleep(CLOSE_RECHECK_SECONDS)
+        try:
+            raw = client.fetch_raw_portfolio()
+            portfolio = raw.get("clientPortfolio") if isinstance(raw, dict) else None
+            positions = portfolio.get("positions") if isinstance(portfolio, dict) else None
+            if not isinstance(positions, list):
+                continue  # unknown: treat as open unless the re-read is clean
+            if not any(int(p.get("instrumentID") or 0) == instrument_id for p in positions):
+                return False
+        except Exception:  # noqa: BLE001 - unknown: assume it is still open
+            continue
+    return True
+
+
+def _lock(mirror: Any) -> Any:
+    return getattr(mirror, "lock", None) or nullcontext()
 
 
 def _load(mirror: Any) -> dict[str, Any]:

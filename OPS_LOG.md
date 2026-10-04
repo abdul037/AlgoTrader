@@ -119,6 +119,19 @@ without explicit operator sign-off recorded here.
 - **14:49 verified:** backup-stop deploy `3b5af992` SUCCESS 14:17:39 UTC. The ETH monitor reads fresh eToro prices
   (last $2,692.37 at 14:48 UTC, open −$2.15 before fees). The mirror balance now reads **$9,990** (cash + invested), so
   no false daily loss stop.
+- **Operator: "build the separate backup-stop job".** `app/broker/etoro_live_guard.py`: a daemon thread runs the
+  ETH-test watch and the backup stops **every 60 s**, independent of the sequential scheduler. Before, they ran inside
+  maintenance, which hits its 240 s limit about 160 times a day and waits behind ~3-minute backtest passes. With nothing
+  open the thread makes no eToro call. It writes a heartbeat, and maintenance runs the same checks only when that
+  heartbeat is older than 5 min. One lock serializes every live-eToro state change in the process.
+- **Independent review before deploy** (15-agent workflow: 3 lenses, each finding verified): 6 confirmed (1 medium,
+  5 low), 5 rejected. All fixed. (1) After a failed close, an empty or malformed portfolio read now counts as *still
+  open* (fail closed), and a re-read follows 3 s later. (2) The test-order and backup-stop steps are isolated, so
+  one failing can't skip the other. (3) Saves merge instead of overwriting, and a test another container already
+  finished is never overwritten or re-announced. The new container's guard also waits 30 s, past the ~20 s deploy
+  overlap. (4) Shutdown stops the guard first and joins it (5 s). The test order is saved before it is sent. A bad
+  amount is recorded as failed. An unclear order result keeps being watched for 30 min instead of being marked failed.
+  813 tests pass.
 - Recommendation to operator: (a) turn on REQUIRE_STRATEGY_OOS_EVIDENCE (trade the 9 daily strategies
   only; intraday become shadow signals); (b) keep the intraday close rule; (c) no live stop floor
   (intraday won't trade anyway). (a) signed off and enforcing since 11:36 UTC (see above); (b) and (c)
