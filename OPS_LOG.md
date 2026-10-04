@@ -26,6 +26,16 @@ without explicit operator sign-off recorded here.
     −$9.49. Keep the close-before-the-bell rule.
   - stop floors help but don't rescue the intraday strategies: 1.0× session ATR → 15m −$5.28,
     5m −$5.17/trade (vs −$8.35 / −$9.49); still negative.
+- **eToro-cost re-pricing (operator request; no API key used).** Finding: every backtest already ran on
+  the default `CostModel()` = eToro *CFD* retail model (10 bps spread + 0.015%/day financing, weekend ×3).
+  eToro's published fees for real, unleveraged US stocks (2026): $2 commission per side, no spread
+  markup, no overnight fee. Re-priced every 1d OOS trade (removed modeled costs; applied $4 round trip
+  + 4 bps market spread/slippage; pessimistic case 12 bps): momentum_breakout +$6.98/trade,
+  ma_crossover +$2.76, relative_strength_momentum +$2.60, atr_donchian +$2.32, ema_trend_stack +$2.25,
+  trend_following +$2.12, etf_mega_cap_rotation +$0.72; regime_aligned_trend_continuation −$0.02 and
+  pullback_trend −$0.43 turn negative. Edges are 0.21–0.38% of notional before the flat fee, so the
+  **flat $4 round trip needs positions of ≈$1,050–1,900 to break even and ≈$2,100–3,800 to keep half
+  the edge** — account size and per-trade risk decide whether eToro live is viable.
 - Recommendation to operator: (a) turn on REQUIRE_STRATEGY_OOS_EVIDENCE (trade the 9 daily strategies
   only; intraday become shadow signals); (b) keep the intraday close rule; (c) no live stop floor
   (intraday won't trade anyway). Awaiting sign-off.
