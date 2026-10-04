@@ -557,6 +557,14 @@ class AppSettings(BaseSettings):
     # Phase 4: live trading also requires this exact operator-set phrase
     # (app/automation/service.py LIVE_OPERATOR_ACKNOWLEDGEMENT). Never set by code.
     live_operator_acknowledgement: str = ""
+    # Capped eToro LIVE test mirror (app/broker/etoro_live_mirror.py; operator decision
+    # 2026-10-04). Real money: inert unless the operator sets ALL of these in Railway.
+    # Keys are secrets -- never commit them or paste them in chat.
+    etoro_live_mirror_enabled: bool = False
+    etoro_live_api_key: str = ""
+    etoro_live_user_key: str = ""
+    etoro_live_acknowledgement: str = ""
+    etoro_live_trade_amount_usd: float = 50.0  # hard-capped at $100 in code
     # Live stop-width floor in prior-session ATRs (widens stop and target, keeping
     # R:R; sizing keeps $ risk constant). 0 = off until the intraday walk-forward
     # shows a floor improves out-of-sample expectancy. Backtests use the same value.

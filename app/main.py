@@ -453,6 +453,15 @@ def create_app(
         parallel_broker_service=app.state.parallel_broker_comparison_service,
         learning_service=app.state.learning_service,
     )
+    from app.broker.etoro_live_mirror import EtoroLiveMirrorService, build_live_client
+
+    app.state.execution_coordinator.etoro_live_mirror = EtoroLiveMirrorService(
+        settings=app_settings,
+        client=build_live_client(app_settings),
+        runtime_state=runtime_state_repository,
+        run_logs=run_log_repository,
+        notifier=app.state.telegram_notifier,
+    )
     app.state.safety_state_repository = safety_state_repository
     app.state.broker_order_repository = broker_order_repository
     app.state.broker_position_repository = broker_position_repository

@@ -588,6 +588,11 @@ class ExecutionCoordinator:
         raise TypeError(f"Selected broker {broker_name!r} does not expose a supported order submission method")
 
     def _mirror_parallel(self, proposal: Any, execution: ExecutionRecord, broker_name: str) -> None:
+        live_mirror = getattr(self, "etoro_live_mirror", None)
+        if live_mirror is not None:
+            # Capped real-money test mirror; it handles its own failures and never
+            # raises into the paper execution path.
+            live_mirror.mirror(proposal=proposal, primary_execution=execution, primary_broker=broker_name)
         if self.parallel_broker is None:
             return
         self.parallel_broker.mirror(

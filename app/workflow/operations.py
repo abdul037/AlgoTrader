@@ -844,6 +844,9 @@ def refresh_phase_gates(service: Any, completed: list[str], errors: list[str]) -
             completed.append("strategy_evidence_refresh")
         refresh_readiness(service.run_logs.db, service.settings, service.runtime_state, service.run_logs)
         completed.append("go_live_readiness_refresh")
+        live_mirror = getattr(getattr(service.auto_trading, "execution", None), "etoro_live_mirror", None)
+        if live_mirror is not None and live_mirror.reconcile() is not None:
+            completed.append("etoro_live_reconcile")
     except Exception as exc:  # noqa: BLE001 - maintenance continues after failures
         errors.append(f"phase_gates_refresh:{exc}")
 
