@@ -51,6 +51,9 @@ without explicit operator sign-off recorded here.
   closes any live position found without a stop. 776 tests pass. **Operator must set in Railway:**
   `ETORO_LIVE_API_KEY`, `ETORO_LIVE_USER_KEY` (secrets), `ETORO_LIVE_ACKNOWLEDGEMENT` (exact phrase),
   `ETORO_LIVE_MIRROR_ENABLED=true`. `ENABLE_REAL_TRADING` stays false.
+- **11:53 verified:** deploy `ecdf45d9` (code `297fc1d`) SUCCESS; `strategy_evidence_refreshed` shows
+  `enforced: true`; **Phase 3 clock started 2026-10-04T11:53:21Z** (`go_live_readiness`: 0/50 trades,
+  0/4 clean weeks). First live Phase 2 session: Mon 10-05 (check armed 15:30 UTC).
 - Recommendation to operator: (a) turn on REQUIRE_STRATEGY_OOS_EVIDENCE (trade the 9 daily strategies
   only; intraday become shadow signals); (b) keep the intraday close rule; (c) no live stop floor
   (intraday won't trade anyway). Awaiting sign-off.
