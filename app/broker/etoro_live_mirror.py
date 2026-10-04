@@ -73,6 +73,22 @@ def build_live_client(settings: Any) -> Any | None:
     return EToroClient(scoped)
 
 
+def account_value_at_cost(raw: dict[str, Any], fallback: float = 0.0) -> float:
+    """AlgoBot balance = cash ``credit`` + the dollars invested in open positions.
+
+    eToro's portfolio ``credit`` is cash only: a $1,000 buy drops it by $1,000 plus the
+    fee (seen 2026-10-04: $10,000 -> $8,990 after the ETH test). Using it as equity would
+    shrink every later trade and read money in open trades as a daily loss. Positions
+    carry ``amount`` (invested at cost) but no live value, so open P&L counts on close.
+    """
+
+    portfolio = (raw or {}).get("clientPortfolio", {}) or {}
+    if portfolio.get("credit") is None:
+        return float(fallback or 0.0)
+    invested = sum(float(p.get("amount") or 0.0) for p in portfolio.get("positions", []) or [])
+    return round(float(portfolio["credit"]) + invested, 2)
+
+
 def client_problem(client: Any | None) -> str | None:
     """Why a live client must not be used, or None. A simulated client returns a fake
     $10,000 account (seen 2026-10-04) and would make mirrored "trades" look real."""
@@ -266,7 +282,7 @@ class EtoroLiveMirrorService:
             self._halt(f"reconcile_failed:{exc}")
             return None
         state = self._state()
-        equity = float(portfolio.account.equity or 0.0)
+        equity = account_value_at_cost(raw, fallback=float(portfolio.account.equity or 0.0))
         if state.get("day_start_equity") is None:
             state["day_start_equity"] = equity
         state["last_equity"] = equity
@@ -280,7 +296,9 @@ class EtoroLiveMirrorService:
             if not symbol:
                 continue
             try:
-                self.client.close_position_by_id(int(item["positionID"]), int(item.get("instrumentID") or 0))
+                self.client.close_position_by_id(
+                    int(item["positionID"]), int(item.get("instrumentID") or 0)
+                )
                 closed.append(symbol)
             except Exception as exc:  # noqa: BLE001
                 self._halt(f"close_unprotected_failed:{symbol}:{exc}")

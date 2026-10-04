@@ -131,6 +131,7 @@ class EtoroLiveTestOrder:
             reasons.append("test_amount_below_10_usd")
         if reasons:
             return self._fail(test, ",".join(reasons))
+        equity_before = self._equity()  # before the buy, so the P&L includes both fees
         try:
             instrument = self.client._search_instrument(symbol)
             if not (instrument["is_tradable"] and instrument["is_buy_enabled"]):
@@ -178,7 +179,7 @@ class EtoroLiveTestOrder:
             risk_pct=round(distance / rate * 100.0, 2),
             opened_at=utc_now().isoformat(),
             max_hold_until=(utc_now() + timedelta(days=MAX_HOLD_DAYS)).isoformat(),
-            equity_at_open=self._equity(),
+            equity_at_open=equity_before,
             position_id=None,
         )
         self._save(test)
@@ -274,8 +275,12 @@ class EtoroLiveTestOrder:
         return test
 
     def _equity(self) -> float | None:
+        """AlgoBot balance at cost (cash + invested), like the mirror's reconcile."""
+
+        from app.broker.etoro_live_mirror import account_value_at_cost
+
         with suppress(Exception):
-            return float(self.client.get_portfolio().account.equity)
+            return account_value_at_cost(self.client.fetch_raw_portfolio())
         return None
 
     def _load(self) -> dict[str, Any]:

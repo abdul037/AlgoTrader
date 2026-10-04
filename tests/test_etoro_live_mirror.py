@@ -337,3 +337,38 @@ def test_simulated_client_is_never_used_for_live_trading(tmp_path) -> None:
         "unusable": "etoro_live_client_in_simulation_mode:base_url_host=api.etoro.example"
     }
     assert logs.events[-1][0] == "etoro_live_client_unusable"
+
+
+def test_balance_counts_money_in_open_positions(tmp_path) -> None:
+    # 2026-10-04: after a $1,000 ETH buy eToro's cash credit read $8,990. Treating cash as the
+    # balance would shrink later trades and trip the 5% daily loss stop with no real loss.
+    from app.broker.etoro_live_mirror import account_value_at_cost
+
+    raw = {
+        "clientPortfolio": {"credit": 8_990.0, "positions": [{"positionID": 9, "amount": 1_000.0}]}
+    }
+    assert account_value_at_cost(raw) == 9_990.0
+    assert account_value_at_cost({"clientPortfolio": {}}, fallback=123.0) == 123.0
+
+    class _CashClient(_Client):
+        def fetch_raw_portfolio(self):
+            return raw
+
+    state = _state()
+    state.set(
+        STATE_KEY,
+        json.dumps(
+            {
+                "day": __import__("app.utils.time", fromlist=["utc_now"])
+                .utc_now()
+                .date()
+                .isoformat(),
+                "day_start_equity": 10_000.0,
+                "last_equity": 10_000.0,
+            }
+        ),
+    )
+    service, logs = _mirror(tmp_path, client=_CashClient(equity=8_990.0), state=state)
+    assert service.reconcile()["equity"] == 9_990.0
+    assert "etoro_live_daily_loss_stop" not in service.blockers(_proposal("MSFT"), "alpaca")
+    assert _run(service, _proposal("MSFT"))["amount_usd"] == 999.0  # 10% of 9,990

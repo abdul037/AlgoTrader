@@ -88,6 +88,15 @@ without explicit operator sign-off recorded here.
 - **Operator: "Increase the copy value from 10 to 50$."** Before any order was sent (the $200 request was never
   written; its scheduled trigger was cancelled), the test cap was raised to **$1,000 in AlgoBot (≈$50 of the copy)**,
   also capped at 10% of the AlgoBot balance, the same per-trade limits as the live mirror. 32 related tests pass.
+- **13:32 UTC** request written ($1,000 version live 13:29:33, old $200 container removed 13:29:52).
+  **13:41:19 UTC (5:41 pm Dubai) ETH test SUBMITTED**: eToro order `1602717961`, $1,000 at 1x, entry ref
+  **$2,698.02**, daily ATR $77.48 → **stop $2,581.80 (−4.31%)**, **target $2,930.47 (+8.62%)**, time stop
+  Sun 10-11 13:41 UTC. The hook runs inside the demote step, so it fires on the maintenance tick that reaches it.
+- **Found: eToro `credit` is cash only.** Right after the buy it read **$8,990** ($10,000 − $1,000 − ≈$10 fee,
+  consistent with eToro's ~1% crypto fee). The mirror used it as equity, which would have shrunk later trades and
+  tripped the 5% daily stop on money merely invested. Fixed: AlgoBot balance = credit + Σ position `amount`
+  (at cost; open P&L counts on close, since the portfolio has no live value). The test's opening balance is now
+  taken before the buy so its P&L is net of both fees. 792 tests pass.
 - Recommendation to operator: (a) turn on REQUIRE_STRATEGY_OOS_EVIDENCE (trade the 9 daily strategies
   only; intraday become shadow signals); (b) keep the intraday close rule; (c) no live stop floor
   (intraday won't trade anyway). (a) signed off and enforcing since 11:36 UTC (see above); (b) and (c)

@@ -71,7 +71,8 @@ class _Client:
         return {"orderForOpen": {"orderID": 555, "statusID": 1}}
 
     def fetch_raw_portfolio(self):
-        return {"clientPortfolio": {"positions": self.positions}}
+        invested = sum(float(p.get("amount") or 0.0) for p in self.positions)
+        return {"clientPortfolio": {"positions": self.positions, "credit": self.equity - invested}}
 
     def get_portfolio(self):
         return SimpleNamespace(account=SimpleNamespace(equity=self.equity), positions=[])
