@@ -54,6 +54,18 @@ without explicit operator sign-off recorded here.
 - **11:53 verified:** deploy `ecdf45d9` (code `297fc1d`) SUCCESS; `strategy_evidence_refreshed` shows
   `enforced: true`; **Phase 3 clock started 2026-10-04T11:53:21Z** (`go_live_readiness`: 0/50 trades,
   0/4 clean weeks). First live Phase 2 session: Mon 10-05 (check armed 15:30 UTC).
+- **12:08** operator set the eToro live Railway variables (deploy `ca085bdb`). **12:23**
+  `etoro_live_reconciled`: equity $10,000, no positions. Operator said the account should hold $500, so I
+  suspected the client's simulation placeholder and pushed `2204ad9` (mirror refuses a simulated client and
+  logs `etoro_live_client_unusable` with the base-URL host). It deployed as `baa22bb3` (SUCCESS 12:32).
+- **12:39 verified, live keys WORK.** The guard did not fire, and Railway logs show real
+  `GET https://public-api.etoro.com/api/v1/trading/info/portfolio` calls returning **200** at 12:39:32
+  (`/pnl` 404 is expected and handled). So the AlgoBot account itself reports **$10,000 credit, 0
+  positions**. The operator's screenshot explains the $500: it is a **copy** from their main account into
+  AlgoBot ("Copy started 04/10/2026 15:32", invested $500). AlgoBot trades are copied in proportion to
+  AlgoBot's $10,000, so a $50 mirror trade (0.5%) puts about **$2.50** of the operator's $500 to work. The
+  $25 daily loss stop is measured on the $10,000 base. Sizing decision is put to the operator; caps are
+  unchanged. The operator confirmed the keys are from AlgoBot, Real environment, with Write permission.
 - Recommendation to operator: (a) turn on REQUIRE_STRATEGY_OOS_EVIDENCE (trade the 9 daily strategies
   only; intraday become shadow signals); (b) keep the intraday close rule; (c) no live stop floor
   (intraday won't trade anyway). Awaiting sign-off.
