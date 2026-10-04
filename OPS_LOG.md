@@ -97,6 +97,11 @@ without explicit operator sign-off recorded here.
   tripped the 5% daily stop on money merely invested. Fixed: AlgoBot balance = credit + Σ position `amount`
   (at cost; open P&L counts on close, since the portfolio has no live value). The test's opening balance is now
   taken before the buy so its P&L is net of both fees. 792 tests pass.
+- **Pages refreshed (operator: "update the artifacts … what's done and what's pending").** A 10-agent workflow
+  gathered the ledger and live figures, redrafted the four pages and fact-checked each one. I then added the ETH test
+  and the balance fix, and checked each page at 400 px and 1100 px in light and dark. That check caught a Console
+  script error (`const top` clashes with `window.top`), which I fixed. Published to the same links: Ops (v2), Profit
+  Roadmap (v18), Console (v2), Architecture (v3).
 - Recommendation to operator: (a) turn on REQUIRE_STRATEGY_OOS_EVIDENCE (trade the 9 daily strategies
   only; intraday become shadow signals); (b) keep the intraday close rule; (c) no live stop floor
   (intraday won't trade anyway). (a) signed off and enforcing since 11:36 UTC (see above); (b) and (c)
