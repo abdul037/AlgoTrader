@@ -76,7 +76,8 @@ without explicit operator sign-off recorded here.
   stop the bot, it only stops the $500 following it. First possible mirrored trade: Mon 10-05 13:30 UTC.
 - Recommendation to operator: (a) turn on REQUIRE_STRATEGY_OOS_EVIDENCE (trade the 9 daily strategies
   only; intraday become shadow signals); (b) keep the intraday close rule; (c) no live stop floor
-  (intraday won't trade anyway). Awaiting sign-off.
+  (intraday won't trade anyway). (a) signed off and enforcing since 11:36 UTC (see above); (b) and (c)
+  stand as recommended.
 
 ## 2026-10-03 (Sat) — loss analysis and three follow-ups (operator: "do all three")
 
