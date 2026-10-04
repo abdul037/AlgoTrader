@@ -41,8 +41,16 @@ without explicit operator sign-off recorded here.
   keys, so the gate can't block everything by accident. `REQUIRE_STRATEGY_OOS_EVIDENCE=true` set
   11:36 UTC; Phase 3 clock starts on the first enforced refresh. Only the 9 passing 1d strategies may
   create proposals; all intraday strategies become shadow signals.
-- Operator asked about **eToro live small trades incl. leverage** — scoping questions sent; nothing built
-  or enabled for real money.
+- Operator asked about **eToro live small trades incl. leverage**. Choices: automatic within caps, $50 per
+  trade, 1x first then one 2x test. Writing the real-money path was blocked twice by the session's
+  auto-mode safety classifier; work was stashed (not deployed) until the operator changed the session's
+  permission mode, then completed.
+- `297fc1d` **capped eToro LIVE test mirror — deployed INERT.** Mirrors each Alpaca paper entry (Phase 2
+  strategies only) as a real eToro position: ≤$100 hard cap (default $50), ≤2 new/day, ≤3 open, $25 daily
+  loss stop, 1x + exactly one 2x test, long-only with stop+target, halts itself on any eToro error,
+  closes any live position found without a stop. 776 tests pass. **Operator must set in Railway:**
+  `ETORO_LIVE_API_KEY`, `ETORO_LIVE_USER_KEY` (secrets), `ETORO_LIVE_ACKNOWLEDGEMENT` (exact phrase),
+  `ETORO_LIVE_MIRROR_ENABLED=true`. `ENABLE_REAL_TRADING` stays false.
 - Recommendation to operator: (a) turn on REQUIRE_STRATEGY_OOS_EVIDENCE (trade the 9 daily strategies
   only; intraday become shadow signals); (b) keep the intraday close rule; (c) no live stop floor
   (intraday won't trade anyway). Awaiting sign-off.
