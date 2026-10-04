@@ -4,8 +4,12 @@ Every Alpaca *paper* entry the bot makes -- since Phase 2 only the daily
 strategies with pooled out-of-sample evidence -- is mirrored as a small REAL
 eToro position, so the operator can see how the strategies behave in a real
 market and prove the eToro live plumbing (orders, stop/target, P&L, leverage).
-Operator choices: automatic within caps, $50 per trade, 1x first then exactly
-one 2x test.
+Operator choices: automatic within caps, 1x first then exactly one 2x test.
+Sizing (operator decision 2026-10-04): each position is 10% of the eToro
+account equity last read by ``reconcile`` -- not a fixed dollar amount --
+because the AlgoBot account is funded by copying and eToro copies its trades
+in proportion. 10% of AlgoBot's $10,000 = $1,000, so about $50 of the
+operator's $500 copy; if AlgoBot is ever funded directly, 10% of $500 = $50.
 
 Real money. The mirror only acts when ALL of these hold:
 
@@ -17,11 +21,13 @@ Real money. The mirror only acts when ALL of these hold:
   target, from a strategy that passes the Phase 2 evidence gate;
 * the mirror is not halted.
 
-Hard caps are code constants, not settings: at most ``HARD_MAX_TRADE_USD`` per
-position, ``HARD_MAX_TRADES_PER_DAY`` new positions per UTC day,
-``HARD_MAX_OPEN_POSITIONS`` open, a ``HARD_DAILY_LOSS_STOP_USD`` equity drop per
-day, and leverage 1 except one 2x test after ``LEVERAGE_TEST_AFTER_1X_TRADES``
-successful 1x entries. Any eToro error halts the mirror -- it never touches the
+Hard caps are code constants, not settings: at most
+``HARD_MAX_TRADE_PCT_OF_EQUITY`` of equity and never more than
+``HARD_MAX_TRADE_USD`` per position, ``HARD_MAX_TRADES_PER_DAY`` new positions
+per UTC day, ``HARD_MAX_OPEN_POSITIONS`` open, a ``HARD_DAILY_LOSS_STOP_PCT``
+equity drop per day, no trade until equity has been read, and leverage 1
+except one 2x test after ``LEVERAGE_TEST_AFTER_1X_TRADES`` successful 1x
+entries. Any eToro error halts the mirror -- it never touches the
 Alpaca paper bot or its circuit breaker -- until the operator clears
 ``etoro_live:halted``. The global ``ENABLE_REAL_TRADING`` stays false: the
 mirror's own client gets a private settings copy with real mode enabled.
@@ -35,10 +41,12 @@ from typing import Any
 
 from app.utils.time import utc_now
 
-HARD_MAX_TRADE_USD = 100.0
+HARD_MAX_TRADE_PCT_OF_EQUITY = 10.0
+HARD_MAX_TRADE_USD = 1_000.0  # absolute backstop against a bad equity reading
+MIN_TRADE_USD = 10.0  # eToro's minimum position size
 HARD_MAX_TRADES_PER_DAY = 2
 HARD_MAX_OPEN_POSITIONS = 3
-HARD_DAILY_LOSS_STOP_USD = 25.0
+HARD_DAILY_LOSS_STOP_PCT = 5.0
 LEVERAGE_TEST_AFTER_1X_TRADES = 2
 
 HALTED_KEY = "etoro_live:halted"
@@ -156,10 +164,25 @@ class EtoroLiveMirrorService:
         if (
             start is not None
             and last is not None
-            and float(start) - float(last) >= HARD_DAILY_LOSS_STOP_USD
+            and float(start) - float(last) >= float(start) * HARD_DAILY_LOSS_STOP_PCT / 100.0
         ):
             reasons.append("etoro_live_daily_loss_stop")
+        amount = self._trade_amount(state)
+        if amount is None:
+            reasons.append("etoro_live_equity_unknown")
+        elif amount < MIN_TRADE_USD:
+            reasons.append("etoro_live_trade_below_minimum")
         return reasons
+
+    def _trade_amount(self, state: dict[str, Any]) -> float | None:
+        """Position size: a share of the last equity reading, capped in code."""
+
+        equity = state.get("last_equity")
+        if equity is None or float(equity) <= 0:
+            return None
+        pct = float(getattr(self.settings, "etoro_live_trade_pct_of_equity", 10.0) or 0.0)
+        pct = min(max(pct, 0.0), HARD_MAX_TRADE_PCT_OF_EQUITY)
+        return round(min(float(equity) * pct / 100.0, HARD_MAX_TRADE_USD), 2)
 
     # -- mirror ----------------------------------------------------------------
     def mirror(
@@ -187,10 +210,7 @@ class EtoroLiveMirrorService:
             )
             else 1
         )
-        amount = min(
-            float(getattr(self.settings, "etoro_live_trade_amount_usd", 50.0) or 50.0),
-            HARD_MAX_TRADE_USD,
-        )
+        amount = self._trade_amount(state)
         order = proposal.order.model_copy(update={"amount_usd": amount, "leverage": leverage})
         try:
             response = self.client.open_market_order_by_amount(
@@ -213,6 +233,7 @@ class EtoroLiveMirrorService:
             "etoro_order_id": response.order_id,
             "status": response.status,
             "amount_usd": amount,
+            "equity_basis_usd": state.get("last_equity"),
             "leverage": leverage,
             "stop_loss": order.stop_loss,
             "take_profit": order.take_profit,

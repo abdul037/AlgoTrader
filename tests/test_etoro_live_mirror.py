@@ -14,6 +14,7 @@ from app.broker.etoro_live_mirror import (
     HALTED_KEY,
     HARD_MAX_TRADE_USD,
     HARD_MAX_TRADES_PER_DAY,
+    MIN_TRADE_USD,
     STATE_KEY,
     EtoroLiveMirrorService,
     build_live_client,
@@ -77,9 +78,11 @@ def _settings(tmp_path, **overrides):
     return make_settings(tmp_path, **values)
 
 
-def _state(passing=("momentum_breakout:1d",)):
+def _state(passing=("momentum_breakout:1d",), equity=10_000.0):
     state = _State()
     state.set(VERDICTS_KEY, json.dumps({"verdicts": {key: {"passed": True} for key in passing}}))
+    if equity is not None:
+        state.set(STATE_KEY, json.dumps({"last_equity": equity}))
     return state
 
 
@@ -147,14 +150,17 @@ def test_live_client_scopes_real_mode_without_touching_global_flag(tmp_path) -> 
     assert settings.enable_real_trading is False and settings.etoro_account_mode == "demo"
 
 
-def test_mirrors_a_qualifying_entry_at_50_usd_1x(tmp_path) -> None:
+def test_mirrors_a_qualifying_entry_at_10_pct_of_equity_1x(tmp_path) -> None:
+    # AlgoBot reports $10,000; the operator copies it with $500, so a 10% ($1,000)
+    # AlgoBot position puts about $50 of the operator's money to work.
     client = _Client()
     service, logs = _mirror(tmp_path, client=client)
     record = _run(service)
-    assert record["amount_usd"] == 50.0 and record["leverage"] == 1
+    assert record["amount_usd"] == 1_000.0 and record["leverage"] == 1
+    assert record["equity_basis_usd"] == 10_000.0
     sent = client.orders[0]
     assert (sent.amount_usd, sent.leverage, sent.stop_loss, sent.take_profit) == (
-        50.0,
+        1_000.0,
         1,
         95.0,
         110.0,
@@ -162,11 +168,32 @@ def test_mirrors_a_qualifying_entry_at_50_usd_1x(tmp_path) -> None:
     assert logs.events[-1][0] == "etoro_live_mirror_submitted"
 
 
-def test_trade_amount_is_hard_capped(tmp_path) -> None:
+def test_directly_funded_500_account_trades_50(tmp_path) -> None:
     client = _Client()
-    service, _ = _mirror(tmp_path, client=client, etoro_live_trade_amount_usd=5_000.0)
+    service, _ = _mirror(tmp_path, client=client, state=_state(equity=500.0))
+    assert _run(service)["amount_usd"] == 50.0
+
+
+def test_trade_size_is_hard_capped_by_pct_and_dollars(tmp_path) -> None:
+    client = _Client()
+    service, _ = _mirror(tmp_path, client=client, etoro_live_trade_pct_of_equity=50.0)
+    _run(service)
+    assert client.orders[0].amount_usd == 1_000.0  # pct capped at 10%
+    client = _Client()
+    service, _ = _mirror(tmp_path, client=client, state=_state(equity=1_000_000.0))
     _run(service)
     assert client.orders[0].amount_usd == HARD_MAX_TRADE_USD
+
+
+def test_no_trade_until_equity_is_known_or_below_minimum(tmp_path) -> None:
+    for equity, reason in (
+        (None, "etoro_live_equity_unknown"),
+        (MIN_TRADE_USD * 5, "etoro_live_trade_below_minimum"),
+    ):
+        client = _Client()
+        service, logs = _mirror(tmp_path, client=client, state=_state(equity=equity))
+        assert _run(service) is None and client.orders == []
+        assert reason in logs.events[-1][1]["reasons"]
 
 
 def test_each_lock_blocks_on_its_own(tmp_path) -> None:
@@ -210,7 +237,10 @@ def test_daily_trade_cap_and_symbol_dedupe(tmp_path) -> None:
 def test_one_2x_test_after_two_1x_trades(tmp_path) -> None:
     client = _Client()
     state = _state()
-    state.set(STATE_KEY, json.dumps({"successful_1x": 2, "leverage_2x_done": False}))
+    state.set(
+        STATE_KEY,
+        json.dumps({"successful_1x": 2, "leverage_2x_done": False, "last_equity": 10_000.0}),
+    )
     service, _ = _mirror(tmp_path, client=client, state=state)
     assert _run(service, _proposal("AAPL"))["leverage"] == 2
     assert _run(service, _proposal("MSFT"))["leverage"] == 1  # only one 2x test, ever
@@ -224,12 +254,27 @@ def test_daily_loss_stop(tmp_path) -> None:
     state.set(
         STATE_KEY,
         json.dumps(
-            {"day": utc_now().date().isoformat(), "day_start_equity": 500.0, "last_equity": 474.0}
+            {
+                "day": utc_now().date().isoformat(),
+                "day_start_equity": 10_000.0,
+                "last_equity": 9_500.0,  # -5%: about -$25 on the operator's $500 copy
+            }
         ),
     )
     service, logs = _mirror(tmp_path, client=client, state=state)
     assert _run(service) is None and client.orders == []
     assert "etoro_live_daily_loss_stop" in logs.events[-1][1]["reasons"]
+    state.set(
+        STATE_KEY,
+        json.dumps(
+            {
+                "day": utc_now().date().isoformat(),
+                "day_start_equity": 10_000.0,
+                "last_equity": 9_600.0,
+            }
+        ),
+    )
+    assert _run(service, _proposal("MSFT")) is not None
 
 
 def test_broker_error_halts_mirror_without_raising(tmp_path) -> None:
