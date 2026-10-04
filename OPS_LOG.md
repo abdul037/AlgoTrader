@@ -102,6 +102,14 @@ without explicit operator sign-off recorded here.
   and the balance fix, and checked each page at 400 px and 1100 px in light and dark. That check caught a Console
   script error (`const top` clashes with `window.top`), which I fixed. Published to the same links: Ops (v2), Profit
   Roadmap (v18), Console (v2), Architecture (v3).
+- **13:49:43 UTC ETH test FILLED** (first seen by the bot): position `3595777383`, **0.370622 ETH @ $2,698.16**
+  ($1,000). eToro kept the target **$2,930.47** but set the stop-loss to **$2,428.34 = exactly −10%** of the
+  fill, not the bot's $2,581.80 (−4.31%). eToro appears to have overridden the requested stop (cause not
+  confirmed). Worst case at eToro's stop: ≈ −$100 + fees in AlgoBot (≈ −$6 on the copy) vs the planned ≈ −$63
+  (≈ −$3). Monday's mirrored stock trades may be affected the same way; I'm putting a software stop to the operator.
+- Balance fix `37327a5` deploy `45f40753` **SUCCESS 13:52:55 UTC**. Corrected the open test's opening balance to
+  $10,000 (pre-buy) so its P&L is net of both fees, and forced a phase-gate run so the mirror re-reads the AlgoBot
+  balance as cash + invested (≈ $9,990; the 13:49 reading of $8,990 came from the old container).
 - Recommendation to operator: (a) turn on REQUIRE_STRATEGY_OOS_EVIDENCE (trade the 9 daily strategies
   only; intraday become shadow signals); (b) keep the intraday close rule; (c) no live stop floor
   (intraday won't trade anyway). (a) signed off and enforcing since 11:36 UTC (see above); (b) and (c)
