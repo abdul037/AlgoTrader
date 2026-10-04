@@ -23,6 +23,7 @@ from contextlib import suppress
 from datetime import timedelta
 from typing import Any
 
+from app.broker.etoro_live_backup_stop import check_backup_stops, fresh_rate
 from app.utils.time import utc_now
 
 REQUEST_KEY = "etoro_live:test_order_request"
@@ -40,15 +41,17 @@ NOT_FOUND_GRACE_MINUTES = 30
 
 
 def run_from_maintenance(service: Any, completed: list[str]) -> None:
-    """Maintenance hook: run the test order if the app wired one."""
+    """Maintenance hook, every tick: the one-off test order, then the backup stops of
+    mirrored positions (both cheap no-ops when there is nothing to do)."""
 
     execution = getattr(getattr(service, "auto_trading", None), "execution", None)
     tester = getattr(execution, "etoro_live_test_order", None)
-    if tester is None:
-        return
+    mirror = getattr(execution, "etoro_live_mirror", None)
     try:
-        if tester.run() is not None:
+        if tester is not None and tester.run() is not None:
             completed.append("etoro_live_test_order")
+        if mirror is not None and check_backup_stops(mirror):
+            completed.append("etoro_live_backup_stop")
     except Exception as exc:  # noqa: BLE001 - maintenance must keep running
         with suppress(Exception):
             service.run_logs.log("etoro_live_test_order_error", {"error": str(exc)})
@@ -224,6 +227,13 @@ class EtoroLiveTestOrder:
                 return self._close(
                     test, position, "no_stop_at_broker" if unprotected else "time_stop"
                 )
+            rate = None
+            with suppress(Exception):  # eToro's own stop still protects the position
+                rate = fresh_rate(self.client, str(test["symbol"]))
+            if rate is not None:
+                test.update(last_rate=rate, last_rate_at=utc_now().isoformat())
+                if rate <= float(test.get("stop_loss") or 0.0):
+                    return self._close(test, position, "bot_backup_stop")
             self._save(test)
             return test
         if test.get("position_id") is not None:

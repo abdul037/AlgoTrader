@@ -242,6 +242,12 @@ class EtoroLiveMirrorService:
         else:
             state["leverage_2x_done"] = True
         self._save(state)
+        from app.broker.etoro_live_backup_stop import remember_stop
+
+        cached = getattr(self.client, "_instrument_cache_by_symbol", {}) or {}
+        remember_stop(
+            self, symbol, order.stop_loss, (cached.get(symbol) or {}).get("instrument_id")
+        )
         record = {
             "symbol": symbol,
             "proposal_id": proposal.id,

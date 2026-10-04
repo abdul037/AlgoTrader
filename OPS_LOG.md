@@ -110,6 +110,12 @@ without explicit operator sign-off recorded here.
 - Balance fix `37327a5` deploy `45f40753` **SUCCESS 13:52:55 UTC**. Corrected the open test's opening balance to
   $10,000 (pre-buy) so its P&L is net of both fees, and forced a phase-gate run so the mirror re-reads the AlgoBot
   balance as cash + invested (≈ $9,990; the 13:49 reading of $8,990 came from the old container).
+- **Operator: "Add a backup stop in the bot."** `app/broker/etoro_live_backup_stop.py`: on every maintenance tick the
+  bot reads a fresh eToro price and closes a live position itself once it is at or below the strategy's stop. This
+  applies to the ETH test now (stop $2,581.80; eToro's own −10% stop at $2,428.34 stays as the outer net) and to
+  every mirrored stock entry from Monday (its intended stop is recorded at entry). There is no price, so no close: eToro's stop
+  still holds. A failed close halts new mirror entries and asks for a manual close. Ticks are minutes apart, so a fast
+  move can fill below the level. 799 tests pass.
 - Recommendation to operator: (a) turn on REQUIRE_STRATEGY_OOS_EVIDENCE (trade the 9 daily strategies
   only; intraday become shadow signals); (b) keep the intraday close rule; (c) no live stop floor
   (intraday won't trade anyway). (a) signed off and enforcing since 11:36 UTC (see above); (b) and (c)
