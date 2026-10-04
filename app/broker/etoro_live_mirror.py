@@ -65,6 +65,21 @@ def build_live_client(settings: Any) -> Any | None:
     return EToroClient(scoped)
 
 
+def client_problem(client: Any | None) -> str | None:
+    """Why a live client must not be used, or None. A simulated client returns a fake
+    $10,000 account (seen 2026-10-04) and would make mirrored "trades" look real."""
+
+    if client is None:
+        return "etoro_live_keys_missing"
+    client_settings = getattr(client, "settings", None)
+    if bool(getattr(client_settings, "broker_simulation_enabled", False)):
+        host = (
+            str(getattr(client_settings, "etoro_base_url", "") or "").split("//")[-1].split("/")[0]
+        )
+        return f"etoro_live_client_in_simulation_mode:base_url_host={host}"
+    return None
+
+
 class EtoroLiveMirrorService:
     """Mirror qualifying Alpaca paper entries into small, capped eToro live positions."""
 
@@ -92,8 +107,9 @@ class EtoroLiveMirrorService:
         if not bool(getattr(settings, "etoro_live_mirror_enabled", False)):
             return ["etoro_live_mirror_disabled"]
         reasons: list[str] = []
-        if self.client is None:
-            reasons.append("etoro_live_keys_missing")
+        problem = client_problem(self.client)
+        if problem:
+            reasons.append(problem)
         if (
             str(getattr(settings, "etoro_live_acknowledgement", "") or "")
             != LIVE_OPERATOR_ACKNOWLEDGEMENT
@@ -218,6 +234,10 @@ class EtoroLiveMirrorService:
             or self.client is None
         ):
             return None
+        problem = client_problem(self.client)
+        if problem:
+            self.logs.log("etoro_live_client_unusable", {"reason": problem})
+            return {"unusable": problem}
         try:
             raw = self.client.fetch_raw_portfolio()
             portfolio = self.client.get_portfolio()

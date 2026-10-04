@@ -269,3 +269,25 @@ def test_coordinator_mirror_hook_never_breaks_paper_execution(tmp_path) -> None:
     coordinator.etoro_live_mirror = SimpleNamespace(mirror=lambda **kw: calls.append(kw))
     coordinator._mirror_parallel(_proposal(), SimpleNamespace(broker_order_id="alp1"), "alpaca")
     assert calls and calls[0]["primary_broker"] == "alpaca"
+
+
+def test_simulated_client_is_never_used_for_live_trading(tmp_path) -> None:
+    # 2026-10-04: the first live check reported a fake $10,000 account -- the client
+    # had fallen back to simulation. The mirror must refuse it, not "trade" on it.
+    simulated = build_live_client(
+        make_settings(tmp_path, etoro_live_api_key="k", etoro_live_user_key="u")
+    )
+    assert simulated.settings.broker_simulation_enabled  # tests use a .example base URL
+    logs = _Logs()
+    service = EtoroLiveMirrorService(
+        settings=_settings(tmp_path), client=simulated, runtime_state=_state(), run_logs=logs
+    )
+    assert _run(service) is None
+    assert any(
+        "etoro_live_client_in_simulation_mode:base_url_host=api.etoro.example" in r
+        for r in logs.events[-1][1]["reasons"]
+    )
+    assert service.reconcile() == {
+        "unusable": "etoro_live_client_in_simulation_mode:base_url_host=api.etoro.example"
+    }
+    assert logs.events[-1][0] == "etoro_live_client_unusable"
