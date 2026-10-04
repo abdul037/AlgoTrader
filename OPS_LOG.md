@@ -132,6 +132,10 @@ without explicit operator sign-off recorded here.
   overlap. (4) Shutdown stops the guard first and joins it (5 s). The test order is saved before it is sent. A bad
   amount is recorded as failed. An unclear order result keeps being watched for 30 min instead of being marked failed.
   813 tests pass.
+- **Verified live:** guard deploy `56d1c5f0` SUCCESS 17:00:19 UTC. At 20:01 UTC the guard heartbeat and the ETH watch
+  both updated within the last minute (heartbeat 20:01:01, price read 20:01:00). There were 0 `etoro_live_guard_error`
+  events since the deploy, and the mirror is not halted. ETH $2,700.16 vs entry $2,698.16 (+$0.74 before fees). The
+  balance reads $9,990.
 - Recommendation to operator: (a) turn on REQUIRE_STRATEGY_OOS_EVIDENCE (trade the 9 daily strategies
   only; intraday become shadow signals); (b) keep the intraday close rule; (c) no live stop floor
   (intraday won't trade anyway). (a) signed off and enforcing since 11:36 UTC (see above); (b) and (c)
