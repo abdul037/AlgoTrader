@@ -116,6 +116,9 @@ without explicit operator sign-off recorded here.
   every mirrored stock entry from Monday (its intended stop is recorded at entry). There is no price, so no close: eToro's stop
   still holds. A failed close halts new mirror entries and asks for a manual close. Ticks are minutes apart, so a fast
   move can fill below the level. 799 tests pass.
+- **14:49 verified:** backup-stop deploy `3b5af992` SUCCESS 14:17:39 UTC. The ETH monitor reads fresh eToro prices
+  (last $2,692.37 at 14:48 UTC, open −$2.15 before fees). The mirror balance now reads **$9,990** (cash + invested), so
+  no false daily loss stop.
 - Recommendation to operator: (a) turn on REQUIRE_STRATEGY_OOS_EVIDENCE (trade the 9 daily strategies
   only; intraday become shadow signals); (b) keep the intraday close rule; (c) no live stop floor
   (intraday won't trade anyway). (a) signed off and enforcing since 11:36 UTC (see above); (b) and (c)
