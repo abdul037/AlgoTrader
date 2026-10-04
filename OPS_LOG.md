@@ -36,6 +36,13 @@ without explicit operator sign-off recorded here.
   pullback_trend −$0.43 turn negative. Edges are 0.21–0.38% of notional before the flat fee, so the
   **flat $4 round trip needs positions of ≈$1,050–1,900 to break even and ≈$2,100–3,800 to keep half
   the edge** — account size and per-trade risk decide whether eToro live is viable.
+- **Operator: "switch on Phase 2 on Alpaca paper."** Verified first: production candidates are
+  `LiveSignalSnapshot` with `timeframe` (default "1d") and registry strategy names matching the verdict
+  keys, so the gate can't block everything by accident. `REQUIRE_STRATEGY_OOS_EVIDENCE=true` set
+  11:36 UTC; Phase 3 clock starts on the first enforced refresh. Only the 9 passing 1d strategies may
+  create proposals; all intraday strategies become shadow signals.
+- Operator asked about **eToro live small trades incl. leverage** — scoping questions sent; nothing built
+  or enabled for real money.
 - Recommendation to operator: (a) turn on REQUIRE_STRATEGY_OOS_EVIDENCE (trade the 9 daily strategies
   only; intraday become shadow signals); (b) keep the intraday close rule; (c) no live stop floor
   (intraday won't trade anyway). Awaiting sign-off.
