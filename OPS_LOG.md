@@ -26,6 +26,10 @@ without explicit operator sign-off recorded here.
   changed (cleared every 15 min and on restart for a full rewrite; recorded only after a successful write). The
   open-signal check now fetches one quote per symbol/timeframe and skips the DB write while a price is unchanged.
   Safety logic is unchanged (protection, unknown-position and breaker checks still read every order). 817 tests pass.
+- **09:05 UTC verified:** deploy `4437d4d4` SUCCESS 08:35 UTC. **0 timeouts since** (14 in the 2 h before). Alpaca
+  reconciliation **≈ 9-10 s** (was ≈ 140 s); the 15-minute full rewrite still takes ≈ 142 s, so that run is ≈ 170 s, under
+  the limit. Open-signal check **≈ 7 s** (was ≈ 100 s). Maintenance now completes every 1-2 min instead of timing out.
+  eToro guard heartbeat fresh (09:05:35); ETH test open at $2,719.88.
 
 ## 2026-10-04 (Sun) — Phase 1 complete (25/25 symbols, 5m + 15m + 1d)
 
