@@ -19,6 +19,13 @@ without explicit operator sign-off recorded here.
 - **07:36 UTC** the eToro guard heartbeat resumed after the restart (last 07:35:02). There have been 0 guard errors since 10-04
   20:00, and the mirror is not halted. ETH test still open: **$2,722.99** vs entry $2,698.16, so **+$9.20 before fees** (≈ −$0.80
   after the $10 buy fee).
+- **Operator: "fix the timeout now."** Diagnosed from `run_logs`: one maintenance run took ≈ 280 s against a 240 s limit
+  (timed out 174 times in 24 h). Hot spots: **Alpaca reconciliation ≈ 140 s** and the **open-signal check ≈ 100 s** (73
+  signals). Cause: the sweep re-reads all orders (≤ 500 plus legs) every minute and rewrote every order row, plus an
+  execution update and a learning event per trade, unconditionally. Fix: write only when the broker-state fingerprint
+  changed (cleared every 15 min and on restart for a full rewrite; recorded only after a successful write). The
+  open-signal check now fetches one quote per symbol/timeframe and skips the DB write while a price is unchanged.
+  Safety logic is unchanged (protection, unknown-position and breaker checks still read every order). 817 tests pass.
 
 ## 2026-10-04 (Sun) — Phase 1 complete (25/25 symbols, 5m + 15m + 1d)
 

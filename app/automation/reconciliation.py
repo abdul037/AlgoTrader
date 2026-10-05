@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -32,6 +33,16 @@ def _leg_is_live(leg: dict[str, Any]) -> bool:
 # order ("insufficient qty available for order", code 40310000). That means the
 # position is *not* bare: a stop, a limit or an earlier close is live on it.
 _QTY_HELD_MARKERS = ("insufficient qty available", "40310000", "held_for_orders")
+
+# The sweep re-reads every order (up to 500, plus legs) every minute. Writing each one
+# back to Postgres unconditionally took ~140 s per run (2026-10-05) and pushed maintenance
+# past its 240 s limit. Rows are now written only when the broker state changed, with a
+# full rewrite every FULL_WRITE_REFRESH_SECONDS (and after every restart) as a safety net.
+FULL_WRITE_REFRESH_SECONDS = 900.0
+
+
+def _fingerprint(*parts: Any) -> str:
+    return json.dumps(parts, sort_keys=True, default=str)
 
 
 def _closing_side(position: Any) -> str:
@@ -78,6 +89,8 @@ class AlpacaReconciliationService:
         self.broker_governance = broker_governance
         self.learning = learning_service
         self.notifier = notifier
+        self._written: dict[str, str] = {}  # row key -> fingerprint of what was last written
+        self._full_write_due = 0.0
 
     def reconcile(self) -> dict[str, Any]:
         if self.alpaca is None or not bool(getattr(self.settings, "alpaca_reconciliation_enabled", True)):
@@ -175,6 +188,9 @@ class AlpacaReconciliationService:
         return bool(self.automation.status().account_verified)
 
     def _reconcile(self) -> dict[str, Any]:
+        if time.monotonic() >= self._full_write_due:
+            self._written.clear()  # periodic full rewrite bounds any drift from other writers
+            self._full_write_due = time.monotonic() + FULL_WRITE_REFRESH_SECONDS
         account = self.alpaca.get_account_identity()
         expected = str(
             getattr(
@@ -279,7 +295,11 @@ class AlpacaReconciliationService:
             symbol = str(payload.get("symbol") or "").upper()
             if execution is not None:
                 owned_symbols.add(symbol)
-                self._update_execution(execution, payload, standalone_exits.get(symbol))
+                exits = standalone_exits.get(symbol)
+                key, fingerprint = f"execution:{execution.id}", _fingerprint(payload, exits)
+                if self._changed(key, fingerprint):
+                    self._update_execution(execution, payload, exits)
+                    self._written[key] = fingerprint
             legs = list(payload.get("legs") or [])
             # A bracket only protects while at least one protective leg is still
             # working at the broker. Counting legs by existence alone reported
@@ -297,10 +317,16 @@ class AlpacaReconciliationService:
                     live_protective_sides.setdefault(symbol, set()).add(side)
                 else:
                     live_close_sides.setdefault(symbol, set()).add(side)
-            if broker_order_id:
+            key, fingerprint = f"order:{broker_order_id}", _fingerprint(payload, execution_id)
+            if broker_order_id and self._changed(key, fingerprint):
                 self._upsert_order(payload, execution_id=execution_id, parent_order_id=None)
+                self._written[key] = fingerprint
             for leg in legs:
-                self._upsert_order(leg, execution_id=execution_id, parent_order_id=broker_order_id)
+                key = f"order:{leg.get('broker_order_id')}"
+                fingerprint = _fingerprint(leg, execution_id, broker_order_id)
+                if self._changed(key, fingerprint):
+                    self._upsert_order(leg, execution_id=execution_id, parent_order_id=broker_order_id)
+                    self._written[key] = fingerprint
 
         for position in positions:
             symbol = str(position.symbol or "").upper()
@@ -377,6 +403,12 @@ class AlpacaReconciliationService:
             },
         )
         return True
+
+    def _changed(self, key: str, fingerprint: str) -> bool:
+        """True unless this exact state was already written. Callers record the fingerprint
+        only after the write succeeds, so a failed write is retried on the next sweep."""
+
+        return self._written.get(key) != fingerprint
 
     def _update_execution(
         self, execution: Any, payload: dict[str, Any], exit_orders: list[dict[str, Any]] | None = None

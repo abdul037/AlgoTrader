@@ -205,13 +205,15 @@ def check_open_signals_impl(service: Any, *, notify: bool, force_refresh: bool) 
     records = service.tracked_signals.list(status="open", limit=500)
     closed_signals = 0
     alerts_sent = 0
+    quotes: dict[tuple[str, str], Any] = {}  # one quote per symbol/timeframe per run
 
     for record in records:
-        quote = service.market_data.get_quote(
-            record.symbol,
-            timeframe=record.timeframe,
-            force_refresh=force_refresh,
-        )
+        key = (record.symbol, record.timeframe)
+        if key not in quotes:
+            quotes[key] = service.market_data.get_quote(
+                record.symbol, timeframe=record.timeframe, force_refresh=force_refresh
+            )
+        quote = quotes[key]
         price = float(quote.last_execution or quote.ask or quote.bid or record.last_price or 0.0)
         snapshot = record.snapshot.model_copy(
             update={
@@ -222,7 +224,8 @@ def check_open_signals_impl(service: Any, *, notify: bool, force_refresh: bool) 
                 "generated_at": utc_now().isoformat(),
             }
         )
-        service.tracked_signals.update_price(record.id, last_price=price, snapshot=snapshot)
+        if price != float(record.last_price or 0.0):  # no DB write while the price is unchanged
+            service.tracked_signals.update_price(record.id, last_price=price, snapshot=snapshot)
 
         close_status_value = service._close_status(snapshot, price)
         if close_status_value is None:
@@ -779,15 +782,9 @@ def run_ledger_cycle_impl(service: Any) -> WorkflowTaskResponse:
 
 
 def refresh_demoted_strategies(service: Any, completed: list[str], errors: list[str]) -> None:
-    """Recompute which strategies have decayed to a ``demote`` verdict and hand
-    the set to the live screener.
-
-    Close-the-loop step 2: the decay monitor produces keep/watch/demote verdicts
-    from live paper performance; this feeds the ``demote`` set to the screener so
-    it can stop scanning strategies that are losing money live. Observe-only by
-    default -- the screener only drops them when ``strategy_auto_demote_enabled``
-    is set. Any failure is logged and swallowed so maintenance always continues.
-    """
+    """Feed the decay monitor's ``demote`` set (live paper performance) to the screener so it
+    stops scanning strategies losing money live (enforced when ``strategy_auto_demote_enabled``).
+    Any failure is logged and swallowed so maintenance always continues."""
 
     # Function-local import keeps app.workflow -> app.performance out of the
     # import-time graph (the escape hatch the architecture-fitness test ignores).
