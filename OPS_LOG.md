@@ -12,6 +12,14 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-10-05 (Mon)
+
+- **05:09 UTC** `BACKTEST_SCHEDULER_INTERVAL_SECONDS` restored 300 → **1800**. The trigger was due Sun 22:00 UTC but ran late
+  because the session was idle. Deploy `a3c390ea` **SUCCESS 05:13 UTC**. Phase 1 was already complete and reported on 10-04.
+- **07:36 UTC** the eToro guard heartbeat resumed after the restart (last 07:35:02). There have been 0 guard errors since 10-04
+  20:00, and the mirror is not halted. ETH test still open: **$2,722.99** vs entry $2,698.16, so **+$9.20 before fees** (≈ −$0.80
+  after the $10 buy fee).
+
 ## 2026-10-04 (Sun) — Phase 1 complete (25/25 symbols, 5m + 15m + 1d)
 
 - **Pooled walk-forward OOS verdicts:** 9 strategies pass, **all daily (1d)**: momentum_breakout
