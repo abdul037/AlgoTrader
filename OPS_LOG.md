@@ -74,6 +74,13 @@ without explicit operator sign-off recorded here.
   is on) is *detached*: never auto-closed, left on eToro's stop/target + backup stop, and
   the operator is alerted. Strategy exits (time limit, signal exit, end-of-day flatten)
   are still copied.
+- **Maintenance timeouts back overnight (operator: "fix the timeouts now").** 23 between
+  20:17 and 08:20 UTC, every ~16 min then ~33 min. Cause: the reconciliation write-skip's
+  15-min full rewrite took ~150-154 s (20:14->20:16:51, 02:01->02:03:36) + ~45 s ledger
+  cycle > 240 s; after hours maintenance runs every ~16 min, so every run did the full
+  rewrite. Fix: rolling refresh (1/12 of rows re-written per sweep) + 150-write budget per
+  sweep for rows in an unknown state (after a restart); a row known to have changed is
+  always written.
 - Minute (5m/15m) strategies: 0 of 25 pass. Pooled OOS expectancy -$13.49 (5m) and
   -$8.25 (15m) per $100 risked, over ~11,800 trades.
 - Tests: 833 passed before the hold flag; eToro/phase suites 76 passed after.

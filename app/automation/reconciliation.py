@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import zlib
 from typing import Any
 
 from app.models.execution import ExecutionStatus
@@ -42,7 +43,13 @@ _ALREADY_FLAT_MARKERS = ("position not found", "40410000")
 # back to Postgres unconditionally took ~140 s per run (2026-10-05) and pushed maintenance
 # past its 240 s limit. Rows are now written only when the broker state changed, with a
 # full rewrite every FULL_WRITE_REFRESH_SECONDS (and after every restart) as a safety net.
-FULL_WRITE_REFRESH_SECONDS = 900.0
+# 2026-10-06: that full rewrite itself took ~150 s; after hours maintenance runs every
+# ~16 min, so EVERY run did it and timed out (23 times overnight). Now a rolling refresh
+# re-writes 1/REFRESH_SLICES of the rows per sweep, and rows in an unknown state (after a
+# restart or a refresh eviction) share UNKNOWN_WRITE_BUDGET writes per sweep; a row known
+# to have changed is always written.
+REFRESH_SLICES = 12
+UNKNOWN_WRITE_BUDGET = 150
 
 
 def _fingerprint(*parts: Any) -> str:
@@ -94,7 +101,8 @@ class AlpacaReconciliationService:
         self.learning = learning_service
         self.notifier = notifier
         self._written: dict[str, str] = {}  # row key -> fingerprint of what was last written
-        self._full_write_due = 0.0
+        self._sweep_no = 0
+        self._unknown_budget = UNKNOWN_WRITE_BUDGET
         self._sweep_lock = threading.Lock()  # one sweep at a time (routes, Telegram, recover)
 
     def reconcile(self) -> dict[str, Any]:
@@ -207,9 +215,11 @@ class AlpacaReconciliationService:
         return bool(self.automation.status().account_verified)
 
     def _reconcile(self) -> dict[str, Any]:
-        if time.monotonic() >= self._full_write_due:
-            self._written.clear()  # periodic full rewrite bounds any drift from other writers
-            self._full_write_due = time.monotonic() + FULL_WRITE_REFRESH_SECONDS
+        self._sweep_no += 1  # rolling refresh bounds any drift from other writers
+        slot = self._sweep_no % REFRESH_SLICES
+        for key in [k for k in self._written if zlib.crc32(k.encode()) % REFRESH_SLICES == slot]:
+            del self._written[key]
+        self._unknown_budget = UNKNOWN_WRITE_BUDGET
         account = self.alpaca.get_account_identity()
         expected = str(
             getattr(
@@ -434,7 +444,14 @@ class AlpacaReconciliationService:
         """True unless this exact state was already written. Callers record the fingerprint
         only after the write succeeds, so a failed write is retried on the next sweep."""
 
-        return self._written.get(key) != fingerprint
+        last = self._written.get(key)
+        if last == fingerprint:
+            return False
+        if last is None:  # state unknown (restart / refresh): bounded writes per sweep
+            if self._unknown_budget <= 0:
+                return False  # no fingerprint recorded, so it is written on a later sweep
+            self._unknown_budget -= 1
+        return True
 
     def _update_execution(
         self, execution: Any, payload: dict[str, Any], exit_orders: list[dict[str, Any]] | None = None

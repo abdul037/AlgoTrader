@@ -139,15 +139,30 @@ def test_changed_leg_is_written_again() -> None:
     assert service.executions.updated == 2
 
 
-def test_periodic_full_rewrite(monkeypatch) -> None:
+def test_rolling_refresh_rewrites_every_row_within_a_cycle() -> None:
+    # 2026-10-06: a full rewrite every 15 min took ~150 s and, with after-hours maintenance
+    # every ~16 min, timed out every run. Each sweep now re-writes only 1/12 of the rows.
     service = _service()
     service.reconcile()
-    service._full_write_due = 0.0  # refresh window elapsed
+    for _ in range(recon.REFRESH_SLICES):
+        service.reconcile()
+    assert service.broker_orders.upserts.count("o1") == 2  # refreshed exactly once more
+    assert sorted(service.broker_orders.upserts[3:]) == ["l1", "l2", "o1"]
+
+
+def test_unknown_rows_share_a_budget_but_real_changes_always_write(monkeypatch) -> None:
+    monkeypatch.setattr(recon, "UNKNOWN_WRITE_BUDGET", 2)
+    service = _service()
+    service.reconcile()  # fresh process: 4 unknown rows (execution + 3 orders), budget 2
+    first = list(service.broker_orders.upserts)
+    assert len(first) + service.executions.updated == 2
     service.reconcile()
-    assert (
-        service.broker_orders.upserts == ["o1", "l1", "l2"] * 2 and service.executions.updated == 2
-    )
-    assert recon.FULL_WRITE_REFRESH_SECONDS >= 60
+    assert len(service.broker_orders.upserts) + service.executions.updated == 4  # caught up
+    service.alpaca.orders = [_order(leg_status="accepted")]
+    service._unknown_budget = 0
+    monkeypatch.setattr(recon, "UNKNOWN_WRITE_BUDGET", 0)
+    service.reconcile()  # every row is known and changed: written despite a zero budget
+    assert sorted(service.broker_orders.upserts[-3:]) == ["l1", "l2", "o1"]
 
 
 def test_failed_write_is_retried_next_sweep() -> None:
