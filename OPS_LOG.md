@@ -83,7 +83,12 @@ without explicit operator sign-off recorded here.
   always written.
 - Minute (5m/15m) strategies: 0 of 25 pass. Pooled OOS expectancy -$13.49 (5m) and
   -$8.25 (15m) per $100 risked, over ~11,800 trades.
-- Tests: 833 passed before the hold flag; eToro/phase suites 76 passed after.
+- Live scorecard page (private, refreshes every minute from Supabase via the operator's
+  connector): https://claude.ai/artifact/GHdfkyLvv8ZQqGWfvoV5f9
+- Tests: 857 passed at `98a0f02` (all of today's builds). Deploys today: `b2569f5`,
+  `662e7e8`, `b761e15`, `99d7d02`, `cad5a3a`, `c7fb601`, `971330d`, `98a0f02`; each
+  verified SUCCESS on Railway (last at ~13:01 UTC). Verification check-ins scheduled for
+  14:39 UTC (open, trades) and 21:35 UTC (after-close timeouts).
 
 ## 2026-10-05 (Mon)
 
@@ -705,6 +710,17 @@ Convened locally over the 31 unreviewed commits (`0a12efe..2575a1b`) plus the we
 - Published ops dashboard artifact "AlgoTrader Ops".
 
 ## Open operator items
+
+- Evidence bar level: keep `STRATEGY_EVIDENCE_MIN_EXPECTANCY_R` at 0 (recommended),
+  or 0.03 / 0.05 (0.05 passes no strategy as of 10-06).
+- Check in the eToro app whether copied stock trades carry a fee (a flat ~$2 would be
+  ~4% of a $50 copy each way; rethink the stock copy if so).
+- Branch `claude/repo-audit-962zde` is ~95 commits ahead of `main` and conflicts with
+  it (main last updated by #31); needs a PR + conflict merge when the operator wants
+  main current. Railway deploys from the branch, so production is unaffected.
+- Queued builds: daily eToro Telegram report; "close all live" command; cost
+  recalibration after ~10 eToro fills; per-timeframe demotion; paper base-URL boot
+  guard; small review leftovers (Telegram /propose and RL paths skip Phase 2 on paper).
 
 - Switch `DATABASE_URL` to the Supabase transaction pooler (port 6543); needs
   the DB password (redacted from the agent).
