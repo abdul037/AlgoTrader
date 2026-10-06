@@ -219,8 +219,8 @@ def _mark_closed(trade: dict[str, Any], rate: float, source: str) -> None:
     stop, target = trade.get("stop_loss"), trade.get("take_profit")
     trade.update(status="closed", closed_seen_at=utc_now().isoformat(), close_rate=rate)
     trade["close_rate_source"] = source
-    if source == "bot_backup_stop":
-        reason = "bot_backup_stop"
+    if source in {"bot_backup_stop", "paper_exit"}:
+        reason = source
     elif stop and rate <= stop * (1 + LEVEL_TOLERANCE):
         reason = "stop"
     elif target and rate >= target * (1 - LEVEL_TOLERANCE):

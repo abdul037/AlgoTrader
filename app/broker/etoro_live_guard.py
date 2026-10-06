@@ -21,6 +21,7 @@ from threading import Event, Thread
 from typing import Any
 
 from app.broker.etoro_live_backup_stop import check_backup_stops
+from app.broker.etoro_live_exit_copy import copy_paper_exits, paper_reader
 from app.broker.etoro_live_scorecard import update_scorecard
 from app.utils.time import utc_now
 
@@ -92,8 +93,8 @@ class EtoroLiveGuard:
 
 
 def run_live_checks(mirror: Any, tester: Any | None) -> list[str]:
-    """The test-order watch, the backup stops and the live scorecard, each isolated so one
-    failing can't skip the others. Shared by the guard thread and the maintenance fallback."""
+    """The test-order watch, the backup stops, the paper-exit copy and the live scorecard,
+    each isolated so one failing can't skip the others. Shared by the guard thread and the maintenance fallback."""
 
     done: list[str] = []
     closes: list[dict] = []
@@ -105,6 +106,7 @@ def run_live_checks(mirror: Any, tester: Any | None) -> list[str]:
     for name, step in (
         ("etoro_live_test_order", lambda: tester is not None and tester.run() is not None),
         ("etoro_live_backup_stop", backup_stops),
+        ("etoro_live_exit_copy", lambda: bool(copy_paper_exits(mirror, _symbols(closes)))),
         ("etoro_live_scorecard", lambda: update_scorecard(mirror, closes) > 0),
     ):
         try:
@@ -117,12 +119,21 @@ def run_live_checks(mirror: Any, tester: Any | None) -> list[str]:
     return done
 
 
-def attach_live_guard(coordinator: Any, *, settings: Any, bars: Any | None) -> None:
-    """Wire the test order and the guard onto the execution coordinator (started at boot)."""
+def _symbols(closes: list[dict]) -> set[str]:
+    return {str(c.get("symbol") or "").upper() for c in closes}
+
+
+def attach_live_guard(
+    coordinator: Any, *, settings: Any, bars: Any | None, paper: Any | None = None
+) -> None:
+    """Wire the test order and the guard onto the execution coordinator (started at boot).
+    ``paper`` is the Alpaca client whose positions the exit copy follows."""
 
     from app.broker.etoro_live_test_order import EtoroLiveTestOrder
 
     mirror = coordinator.etoro_live_mirror
+    if paper is not None and hasattr(paper, "get_portfolio"):
+        mirror.paper_reader = paper_reader(paper)
     coordinator.etoro_live_test_order = EtoroLiveTestOrder(mirror=mirror, bars=bars)
     coordinator.etoro_live_guard = EtoroLiveGuard(
         mirror=mirror,

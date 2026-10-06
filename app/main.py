@@ -464,7 +464,7 @@ def create_app(
     )
     from app.broker.etoro_live_guard import attach_live_guard
 
-    attach_live_guard(app.state.execution_coordinator, settings=app_settings, bars=getattr(alpaca_client, "get_bars", None))
+    attach_live_guard(app.state.execution_coordinator, settings=app_settings, bars=getattr(alpaca_client, "get_bars", None), paper=alpaca_client)
     app.state.safety_state_repository = safety_state_repository
     app.state.broker_order_repository = broker_order_repository
     app.state.broker_position_repository = broker_position_repository

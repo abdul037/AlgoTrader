@@ -59,6 +59,14 @@ without explicit operator sign-off recorded here.
   new entry incl. the 2x test). New funds check: an entry needs free cash (eToro `credit`,
   read at reconcile, reduced by each entry until the next read) of at least the trade
   amount + $100 reserve. Daily cap (2 new trades/day) and 5% daily loss stop unchanged.
+- **Exit copying (operator: "start the exit copying build").** eToro used to exit only at
+  its stop/target, while paper also exits early (time limit, signal exit, flatten), so live
+  results drifted from the backtest. The guard now follows the paper position: once a
+  mirrored symbol is flat on paper for 2 consecutive minute reads while the US market is
+  open (and was seen open on paper first), the eToro position is closed at market and booked
+  as `paper_exit` in the scorecard. Failed/malformed reads change nothing; a failed close is
+  retried each minute and eToro's stop/target stay on meanwhile. Note: a paper safety
+  flatten now also closes the mirrored eToro trades.
 - Minute (5m/15m) strategies: 0 of 25 pass. Pooled OOS expectancy -$13.49 (5m) and
   -$8.25 (15m) per $100 risked, over ~11,800 trades.
 - Tests: 833 passed before the hold flag; eToro/phase suites 76 passed after.
