@@ -28,10 +28,13 @@ entries, drawdown halts, one paper position per symbol) still applies on paper, 
 from __future__ import annotations
 
 import json
+from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any
 
 HARD_MAX_OPEN_PER_BUCKET = 3  # e.g. 3 tech names of 6, each ~10% of the account
+COPY_FAILED_KEY = "etoro_live:copy_failed"
+COPY_FAILED_HOLD_MINUTES = 30
 
 ROOM_REASONS = frozenset(
     {
@@ -84,6 +87,16 @@ def room_verdict(
         getattr(mirror.settings, "etoro_live_room_authority_enabled", True)
     ):
         return None
+    # Review 2026-10-06: only grant eToro room when the copy can actually happen. The
+    # self-simulated paper broker never calls mirror(); a rate-limit cooldown or a fresh
+    # rejection makes mirror() roll back without using any room, so every entry would skip
+    # paper's room checks and none would be copied.
+    settings = mirror.settings
+    for name in ("paper_broker", "broker_for_equities"):  # the order must reach Alpaca paper
+        if str(getattr(settings, name, "alpaca") or "alpaca") != "alpaca":
+            return None
+    if _cooling_down(mirror) or _recent_copy_failure(mirror.state):
+        return None
     try:
         reasons = mirror.blockers(
             SimpleNamespace(id=None, order=order, signal=signal), primary_broker
@@ -93,6 +106,41 @@ def room_verdict(
     if any(reason not in ROOM_REASONS for reason in reasons):
         return None  # the mirror would not copy it, so paper's room decides as before
     return list(reasons)
+
+
+def note_copy_failed(mirror: Any, symbol: str, reason: str) -> None:
+    """Called by mirror() when an order was rate-limited or rejected: for the next
+    COPY_FAILED_HOLD_MINUTES paper's own room rules apply again."""
+
+    from app.utils.time import utc_now
+
+    with suppress(Exception):
+        mirror.state.set(
+            COPY_FAILED_KEY,
+            json.dumps({"at": utc_now().isoformat(), "symbol": symbol, "reason": reason}),
+        )
+
+
+def _recent_copy_failure(runtime_state: Any) -> bool:
+    from datetime import datetime, timedelta
+
+    from app.utils.time import utc_now
+
+    try:
+        at = datetime.fromisoformat(str(_load(runtime_state, COPY_FAILED_KEY).get("at")))
+    except (TypeError, ValueError):
+        return False
+    return utc_now() - at < timedelta(minutes=COPY_FAILED_HOLD_MINUTES)
+
+
+def _cooling_down(mirror: Any) -> bool:
+    from app.broker.etoro_rate_limit import etoro_cooldown_remaining
+
+    client_settings = getattr(getattr(mirror, "client", None), "settings", None)
+    try:
+        return client_settings is not None and etoro_cooldown_remaining(client_settings) > 0
+    except Exception:  # noqa: BLE001 - unknown means do not grant eToro room
+        return True
 
 
 def _load(runtime_state: Any, key: str) -> dict[str, Any]:

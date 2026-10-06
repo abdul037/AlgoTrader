@@ -52,6 +52,13 @@ def wait_for_etoro_slot(settings: Any) -> None:
         time.sleep(min(wait_seconds, 2.0))
 
 
+def etoro_cooldown_remaining(settings: Any) -> float:
+    """Seconds left in this account's local cooldown (0 when calls may go out). Read-only."""
+
+    with _lock:
+        return max(0.0, _bucket(settings)["blocked_until"] - time.monotonic())
+
+
 def mark_etoro_rate_limited(settings: Any, *, status_code: int, body: str) -> bool:
     """Open this account's local cooldown when eToro or Cloudflare rejects the request."""
 

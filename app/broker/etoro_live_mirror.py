@@ -272,6 +272,7 @@ class EtoroLiveMirrorService:
             amount = round(amount / leverage, 2)  # Amount is margin: keep the 1x exposure
         order = proposal.order.model_copy(update={"amount_usd": amount, "leverage": leverage})
         from app.broker.etoro_live_backup_stop import forget_stop, remember_stop
+        from app.broker.etoro_live_room import note_copy_failed
 
         # Write-ahead (review 2026-10-05): the daily count, the one-time 2x flag and the
         # backup stop are saved BEFORE the POST, so a timeout whose order did fill still
@@ -299,12 +300,14 @@ class EtoroLiveMirrorService:
                 self.logs.log(
                     "etoro_live_mirror_rate_limited", {"symbol": symbol, "error": str(exc)}
                 )
+                note_copy_failed(self, symbol, "rate_limited")
                 return None
             self._halt(f"open_failed:{symbol}:{exc}")
             return None
         if str(getattr(response, "status", "") or "").lower() in {"rejected", "cancelled"}:
             self._save(before)  # a rejected order is not a trade and not a successful 1x
             forget_stop(self, symbol)
+            note_copy_failed(self, symbol, str(response.status))
             self.logs.log(
                 "etoro_live_mirror_rejected",
                 {"symbol": symbol, "proposal_id": proposal.id, "status": response.status},

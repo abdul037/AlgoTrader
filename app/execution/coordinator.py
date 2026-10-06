@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import math
 import sqlite3
+import threading
 from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
@@ -23,6 +24,8 @@ from app.risk.guardrails import RiskManager
 from app.risk.market_direction import market_direction_reasons
 from app.risk.volatility_target import daily_drawdown_pct, drawdown_governor_multiplier
 from app.utils.time import utc_now
+
+_ENTRY_LOCK = threading.RLock()
 
 
 class ExecutionCoordinator:
@@ -88,6 +91,12 @@ class ExecutionCoordinator:
         return record
 
     def process_queue_item(self, queue_id: str) -> ExecutionQueueRecord:
+        # Option 3 review 2026-10-06: one entry at a time from the eToro room verdict to the
+        # copy, so two concurrent entries cannot both use eToro's last slot to skip paper room.
+        with _ENTRY_LOCK:
+            return self._process_queue_item(queue_id)
+
+    def _process_queue_item(self, queue_id: str) -> ExecutionQueueRecord:
         record = self.queue.get(queue_id)
         if record is None:
             raise LookupError(f"Execution queue item {queue_id} was not found")
@@ -287,7 +296,8 @@ class ExecutionCoordinator:
                     client_order_id=record.client_order_id,
                 )
             except Exception as exc:
-                if self.settings.execution_mode == "paper" and bool(getattr(self.settings, "paper_simulated_fallback_enabled", False)):
+                # A simulated fallback is never copied, so it may not use eToro's room.
+                if self.settings.execution_mode == "paper" and bool(getattr(self.settings, "paper_simulated_fallback_enabled", False)) and risk.room_authority == "paper":
                     paper_position = self.paper.open_from_approved_proposal(proposal, live_quote=quote)
                     execution = ExecutionRecord(
                         proposal_id=proposal.id,

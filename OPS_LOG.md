@@ -155,6 +155,13 @@ without explicit operator sign-off recorded here.
   paper order); `proposal_created` logs `room_authority`. Rollback without a deploy:
   `ETORO_LIVE_ROOM_AUTHORITY_ENABLED=false`. On 10-06 state this would have let AAPL through
   (tech 2 of 3); NVDA and MSFT stay blocked by paper's one-per-symbol rule.
+  Independent review (3 lenses + a skeptic per finding, ~21:05 UTC): 3 of 6 findings confirmed,
+  none weakening a real-money cap, all fixed: (1) during an eToro rate-limit cooldown, or for
+  30 min after a rejected copy (`etoro_live:copy_failed`), mirror() rolls back without using any
+  room, so eToro room is no longer granted then; (2) the self-simulated paper broker, a
+  non-Alpaca equity broker and the simulated fallback never use eToro room (those orders are
+  never copied); (3) queue items are processed one at a time, so two entries cannot both use
+  eToro's last slot.
 - Minute (5m/15m) strategies: 0 of 25 pass. Pooled OOS expectancy -$13.49 (5m) and
   -$8.25 (15m) per $100 risked, over ~11,800 trades.
 - Live scorecard page (private, refreshes every minute from Supabase via the operator's

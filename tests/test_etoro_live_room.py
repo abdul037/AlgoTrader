@@ -29,6 +29,8 @@ def _live(tmp_path, open_symbols=("100001", "META", "MSFT"), cash=6_990.1, **ove
     data = {"open_symbols": list(open_symbols), "last_equity": 9_988.0, "last_cash": cash}
     state.set(STATE_KEY, json.dumps(data))
     overrides.setdefault("allowed_instruments", ALLOWED)
+    overrides.setdefault("paper_broker", "alpaca")  # production; test settings default to sim
+    overrides.setdefault("broker_for_equities", "alpaca")
     return _mirror(tmp_path, state=state, **overrides)
 
 
@@ -198,3 +200,72 @@ def test_app_wiring_uses_etoro_room_at_proposal_time(tmp_path, monkeypatch) -> N
         raise AssertionError("paper room should refuse")
     except ValueError as exc:
         assert "Projected gross exposure" in str(exc)
+
+
+# -- review 2026-10-06: grant eToro room only when the copy can actually happen ----------
+
+
+def test_rate_limit_cooldown_keeps_paper_room_rules(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from app.broker import etoro_rate_limit
+
+    mirror, _ = _live(tmp_path)
+    mirror.client.settings = SimpleNamespace(etoro_api_key="live-test-key-cooldown")
+    assert room_verdict(mirror, _order("AAPL")) == []
+    etoro_rate_limit.mark_etoro_rate_limited(mirror.client.settings, status_code=429, body="")
+    try:
+        assert room_verdict(mirror, _order("AAPL")) is None
+    finally:
+        etoro_rate_limit._state.clear()
+
+
+def test_a_rejected_copy_keeps_paper_room_rules_for_30_minutes(tmp_path) -> None:
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    from app.broker.etoro_live_room import COPY_FAILED_KEY
+    from app.utils.time import utc_now
+
+    mirror, _ = _live(tmp_path)
+    mirror.client.open_market_order_by_amount = lambda order, client_order_id=None: SimpleNamespace(
+        order_id="x", status="rejected"
+    )
+    assert _run(mirror, _proposal("AAPL")) is None
+    assert json.loads(mirror.state.get(COPY_FAILED_KEY))["reason"] == "rejected"
+    assert room_verdict(mirror, _order("JPM")) is None  # paper's own room rules again
+    old = (utc_now() - timedelta(minutes=31)).isoformat()
+    mirror.state.set(COPY_FAILED_KEY, json.dumps({"at": old}))
+    assert room_verdict(mirror, _order("JPM")) == []
+
+
+def test_self_simulated_paper_broker_keeps_paper_room_rules(tmp_path) -> None:
+    mirror, _ = _live(tmp_path, paper_broker="self_simulated")
+    assert room_verdict(mirror, _order("AAPL")) is None  # mirror() is never called there
+    mirror, _ = _live(tmp_path / "b", broker_for_equities="etoro")
+    assert room_verdict(mirror, _order("AAPL")) is None
+
+
+def test_queue_items_are_processed_one_at_a_time(monkeypatch) -> None:
+    import threading
+    import time
+
+    from app.execution.coordinator import ExecutionCoordinator
+
+    coordinator = ExecutionCoordinator.__new__(ExecutionCoordinator)
+    active, overlap = [0], [False]
+
+    def _slow(queue_id):
+        active[0] += 1
+        overlap[0] = overlap[0] or active[0] > 1
+        time.sleep(0.05)
+        active[0] -= 1
+        return queue_id
+
+    monkeypatch.setattr(coordinator, "_process_queue_item", _slow)
+    threads = [threading.Thread(target=coordinator.process_queue_item, args=(i,)) for i in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not overlap[0]
