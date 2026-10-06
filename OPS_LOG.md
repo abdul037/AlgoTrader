@@ -81,6 +81,12 @@ without explicit operator sign-off recorded here.
   rewrite. Fix: rolling refresh (1/12 of rows re-written per sweep) + 150-write budget per
   sweep for rows in an unknown state (after a restart); a row known to have changed is
   always written.
+- **Daily eToro Telegram report (operator: "start the Telegram report").** Sent by the
+  guard thread once per US trading day at 16:10 New York (20:10 UTC now, follows DST):
+  balance/cash/day change, trades opened and closed (R, $, copy share), open positions
+  with R at a fresh eToro price, live-vs-backtest verdicts, events (2x, paper exits,
+  detaches, backup-stop closes, halt). Once per NY date, retried if the send fails.
+  Preview: `GET /performance/live-daily-report`. Held locally, pushed after the close.
 - Minute (5m/15m) strategies: 0 of 25 pass. Pooled OOS expectancy -$13.49 (5m) and
   -$8.25 (15m) per $100 risked, over ~11,800 trades.
 - Live scorecard page (private, refreshes every minute from Supabase via the operator's

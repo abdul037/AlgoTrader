@@ -84,6 +84,21 @@ def live_scorecard(request: Request):
     return scorecard_report(state, fills)
 
 
+@router.get("/live-daily-report")
+def live_daily_report(request: Request):
+    """Preview the daily eToro LIVE Telegram report for the last 24 h (nothing is sent)."""
+
+    from app.broker.etoro_live_daily_report import build_report
+
+    _require_control_token(request)
+    coordinator = getattr(request.app.state, "execution_coordinator", None)
+    mirror = getattr(coordinator, "etoro_live_mirror", None)
+    if mirror is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="eToro live mirror off")
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    return {"text": build_report(mirror, since=since)}
+
+
 @router.get("/weekly-target-readiness")
 def weekly_target_readiness(request: Request):
     _require_control_token(request)

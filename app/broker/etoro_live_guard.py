@@ -21,6 +21,7 @@ from threading import Event, Thread
 from typing import Any
 
 from app.broker.etoro_live_backup_stop import check_backup_stops
+from app.broker.etoro_live_daily_report import maybe_send_daily_report
 from app.broker.etoro_live_exit_copy import copy_paper_exits, paper_reader
 from app.broker.etoro_live_scorecard import update_scorecard
 from app.utils.time import utc_now
@@ -108,6 +109,7 @@ def run_live_checks(mirror: Any, tester: Any | None) -> list[str]:
         ("etoro_live_backup_stop", backup_stops),
         ("etoro_live_exit_copy", lambda: bool(copy_paper_exits(mirror, _symbols(closes)))),
         ("etoro_live_scorecard", lambda: update_scorecard(mirror, closes) > 0),
+        ("etoro_live_daily_report", lambda: maybe_send_daily_report(mirror)),
     ):
         try:
             if step():
