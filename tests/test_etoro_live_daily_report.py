@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from app.broker.etoro_live_daily_report import REPORT_KEY, build_report, maybe_send_daily_report
+from app.broker.etoro_live_daily_report import (
+    REPORT_KEY,
+    RETRY_MINUTES,
+    build_report,
+    maybe_send_daily_report,
+)
 from app.broker.etoro_live_mirror import HALTED_KEY, STATE_KEY
 from app.broker.etoro_live_scorecard import SCORECARD_KEY
 from tests.test_etoro_live_backup_stop import _Client, _mirror
@@ -18,7 +23,7 @@ SATURDAY = datetime(2026, 10, 10, 21, 0, tzinfo=UTC)
 
 class _Notifier:
     def __init__(self, ok=True):
-        self.sent, self.ok = [], ok
+        self.sent, self.ok, self.enabled = [], ok, True
 
     def send_text(self, text):
         self.sent.append(text)
@@ -81,12 +86,30 @@ def test_sent_once_per_trading_day_after_the_close(tmp_path) -> None:
     assert not maybe_send_daily_report(mirror, now=SATURDAY)
 
 
-def test_failed_send_is_retried(tmp_path) -> None:
+def test_failed_send_is_retried_after_a_backoff(tmp_path) -> None:
     mirror, _ = _setup(tmp_path, ok=False)
     assert not maybe_send_daily_report(mirror, now=AFTER)
     assert mirror.state.get(REPORT_KEY) is None
     mirror.notifier.ok = True
-    assert maybe_send_daily_report(mirror, now=AFTER)
+    assert not maybe_send_daily_report(mirror, now=AFTER + timedelta(minutes=1))
+    assert maybe_send_daily_report(mirror, now=AFTER + timedelta(minutes=RETRY_MINUTES))
+
+
+def test_disabled_telegram_skips_without_reading_etoro_prices(tmp_path) -> None:
+    # 2026-10-06: Telegram was off in production, so the report was rebuilt (with fresh
+    # eToro price reads) on every guard tick.
+    mirror, logs = _setup(tmp_path)
+    mirror.notifier.enabled = False
+    requests = []
+    real_request = mirror.client._request
+    mirror.client._request = lambda *a, **kw: requests.append(a) or real_request(*a, **kw)
+    for minute in range(3):
+        assert not maybe_send_daily_report(mirror, now=AFTER + timedelta(minutes=minute))
+    assert mirror.notifier.sent == [] and requests == []
+    skips = [e for e in logs.events if e[0] == "etoro_live_daily_report_skipped"]
+    assert len(skips) == 1  # logged once per New York date
+    mirror.notifier.enabled = True  # the operator turns Telegram on: sent on the next tick
+    assert maybe_send_daily_report(mirror, now=AFTER + timedelta(minutes=4))
 
 
 def test_report_content(tmp_path) -> None:

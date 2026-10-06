@@ -264,8 +264,8 @@ def test_maintenance_hook_survives_errors(tmp_path) -> None:
     service = SimpleNamespace(auto_trading=SimpleNamespace(execution=execution), run_logs=logs)
     completed: list[str] = []
     run_from_maintenance(service, completed)  # no guard wired -> fallback runs, error isolated
-    assert completed == [] and logs.events[-1][0] == "etoro_live_guard_error"
-    assert logs.events[-1][1]["step"] == "etoro_live_test_order"
+    errors = [e for e in logs.events if e[0] == "etoro_live_guard_error"]
+    assert completed == [] and [e[1]["step"] for e in errors] == ["etoro_live_test_order"]
 
 
 def test_bad_amount_is_recorded_as_failed(tmp_path) -> None:

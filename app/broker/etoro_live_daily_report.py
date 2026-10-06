@@ -9,8 +9,10 @@ daylight-saving changes), the guard thread sends one plain-text message:
 * live-vs-backtest verdicts per strategy (from the scorecard);
 * events: the 2x test, paper exits copied, detached trades, backup-stop closes, a halt.
 
-It sends at most once per New York date, retries on the next tick if the send fails, and
-never raises into the guard.
+It sends at most once per New York date and never raises into the guard. A failed send is
+retried every ``RETRY_MINUTES``; with Telegram disabled it skips before building the report
+(2026-10-06: production had Telegram off, so the guard rebuilt the report and read eToro
+prices every minute), logging the skip once per date.
 """
 
 from __future__ import annotations
@@ -23,6 +25,8 @@ from zoneinfo import ZoneInfo
 from app.utils.time import utc_now
 
 REPORT_KEY = "etoro_live:daily_report"
+ATTEMPT_KEY = "etoro_live:daily_report_attempt"
+RETRY_MINUTES = 15
 NEW_YORK = ZoneInfo("America/New_York")
 DUBAI = ZoneInfo("Asia/Dubai")
 SEND_AFTER_NY = time(16, 10)
@@ -36,17 +40,30 @@ def maybe_send_daily_report(mirror: Any, *, now: datetime | None = None) -> bool
     ny = now.astimezone(NEW_YORK)
     if ny.weekday() >= 5 or ny.time() < SEND_AFTER_NY:
         return False
+    today = ny.date().isoformat()
     sent = _load(mirror.state, REPORT_KEY)
-    if sent.get("ny_date") == ny.date().isoformat():
+    if sent.get("ny_date") == today:
+        return False
+    attempt = _load(mirror.state, ATTEMPT_KEY)
+    if attempt.get("ny_date") != today:
+        attempt = {}
+    if not _notifier_enabled(mirror):
+        if attempt.get("reason") != "telegram_disabled":
+            _record_attempt(mirror, today, now, "telegram_disabled")
+            mirror.logs.log(
+                "etoro_live_daily_report_skipped", {"ny_date": today, "reason": "telegram_disabled"}
+            )
+        return False
+    last = _parse(attempt.get("attempted_at")) if attempt.get("reason") == "send_failed" else None
+    if last is not None and now - last < timedelta(minutes=RETRY_MINUTES):
         return False
     since = sent.get("sent_at") or (now - timedelta(hours=24)).isoformat()
     text = build_report(mirror, since=since, now=now)
     if not _send(mirror, text):
-        return False  # retried on the next tick
-    mirror.state.set(
-        REPORT_KEY, json.dumps({"ny_date": ny.date().isoformat(), "sent_at": now.isoformat()})
-    )
-    mirror.logs.log("etoro_live_daily_report_sent", {"ny_date": ny.date().isoformat()})
+        _record_attempt(mirror, today, now, "send_failed")
+        return False  # retried after RETRY_MINUTES
+    mirror.state.set(REPORT_KEY, json.dumps({"ny_date": today, "sent_at": now.isoformat()}))
+    mirror.logs.log("etoro_live_daily_report_sent", {"ny_date": today})
     return True
 
 
@@ -140,6 +157,25 @@ def build_report(mirror: Any, *, since: str, now: datetime | None = None) -> str
     lines.append("Events: " + ("; ".join(events) if events else "none"))
     lines.append(f"Your copy = {share * 100:.1f}% of each AlgoBot trade. P/L is the price move.")
     return "\n".join(lines)
+
+
+def _notifier_enabled(mirror: Any) -> bool:
+    notifier = getattr(mirror, "notifier", None)
+    return notifier is not None and getattr(notifier, "enabled", True) is not False
+
+
+def _record_attempt(mirror: Any, ny_date: str, now: datetime, reason: str) -> None:
+    mirror.state.set(
+        ATTEMPT_KEY,
+        json.dumps({"ny_date": ny_date, "attempted_at": now.isoformat(), "reason": reason}),
+    )
+
+
+def _parse(value: Any) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _send(mirror: Any, text: str) -> bool:

@@ -44,7 +44,8 @@ def test_tick_never_raises_and_still_beats(tmp_path) -> None:
     mirror, logs = _mirror(tmp_path, _Client())
     guard = EtoroLiveGuard(mirror=mirror, tester=_Tester(fail=True))
     assert guard.tick() == []
-    assert logs.events[-1][0] == "etoro_live_guard_error" and guard.recently_alive()
+    errors = [e for e in logs.events if e[0] == "etoro_live_guard_error"]
+    assert len(errors) == 1 and guard.recently_alive()
 
 
 def test_idle_guard_makes_no_eToro_call(tmp_path) -> None:

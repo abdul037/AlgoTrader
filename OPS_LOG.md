@@ -129,6 +129,17 @@ without explicit operator sign-off recorded here.
   `SWING_FOCUS_INTERVAL_MINUTES=2` set on Railway with skipDeploys (takes effect with the next
   deploy). Watch the first 2 sessions: timeouts (roll back to 10 if > ~40/session), swing gap
   ~13-17 min, intraday gap (roll back if > ~25 min).
+- **First daily eToro report not sent (checked 20:18 UTC / 00:18 Dubai).** Not a bot fault:
+  Telegram is off in production. `TelegramNotifier` sends only with `TELEGRAM_ENABLED=true`
+  plus `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`; alert_history shows every message since
+  2026-07-16 as "generated", never "sent", so the eToro live alerts (halts, exits, backup
+  stops) have not reached the operator either. Operator to set the three Railway variables
+  (values not read by the agent). Fix pushed: with Telegram off the report now skips before
+  building (it had re-read eToro prices every guard minute) and logs
+  `etoro_live_daily_report_skipped` once per date; a failed send retries every 15 min. The
+  report text is always available at `GET /performance/live-daily-report`.
+- Deploy `4640416` (paper limits) SUCCESS 20:08 UTC; open-signal check now bounded
+  (`checked=102`).
 - Minute (5m/15m) strategies: 0 of 25 pass. Pooled OOS expectancy -$13.49 (5m) and
   -$8.25 (15m) per $100 risked, over ~11,800 trades.
 - Live scorecard page (private, refreshes every minute from Supabase via the operator's
@@ -766,7 +777,9 @@ Convened locally over the 31 unreviewed commits (`0a12efe..2575a1b`) plus the we
 - Branch `claude/repo-audit-962zde` is ~95 commits ahead of `main` and conflicts with
   it (main last updated by #31); needs a PR + conflict merge when the operator wants
   main current. Railway deploys from the branch, so production is unaffected.
-- Queued builds: daily eToro Telegram report; "close all live" command; cost
+- Turn Telegram on in Railway (`TELEGRAM_ENABLED=true`, `TELEGRAM_BOT_TOKEN`,
+  `TELEGRAM_CHAT_ID`); nothing the bot sends reaches the operator until then.
+- Queued builds: "close all live" command; cost
   recalibration after ~10 eToro fills; per-timeframe demotion; paper base-URL boot
   guard; small review leftovers (Telegram /propose and RL paths skip Phase 2 on paper).
 
