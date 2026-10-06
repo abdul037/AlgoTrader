@@ -47,7 +47,8 @@ HARD_MAX_TRADE_PCT_OF_EQUITY = 10.0
 HARD_MAX_TRADE_USD = 1_000.0  # absolute backstop against a bad equity reading
 MIN_TRADE_USD = 10.0  # eToro's minimum position size
 HARD_MAX_TRADES_PER_DAY = 2
-HARD_MAX_OPEN_POSITIONS = 3
+HARD_MAX_OPEN_POSITIONS = 6  # operator 2026-10-06: 3 -> 6, "if there is any fund left"
+CASH_RESERVE_USD = 100.0  # free cash kept back for fees; an entry must fit in the rest
 HARD_DAILY_LOSS_STOP_PCT = 5.0
 LEVERAGE_TEST_AFTER_1X_TRADES = 2
 # Operator 2026-10-06 "try the 2x leverage": eToro's Amount is margin, so the 2x test sends
@@ -219,6 +220,9 @@ class EtoroLiveMirrorService:
             reasons.append("etoro_live_equity_unknown")
         elif amount < MIN_TRADE_USD:
             reasons.append("etoro_live_trade_below_minimum")
+        cash = state.get("last_cash")
+        if amount and cash is not None and float(cash) - CASH_RESERVE_USD < amount:
+            reasons.append("etoro_live_insufficient_cash")  # only trade with money left
         return reasons
 
     def _trade_amount(self, state: dict[str, Any]) -> float | None:
@@ -273,6 +277,8 @@ class EtoroLiveMirrorService:
         state["open_symbols"] = sorted(set(state["open_symbols"]) | {symbol})
         if leverage == 2:
             state["leverage_2x_done"] = True
+        if state.get("last_cash") is not None:  # spent until the next reconcile re-reads it
+            state["last_cash"] = round(float(state["last_cash"]) - float(amount or 0.0), 2)
         self._save(state)
         remember_stop(self, symbol, order.stop_loss, None)  # instrument id resolved at check
         try:
@@ -364,6 +370,9 @@ class EtoroLiveMirrorService:
         if state.get("day_start_equity") is None:
             state["day_start_equity"] = equity
         state["last_equity"] = equity
+        credit = (raw.get("clientPortfolio", {}) or {}).get("credit")
+        if credit is not None:
+            state["last_cash"] = round(float(credit), 2)  # free cash, for the funds check
         state["open_symbols"] = sorted({str(p.symbol).upper() for p in portfolio.positions})
         by_position = {p.position_id: str(p.symbol).upper() for p in portfolio.positions}
         closed: list[str] = []

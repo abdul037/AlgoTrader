@@ -54,6 +54,11 @@ without explicit operator sign-off recorded here.
 - Correction: batch backtests already use the default (eToro-style) cost model: 10 bps
   round-trip spread, 0.015%/day financing, weekend x3, $50 minimum. The Alpaca profile is
   unused. The scorecard's measured eToro fills will calibrate the spread.
+- **~12:00 UTC operator: "raise the cap from 3 to 6 maybe if there is any fund left".**
+  eToro live open-position cap 3 -> 6 (ETH + MSFT + META had filled all 3, blocking every
+  new entry incl. the 2x test). New funds check: an entry needs free cash (eToro `credit`,
+  read at reconcile, reduced by each entry until the next read) of at least the trade
+  amount + $100 reserve. Daily cap (2 new trades/day) and 5% daily loss stop unchanged.
 - Minute (5m/15m) strategies: 0 of 25 pass. Pooled OOS expectancy -$13.49 (5m) and
   -$8.25 (15m) per $100 risked, over ~11,800 trades.
 - Tests: 833 passed before the hold flag; eToro/phase suites 76 passed after.

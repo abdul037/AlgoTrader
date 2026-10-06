@@ -203,3 +203,44 @@ def test_rate_limit_cooldown_is_per_account() -> None:
         assert all("live-key" not in key for key in etoro_rate_limit._state)
     finally:
         etoro_rate_limit._state.clear()
+
+
+def test_open_position_cap_is_six(tmp_path) -> None:
+    from app.broker.etoro_live_mirror import HARD_MAX_OPEN_POSITIONS
+
+    assert HARD_MAX_OPEN_POSITIONS == 6
+    state = _state()
+    state.set(STATE_KEY, json.dumps({"last_equity": 10_000.0, "open_symbols": ["A", "B", "C"]}))
+    service, _ = _mirror(tmp_path, state=state)
+    assert _run(service) is not None  # 3 open no longer blocks
+    state.set(
+        STATE_KEY,
+        json.dumps({"last_equity": 10_000.0, "open_symbols": ["A", "B", "C", "D", "E", "F"]}),
+    )
+    service, logs = _mirror(tmp_path, state=state)
+    assert _run(service, _proposal("MSFT")) is None
+    assert "etoro_live_open_position_cap" in logs.events[-1][1]["reasons"]
+
+
+def test_entry_needs_free_cash_and_spends_it(tmp_path) -> None:
+    # Operator 2026-10-06: more open positions "if there is any fund left".
+    state = _state()
+    state.set(STATE_KEY, json.dumps({"last_equity": 10_000.0, "last_cash": 1_150.0}))
+    client = _Client()
+    service, logs = _mirror(tmp_path, client=client, state=state)
+    assert _run(service) is not None and client.orders[0].amount_usd == 1_000.0
+    assert _mirror_state(state)["last_cash"] == 150.0
+    assert _run(service, _proposal("MSFT")) is None and len(client.orders) == 1
+    assert "etoro_live_insufficient_cash" in logs.events[-1][1]["reasons"]
+
+
+def test_reconcile_records_free_cash(tmp_path) -> None:
+    class _Cash(_Client):
+        def fetch_raw_portfolio(self):
+            return {"clientPortfolio": {"credit": 6_990.0, "positions": [{"amount": 3_000.0}]}}
+
+    state = _state()
+    service, _ = _mirror(tmp_path, client=_Cash(), state=state)
+    service.reconcile()
+    current = _mirror_state(state)
+    assert current["last_cash"] == 6_990.0 and current["last_equity"] == 9_990.0
