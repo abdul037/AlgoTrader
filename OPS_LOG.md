@@ -117,6 +117,18 @@ without explicit operator sign-off recorded here.
   `PORTFOLIO_MAX_CORRELATED_EXPOSURE_PCT=60` (was 30). Not changed (not yet approved): sector
   cap 25% (likely to block a 3rd tech name), per-symbol 15%, daily 2 entries per
   correlation bucket, heat 6%. Real-money eToro caps unchanged.
+- **2-minute swing cadence (operator: "Can we do it for 2 mins").** Workflow review (4
+  investigators + skeptic, calibrated to production ticks): go with guards. 2 min does not
+  mean 2-minute scans: ~23-30 swing runs/session, ~13-17 min apart, full 25-symbol sweep
+  ~50-65 min (vs ~17-19 runs / 20-23 min / 80-90 min at 10 min); <=5 min all saturate the
+  single worker. Real-money gates are cadence-independent. Timeouts +15-30% (still <= today).
+  Found a trap in the deployed soft-budget fix: with the code default deadline 180 s the budget
+  would be 50 s (< maintenance) and no scan would start; production is safe only because
+  Railway sets SCREENER_BATCH_DEADLINE_SECONDS=120 (soft budget 110 s seen in deferral logs).
+  Code + .env.example defaults now 120, test asserts soft budget >= 100.
+  `SWING_FOCUS_INTERVAL_MINUTES=2` set on Railway with skipDeploys (takes effect with the next
+  deploy). Watch the first 2 sessions: timeouts (roll back to 10 if > ~40/session), swing gap
+  ~13-17 min, intraday gap (roll back if > ~25 min).
 - Minute (5m/15m) strategies: 0 of 25 pass. Pooled OOS expectancy -$13.49 (5m) and
   -$8.25 (15m) per $100 risked, over ~11,800 trades.
 - Live scorecard page (private, refreshes every minute from Supabase via the operator's

@@ -617,6 +617,9 @@ def test_cadence_soft_budget_keeps_one_batch_inside_the_job_timeout(tmp_path) ->
     batch_deadline = float(s.screener_batch_deadline_seconds)
     job_timeout = float(s.scheduler_job_timeout_seconds)
     assert soft + batch_deadline < job_timeout
+    # Maintenance (60-90 s light) now counts against the soft budget, so the defaults must
+    # leave room for it, or no scan bucket would ever start (2026-10-06 review).
+    assert soft >= 100
     # And the job cap must sit under the self-heal threshold so a bounded job
     # never triggers a spurious restart.
     assert job_timeout < float(s.scheduler_self_heal_stale_seconds)

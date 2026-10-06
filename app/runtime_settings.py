@@ -156,7 +156,9 @@ class AppSettings(BaseSettings):
     max_market_data_age_seconds: int = 120
     screener_market_data_timeout_seconds: float = 20.0
     screener_intelligence_timeout_seconds: float = 20.0
-    screener_batch_deadline_seconds: float = 180.0
+    # 120 matches production (Railway): with maintenance counted against the cadence soft
+    # budget (240 - deadline - 10), 180 would leave 50 s and starve every scan (10-06 review).
+    screener_batch_deadline_seconds: float = 120.0
     screener_default_timeframes: list[str] = Field(default_factory=lambda: ["15m", "1h", "1d"])
     screener_intraday_timeframes: list[str] = Field(default_factory=lambda: ["1m", "5m", "10m", "15m"])
     intelligent_scan_timeframes: list[str] = Field(default_factory=lambda: ["5m", "15m", "1h", "1d", "1w"])

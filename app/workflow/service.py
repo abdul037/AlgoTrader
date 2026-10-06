@@ -160,7 +160,7 @@ class SignalWorkflowService:
         if explicit is not None:
             return float(explicit)
         job_timeout = float(getattr(self.settings, "scheduler_job_timeout_seconds", 240) or 240)
-        batch_deadline = float(getattr(self.settings, "screener_batch_deadline_seconds", 180) or 180)
+        batch_deadline = float(getattr(self.settings, "screener_batch_deadline_seconds", 120) or 120)
         # Leave room for one in-flight batch to finish, plus a 10s margin.
         return max(job_timeout - batch_deadline - 10.0, 30.0)
 
