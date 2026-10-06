@@ -106,6 +106,17 @@ without explicit operator sign-off recorded here.
   runs every 10 min (`SWING_FOCUS_INTERVAL_MINUTES`). Also fixed the scheduler soft budget,
   which started counting after maintenance (150 s maintenance + 180 s scan > 240 s); it now
   counts from the start of the run. Held with the other two commits until after the close.
+- **No trade on 10-06.** Daily scans did find MSFT/NVDA/AAPL (17:02, 19:09 UTC) but every one
+  was blocked by the paper portfolio limits: paper held $28.8k (MSFT $12.2k, TSLA $6.8k,
+  NVDA $5.3k, META $4.5k) against a 30% gross cap on ~$100k, plus per-symbol and correlated
+  caps. TSLA/NVDA (10-01/10-02) predate the eToro mirror (first mirror event 10-05 17:02) so
+  they were never mirrored. Pushed the 3 held commits at 20:00 UTC after the close.
+- **~20:01 UTC operator: "yes please" (match the paper limits to the eToro account shape).**
+  Railway vars set: `MAX_TRADE_AMOUNT_USD=10000` (paper per-trade cap 10% of ~$100k, was
+  >=$12.5k), `PORTFOLIO_MAX_GROSS_EXPOSURE_PCT=60` (was 30), and
+  `PORTFOLIO_MAX_CORRELATED_EXPOSURE_PCT=60` (was 30). Not changed (not yet approved): sector
+  cap 25% (likely to block a 3rd tech name), per-symbol 15%, daily 2 entries per
+  correlation bucket, heat 6%. Real-money eToro caps unchanged.
 - Minute (5m/15m) strategies: 0 of 25 pass. Pooled OOS expectancy -$13.49 (5m) and
   -$8.25 (15m) per $100 risked, over ~11,800 trades.
 - Live scorecard page (private, refreshes every minute from Supabase via the operator's
