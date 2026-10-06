@@ -548,6 +548,9 @@ class AppSettings(BaseSettings):
     strategy_evidence_lookback_days: int = 7
     strategy_evidence_min_trades: int = 40
     strategy_evidence_min_holdout_trades: int = 10
+    # Minimum pooled OOS expectancy in R (1 R = the backtest's $100 risk per trade). 0 keeps
+    # the original "> 0" bar; the operator picks the level (2026-10-06: +0.05R proposed).
+    strategy_evidence_min_expectancy_r: float = 0.0
     # Phase 3 go-live readiness bar (see app/performance/go_live_readiness.py).
     go_live_phase3_start_date: str = ""
     go_live_min_closed_trades: int = 50

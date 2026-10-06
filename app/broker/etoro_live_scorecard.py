@@ -27,7 +27,6 @@ from typing import Any
 from app.utils.time import utc_now
 
 SCORECARD_KEY = "etoro_live:scorecard"
-BACKTEST_RISK_USD = 100.0  # batch backtests: 1% risk of a $10,000 account per trade
 NOT_FILLED_AFTER_HOURS = 24
 MIN_TRADES_FOR_VERDICT = 10
 LEVEL_TOLERANCE = 0.003  # a close within 0.3% of the stop/target counts as hitting it
@@ -265,6 +264,8 @@ def _verdict(runtime_state: Any, strategy: Any, timeframe: Any) -> dict[str, Any
 
 
 def _r(expectancy_usd: Any) -> float | None:
+    from app.performance.strategy_evidence import BACKTEST_RISK_USD
+
     value = _float(expectancy_usd)
     return None if value is None else round(value / BACKTEST_RISK_USD, 4)
 

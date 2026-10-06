@@ -5,7 +5,9 @@ so the verdict pools each strategy+timeframe across the whole universe: the
 newest walk-forward OOS row per symbol, summed. A strategy passes when it has
 
 * at least ``strategy_evidence_min_trades`` OOS trades (default 40),
-* positive expectancy per trade after costs (the engine applies the cost model),
+* positive expectancy per trade after costs (the engine applies the cost model), and at
+  least ``strategy_evidence_min_expectancy_r`` R when set (1 R = the batch backtest's
+  $100 risk per trade, 1% of $10,000) -- a "> 0" bar lets breakeven strategies through,
 * at least ``strategy_evidence_min_holdout_trades`` trades in the sealed
   holdout windows with positive holdout expectancy.
 
@@ -25,6 +27,7 @@ from typing import Any
 from app.utils.time import utc_now
 
 VERDICTS_KEY = "strategy_evidence:verdicts"
+BACKTEST_RISK_USD = 100.0  # batch backtests risk 1% of a $10,000 account per trade
 _LATEST_OOS_SQL = """
     SELECT b.strategy_name, b.file_path, b.metrics_json
     FROM backtests b
@@ -51,6 +54,7 @@ def compute_verdicts(db: Any, settings: Any, *, now: Any = None) -> dict[str, di
     lookback = int(getattr(settings, "strategy_evidence_lookback_days", 7) or 7)
     min_trades = int(getattr(settings, "strategy_evidence_min_trades", 40) or 40)
     min_holdout = int(getattr(settings, "strategy_evidence_min_holdout_trades", 10) or 10)
+    min_r = float(getattr(settings, "strategy_evidence_min_expectancy_r", 0.0) or 0.0)
     cutoff = ((now or utc_now()) - timedelta(days=lookback)).isoformat()
     with db.connect() as connection:
         rows = connection.execute(_LATEST_OOS_SQL, ("%:walk_forward_oos", cutoff)).fetchall()
@@ -84,6 +88,8 @@ def compute_verdicts(db: Any, settings: Any, *, now: Any = None) -> dict[str, di
             reasons.append("too_few_oos_trades")
         if expectancy <= 0:
             reasons.append("oos_expectancy_not_positive")
+        elif min_r > 0 and expectancy < min_r * BACKTEST_RISK_USD:
+            reasons.append(f"oos_expectancy_below_{min_r:g}R")
         if b["holdout_trades"] < min_holdout:
             reasons.append("too_few_holdout_trades")
         elif holdout_expectancy <= 0:
@@ -94,6 +100,7 @@ def compute_verdicts(db: Any, settings: Any, *, now: Any = None) -> dict[str, di
             "symbols": int(b["symbols"]),
             "oos_trades": int(b["trades"]),
             "oos_expectancy_usd": round(expectancy, 4),
+            "oos_expectancy_r": round(expectancy / BACKTEST_RISK_USD, 4),
             "holdout_trades": int(b["holdout_trades"]),
             "holdout_expectancy_usd": round(holdout_expectancy, 4),
         }

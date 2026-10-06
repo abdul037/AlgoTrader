@@ -123,6 +123,13 @@ def test_verdicts_pool_across_symbols_and_use_latest_row(tmp_path) -> None:
         "too_few_oos_trades",
         "too_few_holdout_trades",
     ]
+    assert good["oos_expectancy_r"] == 0.1
+    # Operator bar 2026-10-06: a minimum expectancy in R (1 R = $100 backtest risk).
+    strict = compute_verdicts(db, SimpleNamespace(strategy_evidence_min_expectancy_r=0.15))
+    assert strict["vwap_reclaim:15m"]["reasons"] == ["oos_expectancy_below_0.15R"]
+    assert compute_verdicts(db, SimpleNamespace(strategy_evidence_min_expectancy_r=0.1))[
+        "vwap_reclaim:15m"
+    ]["passed"]
 
 
 def test_evidence_gate_is_off_by_default_and_fails_closed_when_on(tmp_path) -> None:

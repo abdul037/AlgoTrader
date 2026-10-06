@@ -43,6 +43,19 @@ without explicit operator sign-off recorded here.
 - **~10:00 UTC operator: "try the 2x leverage".** Enabled, sized at the same exposure
   as a 1x trade: $500 margin x 2 = $1,000 notional (Amount is margin). Fires once, on the
   next qualifying mirrored entry; later entries are 1x again.
+- **Live-vs-backtest scorecard** (operator: the live account is for testing whether the
+  backtests hold up). Every mirrored entry records its strategy's backtest expectancy in R;
+  the guard attaches the eToro fill and books realized R, P/L and exit reason at close.
+  `GET /performance/live-scorecard`: per-trade rows + per-strategy verdict (collecting
+  until 10 closed). MSFT and META backfilled (signal price = paper fill).
+- Minimum backtest expectancy bar: `STRATEGY_EVIDENCE_MIN_EXPECTANCY_R` added, **default 0
+  (off)**. On the 10:41 refresh no strategy reaches +0.05R (momentum_breakout fell to
+  +$4.10 per $100 risked), so 0.05 would stop all new entries. Awaiting the operator's level.
+- Correction: batch backtests already use the default (eToro-style) cost model: 10 bps
+  round-trip spread, 0.015%/day financing, weekend x3, $50 minimum. The Alpaca profile is
+  unused. The scorecard's measured eToro fills will calibrate the spread.
+- Minute (5m/15m) strategies: 0 of 25 pass. Pooled OOS expectancy -$13.49 (5m) and
+  -$8.25 (15m) per $100 risked, over ~11,800 trades.
 - Tests: 833 passed before the hold flag; eToro/phase suites 76 passed after.
 
 ## 2026-10-05 (Mon)
