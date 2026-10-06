@@ -50,6 +50,9 @@ HARD_MAX_TRADES_PER_DAY = 2
 HARD_MAX_OPEN_POSITIONS = 3
 HARD_DAILY_LOSS_STOP_PCT = 5.0
 LEVERAGE_TEST_AFTER_1X_TRADES = 2
+# Held 2026-10-06 pending the operator: eToro's Amount is margin, so the 2x test would be
+# $2,000 notional (2x the 1x size). Set True once the operator confirms the size.
+LEVERAGE_TEST_ENABLED = False
 
 HALTED_KEY = "etoro_live:halted"
 STATE_KEY = "etoro_live:state"
@@ -165,6 +168,11 @@ class EtoroLiveMirrorService:
         order = proposal.order
         if str(getattr(order.side, "value", order.side)).lower() != "buy":
             reasons.append("mirror_long_only")
+        from app.broker import crypto as crypto_symbols
+
+        bare = str(order.symbol or "").strip().upper()  # eToro names crypto "BTC", "ETH"
+        if crypto_symbols.is_crypto_symbol(bare) or bare in crypto_symbols.KNOWN_CRYPTO_BASES:
+            reasons.append("mirror_equities_only")
         if str(getattr(order.asset_class, "value", order.asset_class) or "equity") not in {
             "equity",
             "unknown",
@@ -177,12 +185,19 @@ class EtoroLiveMirrorService:
             if proposal.signal is not None
             else {}
         )
+        # The real timeframe lives in order.metadata (review 2026-10-05: proposals from the
+        # scanner carry no signal, so the old "1d" default checked the wrong evidence key).
+        timeframe = (getattr(order, "metadata", None) or {}).get("timeframe") or metadata.get(
+            "timeframe"
+        )
         strict = _StrictEvidence(settings)
-        if evidence_blocker(
+        if not timeframe:
+            reasons.append("mirror_timeframe_unknown")
+        elif evidence_blocker(
             strict,
             self.state,
             strategy=str(order.strategy_name or ""),
-            timeframe=metadata.get("timeframe") or "1d",
+            timeframe=str(timeframe),
         ):
             reasons.append("strategy_lacks_oos_evidence")
         state = self._state()
@@ -238,33 +253,55 @@ class EtoroLiveMirrorService:
         leverage = (
             2
             if (
-                not state["leverage_2x_done"]
+                LEVERAGE_TEST_ENABLED
+                and not state["leverage_2x_done"]
                 and state["successful_1x"] >= LEVERAGE_TEST_AFTER_1X_TRADES
             )
             else 1
         )
         amount = self._trade_amount(state)
         order = proposal.order.model_copy(update={"amount_usd": amount, "leverage": leverage})
+        from app.broker.etoro_live_backup_stop import forget_stop, remember_stop
+
+        # Write-ahead (review 2026-10-05): the daily count, the one-time 2x flag and the
+        # backup stop are saved BEFORE the POST, so a timeout whose order did fill still
+        # leaves the position protected and can never allow a second 2x order.
+        before = dict(state)
+        state["trades_today"] += 1
+        state["open_symbols"] = sorted(set(state["open_symbols"]) | {symbol})
+        if leverage == 2:
+            state["leverage_2x_done"] = True
+        self._save(state)
+        remember_stop(self, symbol, order.stop_loss, None)  # instrument id resolved at check
         try:
             response = self.client.open_market_order_by_amount(
                 order, client_order_id=f"etoro-live:{proposal.id}"
             )
         except Exception as exc:  # noqa: BLE001 - halt the mirror, keep the paper bot running
+            from app.broker.etoro_rate_limit import EToroRateLimitError
+
+            if isinstance(exc, EToroRateLimitError) or "with status 4" in str(exc):
+                self._save(before)  # refused or never sent: nothing was opened
+                forget_stop(self, symbol)
+            if isinstance(exc, EToroRateLimitError):
+                self.logs.log(
+                    "etoro_live_mirror_rate_limited", {"symbol": symbol, "error": str(exc)}
+                )
+                return None
             self._halt(f"open_failed:{symbol}:{exc}")
             return None
-        state["trades_today"] += 1
-        state["open_symbols"] = sorted(set(state["open_symbols"]) | {symbol})
+        if str(getattr(response, "status", "") or "").lower() in {"rejected", "cancelled"}:
+            self._save(before)  # a rejected order is not a trade and not a successful 1x
+            forget_stop(self, symbol)
+            self.logs.log(
+                "etoro_live_mirror_rejected",
+                {"symbol": symbol, "proposal_id": proposal.id, "status": response.status},
+            )
+            self._notify(f"eToro LIVE order for {symbol} was {response.status}; nothing opened.")
+            return None
         if leverage == 1:
             state["successful_1x"] += 1
-        else:
-            state["leverage_2x_done"] = True
-        self._save(state)
-        from app.broker.etoro_live_backup_stop import remember_stop
-
-        cached = getattr(self.client, "_instrument_cache_by_symbol", {}) or {}
-        remember_stop(
-            self, symbol, order.stop_loss, (cached.get(symbol) or {}).get("instrument_id")
-        )
+            self._save(state)
         record = {
             "symbol": symbol,
             "proposal_id": proposal.id,
@@ -303,6 +340,11 @@ class EtoroLiveMirrorService:
             raw = self.client.fetch_raw_portfolio()
             portfolio = self.client.get_portfolio()
         except Exception as exc:  # noqa: BLE001
+            from app.broker.etoro_rate_limit import EToroRateLimitError
+
+            if isinstance(exc, EToroRateLimitError):  # local cooldown: skip, don't halt
+                self.logs.log("etoro_live_reconcile_rate_limited", {"error": str(exc)})
+                return None
             self._halt(f"reconcile_failed:{exc}")
             return None
         state = self._state()

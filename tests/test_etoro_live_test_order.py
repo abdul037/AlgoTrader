@@ -214,6 +214,7 @@ def test_watch_fill_then_close_at_broker(tmp_path) -> None:
     assert tester.run()["position_id"] == 9
     assert logs.events[-1][0] == "etoro_live_test_order_filled"
     client.positions, client.equity = [], 10_017.0  # target hit at eToro
+    assert tester.run()["status"] == "open"  # first clean read without it: confirm once more
     closed = tester.run()
     assert (
         closed["status"] == "closed"
@@ -317,3 +318,18 @@ def test_finished_elsewhere_is_not_overwritten(tmp_path) -> None:
     client.positions = []
     assert tester._finish(dict(finished, status="open"), "x")["status"] == "closed"
     assert not any(e == "etoro_live_test_order_closed" for e, _ in logs.events)
+
+
+def test_empty_or_malformed_portfolio_read_changes_nothing(tmp_path) -> None:
+    # Review 2026-10-05: an empty body ({}) used to read as "no positions" and marked the
+    # live test closed with a -$10,000 P&L. Now it is ignored and the watch continues.
+    client, state = _Client(), _State()
+    _request(state)
+    tester, _ = _tester(tmp_path, client=client, state=state)
+    tester.run()
+    client.positions = [{"positionID": 9, "instrumentID": 100001, "stopLossRate": 1_910.0}]
+    tester.run()
+    for bad in ({}, {"clientPortfolio": None}, {"clientPortfolio": {"positions": []}}):
+        client.fetch_raw_portfolio = lambda bad=bad: bad
+        assert tester.run() is None
+        assert json.loads(state.get(TEST_STATE_KEY))["status"] == "open"

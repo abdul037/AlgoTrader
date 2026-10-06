@@ -12,6 +12,36 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-10-06 (Tue) — real-money code review fixes
+
+- Mon 10-05 session (eToro LIVE, AlgoBot): two mirrored 1x entries, MSFT $999 at
+  17:02 UTC (stop 511.02, target 544.52, momentum_breakout) and META $998.90 at
+  19:15 UTC (stop 661.90, target 928.04, etf_mega_cap_relative_strength_rotation).
+  Both have bot backup stops recorded. ETH test still open. One watch read timed
+  out at 23:47 UTC and the next tick recovered. Not halted; equity basis $9,988.
+- Independent review (3 reviewers) of the real-money paths. Verified and fixed:
+  - Mirror writes its state (daily count, open symbol, 2x flag, backup stop)
+    *before* the POST. It rolls back on a 4xx refusal or rejected/cancelled
+    status, and a rate limit never halts it. A rejected order no longer counts
+    as a successful 1x.
+  - The evidence gate uses the order's own timeframe (scanner proposals have no
+    signal). Missing timeframe → blocked. Crypto (incl. bare "BTC"/"ETH") is
+    never mirrored by the stock mirror. The mirror is skipped when the paper
+    order FAILED/BLOCKED.
+  - Backup stop and ETH watch ignore malformed/empty portfolio reads (no stop
+    dropped, no false "closed"). A stop is dropped only after the position was
+    seen and is now gone. A rate-limited close keeps the stop and doesn't halt.
+  - eToro rate-limit cooldown is per account (a demo 429 no longer blinds the
+    live backup stop).
+  - Reconciliation: one sweep at a time. Alpaca 40410000 "position not found" is
+    treated as already flat. Stream updates invalidate the write-skip cache.
+  - Readiness counts only if computed within 2 h. Evidence older than 24 h is
+    blocked. Bad trade rows are skipped. The phase-gate refreshes run
+    independently.
+  - **2x leverage test held** (`LEVERAGE_TEST_ENABLED = False`): eToro's Amount is
+    margin, so it would be $2,000 notional. Awaiting the operator's decision.
+- Tests: 833 passed before the hold flag; eToro/phase suites 76 passed after.
+
 ## 2026-10-05 (Mon)
 
 - **05:09 UTC** `BACKTEST_SCHEDULER_INTERVAL_SECONDS` restored 300 → **1800**. The trigger was due Sun 22:00 UTC but ran late

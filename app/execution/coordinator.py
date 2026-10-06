@@ -73,7 +73,7 @@ class ExecutionCoordinator:
             signal_id=getattr(proposal.signal, "id", None),
             symbol=proposal.order.symbol.upper(),
             strategy_name=proposal.order.strategy_name,
-            timeframe=(proposal.signal.metadata.get("timeframe") if proposal.signal is not None else None),
+            timeframe=_proposal_timeframe(proposal),
             mode=self.settings.execution_mode,
             requested_entry_price=proposal.order.proposed_price,
             payload={"order": proposal.order.model_dump(), "signal": proposal.signal.model_dump() if proposal.signal else None},
@@ -157,7 +157,7 @@ class ExecutionCoordinator:
 
         automation_blockers = self._automation_blockers()
 
-        timeframe = record.timeframe or (proposal.signal.metadata.get("timeframe") if proposal.signal is not None else "1d") or "1d"
+        timeframe = record.timeframe or _proposal_timeframe(proposal) or "1d"
         quote_provider = broker_name if broker_name in {"alpaca", "etoro"} else None
         quote = self.market_data.get_quote(proposal.order.symbol, timeframe=timeframe, provider=quote_provider, force_refresh=True)
         quote_price = float(quote.last_execution or quote.ask or quote.bid or proposal.order.proposed_price)
@@ -589,7 +589,8 @@ class ExecutionCoordinator:
 
     def _mirror_parallel(self, proposal: Any, execution: ExecutionRecord, broker_name: str) -> None:
         live_mirror = getattr(self, "etoro_live_mirror", None)
-        if live_mirror is not None:
+        failed = str(getattr(execution, "status", "")) in {ExecutionStatus.FAILED, ExecutionStatus.BLOCKED}
+        if live_mirror is not None and not failed:  # never put real money behind a failed paper order
             # Capped real-money test mirror; it handles its own failures and never
             # raises into the paper execution path.
             live_mirror.mirror(proposal=proposal, primary_execution=execution, primary_broker=broker_name)
@@ -674,3 +675,14 @@ class ExecutionCoordinator:
         if normalized == ExecutionStatus.BLOCKED:
             return ExecutionStatus.BLOCKED
         return ExecutionStatus.SUBMITTED
+
+
+def _proposal_timeframe(proposal: Any) -> str | None:
+    """Timeframe of a proposal: the order's metadata first (scanner proposals carry no
+    signal), then the signal's. Review 2026-10-05: defaulting to "1d" switched the
+    market-direction filter off for intraday entries."""
+
+    order_meta = getattr(getattr(proposal, "order", None), "metadata", None) or {}
+    signal = getattr(proposal, "signal", None)
+    signal_meta = (getattr(signal, "metadata", None) or {}) if signal is not None else {}
+    return order_meta.get("timeframe") or signal_meta.get("timeframe") or None

@@ -235,7 +235,19 @@ def test_daily_trade_cap_and_symbol_dedupe(tmp_path) -> None:
     assert "etoro_live_daily_trade_cap" in logs.events[-1][1]["reasons"]
 
 
-def test_one_2x_test_after_two_1x_trades(tmp_path) -> None:
+def test_2x_test_is_held_until_the_operator_confirms(tmp_path) -> None:
+    client = _Client()
+    state = _state()
+    state.set(STATE_KEY, json.dumps({"last_equity": 10_000.0, "successful_1x": 2}))
+    service, _ = _mirror(tmp_path, client=client, state=state)
+    _run(service)
+    assert client.orders[0].leverage == 1
+
+
+def test_one_2x_test_after_two_1x_trades(tmp_path, monkeypatch) -> None:
+    import app.broker.etoro_live_mirror as live_mirror
+
+    monkeypatch.setattr(live_mirror, "LEVERAGE_TEST_ENABLED", True)
     client = _Client()
     state = _state()
     state.set(

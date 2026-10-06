@@ -19,10 +19,11 @@ from contextlib import nullcontext
 from datetime import timedelta
 from typing import Any
 
+from app.broker.etoro_rate_limit import EToroRateLimitError
 from app.utils.time import utc_now
 
 STOPS_KEY = "etoro_live:intended_stops"
-UNSEEN_GRACE_MINUTES = 30  # an entry with no matching position after this is dropped
+UNSEEN_GRACE_MINUTES = 24 * 60  # never-seen entry (e.g. an order queued before the open) ages out
 CLOSE_RECHECK_SECONDS = 3.0
 
 
@@ -50,6 +51,15 @@ def remember_stop(mirror: Any, symbol: str, stop: float | None, instrument_id: i
         _remember(mirror, symbol, stop, instrument_id)
 
 
+def forget_stop(mirror: Any, symbol: str) -> None:
+    """Drop a recorded stop (its order was refused, so no position exists)."""
+
+    with _lock(mirror):
+        stops = _load(mirror)
+        if stops.pop(symbol.upper(), None) is not None:
+            _save(mirror, stops)
+
+
 def check_backup_stops(mirror: Any) -> list[dict[str, Any]] | None:
     """Close any mirrored position whose fresh price is at or below its intended stop."""
 
@@ -67,6 +77,18 @@ def _remember(mirror: Any, symbol: str, stop: float, instrument_id: int | None) 
     _save(mirror, stops)
 
 
+def portfolio_positions(raw: Any) -> list[dict[str, Any]] | None:
+    """Positions from a raw eToro portfolio read, or None when the read is not a
+    well-formed portfolio (empty body, no ``clientPortfolio``, no ``credit``, positions
+    not a list). Callers must change nothing on None (review 2026-10-05)."""
+
+    portfolio = raw.get("clientPortfolio") if isinstance(raw, dict) else None
+    if not isinstance(portfolio, dict) or portfolio.get("credit") is None:
+        return None
+    positions = portfolio.get("positions")
+    return positions if isinstance(positions, list) else None
+
+
 def _check(mirror: Any) -> list[dict[str, Any]] | None:
     from app.broker.etoro_live_mirror import client_problem
 
@@ -74,9 +96,9 @@ def _check(mirror: Any) -> list[dict[str, Any]] | None:
     if not stops or client_problem(mirror.client):
         return None
     client = mirror.client
-    positions = (client.fetch_raw_portfolio().get("clientPortfolio", {}) or {}).get(
-        "positions", []
-    ) or []
+    positions = portfolio_positions(client.fetch_raw_portfolio())
+    if positions is None:
+        return None  # malformed/empty read: keep every stop, try again next tick
     grace = (utc_now() - timedelta(minutes=UNSEEN_GRACE_MINUTES)).isoformat()
     closed: list[dict[str, Any]] = []
     remaining: dict[str, Any] = {}
@@ -91,9 +113,12 @@ def _check(mirror: Any) -> list[dict[str, Any]] | None:
                 continue
         held = [p for p in positions if int(p.get("instrumentID") or 0) == int(instrument_id)]
         if not held:
-            if str(info.get("recorded_at") or "") > grace:
-                remaining[symbol] = info  # not visible yet; closed positions age out
+            # Seen before and now gone -> closed at eToro: drop. Never seen -> it may still be
+            # a pending order (queued before the open): keep it until it ages out.
+            if not info.get("seen") and str(info.get("recorded_at") or "") > grace:
+                remaining[symbol] = info
             continue
+        info["seen"] = True
         try:
             rate = fresh_rate(client, symbol)
         except Exception:  # noqa: BLE001 - eToro's own stop still protects it
@@ -107,6 +132,12 @@ def _check(mirror: Any) -> list[dict[str, Any]] | None:
                 client.close_position_by_id(int(position["positionID"]), int(instrument_id))
                 record["position_ids"].append(position["positionID"])
         except Exception as exc:  # noqa: BLE001 - stop new risk, ask for a manual close
+            if isinstance(exc, EToroRateLimitError):  # nothing was sent; retry next tick
+                remaining[symbol] = info
+                mirror.logs.log(
+                    "etoro_live_backup_stop_rate_limited", {**record, "error": str(exc)}
+                )
+                continue
             if not _still_open(client, int(instrument_id)):  # e.g. the old container closed it
                 record["closed_elsewhere"] = True
             else:
@@ -127,8 +158,10 @@ def _check(mirror: Any) -> list[dict[str, Any]] | None:
     for symbol in set(stops) - set(remaining):
         current.pop(symbol, None)
     for symbol, info in remaining.items():
-        if symbol in current and info.get("instrument_id"):
-            current[symbol]["instrument_id"] = info["instrument_id"]
+        if symbol in current:
+            for field in ("instrument_id", "seen"):
+                if info.get(field):
+                    current[symbol][field] = info[field]
     _save(mirror, current)
     return closed
 

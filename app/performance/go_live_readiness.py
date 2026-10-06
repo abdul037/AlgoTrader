@@ -62,8 +62,11 @@ def _closed_trades(connection: Any, since: str) -> list[dict[str, Any]]:
     ).fetchall()
     trades = []
     for row in rows:
-        request = json.loads(row["request_json"] or "{}")
-        broker = dict(json.loads(row["response_json"] or "{}").get("broker_execution") or {})
+        try:  # one malformed row must not stop every later readiness refresh
+            request = json.loads(row["request_json"] or "{}")
+            broker = dict(json.loads(row["response_json"] or "{}").get("broker_execution") or {})
+        except (TypeError, ValueError, AttributeError):
+            continue
         entry = float(broker.get("filled_avg_price") or request.get("proposed_price") or 0.0)
         qty = float(broker.get("filled_qty") or 0.0)
         stop = float(request.get("stop_loss") or 0.0)
@@ -203,11 +206,25 @@ def refresh_readiness(
     return report
 
 
+READINESS_MAX_AGE_HOURS = 2.0  # refreshed every 30 min; an older "ready" is not trusted
+
+
 def readiness_ready(runtime_state: Any) -> bool:
+    """Ready only if the cached report says so AND is fresh (review 2026-10-05: a past
+    ``ready: true`` stayed in force even if later trades failed the bar)."""
+
+    from datetime import datetime, timedelta
+
+    from app.utils.time import utc_now
+
     try:
-        return bool(json.loads(runtime_state.get(READINESS_KEY) or "{}").get("ready"))
+        report = json.loads(runtime_state.get(READINESS_KEY) or "{}")
+        computed = datetime.fromisoformat(str(report.get("computed_at") or ""))
     except (TypeError, ValueError):
         return False
+    if utc_now() - computed > timedelta(hours=READINESS_MAX_AGE_HOURS):
+        return False
+    return bool(report.get("ready"))
 
 
 __all__ = ["compute_readiness", "readiness_ready", "refresh_readiness"]

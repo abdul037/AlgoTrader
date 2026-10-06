@@ -23,7 +23,7 @@ from contextlib import nullcontext, suppress
 from datetime import timedelta
 from typing import Any
 
-from app.broker.etoro_live_backup_stop import _still_open, fresh_rate
+from app.broker.etoro_live_backup_stop import _still_open, fresh_rate, portfolio_positions
 from app.utils.time import utc_now
 
 REQUEST_KEY = "etoro_live:test_order_request"
@@ -219,7 +219,10 @@ class EtoroLiveTestOrder:
         except Exception as exc:  # noqa: BLE001
             self.mirror.logs.log("etoro_live_test_order_watch_error", {"error": str(exc)})
             return None
-        positions = (raw.get("clientPortfolio", {}) or {}).get("positions", []) or []
+        positions = portfolio_positions(raw)
+        if positions is None:  # malformed/empty read: change nothing, retry next tick
+            self.mirror.logs.log("etoro_live_test_order_bad_read", {"raw_type": type(raw).__name__})
+            return None
         mine = [
             p for p in positions if int(p.get("instrumentID") or 0) == test.get("instrument_id")
         ]
@@ -255,9 +258,16 @@ class EtoroLiveTestOrder:
                     return self._close(test, position, "bot_backup_stop")
             if self._superseded(test):
                 return self._load()
+            test["unseen_reads"] = 0
             self._save(test)
             return test
         if test.get("position_id") is not None:
+            # Gone from a clean read: confirm on a second consecutive clean read first.
+            test["unseen_reads"] = int(test.get("unseen_reads") or 0) + 1
+            if test["unseen_reads"] < 2:
+                if not self._superseded(test):
+                    self._save(test)
+                return test
             return self._finish(test, "closed_at_broker_by_stop_or_target")
         opened = str(test.get("opened_at") or "")
         grace_over = utc_now() - timedelta(minutes=NOT_FOUND_GRACE_MINUTES)
@@ -322,7 +332,9 @@ class EtoroLiveTestOrder:
         from app.broker.etoro_live_mirror import account_value_at_cost
 
         with suppress(Exception):
-            return account_value_at_cost(self.client.fetch_raw_portfolio())
+            raw = self.client.fetch_raw_portfolio()
+            if portfolio_positions(raw) is not None:  # never a 0 balance from a bad read
+                return account_value_at_cost(raw)
         return None
 
     def _load(self) -> dict[str, Any]:

@@ -133,4 +133,22 @@ def evidence_blocker(
     verdict = (cached.get("verdicts") or {}).get(f"{strategy}:{str(timeframe or '').lower()}")
     if verdict is None or not verdict.get("passed"):
         return "strategy_lacks_oos_evidence"
+    if _stale(cached.get("computed_at")):  # refreshed every 30 min; a day-old pass is not trusted
+        return "strategy_evidence_stale"
     return None
+
+
+EVIDENCE_MAX_AGE_HOURS = 24.0
+
+
+def _stale(computed_at: Any) -> bool:
+    from datetime import datetime, timedelta
+
+    if not computed_at:
+        return False  # older caches had no timestamp; the 30-min refresh adds it
+    try:
+        return utc_now() - datetime.fromisoformat(str(computed_at)) > timedelta(
+            hours=EVIDENCE_MAX_AGE_HOURS
+        )
+    except (TypeError, ValueError):
+        return True

@@ -201,3 +201,15 @@ def test_eth_test_closed_by_the_bot_at_the_strategy_stop(tmp_path) -> None:
     client.rates = {"ETH": 1_905.0}
     closed = tester.run()
     assert closed["close_reason"] == "bot_backup_stop" and client.closed == [(9, 100001)]
+
+
+def test_malformed_read_keeps_every_stop(tmp_path) -> None:
+    client = _Client(rates={"AAPL": 90.0}, positions=[{"positionID": 7, "instrumentID": 1001}])
+    mirror, _ = _mirror(tmp_path, client)
+    remember_stop(mirror, "AAPL", 95.0, 1001)
+    stops = json.loads(mirror.state.get(STOPS_KEY))
+    stops["AAPL"]["recorded_at"] = (utc_now() - timedelta(hours=2)).isoformat()
+    mirror.state.set(STOPS_KEY, json.dumps(stops))
+    client.fetch_raw_portfolio = lambda: {}
+    assert check_backup_stops(mirror) is None and client.closed == []
+    assert "AAPL" in json.loads(mirror.state.get(STOPS_KEY))

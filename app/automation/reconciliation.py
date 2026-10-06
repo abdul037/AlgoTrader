@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from typing import Any
 
@@ -33,6 +34,9 @@ def _leg_is_live(leg: dict[str, Any]) -> bool:
 # order ("insufficient qty available for order", code 40310000). That means the
 # position is *not* bare: a stop, a limit or an earlier close is live on it.
 _QTY_HELD_MARKERS = ("insufficient qty available", "40310000", "held_for_orders")
+# The position is already gone (e.g. a concurrent sweep or the old container closed it):
+# already flat, not a missing-bracket breaker trip (review 2026-10-05).
+_ALREADY_FLAT_MARKERS = ("position not found", "40410000")
 
 # The sweep re-reads every order (up to 500, plus legs) every minute. Writing each one
 # back to Postgres unconditionally took ~140 s per run (2026-10-05) and pushed maintenance
@@ -91,10 +95,19 @@ class AlpacaReconciliationService:
         self.notifier = notifier
         self._written: dict[str, str] = {}  # row key -> fingerprint of what was last written
         self._full_write_due = 0.0
+        self._sweep_lock = threading.Lock()  # one sweep at a time (routes, Telegram, recover)
 
     def reconcile(self) -> dict[str, Any]:
         if self.alpaca is None or not bool(getattr(self.settings, "alpaca_reconciliation_enabled", True)):
             return {"status": "disabled", "issues": []}
+        if not self._sweep_lock.acquire(blocking=False):
+            return {"status": "skipped", "issues": [], "reason": "sweep_already_running"}
+        try:
+            return self._reconcile_once()
+        finally:
+            self._sweep_lock.release()
+
+    def _reconcile_once(self) -> dict[str, Any]:
         result: dict[str, Any] | None = None
         last_error: Exception | None = None
         attempts = max(int(getattr(self.settings, "alpaca_reconciliation_max_attempts", 3) or 3), 1)
@@ -167,6 +180,12 @@ class AlpacaReconciliationService:
         self._upsert_order(payload, execution_id=execution.id, parent_order_id=None)
         for leg in legs:
             self._upsert_order(leg, execution_id=execution.id, parent_order_id=order_id)
+        # The stream writes without standalone exits; make the next sweep rewrite these rows
+        # instead of skipping them as unchanged (review 2026-10-05).
+        for key in [f"execution:{execution.id}", f"order:{order_id}"] + [
+            f"order:{leg.get('broker_order_id')}" for leg in legs
+        ]:
+            self._written.pop(key, None)
         self.state.set("trade_stream:last_update_at", utc_now().isoformat())
         self.logs.log(
             "alpaca_trade_stream_ingested",
@@ -378,6 +397,9 @@ class AlpacaReconciliationService:
             response = self.alpaca.close_position(symbol)
         except Exception as exc:  # noqa: BLE001 - broker SDK errors must surface as an issue, not crash reconciliation
             message = str(exc)
+            if any(marker in message.lower() for marker in _ALREADY_FLAT_MARKERS):
+                self.logs.log("unprotected_position_already_flat", {"symbol": symbol, "error": message})
+                return True
             if any(marker in message.lower() for marker in _QTY_HELD_MARKERS):
                 # The shares are already committed to a working order at the
                 # broker, so the position is being closed or is protected after

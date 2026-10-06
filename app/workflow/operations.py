@@ -836,17 +836,19 @@ def refresh_phase_gates(service: Any, completed: list[str], errors: list[str]) -
         return
     service.runtime_state.set("phase_gates:last_run_at", utc_now().isoformat())
     backtests = getattr(service.market_screener, "backtests", None)
-    try:
-        if backtests is not None:
-            refresh_verdicts(backtests.db, service.settings, service.runtime_state, service.run_logs)
-            completed.append("strategy_evidence_refresh")
-        refresh_readiness(service.run_logs.db, service.settings, service.runtime_state, service.run_logs)
-        completed.append("go_live_readiness_refresh")
-        live_mirror = getattr(getattr(service.auto_trading, "execution", None), "etoro_live_mirror", None)
-        if live_mirror is not None and live_mirror.reconcile() is not None:
-            completed.append("etoro_live_reconcile")
-    except Exception as exc:  # noqa: BLE001 - maintenance continues after failures
-        errors.append(f"phase_gates_refresh:{exc}")
+    mirror = getattr(getattr(service.auto_trading, "execution", None), "etoro_live_mirror", None)
+    args = (service.settings, service.runtime_state, service.run_logs)
+    db = getattr(backtests, "db", None)
+    for name, step in (  # independent: one failing must not skip the others (review 10-05)
+        ("strategy_evidence_refresh", lambda: db is not None and bool(refresh_verdicts(db, *args))),
+        ("go_live_readiness_refresh", lambda: bool(refresh_readiness(service.run_logs.db, *args))),
+        ("etoro_live_reconcile", lambda: mirror is not None and mirror.reconcile() is not None),
+    ):
+        try:
+            if step():
+                completed.append(name)
+        except Exception as exc:  # noqa: BLE001 - maintenance continues after failures
+            errors.append(f"phase_gates_refresh:{name}:{exc}")
 
 
 def _account_equity_usd(service: Any) -> float:

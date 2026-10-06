@@ -291,7 +291,7 @@ def test_each_lock_releases_only_when_its_condition_holds(tmp_path) -> None:
     )
     assert set(automation.execution_blockers()) & GO_LIVE_LOCKS == {"go_live_readiness_not_met"}
 
-    state.set(READINESS_KEY, json.dumps({"ready": True}))
+    state.set(READINESS_KEY, json.dumps({"ready": True, "computed_at": utc_now().isoformat()}))
     assert readiness_ready(state)
     assert set(automation.execution_blockers()) & GO_LIVE_LOCKS == set()
 
