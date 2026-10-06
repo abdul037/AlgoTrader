@@ -42,6 +42,7 @@ from app.workflow.schedule import (
     parse_time,
     schedule_zone,
 )
+from app.workflow.swing_focus import swing_interval_minutes
 
 
 class LedgerRecordingError(RuntimeError):
@@ -99,6 +100,7 @@ class SignalWorkflowService:
 
     def run_scheduled_tasks(self) -> dict[str, int]:
         summary = {"alerts_sent": 0, "closed_signals": 0, "ledger_cycles": 0, "buckets_run": 0}
+        started_at = time.monotonic()  # the soft budget counts maintenance too (10-06 timeouts)
         flatten_intraday_before_close(self)  # risk-reducing, so it runs even while paused
         if self.automation is not None:
             blockers = self.automation.scan_blockers()
@@ -125,7 +127,6 @@ class SignalWorkflowService:
         # sum past the worker's per-job timeout, so stop starting new ones once the
         # soft budget is spent; _bucket_due keeps the rest due for the next tick.
         soft_budget = self._cadence_soft_budget_seconds()
-        started_at = time.monotonic()
         deferred: list[str] = []
         for bucket_name in self.SCAN_BUCKETS:
             if not self._bucket_due(bucket_name):
@@ -786,7 +787,7 @@ class SignalWorkflowService:
         end = self._combine_local_time(now_local, self.settings.end_of_day_scan_time_local)
         if now_local < start or now_local > end:
             return False
-        return self._is_due("workflow:last_swing_scan_at", int(getattr(self.settings, "swing_scan_interval_minutes", 60)))
+        return self._is_due("workflow:last_swing_scan_at", swing_interval_minutes(self.settings))
 
     def _check_open_signals_impl(self, *, notify: bool, force_refresh: bool) -> WorkflowTaskResponse:
         return check_open_signals_impl(self, notify=notify, force_refresh=force_refresh)
@@ -975,7 +976,7 @@ class SignalWorkflowService:
         if bucket_name == "swing_hourly":
             return self._next_interval_due_at(
                 "workflow:last_swing_scan_at",
-                int(getattr(self.settings, "swing_scan_interval_minutes", 60)),
+                swing_interval_minutes(self.settings),
                 self.settings.market_open_scan_time_local,
                 self.settings.end_of_day_scan_time_local,
                 now_local,

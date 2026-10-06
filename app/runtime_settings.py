@@ -230,6 +230,11 @@ class AppSettings(BaseSettings):
     workflow_lock_timeout_minutes: int = 45
     swing_scan_timeframes: list[str] = Field(default_factory=lambda: ["1d", "1w"])
     swing_scan_interval_minutes: int = 60
+    # Evidence-focused swing scan (app/workflow/swing_focus.py): while the evidence gate is
+    # on, scan only passing specs, rotate the symbol start, and run every N minutes.
+    swing_scan_evidence_focus: bool = True
+    swing_focus_interval_minutes: int = 10
+    swing_focus_shadow_every: int = 6
     intraday_scan_interval_minutes: int = 15
     scalp_scan_batch_size: int = 20
     intraday_active_shortlist_size: int = 20

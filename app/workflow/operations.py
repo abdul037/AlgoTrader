@@ -29,7 +29,11 @@ def run_scan_task(
     force_refresh: bool,
     symbols: list[str] | None = None,
 ) -> WorkflowTaskResponse:
-    spec_batch = _rotating_spec_batch(service, task=task, timeframes=timeframes)
+    from app.workflow.swing_focus import advance_symbols, focused_spec_batch, rotate_symbols
+
+    spec_batch = focused_spec_batch(service, task=task, timeframes=timeframes) or (
+        _rotating_spec_batch(service, task=task, timeframes=timeframes)
+    )
     effective_timeframes = timeframes
     if spec_batch:
         effective_timeframes = list(spec_batch["timeframes"])
@@ -45,6 +49,7 @@ def run_scan_task(
         "notify": False,
         "force_refresh": force_refresh,
     }
+    kwargs["symbols"] = rotate_symbols(service, task=task, symbols=list(kwargs["symbols"]))
     if spec_batch:
         kwargs["strategy_spec_keys"] = spec_batch["strategy_spec_keys"]
     if "scan_task" in inspect.signature(service.market_screener.scan_universe).parameters:
@@ -70,6 +75,9 @@ def run_scan_task(
             open_signals=len(service.tracked_signals.list(status="open", limit=500)),
             errors=[error],
         )
+    evaluated = getattr(response, "evaluated_symbols", 0) or 0  # a count (or a list)
+    evaluated = len(evaluated) if isinstance(evaluated, (list, tuple)) else int(evaluated)
+    advance_symbols(service, task=task, total=len(kwargs["symbols"]), evaluated=evaluated)
     alerts_sent = service._send_scan_alerts(task=task, response=response, notify=notify)
     service._track_candidates(response, origin=origin)
     proposals_created = auto_propose_candidates(service, response, origin=origin, notify=notify)

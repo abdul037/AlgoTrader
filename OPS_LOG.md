@@ -95,6 +95,17 @@ without explicit operator sign-off recorded here.
   `app/workflow/open_signals.py` (operations.py 999 -> 935 lines). No eToro trade yet
   today (0 of 2 daily slots used; 2x test still armed), no halt, MSFT/META backup stops
   recorded, ETH test open.
+- **No trade today explained (16:10 UTC).** The hourly swing scan rotated 6 of 38 specs per
+  run, 1h specs first, so the six passing 1d strategies came up only in batches 3-5 (once a
+  day), and its 180 s deadline reached only the first 6-10 of 25 symbols, always the same
+  ones. Monday's MSFT (batch 3, 17:00) and META (batch 5, 19:13) fit exactly.
+- **Scan fix (operator: "build the scan fix and deploy after close, it should run every
+  min").** Every minute isn't feasible (one scan ~2-3 min on the single shared worker), so
+  while the evidence gate is on the swing scan now: checks only passing specs (every 6th run
+  rotates all specs for shadow signals); starts where the last run stopped in the symbol list;
+  runs every 10 min (`SWING_FOCUS_INTERVAL_MINUTES`). Also fixed the scheduler soft budget,
+  which started counting after maintenance (150 s maintenance + 180 s scan > 240 s); it now
+  counts from the start of the run. Held with the other two commits until after the close.
 - Minute (5m/15m) strategies: 0 of 25 pass. Pooled OOS expectancy -$13.49 (5m) and
   -$8.25 (15m) per $100 risked, over ~11,800 trades.
 - Live scorecard page (private, refreshes every minute from Supabase via the operator's
