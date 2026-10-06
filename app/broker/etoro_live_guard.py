@@ -134,6 +134,9 @@ def attach_live_guard(
     from app.broker.etoro_live_test_order import EtoroLiveTestOrder
 
     mirror = coordinator.etoro_live_mirror
+    proposals = getattr(coordinator, "proposals", None)
+    if proposals is not None:
+        proposals.etoro_live_mirror = mirror  # option 3: eToro room at proposal time too
     if paper is not None and hasattr(paper, "get_portfolio"):
         mirror.paper_reader = paper_reader(paper)
     coordinator.etoro_live_test_order = EtoroLiveTestOrder(mirror=mirror, bars=bars)

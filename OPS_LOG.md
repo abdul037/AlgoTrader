@@ -140,6 +140,21 @@ without explicit operator sign-off recorded here.
   report text is always available at `GET /performance/live-daily-report`.
 - Deploy `4640416` (paper limits) SUCCESS 20:08 UTC; open-signal check now bounded
   (`checked=102`).
+- **Option 3 built (operator ~20:25 UTC: "go with option 3, build it"): eToro's own limits
+  decide portfolio room.** When the mirror would copy an order (`room_verdict` asks the mirror's
+  own `blockers()`, state reads only: no eToro call, no lock), paper skips its room checks
+  (max open positions, gross / symbol / sector / correlated exposure) and eToro's room applies
+  instead: one position per symbol, 6 open, free cash + $100 reserve, and a new code cap of 3
+  open positions per correlation group (`HARD_MAX_OPEN_PER_BUCKET`, enforced in `mirror()` too).
+  If the mirror would refuse for any other reason (disabled, halted, evidence, 2-a-day cap,
+  loss stop, not a long equity), paper keeps all its own room rules, as before. Unchanged on
+  paper: one position per symbol (exit copy follows the paper position), stop, per-trade risk %,
+  loss limits, kill switch, cooldowns, the daily 2-entries-per-group cap, drawdown halts, heat.
+  The eToro open set now maps raw instrument ids back to symbols and keeps mirrored orders not
+  yet filled. Both gates use it (proposal time, where the 10-06 blocks happened, and before the
+  paper order); `proposal_created` logs `room_authority`. Rollback without a deploy:
+  `ETORO_LIVE_ROOM_AUTHORITY_ENABLED=false`. On 10-06 state this would have let AAPL through
+  (tech 2 of 3); NVDA and MSFT stay blocked by paper's one-per-symbol rule.
 - Minute (5m/15m) strategies: 0 of 25 pass. Pooled OOS expectancy -$13.49 (5m) and
   -$8.25 (15m) per $100 risked, over ~11,800 trades.
 - Live scorecard page (private, refreshes every minute from Supabase via the operator's

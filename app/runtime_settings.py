@@ -576,6 +576,9 @@ class AppSettings(BaseSettings):
     etoro_live_acknowledgement: str = ""
     etoro_live_trade_pct_of_equity: float = 10.0  # hard-capped at 10% / $1,000 in code
     etoro_live_guard_interval_seconds: int = 60  # backup stop / test watch cadence (min 10)
+    # Option 3 (operator 2026-10-06): while the mirror would copy an order, eToro's own room
+    # (6 positions, 3 per group, free cash) replaces paper's gross/sector/correlated limits.
+    etoro_live_room_authority_enabled: bool = True
     # Live stop-width floor in prior-session ATRs (widens stop and target, keeping
     # R:R; sizing keeps $ risk constant). 0 = off until the intraday walk-forward
     # shows a floor improves out-of-sample expectancy. Backtests use the same value.

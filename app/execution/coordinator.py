@@ -12,6 +12,7 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 
 from app.broker import crypto as crypto_symbols
+from app.broker.etoro_live_room import room_verdict
 from app.broker.router import BrokerRouter, NoBrokerForAssetClass
 from app.models.approval import ApprovalStatus
 from app.models.execution import ExecutionRecord, ExecutionStatus
@@ -213,7 +214,8 @@ class ExecutionCoordinator:
             return record
 
         risk_context = self.risk_context_factory(self.settings, broker, self.executions)
-        risk = self.risk_manager.validate_order(proposal.order, risk_context)
+        room = room_verdict(getattr(self, "etoro_live_mirror", None), proposal.order, signal=proposal.signal, primary_broker=broker_name)
+        risk = self.risk_manager.validate_order(proposal.order, risk_context, etoro_room=room)
         if not risk.passed:
             record.status = ExecutionQueueStatus.BLOCKED
             record.ready_for_execution = False

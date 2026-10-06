@@ -12,6 +12,7 @@ class RiskValidationResult(BaseModel):
     reasons: list[str] = Field(default_factory=list)
     risk_amount_usd: float = 0.0
     risk_pct_of_balance: float = 0.0
+    room_authority: str = "paper"  # "etoro_live" when eToro's own limits decided room
 
 
 def leverage_cap_for_asset(

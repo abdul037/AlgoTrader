@@ -204,10 +204,14 @@ class EtoroLiveMirrorService:
         state = self._state()
         if state["trades_today"] >= HARD_MAX_TRADES_PER_DAY:
             reasons.append("etoro_live_daily_trade_cap")
-        if order.symbol.upper() in state["open_symbols"]:
+        from app.broker.etoro_live_room import bucket_blockers, effective_open_symbols
+
+        held = effective_open_symbols(self.state, state)  # ids mapped, unfilled orders kept
+        if order.symbol.upper() in held:
             reasons.append("etoro_live_symbol_already_open")
-        if len(state["open_symbols"]) >= HARD_MAX_OPEN_POSITIONS:
+        if len(held) >= HARD_MAX_OPEN_POSITIONS:
             reasons.append("etoro_live_open_position_cap")
+        reasons.extend(bucket_blockers(order.symbol, held))
         start, last = state.get("day_start_equity"), state.get("last_equity")
         if (
             start is not None
