@@ -15,6 +15,7 @@ from app.models.workflow import WorkflowTaskResponse
 from app.risk.proposal_sizing import risk_based_proposal_notional
 from app.universe import resolve_universe
 from app.utils.time import utc_now
+from app.workflow.open_signals import check_open_signals_impl  # noqa: F401 - re-export
 
 
 def run_scan_task(
@@ -199,71 +200,6 @@ def close_status(snapshot: Any, price: float) -> str | None:
         if not is_short and price >= target:
             return "target_hit"
     return None
-
-
-def check_open_signals_impl(service: Any, *, notify: bool, force_refresh: bool) -> WorkflowTaskResponse:
-    records = service.tracked_signals.list(status="open", limit=500)
-    closed_signals = 0
-    alerts_sent = 0
-    quotes: dict[tuple[str, str], Any] = {}  # one quote per symbol/timeframe per run
-
-    for record in records:
-        key = (record.symbol, record.timeframe)
-        if key not in quotes:
-            quotes[key] = service.market_data.get_quote(
-                record.symbol, timeframe=record.timeframe, force_refresh=force_refresh
-            )
-        quote = quotes[key]
-        price = float(quote.last_execution or quote.ask or quote.bid or record.last_price or 0.0)
-        snapshot = record.snapshot.model_copy(
-            update={
-                "current_price": price,
-                "current_bid": quote.bid,
-                "current_ask": quote.ask,
-                "rate_timestamp": quote.timestamp,
-                "generated_at": utc_now().isoformat(),
-            }
-        )
-        if price != float(record.last_price or 0.0):  # no DB write while the price is unchanged
-            service.tracked_signals.update_price(record.id, last_price=price, snapshot=snapshot)
-
-        close_status_value = service._close_status(snapshot, price)
-        if close_status_value is None:
-            continue
-
-        closed = service.tracked_signals.close(
-            record.id,
-            status=close_status_value,
-            last_price=price,
-            snapshot=snapshot,
-        )
-        closed_signals += 1
-        message = service.notifier.format_tracked_signal_update(closed, event_type=close_status_value)
-        if notify and service.notifier.send_text(message):
-            alerts_sent += 1
-        service.alert_history.create(
-            category="tracked_signal_update",
-            status=close_status_value,
-            message_text=message,
-            symbol=closed.symbol,
-            strategy_name=closed.strategy_name,
-            timeframe=closed.timeframe,
-            payload=closed.model_dump(),
-        )
-
-    service.runtime_state.set("workflow:last_open_signal_check_at", utc_now().isoformat())
-    service.run_logs.log(
-        "workflow_open_signal_check_completed",
-        {"open_signals": len(records), "closed_signals": closed_signals, "alerts_sent": alerts_sent},
-    )
-    return WorkflowTaskResponse(
-        task="open_signal_check",
-        status="ok",
-        detail="Open signal check completed.",
-        alerts_sent=alerts_sent,
-        open_signals=len(records),
-        closed_signals=closed_signals,
-    )
 
 
 def send_daily_summary_impl(service: Any, *, notify: bool) -> WorkflowTaskResponse:

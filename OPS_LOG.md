@@ -87,6 +87,14 @@ without explicit operator sign-off recorded here.
   with R at a fresh eToro price, live-vs-backtest verdicts, events (2x, paper exits,
   detaches, backup-stop closes, halt). Once per NY date, retried if the send fails.
   Preview: `GET /performance/live-daily-report`. Held locally, pushed after the close.
+- **14:40 check:** reconciliation fix confirmed (29 s per sweep, was ~150 s), but 6 timeouts
+  13:42-15:19 UTC came from another step: the open-signal check took 129 s in market hours
+  (writing all ~90 tracked signals every run + a quote per symbol/timeframe). Fix (held with
+  the Telegram report until after the close): price written only on a >=0.1% move (closes
+  always written), 60 s budget per run with a resume cursor; moved to
+  `app/workflow/open_signals.py` (operations.py 999 -> 935 lines). No eToro trade yet
+  today (0 of 2 daily slots used; 2x test still armed), no halt, MSFT/META backup stops
+  recorded, ETH test open.
 - Minute (5m/15m) strategies: 0 of 25 pass. Pooled OOS expectancy -$13.49 (5m) and
   -$8.25 (15m) per $100 risked, over ~11,800 trades.
 - Live scorecard page (private, refreshes every minute from Supabase via the operator's
