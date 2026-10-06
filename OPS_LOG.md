@@ -40,6 +40,9 @@ without explicit operator sign-off recorded here.
     independently.
   - **2x leverage test held** (`LEVERAGE_TEST_ENABLED = False`): eToro's Amount is
     margin, so it would be $2,000 notional. Awaiting the operator's decision.
+- **~10:00 UTC operator: "try the 2x leverage".** Enabled, sized at the same exposure
+  as a 1x trade: $500 margin x 2 = $1,000 notional (Amount is margin). Fires once, on the
+  next qualifying mirrored entry; later entries are 1x again.
 - Tests: 833 passed before the hold flag; eToro/phase suites 76 passed after.
 
 ## 2026-10-05 (Mon)

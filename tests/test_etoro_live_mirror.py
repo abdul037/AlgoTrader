@@ -235,19 +235,7 @@ def test_daily_trade_cap_and_symbol_dedupe(tmp_path) -> None:
     assert "etoro_live_daily_trade_cap" in logs.events[-1][1]["reasons"]
 
 
-def test_2x_test_is_held_until_the_operator_confirms(tmp_path) -> None:
-    client = _Client()
-    state = _state()
-    state.set(STATE_KEY, json.dumps({"last_equity": 10_000.0, "successful_1x": 2}))
-    service, _ = _mirror(tmp_path, client=client, state=state)
-    _run(service)
-    assert client.orders[0].leverage == 1
-
-
-def test_one_2x_test_after_two_1x_trades(tmp_path, monkeypatch) -> None:
-    import app.broker.etoro_live_mirror as live_mirror
-
-    monkeypatch.setattr(live_mirror, "LEVERAGE_TEST_ENABLED", True)
+def test_one_2x_test_after_two_1x_trades_at_the_same_exposure(tmp_path) -> None:
     client = _Client()
     state = _state()
     state.set(
@@ -256,7 +244,10 @@ def test_one_2x_test_after_two_1x_trades(tmp_path, monkeypatch) -> None:
     )
     service, _ = _mirror(tmp_path, client=client, state=state)
     assert _run(service, _proposal("AAPL"))["leverage"] == 2
+    # eToro's Amount is margin: $500 at 2x = the same $1,000 exposure as a 1x trade.
+    assert client.orders[0].leverage == 2 and client.orders[0].amount_usd == 500.0
     assert _run(service, _proposal("MSFT"))["leverage"] == 1  # only one 2x test, ever
+    assert client.orders[1].amount_usd == 1_000.0
 
 
 def test_daily_loss_stop(tmp_path) -> None:

@@ -50,9 +50,9 @@ HARD_MAX_TRADES_PER_DAY = 2
 HARD_MAX_OPEN_POSITIONS = 3
 HARD_DAILY_LOSS_STOP_PCT = 5.0
 LEVERAGE_TEST_AFTER_1X_TRADES = 2
-# Held 2026-10-06 pending the operator: eToro's Amount is margin, so the 2x test would be
-# $2,000 notional (2x the 1x size). Set True once the operator confirms the size.
-LEVERAGE_TEST_ENABLED = False
+# Operator 2026-10-06 "try the 2x leverage": eToro's Amount is margin, so the 2x test sends
+# half the usual amount -- same $ exposure as a 1x trade ($500 x 2 = $1,000 notional).
+LEVERAGE_TEST_ENABLED = True
 
 HALTED_KEY = "etoro_live:halted"
 STATE_KEY = "etoro_live:state"
@@ -260,6 +260,8 @@ class EtoroLiveMirrorService:
             else 1
         )
         amount = self._trade_amount(state)
+        if amount and leverage > 1:
+            amount = round(amount / leverage, 2)  # Amount is margin: keep the 1x exposure
         order = proposal.order.model_copy(update={"amount_usd": amount, "leverage": leverage})
         from app.broker.etoro_live_backup_stop import forget_stop, remember_stop
 
