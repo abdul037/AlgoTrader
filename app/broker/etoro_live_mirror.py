@@ -318,6 +318,16 @@ class EtoroLiveMirrorService:
             "strategy_name": order.strategy_name,
         }
         self.logs.log("etoro_live_mirror_submitted", record)
+        try:  # live-vs-backtest scorecard; bookkeeping only, never blocks the trade
+            from app.broker.etoro_live_scorecard import record_entry
+
+            metadata = getattr(getattr(proposal, "signal", None), "metadata", None) or {}
+            timeframe = (getattr(order, "metadata", None) or {}).get("timeframe") or metadata.get(
+                "timeframe"
+            )
+            record_entry(self, record, timeframe=timeframe, entry_price=order.proposed_price)
+        except Exception as exc:  # noqa: BLE001
+            self.logs.log("etoro_live_scorecard_error", {"symbol": symbol, "error": str(exc)})
         self._notify(
             f"eToro LIVE test order: BUY ${amount:.0f} {symbol} x{leverage} "
             f"(stop {order.stop_loss}, target {order.take_profit}, {order.strategy_name})"

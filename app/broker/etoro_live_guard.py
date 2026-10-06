@@ -21,6 +21,7 @@ from threading import Event, Thread
 from typing import Any
 
 from app.broker.etoro_live_backup_stop import check_backup_stops
+from app.broker.etoro_live_scorecard import update_scorecard
 from app.utils.time import utc_now
 
 logger = logging.getLogger(__name__)
@@ -91,13 +92,20 @@ class EtoroLiveGuard:
 
 
 def run_live_checks(mirror: Any, tester: Any | None) -> list[str]:
-    """The test-order watch and the backup stops, each isolated so one failing can't skip
-    the other. Shared by the guard thread and the maintenance fallback."""
+    """The test-order watch, the backup stops and the live scorecard, each isolated so one
+    failing can't skip the others. Shared by the guard thread and the maintenance fallback."""
 
     done: list[str] = []
+    closes: list[dict] = []
+
+    def backup_stops() -> bool:
+        closes.extend(check_backup_stops(mirror) or [])
+        return bool(closes)
+
     for name, step in (
         ("etoro_live_test_order", lambda: tester is not None and tester.run() is not None),
-        ("etoro_live_backup_stop", lambda: bool(check_backup_stops(mirror))),
+        ("etoro_live_backup_stop", backup_stops),
+        ("etoro_live_scorecard", lambda: update_scorecard(mirror, closes) > 0),
     ):
         try:
             if step():

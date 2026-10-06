@@ -48,6 +48,42 @@ def go_live_readiness(request: Request):
     }
 
 
+@router.get("/live-scorecard")
+def live_scorecard(request: Request):
+    """eToro LIVE trades against their backtest: expected R vs realized R, fills, exits."""
+
+    import json
+
+    from app.broker.etoro_live_scorecard import SCORECARD_KEY, scorecard_report
+    from app.storage.repositories import RuntimeStateRepository
+
+    _require_control_token(request)
+    db = request.app.state.db
+    state = RuntimeStateRepository(db)
+    try:
+        cards = json.loads(state.get(SCORECARD_KEY) or "{}")
+    except (TypeError, ValueError):
+        cards = {}
+    ids = [str(t.get("proposal_id")) for t in cards.values() if t.get("proposal_id")]
+    fills: dict[str, float] = {}
+    if ids:
+        marks = ",".join("?" for _ in ids)
+        with db.connect() as connection:
+            rows = connection.execute(
+                f"SELECT proposal_id, response_json FROM executions WHERE proposal_id IN ({marks})",
+                tuple(ids),
+            ).fetchall()
+        for row in rows:
+            try:
+                broker = json.loads(row["response_json"] or "{}").get("broker_execution") or {}
+                fill = float(broker.get("filled_avg_price") or 0.0)
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if fill > 0:
+                fills[str(row["proposal_id"])] = fill
+    return scorecard_report(state, fills)
+
+
 @router.get("/weekly-target-readiness")
 def weekly_target_readiness(request: Request):
     _require_control_token(request)
