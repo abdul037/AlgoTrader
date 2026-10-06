@@ -158,6 +158,10 @@ class AutomationService:
         results: list[dict[str, Any]] = []
         total_cancelled = 0
         total_closed = 0
+        if close_allowed:  # before closing: eToro live must not copy this as a strategy exit
+            from app.broker.etoro_live_exit_copy import mark_paper_safety_flatten
+
+            mark_paper_safety_flatten(self.state, symbol=None, reason=f"emergency_stop:{reason}")
         for client in self.broker_router.all_clients():
             item: dict[str, Any] = {
                 "client": client.__class__.__name__,

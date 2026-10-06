@@ -20,6 +20,8 @@ leaves the trade protected, never naked.
 
 from __future__ import annotations
 
+import json
+from datetime import timedelta
 from typing import Any
 
 from app.broker.etoro_rate_limit import EToroRateLimitError
@@ -27,6 +29,57 @@ from app.utils.time import utc_now
 
 FLAT_READS_TO_CLOSE = 2
 _GONE_MARKERS = ("not found", "does not exist", "already closed")
+# Paper safety flattens are NOT copied (operator 2026-10-06, "build the exception"): a
+# breaker trip / emergency stop or an unprotected-position close on paper is plumbing, not
+# a strategy exit, and paper alarms have been false before. The paper side writes a marker
+# before it closes anything; a live trade whose paper position vanished after such a
+# marker is detached (left on eToro's own stop/target and the backup stop), never closed.
+SAFETY_KEY = "paper_safety_flatten"
+KILL_SWITCH_KEY = "automation:kill_switch"
+SAFETY_WINDOW_HOURS = 24  # a flatten queued after hours fills at the next open
+
+
+def mark_paper_safety_flatten(runtime_state: Any, *, symbol: str | None, reason: str) -> None:
+    """Record a paper safety flatten (all positions when ``symbol`` is None). Never raises."""
+
+    try:
+        try:
+            data = json.loads(runtime_state.get(SAFETY_KEY) or "{}")
+        except (TypeError, ValueError):
+            data = {}
+        data = data if isinstance(data, dict) else {}
+        now = utc_now().isoformat()
+        if symbol is None:
+            data["all_at"] = now
+        else:
+            data.setdefault("symbols", {})[str(symbol).upper()] = now
+        data["last_reason"] = reason
+        runtime_state.set(SAFETY_KEY, json.dumps(data))
+    except Exception:  # noqa: BLE001 - a marker failure must never block a safety flatten
+        pass
+
+
+def _safety_flatten(runtime_state: Any, trade: dict[str, Any], symbol: str) -> str | None:
+    """Why this trade's paper exit must not be copied, or None for a strategy exit."""
+
+    if str(runtime_state.get(KILL_SWITCH_KEY) or "").strip().lower() in {"1", "true", "yes"}:
+        return "paper_kill_switch_on"
+    try:
+        data = json.loads(runtime_state.get(SAFETY_KEY) or "{}")
+    except (TypeError, ValueError):
+        return "paper_safety_marker_unreadable"  # fail closed: detach, don't close
+    if not isinstance(data, dict):
+        return "paper_safety_marker_unreadable"
+    cutoff = (utc_now() - timedelta(hours=SAFETY_WINDOW_HOURS)).isoformat()
+    opened = str(trade.get("opened_at") or "")
+    symbols = data.get("symbols") if isinstance(data.get("symbols"), dict) else {}
+    for at, why in (
+        (data.get("all_at"), "paper_emergency_flatten"),
+        (symbols.get(symbol), "paper_unprotected_flatten"),
+    ):
+        if at and str(at) > cutoff and str(at) >= opened:
+            return why
+    return None
 
 
 def paper_reader(alpaca: Any) -> Any:
@@ -74,6 +127,8 @@ def copy_paper_exits(mirror: Any, skip_symbols: set[str] | None = None) -> list[
         closes: list[dict[str, Any]] = []
         for trade in live.values():
             symbol = str(trade.get("symbol") or "").upper()
+            if trade.get("exit_copy") == "detached":
+                continue  # rides eToro's own stop/target from here
             if symbol in held:
                 trade["paper_seen"] = True
                 trade["paper_flat_reads"] = 0
@@ -82,6 +137,18 @@ def copy_paper_exits(mirror: Any, skip_symbols: set[str] | None = None) -> list[
                 continue
             trade["paper_flat_reads"] = int(trade.get("paper_flat_reads") or 0) + 1
             if trade["paper_flat_reads"] < FLAT_READS_TO_CLOSE:
+                continue
+            reason = _safety_flatten(mirror.state, trade, symbol)
+            if reason is not None:
+                trade.update(exit_copy="detached", detached_reason=reason)
+                trade["detached_at"] = utc_now().isoformat()
+                mirror.logs.log(
+                    "etoro_live_exit_copy_detached", {"symbol": symbol, "reason": reason}
+                )
+                mirror._notify(
+                    f"eToro LIVE: the paper bot closed {symbol} for safety ({reason}). The eToro "
+                    "trade stays open on its own stop and target; close it in eToro if you want out."
+                )
                 continue
             record = _close(mirror, trade, symbol)
             if record is None:

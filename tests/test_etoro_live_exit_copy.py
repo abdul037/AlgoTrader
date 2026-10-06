@@ -7,7 +7,13 @@ import json
 from types import SimpleNamespace
 
 from app.broker.etoro_live_backup_stop import STOPS_KEY, remember_stop
-from app.broker.etoro_live_exit_copy import copy_paper_exits, paper_reader
+from app.broker.etoro_live_exit_copy import (
+    KILL_SWITCH_KEY,
+    SAFETY_KEY,
+    copy_paper_exits,
+    mark_paper_safety_flatten,
+    paper_reader,
+)
 from app.broker.etoro_live_guard import run_live_checks
 from app.broker.etoro_live_scorecard import SCORECARD_KEY
 from tests.test_etoro_live_backup_stop import _Client, _mirror
@@ -123,3 +129,100 @@ def test_paper_reader_uses_the_clock_and_positions() -> None:
     assert paper_reader(alpaca)() == (True, {"MSFT"})
     closed = SimpleNamespace(is_regular_market_open=lambda: False, get_portfolio=None)
     assert paper_reader(closed)() == (False, set())
+
+
+def _flatten_then_two_reads(mirror, paper):
+    copy_paper_exits(mirror)  # seen on paper
+    paper["held"] = set()
+    copy_paper_exits(mirror)
+    return copy_paper_exits(mirror)
+
+
+def test_emergency_flatten_on_paper_detaches_instead_of_closing(tmp_path) -> None:
+    mirror, client, paper, logs = _setup(tmp_path, {"AAPL"})
+    copy_paper_exits(mirror)
+    mark_paper_safety_flatten(mirror.state, symbol=None, reason="emergency_stop:breaker")
+    paper["held"] = set()
+    for _ in range(4):
+        assert copy_paper_exits(mirror) == []
+    card = _card(mirror)
+    assert client.closed == [] and card["status"] == "open"
+    assert card["exit_copy"] == "detached" and card["detached_reason"] == "paper_emergency_flatten"
+    assert sum(1 for e, _ in logs.events if e == "etoro_live_exit_copy_detached") == 1
+    assert "AAPL" in json.loads(mirror.state.get(STOPS_KEY))  # backup stop still guards it
+
+
+def test_kill_switch_on_detaches(tmp_path) -> None:
+    mirror, client, paper, _ = _setup(tmp_path, {"AAPL"})
+    mirror.state.set(KILL_SWITCH_KEY, "true")
+    assert _flatten_then_two_reads(mirror, paper) == [] and client.closed == []
+    assert _card(mirror)["detached_reason"] == "paper_kill_switch_on"
+
+
+def test_unprotected_flatten_only_detaches_that_symbol(tmp_path) -> None:
+    mirror, client, paper, _ = _setup(tmp_path, {"AAPL"})
+    mark_paper_safety_flatten(mirror.state, symbol="MSFT", reason="unprotected_position")
+    assert _flatten_then_two_reads(mirror, paper) and client.closed == [(7, 1001)]
+    mirror2, client2, paper2, _ = _setup(tmp_path / "b", {"AAPL"})
+    mark_paper_safety_flatten(mirror2.state, symbol="aapl", reason="unprotected_position")
+    assert _flatten_then_two_reads(mirror2, paper2) == [] and client2.closed == []
+    assert _card(mirror2)["detached_reason"] == "paper_unprotected_flatten"
+
+
+def test_flatten_before_the_trade_opened_does_not_detach(tmp_path) -> None:
+    mirror, client, paper, _ = _setup(tmp_path, {"AAPL"})
+    mark_paper_safety_flatten(mirror.state, symbol=None, reason="emergency_stop:old")
+    cards = json.loads(mirror.state.get(SCORECARD_KEY))
+    cards["e1"]["opened_at"] = "2999-01-01T00:00:00+00:00"  # opened after the flatten
+    mirror.state.set(SCORECARD_KEY, json.dumps(cards))
+    assert _flatten_then_two_reads(mirror, paper) and client.closed == [(7, 1001)]
+
+
+def test_paper_emergency_stop_writes_the_marker_first() -> None:
+    from app.automation.service import AutomationService
+
+    seen = []
+    state = {}
+
+    class _State(dict):
+        def get(self, key, default=None):
+            return super().get(key, default)
+
+        def set(self, key, value):
+            self[key] = value
+
+    state = _State()
+    client = SimpleNamespace(
+        cancel_all_orders=lambda: 0,
+        close_all_positions=lambda: seen.append(state.get(SAFETY_KEY)) or 2,
+    )
+    service = AutomationService(
+        settings=SimpleNamespace(execution_mode="paper"),
+        runtime_state=state,
+        run_logs=SimpleNamespace(log=lambda *a: None),
+        broker_router=SimpleNamespace(all_clients=lambda: [client]),
+    )
+    service._emergency_stop(reason="breaker")
+    assert seen and json.loads(seen[0])["all_at"]  # marked before anything closed
+
+
+def test_unprotected_flatten_writes_the_symbol_marker() -> None:
+    from app.automation.reconciliation import AlpacaReconciliationService
+
+    class _State(dict):
+        def get(self, key, default=None):
+            return super().get(key, default)
+
+        def set(self, key, value):
+            self[key] = value
+
+    recon = AlpacaReconciliationService.__new__(AlpacaReconciliationService)
+    recon.settings = SimpleNamespace(execution_mode="paper", enable_real_trading=False)
+    recon.state = _State()
+    recon.logs = SimpleNamespace(log=lambda *a: None)
+    marks = []
+    recon.alpaca = SimpleNamespace(
+        close_position=lambda s: marks.append(recon.state.get(SAFETY_KEY)) or SimpleNamespace()
+    )
+    recon._flatten_unprotected("NVDA", SimpleNamespace())
+    assert marks and "NVDA" in json.loads(marks[0])["symbols"]

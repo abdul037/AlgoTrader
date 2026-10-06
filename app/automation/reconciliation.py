@@ -393,6 +393,10 @@ class AlpacaReconciliationService:
             return False
         if not hasattr(self.alpaca, "close_position"):
             return False
+        from app.broker.etoro_live_exit_copy import mark_paper_safety_flatten
+
+        # Before closing: eToro live must not copy this as a strategy exit.
+        mark_paper_safety_flatten(self.state, symbol=symbol, reason="unprotected_position")
         try:
             response = self.alpaca.close_position(symbol)
         except Exception as exc:  # noqa: BLE001 - broker SDK errors must surface as an issue, not crash reconciliation

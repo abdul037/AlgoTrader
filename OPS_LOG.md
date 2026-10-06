@@ -65,8 +65,15 @@ without explicit operator sign-off recorded here.
   mirrored symbol is flat on paper for 2 consecutive minute reads while the US market is
   open (and was seen open on paper first), the eToro position is closed at market and booked
   as `paper_exit` in the scorecard. Failed/malformed reads change nothing; a failed close is
-  retried each minute and eToro's stop/target stay on meanwhile. Note: a paper safety
-  flatten now also closes the mirrored eToro trades.
+  retried each minute and eToro's stop/target stay on meanwhile.
+- **Exception (operator: "build the exception and deploy").** Paper *safety* flattens are
+  not copied. Found: every paper breaker trip runs an emergency stop that closes all paper
+  positions, and paper alarms have been false before. The emergency stop and the
+  unprotected-position close now write a `paper_safety_flatten` marker before closing; a
+  live trade whose paper position vanished after such a marker (or while the kill switch
+  is on) is *detached*: never auto-closed, left on eToro's stop/target + backup stop, and
+  the operator is alerted. Strategy exits (time limit, signal exit, end-of-day flatten)
+  are still copied.
 - Minute (5m/15m) strategies: 0 of 25 pass. Pooled OOS expectancy -$13.49 (5m) and
   -$8.25 (15m) per $100 risked, over ~11,800 trades.
 - Tests: 833 passed before the hold flag; eToro/phase suites 76 passed after.
