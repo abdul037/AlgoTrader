@@ -162,6 +162,16 @@ without explicit operator sign-off recorded here.
   non-Alpaca equity broker and the simulated fallback never use eToro room (those orders are
   never copied); (3) queue items are processed one at a time, so two entries cannot both use
   eToro's last slot.
+- **After-close check (run 10-07 09:00 UTC / 13:00 Dubai; the 21:35 check-in reached the session
+  late after a container restart).** Scheduler "job exceeded 240s": 26 during the 10-06 session
+  (1-5 per hour, 13:00-19:59 UTC), **0 since 20:00 UTC** (the open-signal bound, soft-budget and
+  120 s defaults all deployed 20:08-20:22). Reconciliation (ledger cycle -> alpaca_reconciliation_ok):
+  avg 21 s / max 29 s in session, avg 22 s / max 36 s after (was ~150 s before 98a0f02). The first
+  test under load is today's session. eToro live on 10-06: no new trades (0 mirror events), no exit
+  copies or detaches, no backup-stop closes, not halted. Open: ETH test, MSFT, META (3 of 6;
+  $6,990 free; 2x test still next). One transient exit-copy read error 10-07 04:28 (Alpaca
+  connection dropped, retried next tick). Deploys `3ac3a44`, `424a702`, `fb79c82` SUCCESS (last
+  21:18 UTC); CI green on PR #32 for each.
 - Minute (5m/15m) strategies: 0 of 25 pass. Pooled OOS expectancy -$13.49 (5m) and
   -$8.25 (15m) per $100 risked, over ~11,800 trades.
 - Live scorecard page (private, refreshes every minute from Supabase via the operator's
