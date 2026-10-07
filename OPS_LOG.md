@@ -35,6 +35,13 @@ without explicit operator sign-off recorded here.
   position) was kept as option 3's backstop; with 8 paper positions (4 paper-only) it allows
   about 3-4 more paper entries, so the 8th-9th eToro slots may wait until paper-only positions
   close. Pushed after the 20:00 UTC close.
+- **Scorecard P/L now uses eToro's own prices (operator: "it should be based on eToro").** The backup
+  stop's per-minute eToro price read is saved under `etoro_live:marks` (display only); the page
+  (artifact v4) uses it when under 15 min old, else the labelled paper price, and its strip shows
+  Open P/L, Closed P/L (eToro balance at cost minus the $10,000 funded, so after fees) and Total P/L.
+- Deploy `d38f82a` (with `b8c558e`, caps 9 / 4) pushed 20:01 UTC, SUCCESS 20:05 UTC; CI green.
+  First eToro marks 20:05:47 UTC: MSFT 529.60, META 721.32, AMD 645.46, COST 945.53 -> open
+  P/L -$17.55, total -$84.25 (-0.84%). Guard heartbeat fresh, 0 guard errors.
 
 ## 2026-10-06 (Tue) — real-money code review fixes
 
