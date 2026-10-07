@@ -213,3 +213,15 @@ def test_malformed_read_keeps_every_stop(tmp_path) -> None:
     client.fetch_raw_portfolio = lambda: {}
     assert check_backup_stops(mirror) is None and client.closed == []
     assert "AAPL" in json.loads(mirror.state.get(STOPS_KEY))
+
+
+def test_eToro_prices_are_saved_for_the_scorecard(tmp_path) -> None:
+    # Operator 2026-10-07: the scorecard's live P/L should use eToro's own price.
+    from app.broker.etoro_live_backup_stop import MARKS_KEY
+
+    client = _Client(rates={"AAPL": 104.0}, positions=[{"positionID": 7, "instrumentID": 1001}])
+    mirror, _ = _mirror(tmp_path, client)
+    remember_stop(mirror, "AAPL", 95.0, 1001)
+    assert check_backup_stops(mirror) == []
+    marks = json.loads(mirror.state.get(MARKS_KEY))
+    assert marks["AAPL"]["rate"] == 104.0 and marks["AAPL"]["at"]

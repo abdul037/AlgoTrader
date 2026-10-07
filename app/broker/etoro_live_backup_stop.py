@@ -23,6 +23,9 @@ from app.broker.etoro_rate_limit import EToroRateLimitError
 from app.utils.time import utc_now
 
 STOPS_KEY = "etoro_live:intended_stops"
+# eToro's own price per open live position, saved each tick for the scorecard page's live P/L
+# (operator 2026-10-07: "it should be based on eToro"). Display only; nothing trades on it.
+MARKS_KEY = "etoro_live:marks"
 UNSEEN_GRACE_MINUTES = 24 * 60  # never-seen entry (e.g. an order queued before the open) ages out
 CLOSE_RECHECK_SECONDS = 3.0
 
@@ -102,6 +105,7 @@ def _check(mirror: Any) -> list[dict[str, Any]] | None:
     grace = (utc_now() - timedelta(minutes=UNSEEN_GRACE_MINUTES)).isoformat()
     closed: list[dict[str, Any]] = []
     remaining: dict[str, Any] = {}
+    marks: dict[str, Any] = {}
     for symbol, info in stops.items():
         instrument_id = info.get("instrument_id")
         if not instrument_id:
@@ -123,6 +127,8 @@ def _check(mirror: Any) -> list[dict[str, Any]] | None:
             rate = fresh_rate(client, symbol)
         except Exception:  # noqa: BLE001 - eToro's own stop still protects it
             rate = None
+        if rate is not None:
+            marks[symbol] = {"rate": rate, "at": utc_now().isoformat()}
         if rate is None or rate > float(info["stop"]):
             remaining[symbol] = info
             continue
@@ -163,7 +169,21 @@ def _check(mirror: Any) -> list[dict[str, Any]] | None:
                 if info.get(field):
                     current[symbol][field] = info[field]
     _save(mirror, current)
+    _save_marks(mirror, marks, held_symbols=set(remaining))
     return closed
+
+
+def _save_marks(mirror: Any, marks: dict[str, Any], *, held_symbols: set[str]) -> None:
+    """Keep the latest eToro price per symbol still held; never raises into the guard."""
+
+    try:
+        current = json.loads(mirror.state.get(MARKS_KEY) or "{}")
+        current = current if isinstance(current, dict) else {}
+        current = {k: v for k, v in current.items() if k in held_symbols or k in marks}
+        current.update(marks)
+        mirror.state.set(MARKS_KEY, json.dumps(current))
+    except Exception:  # noqa: BLE001 - display data only
+        return
 
 
 def _still_open(client: Any, instrument_id: int) -> bool:
