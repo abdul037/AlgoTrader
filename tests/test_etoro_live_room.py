@@ -2,7 +2,7 @@
 
 On 10-06 MSFT/NVDA/AAPL were refused by the PAPER account's gross/correlated limits while
 the real eToro account had 3 of 6 positions and $6,990 free. While the mirror would copy
-an order, eToro's room (6 positions, 3 per group, free cash, one per symbol) now replaces
+an order, eToro's room (9 positions and 4 per group since 10-07, free cash, one per symbol) now replaces
 paper's room checks; every per-trade check stays.
 """
 
@@ -85,7 +85,8 @@ def test_paper_full_but_etoro_has_room_lets_aapl_through(tmp_path) -> None:
 
 
 def test_etoro_full_blocks_paper_too(tmp_path) -> None:
-    mirror, _ = _live(tmp_path, open_symbols=("100001", "META", "MSFT", "TSLA", "JPM", "XOM"))
+    full = ("100001", "META", "MSFT", "TSLA", "JPM", "XOM", "SPY", "COST", "AMZN")
+    mirror, _ = _live(tmp_path, open_symbols=full)
     order = _order("AAPL")
     room = room_verdict(mirror, order)
     assert room == ["etoro_live_open_position_cap"]
@@ -94,9 +95,9 @@ def test_etoro_full_blocks_paper_too(tmp_path) -> None:
     assert "eToro live room: etoro_live_open_position_cap" in risk.reasons
 
 
-def test_three_per_group_cap_and_ids_not_counted(tmp_path) -> None:
-    assert HARD_MAX_OPEN_PER_BUCKET == 3
-    mirror, _ = _live(tmp_path, open_symbols=("100001", "META", "MSFT", "NVDA"))
+def test_four_per_group_cap_and_ids_not_counted(tmp_path) -> None:
+    assert HARD_MAX_OPEN_PER_BUCKET == 4
+    mirror, _ = _live(tmp_path, open_symbols=("100001", "META", "MSFT", "NVDA", "AMD"))
     assert room_verdict(mirror, _order("AAPL")) == ["etoro_live_bucket_cap"]
     assert room_verdict(mirror, _order("JPM")) == []  # financials: own group
     mirror, _ = _live(tmp_path / "b", open_symbols=("100001", "META", "MSFT"))
@@ -104,12 +105,12 @@ def test_three_per_group_cap_and_ids_not_counted(tmp_path) -> None:
 
 
 def test_the_mirror_itself_enforces_the_group_cap(tmp_path) -> None:
-    mirror, logs = _live(tmp_path, open_symbols=("META", "MSFT", "NVDA"))
+    mirror, logs = _live(tmp_path, open_symbols=("META", "MSFT", "NVDA", "AMD"))
     assert _run(mirror, _proposal("AAPL")) is None
     assert mirror.client.orders == []
-    mirror, _ = _live(tmp_path / "b")
+    mirror, _ = _live(tmp_path / "b", open_symbols=("100001", "META", "MSFT", "NVDA"))
     assert _run(mirror, _proposal("AAPL")) is not None
-    # The write-ahead adds AAPL, so a 4th tech name is refused on the next check.
+    # The write-ahead adds AAPL, so a 5th tech name is refused on the next check.
     assert room_verdict(mirror, _order("GOOGL")) == ["etoro_live_bucket_cap"]
 
 

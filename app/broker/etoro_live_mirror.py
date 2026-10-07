@@ -47,7 +47,9 @@ HARD_MAX_TRADE_PCT_OF_EQUITY = 10.0
 HARD_MAX_TRADE_USD = 1_000.0  # absolute backstop against a bad equity reading
 MIN_TRADE_USD = 10.0  # eToro's minimum position size
 HARD_MAX_TRADES_PER_DAY = 2
-HARD_MAX_OPEN_POSITIONS = 6  # operator 2026-10-06: 3 -> 6, "if there is any fund left"
+# Operator 2026-10-06: 3 -> 6 "if there is any fund left"; 2026-10-07: 6 -> 9 so the cash can
+# be invested when strategies approve trades (9 x 10% + the $100 reserve fits the account).
+HARD_MAX_OPEN_POSITIONS = 9
 CASH_RESERVE_USD = 100.0  # free cash kept back for fees; an entry must fit in the rest
 HARD_DAILY_LOSS_STOP_PCT = 5.0
 LEVERAGE_TEST_AFTER_1X_TRADES = 2

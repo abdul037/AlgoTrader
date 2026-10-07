@@ -205,17 +205,19 @@ def test_rate_limit_cooldown_is_per_account() -> None:
         etoro_rate_limit._state.clear()
 
 
-def test_open_position_cap_is_six(tmp_path) -> None:
+def test_open_position_cap_is_nine(tmp_path) -> None:
     from app.broker.etoro_live_mirror import HARD_MAX_OPEN_POSITIONS
 
-    assert HARD_MAX_OPEN_POSITIONS == 6
+    assert HARD_MAX_OPEN_POSITIONS == 9
     state = _state()
     state.set(STATE_KEY, json.dumps({"last_equity": 10_000.0, "open_symbols": ["A", "B", "C"]}))
     service, _ = _mirror(tmp_path, state=state)
     assert _run(service) is not None  # 3 open no longer blocks
     state.set(
         STATE_KEY,
-        json.dumps({"last_equity": 10_000.0, "open_symbols": ["A", "B", "C", "D", "E", "F"]}),
+        json.dumps(
+            {"last_equity": 10_000.0, "open_symbols": ["A", "B", "C", "D", "E", "F", "G", "H", "I"]}
+        ),
     )
     service, logs = _mirror(tmp_path, state=state)
     assert _run(service, _proposal("MSFT")) is None

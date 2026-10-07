@@ -12,6 +12,30 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-10-07 (Wed) — option 3 live: first trades, live caps raised to 9 positions
+
+- **Option 3 worked on its first session.** The swing scan's AMD and COST entries passed on
+  eToro's room (`room_authority: etoro_live`) and were copied: **AMD** 16:31 UTC (20:31 Dubai),
+  the one-time **2x test**, $496.79 margin / $993.58 exposure, fill 642.00, stop 541.53, target
+  876.98 (etf_mega_cap_relative_strength_rotation 1d); **COST** 16:38 UTC, $993.43 1x, fill
+  947.39, stop 927.51, target 972.08 (momentum_breakout 1d). Paper then took AAPL and AMZN
+  under its own room rules (eToro's 2-a-day cap used; AAPL also hit the tech cap), as designed.
+  Later NVDA/MSFT/GOOGL/AVGO/PYPL/DIS/XOM/CSCO/META were refused by paper's limits.
+- **ETH test closed by the bot's backup stop** 10:09 UTC (14:09 Dubai) at 2,580.33 vs 2,698.16
+  open: about -$44 price move on $1,000 before fees (-1.0R on its 4.31% ATR stop).
+- eToro at 19:16 UTC: MSFT, META, AMD, COST open (open P/L -$22.26 price move); balance at cost
+  $9,933, free cash $6,445, trades 2/2. Scorecard page now has a live P/L table and an open
+  P/L total (artifact v3).
+- **~19:20 UTC operator: raise the live limits so the cash is invested when strategies approve
+  trades.** Chose "9 trades, tech 4": `HARD_MAX_OPEN_POSITIONS` 6 -> 9 and
+  `HARD_MAX_OPEN_PER_BUCKET` 3 -> 4 (code constants). Unchanged: 10% / $1,000 per trade, 2 new
+  trades a day, $100 cash reserve, 5% daily loss stop, evidence gate, stop + target, backup
+  stop, long equities only. At 9 x ~$993 + $100 the account is ~91% invested at most; the
+  operator's $500 copy up to ~$450. Note: paper's portfolio-heat cap (6%, ~0.5% per open paper
+  position) was kept as option 3's backstop; with 8 paper positions (4 paper-only) it allows
+  about 3-4 more paper entries, so the 8th-9th eToro slots may wait until paper-only positions
+  close. Pushed after the 20:00 UTC close.
+
 ## 2026-10-06 (Tue) — real-money code review fixes
 
 - Mon 10-05 session (eToro LIVE, AlgoBot): two mirrored 1x entries, MSFT $999 at

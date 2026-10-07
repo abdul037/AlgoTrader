@@ -13,7 +13,7 @@ room instead of paper's:
   (disabled, halted, evidence, the 2-a-day cap, the loss stop, not a long equity ...) it
   returns None and paper keeps all its own room checks -- exactly the old behaviour.
   Otherwise it returns eToro's room reasons: [] means paper skips its room checks.
-* eToro's room is: one position per symbol, 6 open positions, free cash for the trade
+* eToro's room is: one position per symbol, 9 open positions (6 until 10-07), free cash for the trade
   plus the $100 reserve, and at most ``HARD_MAX_OPEN_PER_BUCKET`` open positions in one
   correlation group (code constant, no setting can raise it).
 * ``effective_open_symbols`` is the open set those caps count: reconcile's list, with raw
@@ -32,7 +32,7 @@ from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any
 
-HARD_MAX_OPEN_PER_BUCKET = 3  # e.g. 3 tech names of 6, each ~10% of the account
+HARD_MAX_OPEN_PER_BUCKET = 4  # operator 2026-10-07: 3 -> 4 with 9 positions (e.g. 4 tech of 9)
 COPY_FAILED_KEY = "etoro_live:copy_failed"
 COPY_FAILED_HOLD_MINUTES = 30
 
