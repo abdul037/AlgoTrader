@@ -26,6 +26,26 @@ STOPS_KEY = "etoro_live:intended_stops"
 # eToro's own price per open live position, saved each tick for the scorecard page's live P/L
 # (operator 2026-10-07: "it should be based on eToro"). Display only; nothing trades on it.
 MARKS_KEY = "etoro_live:marks"
+# The live account's positions exactly as eToro reports them (operator 2026-10-07: "show the
+# actual eToro trade and P/L"). Display only; nothing trades on it.
+POSITIONS_KEY = "etoro_live:positions"
+_POSITION_FIELDS = (
+    "positionID",
+    "instrumentID",
+    "isBuy",
+    "leverage",
+    "units",
+    "amount",
+    "openRate",
+    "openDateTime",
+    "stopLossRate",
+    "takeProfitRate",
+    "totalFees",
+    "unrealizedPnL",
+    "netProfit",
+    "pnL",
+    "pnl",
+)
 UNSEEN_GRACE_MINUTES = 24 * 60  # never-seen entry (e.g. an order queued before the open) ages out
 CLOSE_RECHECK_SECONDS = 3.0
 
@@ -99,9 +119,11 @@ def _check(mirror: Any) -> list[dict[str, Any]] | None:
     if not stops or client_problem(mirror.client):
         return None
     client = mirror.client
-    positions = portfolio_positions(client.fetch_raw_portfolio())
+    raw = client.fetch_raw_portfolio()
+    positions = portfolio_positions(raw)
     if positions is None:
         return None  # malformed/empty read: keep every stop, try again next tick
+    _save_positions(mirror, raw, positions, stops)
     grace = (utc_now() - timedelta(minutes=UNSEEN_GRACE_MINUTES)).isoformat()
     closed: list[dict[str, Any]] = []
     remaining: dict[str, Any] = {}
@@ -171,6 +193,35 @@ def _check(mirror: Any) -> list[dict[str, Any]] | None:
     _save(mirror, current)
     _save_marks(mirror, marks, held_symbols=set(remaining))
     return closed
+
+
+def _save_positions(
+    mirror: Any, raw: dict[str, Any], positions: list[Any], stops: dict[str, Any]
+) -> None:
+    """Snapshot eToro's own view of the live positions; never raises into the guard."""
+
+    try:
+        by_id = {
+            str(info.get("instrument_id")): symbol
+            for symbol, info in stops.items()
+            if info.get("instrument_id")
+        }
+        rows = []
+        for position in positions:
+            if not isinstance(position, dict):
+                continue
+            row = {k: position[k] for k in _POSITION_FIELDS if k in position}
+            row["symbol"] = by_id.get(str(position.get("instrumentID")), "")
+            rows.append(row)
+        portfolio = raw.get("clientPortfolio") or {}
+        snapshot = {
+            "at": utc_now().isoformat(),
+            "credit": portfolio.get("credit"),
+            "positions": rows,
+        }
+        mirror.state.set(POSITIONS_KEY, json.dumps(snapshot))
+    except Exception:  # noqa: BLE001 - display data only
+        return
 
 
 def _save_marks(mirror: Any, marks: dict[str, Any], *, held_symbols: set[str]) -> None:

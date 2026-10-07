@@ -225,3 +225,27 @@ def test_eToro_prices_are_saved_for_the_scorecard(tmp_path) -> None:
     assert check_backup_stops(mirror) == []
     marks = json.loads(mirror.state.get(MARKS_KEY))
     assert marks["AAPL"]["rate"] == 104.0 and marks["AAPL"]["at"]
+
+
+def test_eToro_positions_are_saved_as_eToro_reports_them(tmp_path) -> None:
+    # Operator 2026-10-07: show the actual eToro trades and P/L on the scorecard.
+    from app.broker.etoro_live_backup_stop import POSITIONS_KEY
+
+    raw = {
+        "positionID": 7,
+        "instrumentID": 1001,
+        "openRate": 100.5,
+        "units": 9.9,
+        "amount": 995.0,
+        "totalFees": 0.0,
+        "secret": "not copied",
+    }
+    client = _Client(rates={"AAPL": 104.0}, positions=[raw])
+    mirror, _ = _mirror(tmp_path, client)
+    remember_stop(mirror, "AAPL", 95.0, 1001)
+    check_backup_stops(mirror)
+    snap = json.loads(mirror.state.get(POSITIONS_KEY))
+    assert snap["credit"] == 9_000.0 and snap["at"]
+    (row,) = snap["positions"]
+    assert row["symbol"] == "AAPL" and row["openRate"] == 100.5 and row["units"] == 9.9
+    assert "secret" not in row  # only the whitelisted position fields
