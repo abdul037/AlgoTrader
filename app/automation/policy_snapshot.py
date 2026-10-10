@@ -92,6 +92,9 @@ def effective_execution_policy(settings: Any) -> dict[str, Any]:
             {str(s).upper() for s in (_get("market_universe_symbols", []) or [])}
             - {str(s).upper() for s in (_get("allowed_instruments", []) or [])}
         )[:50],
+        # Shadow pre-market deep scan (2026-10-10): on = the 08:30 bucket runs it instead of
+        # the old rotating scan. It never trades; logged so the switch is checkable at boot.
+        "premarket_deep_scan_enabled": bool(_get("premarket_deep_scan_enabled", False)),
         # A boolean only — never the account number itself.
         "alpaca_expected_account_configured": bool(
             str(_get("alpaca_expected_account_number", "") or "").strip()

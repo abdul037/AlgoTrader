@@ -221,6 +221,12 @@ class AppSettings(BaseSettings):
     workflow_scan_default_universe_limit: int = 10
     schedule_timezone: str = "America/New_York"
     premarket_scan_enabled: bool = True
+    # Shadow pre-market deep scan (operator 2026-10-10): in the 08:30 ET bucket, every allowed
+    # equity x every 1d strategy on completed bars -> ranked watchlist; never trades.
+    premarket_deep_scan_enabled: bool = False
+    premarket_deep_scan_cutoff_local: str = "09:20"
+    premarket_deep_scan_max_items: int = 25
+    premarket_deep_scan_notify: bool = False
     premarket_scan_time_local: str = "08:30"
     market_open_scan_enabled: bool = True
     market_open_scan_time_local: str = "09:35"

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import threading
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import sleep, time
@@ -276,15 +279,25 @@ class MarketDataEngine:
             return None
 
     def _write_cached_frame(self, path: Path, frame: pd.DataFrame) -> None:
+        suffix = f".tmp-{os.getpid()}-{threading.get_ident()}"
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             cached = frame.copy()
             cached["timestamp"] = pd.to_datetime(cached["timestamp"], utc=True)
-            cached.to_csv(path, index=False)
+            # Write-then-rename (2026-10-10): a concurrent reader (e.g. an abandoned timed-out
+            # scan thread) sees the old file or the new one, never a truncated frame.
+            tmp_csv = path.with_name(path.name + suffix)
+            cached.to_csv(tmp_csv, index=False)
+            os.replace(tmp_csv, path)
             meta_path = path.with_suffix(".meta.json")
-            meta_path.write_text(json.dumps({"rows": len(cached), "updated_at": int(time())}), encoding="utf-8")
+            tmp_meta = meta_path.with_name(meta_path.name + suffix)
+            tmp_meta.write_text(json.dumps({"rows": len(cached), "updated_at": int(time())}), encoding="utf-8")
+            os.replace(tmp_meta, meta_path)
         except Exception as exc:
             logger.warning("Failed to write market data cache %s: %s", path, exc)
+            for leftover in (path.with_name(path.name + suffix), path.with_suffix(".meta.json" + suffix)):
+                with suppress(OSError):
+                    leftover.unlink(missing_ok=True)
 
     def _cache_path(self, symbol: str, timeframe: str, provider: str) -> Path:
         safe_symbol = symbol.replace("/", "_").replace(":", "_")

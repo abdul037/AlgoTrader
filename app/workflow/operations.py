@@ -40,6 +40,11 @@ def run_scan_task(
             task=task, status="skipped", skipped=True,
             detail=f"{task.replace('_', ' ').title()} deferred to the next tick (cadence budget).",
         )
+    if task == "premarket_scan" and bool(getattr(service.settings, "premarket_deep_scan_enabled", False)):
+        from app.workflow.premarket_deep_scan import run_premarket_deep_scan  # shadow only
+
+        stop = ScanDeadline(budget.scan_stop_at) if budget is not None and budget.enforces_scan_stop else None
+        return run_premarket_deep_scan(service, state_key=state_key, force_refresh=force_refresh, stop=stop)
     spec_batch = focused_spec_batch(service, task=task, timeframes=timeframes) or (
         _rotating_spec_batch(service, task=task, timeframes=timeframes)
     )

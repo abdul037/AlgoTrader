@@ -103,3 +103,9 @@ def test_snapshot_reports_empty_gap_when_lists_agree(tmp_path) -> None:
     )
 
     assert snapshot["universe_not_in_allowlist"] == []
+
+
+def test_snapshot_shows_whether_the_shadow_premarket_scan_is_on(tmp_path) -> None:
+    assert effective_execution_policy(make_settings(tmp_path))["premarket_deep_scan_enabled"] is False
+    on = make_settings(tmp_path, premarket_deep_scan_enabled=True)
+    assert effective_execution_policy(on)["premarket_deep_scan_enabled"] is True

@@ -193,8 +193,8 @@ def scan_universe(
                     break
                 evaluated_strategy_runs += 1
                 evaluated_spec_keys.add(_spec_key(spec))
-                strategy = service._build_strategy(spec)
-                try:
+                try:  # a failed build (e.g. a generated strategy retired mid-scan) is one run's error
+                    strategy = service._build_strategy(spec)
                     signal = strategy.generate_signal(history.copy(), symbol)
                 except Exception as exc:
                     if isinstance(exc, ScanTimeoutError):

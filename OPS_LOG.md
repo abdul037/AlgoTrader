@@ -45,6 +45,43 @@ without explicit operator sign-off recorded here.
   the bot would cut it to ~0.01-0.02 s (every repository call ~0.58 s -> ~0.05 s, scans and
   pre-trade checks several times faster) but needs a new project + data migration and a
   DATABASE_URL change by the operator. Recommended: plan the database move for a weekend.
+- **Step 1, phase 1 built: shadow pre-market deep scan.** With `PREMARKET_DEEP_SCAN_ENABLED=true`
+  the 08:30 ET `premarket_scan` bucket runs `app/workflow/premarket_deep_scan.py` INSTEAD of the
+  old rotating batch: every allowed stock (25) x every daily strategy (19; pairs_stat_arb
+  excluded), each built exactly as the live screener builds it, on the last COMPLETED daily bar
+  (the bar the backtests decide on: signal on bar N's close, fill at bar N+1's open). The bar's
+  session date is its UTC date, which holds for Alpaca/yfinance (04:00Z/05:00Z), 00:00Z, open-
+  and close-stamped feeds. Setups are ranked into `runtime_state['premarket:watchlist:<NY date>']`
+  (also `GET /workflow/premarket-watchlist` and the scorecard page): "tradeable" = a full-strength
+  signal, from a strategy passing the eToro mirror's evidence rule (always enforced there), on an
+  allowed, non-blacklisted stock not held or pending; then strict before weak, backtest
+  expectancy, R:R. Weak signals are listed but never tradeable (live they need approval).
+  SHADOW ONLY: no proposals, orders, scan decisions, alerts, tracked signals, learning rows,
+  Telegram or eToro activity (a real-wiring test checks only runtime_state and run_logs change;
+  proposals are read from the repository because the service's read writes expiries). While the
+  flag is on the old 08:30 scan does not run, so its outputs (alerts, tracked signals, the scan
+  decisions later scans use for repeat suppression and the weak-valid daily cap, auto-proposals)
+  are not produced; it produced none from 09-25 to 10-09. Bounded by the cadence scan stop, or by
+  `SCREENER_BATCH_DEADLINE_SECONDS` (120 s) for manual runs and the legacy budget; resumes across
+  ticks with a cursor; an eToro rate-limit cooldown pauses it instead of burning the universe;
+  finishes at the cutoff (`PREMARKET_DEEP_SCAN_CUTOFF_LOCAL`, default 09:20, never after 09:30; a
+  mistyped value falls back to 09:20) with what it has; past the cutoff with no list it records
+  `missed_cutoff` and never runs into the session; a save never replaces a finished list or more
+  progress (overlapping manual run). It writes the bucket's coverage record in the old fields.
+  Rollback: `PREMARKET_DEEP_SCAN_ENABLED=false` restores the old 08:30 scan exactly.
+- **Scan hot-path fixes riding along:** (1) the strategy-lab by-name lookup (one ~0.58 s database
+  read per built-in strategy run, in a table with 0 rows) is skipped through a 60 s cache; every
+  service write clears it, a write during a refresh is never cached away, and a listed strategy
+  found retired on its by-id read clears it at once (retired strategies still never build: that
+  read is always fresh). (2) A strategy that fails to build is now that run's `strategy_error`
+  instead of aborting the whole `scan_universe` (reproduced with a generated strategy retired
+  mid-scan; latent before for ~1 symbol, the cache made it 60 s). (3) Market-data cache files are
+  written to a temp file and renamed, so a reader never sees a half-written frame.
+- **Review (2 independent reviewers, 10-10):** 20 findings, all addressed above or in tests: the
+  00:00Z forming-bar case, the docstring's "no trading behaviour change" claim (now precise), the
+  cutoff parse, the missing deadline for manual/legacy runs, overlapping saves, the rate-limit
+  burn, specs dropped between ticks (recorded), stale health records, the cache race, the scan
+  abort, and 10 test-strength gaps (each new test checked to fail without its fix).
 
 ## 2026-10-08 (Thu) → 10-10 (Sat) — more live trades; cadence timeout fix
 
