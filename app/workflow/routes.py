@@ -57,6 +57,19 @@ def scan_decisions(
     return request.app.state.scan_decision_repository.list(limit=limit, status=status, symbol=symbol)
 
 
+@router.get("/premarket-watchlist")
+def premarket_watchlist(request: Request, date: str | None = Query(default=None)):
+    """Today's (or ``date``'s) shadow pre-market watchlist. Read-only, no side effects."""
+
+    from app.workflow.premarket_deep_scan import load_watchlist, session_date_now
+
+    workflow = _workflow(request)
+    watchlist = load_watchlist(workflow.runtime_state, date or session_date_now(workflow.settings))
+    if watchlist is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No pre-market watchlist for that date.")
+    return watchlist
+
+
 @router.post("/run/premarket-scan", response_model=WorkflowTaskResponse)
 def run_premarket_scan(request: Request) -> WorkflowTaskResponse:
     return _workflow(request).run_premarket_scan(notify=True, force_refresh=True)

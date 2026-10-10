@@ -54,6 +54,25 @@ def test_backtest_metrics_are_sane(tmp_path: Path) -> None:
     assert result.ending_cash > 0
 
 
+def test_partial_size_trades_keep_uninvested_cash(tmp_path: Path) -> None:
+    # Regression (2026-09-08): closing a trade assigned the position's proceeds
+    # to ``cash`` instead of adding them, so every risk-sized trade (a fraction
+    # of the account invested) "lost" the uninvested balance -- walk-forward
+    # folds reported about -82% per fold from single, profitable trades.
+    csv_path = Path(__file__).resolve().parents[1] / "sample_data" / "nvda.csv"
+    data = MarketDataService().load_csv(csv_path)
+    engine = BacktestEngine(
+        config=EngineConfig(initial_cash=10_000.0, risk_per_trade_pct=1.0, cost_model=zero_cost_model())
+    )
+
+    result = engine.run(symbol="NVDA", strategy=MACrossoverStrategy(), data=data, file_path=str(csv_path))
+
+    assert result.metrics["number_of_trades"] >= 1
+    total_pnl = sum(float(t["pnl_usd"]) for t in result.trades)
+    assert math.isclose(result.ending_cash, 10_000.0 + total_pnl, rel_tol=1e-9, abs_tol=1e-6)
+    assert abs(result.metrics["total_return_pct"]) < 50.0  # not the -82% artefact
+
+
 def test_profit_factor_returns_inf_when_no_losers() -> None:
     summary = summarize_trades([
         {"pnl_usd": 100.0},

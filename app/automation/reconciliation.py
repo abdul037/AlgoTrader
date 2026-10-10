@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import threading
 import time
+import zlib
 from typing import Any
 
 from app.models.execution import ExecutionStatus
@@ -12,6 +15,52 @@ from app.models.institutional import (
     BrokerReconciliationResult,
 )
 from app.utils.time import utc_now
+
+_LIVE_LEG_STATUSES = {
+    "new",
+    "accepted",
+    "held",
+    "pending_new",
+    "partially_filled",
+    "accepted_for_bidding",
+    "calculated",
+}
+
+
+def _leg_is_live(leg: dict[str, Any]) -> bool:
+    return str(leg.get("status") or "").lower() in _LIVE_LEG_STATUSES
+
+
+# Alpaca rejects a close while the shares are already committed to a working
+# order ("insufficient qty available for order", code 40310000). That means the
+# position is *not* bare: a stop, a limit or an earlier close is live on it.
+_QTY_HELD_MARKERS = ("insufficient qty available", "40310000", "held_for_orders")
+# The position is already gone (e.g. a concurrent sweep or the old container closed it):
+# already flat, not a missing-bracket breaker trip (review 2026-10-05).
+_ALREADY_FLAT_MARKERS = ("position not found", "40410000")
+
+# The sweep re-reads every order (up to 500, plus legs) every minute. Writing each one
+# back to Postgres unconditionally took ~140 s per run (2026-10-05) and pushed maintenance
+# past its 240 s limit. Rows are now written only when the broker state changed, with a
+# full rewrite every FULL_WRITE_REFRESH_SECONDS (and after every restart) as a safety net.
+# 2026-10-06: that full rewrite itself took ~150 s; after hours maintenance runs every
+# ~16 min, so EVERY run did it and timed out (23 times overnight). Now a rolling refresh
+# re-writes 1/REFRESH_SLICES of the rows per sweep, and rows in an unknown state (after a
+# restart or a refresh eviction) share UNKNOWN_WRITE_BUDGET writes per sweep; a row known
+# to have changed is always written.
+REFRESH_SLICES = 12
+UNKNOWN_WRITE_BUDGET = 150
+
+
+def _fingerprint(*parts: Any) -> str:
+    return json.dumps(parts, sort_keys=True, default=str)
+
+
+def _closing_side(position: Any) -> str:
+    """The order side that reduces ``position`` (sell for a long, buy for a short)."""
+
+    quantity = float(getattr(position, "quantity", 0.0) or 0.0)
+    return "buy" if quantity < 0 else "sell"
 
 
 class AlpacaReconciliationService:
@@ -51,10 +100,22 @@ class AlpacaReconciliationService:
         self.broker_governance = broker_governance
         self.learning = learning_service
         self.notifier = notifier
+        self._written: dict[str, str] = {}  # row key -> fingerprint of what was last written
+        self._sweep_no = 0
+        self._unknown_budget = UNKNOWN_WRITE_BUDGET
+        self._sweep_lock = threading.Lock()  # one sweep at a time (routes, Telegram, recover)
 
     def reconcile(self) -> dict[str, Any]:
         if self.alpaca is None or not bool(getattr(self.settings, "alpaca_reconciliation_enabled", True)):
             return {"status": "disabled", "issues": []}
+        if not self._sweep_lock.acquire(blocking=False):
+            return {"status": "skipped", "issues": [], "reason": "sweep_already_running"}
+        try:
+            return self._reconcile_once()
+        finally:
+            self._sweep_lock.release()
+
+    def _reconcile_once(self) -> dict[str, Any]:
         result: dict[str, Any] | None = None
         last_error: Exception | None = None
         attempts = max(int(getattr(self.settings, "alpaca_reconciliation_max_attempts", 3) or 3), 1)
@@ -127,6 +188,12 @@ class AlpacaReconciliationService:
         self._upsert_order(payload, execution_id=execution.id, parent_order_id=None)
         for leg in legs:
             self._upsert_order(leg, execution_id=execution.id, parent_order_id=order_id)
+        # The stream writes without standalone exits; make the next sweep rewrite these rows
+        # instead of skipping them as unchanged (review 2026-10-05).
+        for key in [f"execution:{execution.id}", f"order:{order_id}"] + [
+            f"order:{leg.get('broker_order_id')}" for leg in legs
+        ]:
+            self._written.pop(key, None)
         self.state.set("trade_stream:last_update_at", utc_now().isoformat())
         self.logs.log(
             "alpaca_trade_stream_ingested",
@@ -148,6 +215,11 @@ class AlpacaReconciliationService:
         return bool(self.automation.status().account_verified)
 
     def _reconcile(self) -> dict[str, Any]:
+        self._sweep_no += 1  # rolling refresh bounds any drift from other writers
+        slot = self._sweep_no % REFRESH_SLICES
+        for key in [k for k in self._written if zlib.crc32(k.encode()) % REFRESH_SLICES == slot]:
+            del self._written[key]
+        self._unknown_budget = UNKNOWN_WRITE_BUDGET
         account = self.alpaca.get_account_identity()
         expected = str(
             getattr(
@@ -217,8 +289,32 @@ class AlpacaReconciliationService:
             for item in self.executions.list(limit=2000)
             if item.broker_order_id
         }
+        # Filled standalone sells (reconciliation flattens, manual closes) that
+        # close an execution whose bracket legs never filled. Without them the
+        # loss never reaches realized_pnl_usd, so the daily-loss cap and the
+        # loss-streak cooldown can't see it (QA review 2026-09-27).
+        standalone_exits: dict[str, list[dict[str, Any]]] = {}
+        for order in orders:
+            exit_payload = dict(order.response_payload or {})
+            if (
+                str(order.broker_order_id or "") not in executions_by_order
+                and str(exit_payload.get("side") or "").lower() == "sell"
+                and str(exit_payload.get("status") or "").lower() == "filled"
+                and not exit_payload.get("legs")
+                and exit_payload.get("filled_at")
+            ):
+                standalone_exits.setdefault(str(exit_payload.get("symbol") or "").upper(), []).append(exit_payload)
         owned_symbols: set[str] = set()
         protected_symbols: set[str] = set()
+        # symbol -> sides with a live *market* reducing order (an in-flight
+        # close). Shares committed to such an order are not bare: on 2026-09-10 a
+        # pre-market flatten was still pending when the next sweep tried to
+        # flatten again, Alpaca rejected it (qty held) and the breaker tripped.
+        live_close_sides: dict[str, set[str]] = {}
+        # symbol -> sides with a live protective (stop / stop_limit / limit)
+        # reducing order. Crypto has no native bracket, so its stop-limit sell is
+        # what protects the position; a live one means "protected".
+        live_protective_sides: dict[str, set[str]] = {}
 
         for order in orders:
             payload = dict(order.response_payload or {})
@@ -228,20 +324,59 @@ class AlpacaReconciliationService:
             symbol = str(payload.get("symbol") or "").upper()
             if execution is not None:
                 owned_symbols.add(symbol)
-                self._update_execution(execution, payload)
+                exits = standalone_exits.get(symbol)
+                key, fingerprint = f"execution:{execution.id}", _fingerprint(payload, exits)
+                if self._changed(key, fingerprint):
+                    self._update_execution(execution, payload, exits)
+                    self._written[key] = fingerprint
             legs = list(payload.get("legs") or [])
-            if execution is not None and payload.get("order_class") == "bracket" and len(legs) >= 2:
+            # A bracket only protects while at least one protective leg is still
+            # working at the broker. Counting legs by existence alone reported
+            # GOOGL as protected on 2026-09-09 after its TP had expired and its
+            # stop had been cancelled at the close.
+            # Only a live *stop* leg caps the loss: a bracket whose take-profit is
+            # still working but whose stop was cancelled is not protected.
+            live_legs = [leg for leg in legs if _leg_is_live(leg) and "stop" in str(leg.get("type") or "").lower()]
+            if execution is not None and payload.get("order_class") == "bracket" and live_legs:
                 protected_symbols.add(symbol)
-            if broker_order_id:
+            if symbol and _leg_is_live(payload):
+                side = str(payload.get("side") or "").lower()
+                order_type = str(payload.get("order_type") or payload.get("type") or "").lower()
+                if order_type in {"stop", "stop_limit", "stop-limit", "limit", "trailing_stop"}:
+                    live_protective_sides.setdefault(symbol, set()).add(side)
+                else:
+                    live_close_sides.setdefault(symbol, set()).add(side)
+            key, fingerprint = f"order:{broker_order_id}", _fingerprint(payload, execution_id)
+            if broker_order_id and self._changed(key, fingerprint):
                 self._upsert_order(payload, execution_id=execution_id, parent_order_id=None)
+                self._written[key] = fingerprint
             for leg in legs:
-                self._upsert_order(leg, execution_id=execution_id, parent_order_id=broker_order_id)
+                key = f"order:{leg.get('broker_order_id')}"
+                fingerprint = _fingerprint(leg, execution_id, broker_order_id)
+                if self._changed(key, fingerprint):
+                    self._upsert_order(leg, execution_id=execution_id, parent_order_id=broker_order_id)
+                    self._written[key] = fingerprint
 
         for position in positions:
             symbol = str(position.symbol or "").upper()
             if symbol not in owned_symbols:
                 issues.append(f"unknown_position:{symbol}")
             if symbol not in protected_symbols:
+                closing_side = _closing_side(position)
+                if closing_side in live_protective_sides.get(symbol, set()):
+                    # A live stop / limit reducing order protects the position.
+                    # This is how crypto positions are protected (no bracket).
+                    continue
+                if closing_side in live_close_sides.get(symbol, set()):
+                    # A working market reducing order (usually our own flatten
+                    # waiting for the open) already commits the shares.
+                    self.logs.log(
+                        "unprotected_position_closing_in_flight",
+                        {"symbol": symbol, "quantity": float(getattr(position, "quantity", 0.0) or 0.0)},
+                    )
+                    continue
+                if symbol in owned_symbols and self._flatten_unprotected(symbol, position):
+                    continue
                 issues.append(f"missing_bracket_protection:{symbol}")
 
         return {
@@ -251,7 +386,76 @@ class AlpacaReconciliationService:
             "issues": sorted(set(issues)),
         }
 
-    def _update_execution(self, execution: Any, payload: dict[str, Any]) -> None:
+    def _flatten_unprotected(self, symbol: str, position: Any) -> bool:
+        """Close an owned position whose protective legs are gone (paper only).
+
+        An unattended bot must never hold a position without a working stop.
+        Rather than tripping the circuit breaker (which halts everything), close
+        the bare position at market and record it; the ledger sync then books the
+        exit from the broker fill. Returns True when the close was submitted.
+        """
+
+        if not bool(getattr(self.settings, "reconciliation_flatten_unprotected_positions", True)):
+            return False
+        if str(getattr(self.settings, "execution_mode", "paper")) != "paper":
+            return False
+        if bool(getattr(self.settings, "enable_real_trading", False)):
+            return False
+        if not hasattr(self.alpaca, "close_position"):
+            return False
+        from app.broker.etoro_live_exit_copy import mark_paper_safety_flatten
+
+        # Before closing: eToro live must not copy this as a strategy exit.
+        mark_paper_safety_flatten(self.state, symbol=symbol, reason="unprotected_position")
+        try:
+            response = self.alpaca.close_position(symbol)
+        except Exception as exc:  # noqa: BLE001 - broker SDK errors must surface as an issue, not crash reconciliation
+            message = str(exc)
+            if any(marker in message.lower() for marker in _ALREADY_FLAT_MARKERS):
+                self.logs.log("unprotected_position_already_flat", {"symbol": symbol, "error": message})
+                return True
+            if any(marker in message.lower() for marker in _QTY_HELD_MARKERS):
+                # The shares are already committed to a working order at the
+                # broker, so the position is being closed or is protected after
+                # all. Not a breaker condition; the next sweep sees the outcome.
+                self.logs.log(
+                    "unprotected_position_flatten_deferred",
+                    {"symbol": symbol, "reason": "qty_held_by_working_order", "error": message},
+                )
+                return True
+            self.logs.log(
+                "unprotected_position_flatten_failed",
+                {"symbol": symbol, "error": message},
+            )
+            return False
+        self.logs.log(
+            "unprotected_position_flattened",
+            {
+                "symbol": symbol,
+                "quantity": float(getattr(position, "quantity", 0.0) or 0.0),
+                "broker_order_id": str(getattr(response, "order_id", "") or ""),
+                "status": str(getattr(response, "status", "") or ""),
+                "reason": "bracket_legs_no_longer_live",
+            },
+        )
+        return True
+
+    def _changed(self, key: str, fingerprint: str) -> bool:
+        """True unless this exact state was already written. Callers record the fingerprint
+        only after the write succeeds, so a failed write is retried on the next sweep."""
+
+        last = self._written.get(key)
+        if last == fingerprint:
+            return False
+        if last is None:  # state unknown (restart / refresh): bounded writes per sweep
+            if self._unknown_budget <= 0:
+                return False  # no fingerprint recorded, so it is written on a later sweep
+            self._unknown_budget -= 1
+        return True
+
+    def _update_execution(
+        self, execution: Any, payload: dict[str, Any], exit_orders: list[dict[str, Any]] | None = None
+    ) -> None:
         status = str(payload.get("status") or "").lower()
 
         # Execution quality: signed slippage of the fill vs the decision price.
@@ -282,6 +486,13 @@ class AlpacaReconciliationService:
         elif status in {"canceled", "cancelled", "expired", "rejected"}:
             execution.status = ExecutionStatus.CANCELED if status.startswith("cancel") else ExecutionStatus.FAILED
         execution.realized_pnl_usd = self._realized_pnl(payload)
+        exit_fill = None if execution.realized_pnl_usd else AlpacaReconciliationService._standalone_exit(payload, exit_orders)
+        if exit_fill is not None:
+            entry_qty = float(payload.get("filled_qty") or 0.0)
+            exit_qty = min(entry_qty, float(exit_fill.get("filled_qty") or 0.0))
+            entry_price = float(payload.get("filled_avg_price") or 0.0)
+            execution.realized_pnl_usd = round((float(exit_fill["filled_avg_price"]) - entry_price) * exit_qty, 2)
+            execution.response_payload["exit_fill"] = {**exit_fill, "legs": [], "status": "filled"}
         execution.updated_at = utc_now().isoformat()
         self.executions.update(execution)
         if self.learning is not None:
@@ -311,6 +522,22 @@ class AlpacaReconciliationService:
         if legs:
             return "protective_order_change"
         return "reconciled"
+
+    @staticmethod
+    def _standalone_exit(payload: dict[str, Any], exit_orders: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+        """Earliest filled standalone sell after a filled long entry with no filled leg."""
+
+        entry_at = str(payload.get("filled_at") or "")
+        if not exit_orders or not entry_at or float(payload.get("filled_qty") or 0.0) <= 0:
+            return None
+        if str(payload.get("side") or "").lower() != "buy" or float(payload.get("filled_avg_price") or 0.0) <= 0:
+            return None
+        candidates = [
+            item
+            for item in exit_orders
+            if str(item.get("filled_at") or "") > entry_at and float(item.get("filled_avg_price") or 0.0) > 0
+        ]
+        return min(candidates, key=lambda item: str(item.get("filled_at"))) if candidates else None
 
     @staticmethod
     def _realized_pnl(payload: dict[str, Any]) -> float:

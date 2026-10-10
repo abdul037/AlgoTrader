@@ -20,6 +20,85 @@ def _require_control_token(request: Request) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Control token required")
 
 
+@router.get("/go-live-readiness")
+def go_live_readiness(request: Request):
+    """Phase 2/3/4 status: pooled strategy evidence verdicts and the go-live bar."""
+
+    import json
+
+    from app.performance.go_live_readiness import READINESS_KEY
+    from app.performance.strategy_evidence import VERDICTS_KEY
+    from app.storage.repositories import RuntimeStateRepository
+
+    _require_control_token(request)
+    state = RuntimeStateRepository(request.app.state.db)
+    settings = request.app.state.settings
+
+    def _read(key: str) -> dict[str, Any]:
+        try:
+            return json.loads(state.get(key) or "{}")
+        except (TypeError, ValueError):
+            return {}
+
+    return {
+        "evidence_gate_enforced": bool(getattr(settings, "require_strategy_oos_evidence", False)),
+        "strategy_evidence": _read(VERDICTS_KEY),
+        "readiness": _read(READINESS_KEY),
+        "real_trading_enabled": bool(getattr(settings, "enable_real_trading", False)),
+    }
+
+
+@router.get("/live-scorecard")
+def live_scorecard(request: Request):
+    """eToro LIVE trades against their backtest: expected R vs realized R, fills, exits."""
+
+    import json
+
+    from app.broker.etoro_live_scorecard import SCORECARD_KEY, scorecard_report
+    from app.storage.repositories import RuntimeStateRepository
+
+    _require_control_token(request)
+    db = request.app.state.db
+    state = RuntimeStateRepository(db)
+    try:
+        cards = json.loads(state.get(SCORECARD_KEY) or "{}")
+    except (TypeError, ValueError):
+        cards = {}
+    ids = [str(t.get("proposal_id")) for t in cards.values() if t.get("proposal_id")]
+    fills: dict[str, float] = {}
+    if ids:
+        marks = ",".join("?" for _ in ids)
+        with db.connect() as connection:
+            rows = connection.execute(
+                f"SELECT proposal_id, response_json FROM executions WHERE proposal_id IN ({marks})",
+                tuple(ids),
+            ).fetchall()
+        for row in rows:
+            try:
+                broker = json.loads(row["response_json"] or "{}").get("broker_execution") or {}
+                fill = float(broker.get("filled_avg_price") or 0.0)
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if fill > 0:
+                fills[str(row["proposal_id"])] = fill
+    return scorecard_report(state, fills)
+
+
+@router.get("/live-daily-report")
+def live_daily_report(request: Request):
+    """Preview the daily eToro LIVE Telegram report for the last 24 h (nothing is sent)."""
+
+    from app.broker.etoro_live_daily_report import build_report
+
+    _require_control_token(request)
+    coordinator = getattr(request.app.state, "execution_coordinator", None)
+    mirror = getattr(coordinator, "etoro_live_mirror", None)
+    if mirror is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="eToro live mirror off")
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    return {"text": build_report(mirror, since=since)}
+
+
 @router.get("/weekly-target-readiness")
 def weekly_target_readiness(request: Request):
     _require_control_token(request)

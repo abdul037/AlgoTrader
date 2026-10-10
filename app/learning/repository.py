@@ -214,6 +214,22 @@ class LearningRepository:
             self._review,
         )
 
+    def reviewed_execution_ids(self, execution_ids: list[str]) -> set[str]:
+        """Which of ``execution_ids`` have a trade review: one query, not one per id."""
+
+        ids = sorted({str(item) for item in execution_ids if item})
+        found: set[str] = set()
+        for start in range(0, len(ids), 500):  # stay under old SQLite variable limits
+            chunk = ids[start : start + 500]
+            placeholders = ", ".join("?" for _ in chunk)
+            with self.db.connect() as connection:
+                rows = connection.execute(
+                    f"SELECT execution_id FROM learning_trade_reviews WHERE execution_id IN ({placeholders})",  # noqa: S608
+                    tuple(chunk),
+                ).fetchall()
+            found.update(str(row["execution_id"]) for row in rows)
+        return found
+
     def list_reviews(self, *, limit: int = 200) -> list[TradeReview]:
         return self._many(
             "SELECT * FROM learning_trade_reviews ORDER BY created_at DESC LIMIT ?",

@@ -12,8 +12,11 @@ from app.automation.reliability import candidate_propose_drop_reason, proposal_q
 from app.models.approval import ApprovalStatus
 from app.models.execution_queue import ExecutionQueueStatus
 from app.models.workflow import WorkflowTaskResponse
+from app.risk.proposal_sizing import risk_based_proposal_notional
 from app.universe import resolve_universe
 from app.utils.time import utc_now
+from app.workflow.cadence_budget import ScanDeadline, current_budget
+from app.workflow.open_signals import check_open_signals_impl  # noqa: F401 - re-export
 
 
 def run_scan_task(
@@ -27,7 +30,24 @@ def run_scan_task(
     force_refresh: bool,
     symbols: list[str] | None = None,
 ) -> WorkflowTaskResponse:
-    spec_batch = _rotating_spec_batch(service, task=task, timeframes=timeframes)
+    from app.workflow.swing_focus import advance_symbols, focused_spec_batch, rotate_symbols
+
+    budget = current_budget()  # set only inside a scheduled cadence tick
+    if budget is not None and not budget.scan_fits():
+        # Before the spec batch and swing cursors move; run_intraday_scan restores its offset.
+        service.run_logs.log("workflow_scan_budget_deferred", {"task": task, **budget.describe()})
+        return WorkflowTaskResponse(
+            task=task, status="skipped", skipped=True,
+            detail=f"{task.replace('_', ' ').title()} deferred to the next tick (cadence budget).",
+        )
+    if task == "premarket_scan" and bool(getattr(service.settings, "premarket_deep_scan_enabled", False)):
+        from app.workflow.premarket_deep_scan import run_premarket_deep_scan  # shadow only
+
+        stop = ScanDeadline(budget.scan_stop_at) if budget is not None and budget.enforces_scan_stop else None
+        return run_premarket_deep_scan(service, state_key=state_key, force_refresh=force_refresh, stop=stop)
+    spec_batch = focused_spec_batch(service, task=task, timeframes=timeframes) or (
+        _rotating_spec_batch(service, task=task, timeframes=timeframes)
+    )
     effective_timeframes = timeframes
     if spec_batch:
         effective_timeframes = list(spec_batch["timeframes"])
@@ -43,10 +63,14 @@ def run_scan_task(
         "notify": False,
         "force_refresh": force_refresh,
     }
+    kwargs["symbols"] = rotate_symbols(service, task=task, symbols=list(kwargs["symbols"]))
     if spec_batch:
         kwargs["strategy_spec_keys"] = spec_batch["strategy_spec_keys"]
-    if "scan_task" in inspect.signature(service.market_screener.scan_universe).parameters:
+    scan_params = inspect.signature(service.market_screener.scan_universe).parameters
+    if "scan_task" in scan_params:
         kwargs["scan_task"] = task
+    if budget is not None and budget.enforces_scan_stop and "cancel_event" in scan_params:
+        kwargs["cancel_event"] = ScanDeadline(budget.scan_stop_at)  # stop in time for the post-scan work
     try:
         response = service.market_screener.scan_universe(**kwargs)
     except Exception as exc:  # noqa: BLE001 - workflow must not block future runs
@@ -68,6 +92,9 @@ def run_scan_task(
             open_signals=len(service.tracked_signals.list(status="open", limit=500)),
             errors=[error],
         )
+    evaluated = getattr(response, "evaluated_symbols", 0) or 0  # a count (or a list)
+    evaluated = len(evaluated) if isinstance(evaluated, (list, tuple)) else int(evaluated)
+    advance_symbols(service, task=task, total=len(kwargs["symbols"]), evaluated=evaluated)
     alerts_sent = service._send_scan_alerts(task=task, response=response, notify=notify)
     service._track_candidates(response, origin=origin)
     proposals_created = auto_propose_candidates(service, response, origin=origin, notify=notify)
@@ -198,68 +225,6 @@ def close_status(snapshot: Any, price: float) -> str | None:
         if not is_short and price >= target:
             return "target_hit"
     return None
-
-
-def check_open_signals_impl(service: Any, *, notify: bool, force_refresh: bool) -> WorkflowTaskResponse:
-    records = service.tracked_signals.list(status="open", limit=500)
-    closed_signals = 0
-    alerts_sent = 0
-
-    for record in records:
-        quote = service.market_data.get_quote(
-            record.symbol,
-            timeframe=record.timeframe,
-            force_refresh=force_refresh,
-        )
-        price = float(quote.last_execution or quote.ask or quote.bid or record.last_price or 0.0)
-        snapshot = record.snapshot.model_copy(
-            update={
-                "current_price": price,
-                "current_bid": quote.bid,
-                "current_ask": quote.ask,
-                "rate_timestamp": quote.timestamp,
-                "generated_at": utc_now().isoformat(),
-            }
-        )
-        service.tracked_signals.update_price(record.id, last_price=price, snapshot=snapshot)
-
-        close_status_value = service._close_status(snapshot, price)
-        if close_status_value is None:
-            continue
-
-        closed = service.tracked_signals.close(
-            record.id,
-            status=close_status_value,
-            last_price=price,
-            snapshot=snapshot,
-        )
-        closed_signals += 1
-        message = service.notifier.format_tracked_signal_update(closed, event_type=close_status_value)
-        if notify and service.notifier.send_text(message):
-            alerts_sent += 1
-        service.alert_history.create(
-            category="tracked_signal_update",
-            status=close_status_value,
-            message_text=message,
-            symbol=closed.symbol,
-            strategy_name=closed.strategy_name,
-            timeframe=closed.timeframe,
-            payload=closed.model_dump(),
-        )
-
-    service.runtime_state.set("workflow:last_open_signal_check_at", utc_now().isoformat())
-    service.run_logs.log(
-        "workflow_open_signal_check_completed",
-        {"open_signals": len(records), "closed_signals": closed_signals, "alerts_sent": alerts_sent},
-    )
-    return WorkflowTaskResponse(
-        task="open_signal_check",
-        status="ok",
-        detail="Open signal check completed.",
-        alerts_sent=alerts_sent,
-        open_signals=len(records),
-        closed_signals=closed_signals,
-    )
 
 
 def send_daily_summary_impl(service: Any, *, notify: bool) -> WorkflowTaskResponse:
@@ -778,15 +743,9 @@ def run_ledger_cycle_impl(service: Any) -> WorkflowTaskResponse:
 
 
 def refresh_demoted_strategies(service: Any, completed: list[str], errors: list[str]) -> None:
-    """Recompute which strategies have decayed to a ``demote`` verdict and hand
-    the set to the live screener.
-
-    Close-the-loop step 2: the decay monitor produces keep/watch/demote verdicts
-    from live paper performance; this feeds the ``demote`` set to the screener so
-    it can stop scanning strategies that are losing money live. Observe-only by
-    default -- the screener only drops them when ``strategy_auto_demote_enabled``
-    is set. Any failure is logged and swallowed so maintenance always continues.
-    """
+    """Feed the decay monitor's ``demote`` set (live paper performance) to the screener so it
+    stops scanning strategies losing money live (enforced when ``strategy_auto_demote_enabled``).
+    Any failure is logged and swallowed so maintenance always continues."""
 
     # Function-local import keeps app.workflow -> app.performance out of the
     # import-time graph (the escape hatch the architecture-fitness test ignores).
@@ -823,6 +782,56 @@ def refresh_demoted_strategies(service: Any, completed: list[str], errors: list[
         errors.append(f"strategy_demote_refresh:{exc}")
         with suppress(Exception):
             service.run_logs.log("strategy_demote_error", {"error": str(exc)})
+    refresh_phase_gates(service, completed, errors)
+
+
+def refresh_phase_gates(service: Any, completed: list[str], errors: list[str]) -> None:
+    """Phase 2/3 bookkeeping every 30 min (evidence verdicts, readiness, eToro reconcile)."""
+
+    from app.broker.etoro_live_test_order import run_from_maintenance
+    from app.performance.go_live_readiness import refresh_readiness
+    from app.performance.strategy_evidence import refresh_verdicts
+
+    run_from_maintenance(service, completed)  # every tick: one-off eToro live test order, if requested
+    if not service._is_due("phase_gates:last_run_at", 30):
+        return
+    service.runtime_state.set("phase_gates:last_run_at", utc_now().isoformat())
+    backtests = getattr(service.market_screener, "backtests", None)
+    mirror = getattr(getattr(service.auto_trading, "execution", None), "etoro_live_mirror", None)
+    args = (service.settings, service.runtime_state, service.run_logs)
+    db = getattr(backtests, "db", None)
+    for name, step in (  # independent: one failing must not skip the others (review 10-05)
+        ("strategy_evidence_refresh", lambda: db is not None and bool(refresh_verdicts(db, *args))),
+        ("go_live_readiness_refresh", lambda: bool(refresh_readiness(service.run_logs.db, *args))),
+        ("etoro_live_reconcile", lambda: mirror is not None and mirror.reconcile() is not None),
+    ):
+        try:
+            if step():
+                completed.append(name)
+        except Exception as exc:  # noqa: BLE001 - maintenance continues after failures
+            errors.append(f"phase_gates_refresh:{name}:{exc}")
+
+
+def _account_equity_usd(service: Any) -> float:
+    """Latest broker-reconciled equity, else the configured paper balance."""
+
+    safety = getattr(getattr(service, "auto_trading", None), "safety", None)
+    latest = None
+    if safety is not None and hasattr(safety, "latest_reconciliation"):
+        with suppress(Exception):
+            latest = safety.latest_reconciliation()
+    if isinstance(latest, dict):
+        raw = latest.get("account_json")
+        account = raw if isinstance(raw, dict) else None
+        if isinstance(raw, str) and raw:
+            with suppress(Exception):
+                account = json.loads(raw)
+        if isinstance(account, dict):
+            with suppress(TypeError, ValueError):
+                equity = float(account.get("equity") or 0.0)
+                if equity > 0:
+                    return equity
+    return float(getattr(service.settings, "paper_account_balance_usd", 100_000.0) or 100_000.0)
 
 
 def auto_propose_candidates(service: Any, response: Any, *, origin: str, notify: bool) -> int:
@@ -879,15 +888,22 @@ def auto_propose_candidates(service: Any, response: Any, *, origin: str, notify:
                     "Supervised weak-valid paper proposal; not production-qualified. "
                     f"Auto-created from {origin}; Telegram approval is required before execution."
                 )
+            amount_usd, sizing = risk_based_proposal_notional(
+                service.settings,
+                entry_price=getattr(candidate, "entry_price", None) or getattr(candidate, "current_price", None),
+                stop_price=getattr(candidate, "stop_loss", None),
+                equity_usd=_account_equity_usd(service),
+            )
             request = service._approval_adapter.build_proposal_request(
                 candidate,
-                amount_usd=float(getattr(service.settings, "default_trade_amount_usd", 1000.0)),
+                amount_usd=amount_usd,
                 notes=notes,
             )
             proposal_quality = proposal_quality_label(candidate)
             request.metadata = {
                 **dict(getattr(request, "metadata", {}) or {}),
                 **candidate_metadata,
+                "sizing": sizing,
                 "proposal_quality": proposal_quality,
                 "proposal_source": candidate_metadata.get("source") or "scanner_strategy",
                 "proposal_origin": origin,

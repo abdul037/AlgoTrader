@@ -65,3 +65,47 @@ def test_snapshot_never_leaks_credential_values(tmp_path) -> None:
     assert "PAPER-XYZ" not in serialized
     # ...but the fact that an expected account IS configured is still surfaced.
     assert snapshot["alpaca_expected_account_configured"] is True
+
+
+def test_snapshot_exposes_position_sizing_caps(tmp_path) -> None:
+    # The first blocked live attempt (AMD, 2026-09-08) failed at the broker step
+    # because one share exceeded the per-trade amount; both sizing terms must be
+    # visible from run_logs so that failure mode is diagnosable without app access.
+    snapshot = effective_execution_policy(
+        make_settings(tmp_path, default_trade_amount_usd=1000.0, max_trade_amount_usd=1000.0)
+    )
+
+    assert snapshot["default_trade_amount_usd"] == 1000.0
+    assert snapshot["max_trade_amount_usd"] == 1000.0
+    assert "max_open_positions" in snapshot
+
+
+def test_snapshot_flags_universe_symbols_missing_from_the_allowlist(tmp_path) -> None:
+    # 2026-09-08: the scanner used a 25-name universe while ALLOWED_INSTRUMENTS was
+    # still a 6-name list, so most promoted candidates were rejected at the proposal
+    # step. The snapshot must make that disagreement visible at boot.
+    snapshot = effective_execution_policy(
+        make_settings(
+            tmp_path,
+            market_universe_symbols=["AAPL", "META", "INTC"],
+            allowed_instruments=["AAPL", "GOOGL"],
+        )
+    )
+
+    assert snapshot["allowed_instruments_count"] == 2
+    assert snapshot["market_universe_symbols_count"] == 3
+    assert snapshot["universe_not_in_allowlist"] == ["INTC", "META"]
+
+
+def test_snapshot_reports_empty_gap_when_lists_agree(tmp_path) -> None:
+    snapshot = effective_execution_policy(
+        make_settings(tmp_path, market_universe_symbols=["AAPL", "META"], allowed_instruments=["META", "AAPL"])
+    )
+
+    assert snapshot["universe_not_in_allowlist"] == []
+
+
+def test_snapshot_shows_whether_the_shadow_premarket_scan_is_on(tmp_path) -> None:
+    assert effective_execution_policy(make_settings(tmp_path))["premarket_deep_scan_enabled"] is False
+    on = make_settings(tmp_path, premarket_deep_scan_enabled=True)
+    assert effective_execution_policy(on)["premarket_deep_scan_enabled"] is True

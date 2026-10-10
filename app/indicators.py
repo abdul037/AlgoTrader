@@ -2,18 +2,72 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-
 INTRADAY_TIMEFRAMES = {"1m", "5m", "10m", "15m"}
+
+
+class _PrefixCache:
+    def __init__(self, source: pd.DataFrame) -> None:
+        self.source = source.reset_index(drop=True)
+        self.by_timeframe: dict[str, pd.DataFrame] = {}
+
+    def lookup(self, data: pd.DataFrame, timeframe: str) -> pd.DataFrame | None:
+        rows = len(data)
+        source = self.source
+        if rows == 0 or rows > len(source) or not set(data.columns) <= set(source.columns):
+            return None
+        for column in ("timestamp", "close"):
+            if column in data.columns and (
+                data[column].iloc[0] != source[column].iloc[0] or data[column].iloc[-1] != source[column].iloc[rows - 1]
+            ):
+                return None
+        key = timeframe.lower()
+        if key not in self.by_timeframe:
+            self.by_timeframe[key] = _enrich(source, timeframe=timeframe)
+        return self.by_timeframe[key].iloc[:rows].copy()
+
+
+_PREFIX_CACHE: ContextVar[_PrefixCache | None] = ContextVar("indicator_prefix_cache", default=None)
+
+
+@contextmanager
+def precomputed_indicators(source: pd.DataFrame) -> Iterator[None]:
+    """Within this block, indicators for any prefix of ``source`` are sliced from
+    one full-frame computation instead of recomputed per bar.
+
+    Every indicator here is causal (rolling/ewm/cumulative/shifted, each row
+    depending only on earlier rows from the same start), so the slice equals a
+    fresh computation on the prefix -- see tests/test_indicator_prefix_cache.py.
+    The backtest engine uses this: a 5m walk-forward called the ~26 ms enrichment
+    once per bar per strategy, 158 s per symbol/strategy run.
+    """
+
+    token = _PREFIX_CACHE.set(_PrefixCache(source))
+    try:
+        yield
+    finally:
+        _PREFIX_CACHE.reset(token)
 
 
 def enrich_technical_indicators(data: pd.DataFrame, *, timeframe: str) -> pd.DataFrame:
     """Return a copy of the OHLCV frame with a broad indicator set attached."""
 
+    cache = _PREFIX_CACHE.get()
+    if cache is not None:
+        cached = cache.lookup(data, timeframe)
+        if cached is not None:
+            return cached
+    return _enrich(data, timeframe=timeframe)
+
+
+def _enrich(data: pd.DataFrame, *, timeframe: str) -> pd.DataFrame:
     frame = data.copy().reset_index(drop=True)
     if frame.empty:
         return frame
@@ -100,11 +154,15 @@ def enrich_technical_indicators(data: pd.DataFrame, *, timeframe: str) -> pd.Dat
         cumulative_price_volume = (frame["close"] * frame["volume"]).groupby(frame["session_date"]).cumsum()
         frame["vwap"] = cumulative_price_volume / cumulative_volume
         frame["session_bar"] = frame.groupby("session_date").cumcount() + 1
-        opening_range = frame[frame["session_bar"] <= 5].groupby("session_date").agg(
-            opening_range_high=("high", "max"),
-            opening_range_low=("low", "min"),
-        )
-        frame = frame.join(opening_range, on="session_date")
+        # Causal opening range: on bar k of the session it is the high/low of the
+        # bars seen so far, capped at the first 5. Identical to slicing the frame
+        # up to bar k (the live path), and safe to compute once over a whole
+        # backtest -- the old per-session aggregate filled bars 1-4 from bars 2-5.
+        in_range = frame["session_bar"] <= 5
+        frame["opening_range_high"] = high.where(in_range).groupby(frame["session_date"]).cummax()
+        frame["opening_range_low"] = low.where(in_range).groupby(frame["session_date"]).cummin()
+        frame["opening_range_high"] = frame.groupby("session_date")["opening_range_high"].ffill()
+        frame["opening_range_low"] = frame.groupby("session_date")["opening_range_low"].ffill()
     else:
         cumulative_volume = volume.cumsum().replace(0.0, np.nan)
         frame["vwap"] = (close * volume).cumsum() / cumulative_volume

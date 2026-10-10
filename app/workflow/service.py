@@ -7,10 +7,14 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.automation.auto_recover import try_auto_recover
+from app.automation.intraday_exit import flatten_intraday_before_close
 from app.execution.interfaces import SignalApprovalAdapter
 from app.models.workflow import WorkflowBucketStatus, WorkflowStatusResponse, WorkflowTaskResponse
 from app.universe import resolve_universe
 from app.utils.time import utc_now
+from app.workflow.cadence_budget import CadenceBudget, tick_budget
+from app.workflow.crypto_scan import crypto_bucket_enabled, crypto_scan_due, run_crypto_scan
 from app.workflow.operations import (
     candidate_with_ledger_outcome,
     check_open_signals_impl,
@@ -39,6 +43,7 @@ from app.workflow.schedule import (
     parse_time,
     schedule_zone,
 )
+from app.workflow.swing_focus import swing_interval_minutes
 
 
 class LedgerRecordingError(RuntimeError):
@@ -49,7 +54,7 @@ class SignalWorkflowService:
     """Coordinate scheduled scans, tracked open signals, and daily summaries."""
 
     LedgerRecordingError = LedgerRecordingError
-    SCAN_BUCKETS = ("premarket_scan", "market_open_scan", "intraday_rotation", "swing_hourly", "end_of_day_scan")
+    SCAN_BUCKETS = ("premarket_scan", "market_open_scan", "intraday_rotation", "swing_hourly", "end_of_day_scan", "crypto_rotation")
     SCHEDULER_BUCKETS = (*SCAN_BUCKETS, "maintenance")
 
     def __init__(
@@ -96,8 +101,12 @@ class SignalWorkflowService:
 
     def run_scheduled_tasks(self) -> dict[str, int]:
         summary = {"alerts_sent": 0, "closed_signals": 0, "ledger_cycles": 0, "buckets_run": 0}
+        started_at = time.monotonic()  # the soft budget counts maintenance too (10-06 timeouts)
+        flatten_intraday_before_close(self)  # risk-reducing, so it runs even while paused
         if self.automation is not None:
             blockers = self.automation.scan_blockers()
+            if blockers and try_auto_recover(self, blockers):  # paper-only breaker self-healing
+                blockers = self.automation.scan_blockers()
             if blockers:
                 self.run_logs.log("workflow_scheduler_paused", {"blockers": blockers})
                 for bucket_name in self.SCAN_BUCKETS:
@@ -115,50 +124,25 @@ class SignalWorkflowService:
         if not self.settings.screener_scheduler_enabled:
             return summary
 
-        # Budget-aware dispatch: each bucket runs a full universe scan bounded by
-        # its own batch deadline, so several buckets coming due together (a market
-        # open/close burst) can sum past the worker's per-job wall-clock timeout,
-        # abandoning the whole tick. Instead, stop starting new buckets once the
-        # elapsed time nears a soft budget and let the next tick (seconds later)
-        # pick up the rest — _bucket_due keeps them due until they actually run.
-        soft_budget = self._cadence_soft_budget_seconds()
-        started_at = time.monotonic()
+        # Budget-aware dispatch (app/workflow/cadence_budget.py): a bucket starts only if its
+        # pre-work, a useful scan and the post-scan reserve fit inside the job's wall-clock
+        # cap, and its scan then stops in time for that reserve (10-07..10-09 timeouts).
+        budget = CadenceBudget.for_tick(self.settings, started_at)
         deferred: list[str] = []
         for bucket_name in self.SCAN_BUCKETS:
             if not self._bucket_due(bucket_name):
                 continue
-            if soft_budget > 0 and (time.monotonic() - started_at) >= soft_budget:
+            if budget is not None and not budget.admits(bucket_name, self.settings):
                 deferred.append(bucket_name)
                 continue
-            result = self.run_bucket(bucket_name, notify=True, force_refresh=bucket_name in {"premarket_scan", "market_open_scan", "end_of_day_scan"})
+            with tick_budget(budget):
+                result = self.run_bucket(bucket_name, notify=True, force_refresh=bucket_name in {"premarket_scan", "market_open_scan", "end_of_day_scan"})
             summary["alerts_sent"] += result.alerts_sent
             if result.status == "ok":
                 summary["buckets_run"] += 1
-        if deferred:
-            self.run_logs.log(
-                "workflow_cadence_deferred",
-                {"deferred_buckets": deferred, "soft_budget_seconds": soft_budget},
-            )
+        if deferred and budget is not None:
+            self.run_logs.log("workflow_cadence_deferred", {"deferred_buckets": deferred, **budget.describe()})
         return summary
-
-    def _cadence_soft_budget_seconds(self) -> float:
-        """How long ``run_scheduled_tasks`` may keep starting new buckets before
-        deferring the rest to the next tick.
-
-        Derived so the invariant ``soft_budget + one_batch_deadline < job_timeout``
-        holds: the last bucket may start just before the soft budget and then run
-        up to its own batch deadline, and that must still finish before the job
-        wall-clock cap. Otherwise a single deep bucket started late would trip the
-        timeout — which is exactly the failure this guards against. Overridable
-        via ``scheduler_cadence_soft_budget_seconds`` (<= 0 disables deferral)."""
-
-        explicit = getattr(self.settings, "scheduler_cadence_soft_budget_seconds", None)
-        if explicit is not None:
-            return float(explicit)
-        job_timeout = float(getattr(self.settings, "scheduler_job_timeout_seconds", 240) or 240)
-        batch_deadline = float(getattr(self.settings, "screener_batch_deadline_seconds", 180) or 180)
-        # Leave room for one in-flight batch to finish, plus a 10s margin.
-        return max(job_timeout - batch_deadline - 10.0, 30.0)
 
     def run_premarket_scan(self, *, notify: bool = True, force_refresh: bool = False) -> WorkflowTaskResponse:
         return self._execute_guarded(
@@ -225,8 +209,9 @@ class SignalWorkflowService:
         )
 
     def run_intraday_scan(self, *, notify: bool = True, force_refresh: bool = False) -> WorkflowTaskResponse:
-        symbols = self._intraday_scan_symbols()
-        return self._execute_guarded(
+        prior_offset = self.runtime_state.get("workflow:intraday_scan_offset")
+        symbols = self._intraday_scan_symbols()  # advances the offset
+        result = self._execute_guarded(
             "intraday_scan",
             lambda: self._run_scan_task(
                 task="intraday_scan",
@@ -239,6 +224,9 @@ class SignalWorkflowService:
             ),
             bucket_name="intraday_rotation",
         )
+        if result.skipped:  # budget or lock skip: the batch was never scanned, retry it
+            self.runtime_state.set("workflow:intraday_scan_offset", prior_offset or "0")
+        return result
 
     def run_end_of_day_scan(self, *, notify: bool = True, force_refresh: bool = False) -> WorkflowTaskResponse:
         timeframes = ["15m", "1h", "1d", "1w"]
@@ -371,6 +359,7 @@ class SignalWorkflowService:
             "premarket_scan": lambda: self.run_premarket_scan(notify=notify, force_refresh=force_refresh),
             "market_open_scan": lambda: self.run_market_open_scan(notify=notify, force_refresh=force_refresh),
             "intraday_rotation": lambda: self.run_intraday_scan(notify=notify, force_refresh=force_refresh),
+            "crypto_rotation": lambda: run_crypto_scan(self, notify=notify, force_refresh=force_refresh),
             "swing_hourly": lambda: self.run_swing_scan(notify=notify, force_refresh=force_refresh),
             "end_of_day_scan": lambda: self.run_end_of_day_scan(notify=notify, force_refresh=force_refresh),
             "maintenance": lambda: self.run_maintenance(notify=notify),
@@ -384,17 +373,8 @@ class SignalWorkflowService:
         return [self._bucket_status(name) for name in self.SCHEDULER_BUCKETS]
 
     def status(self) -> WorkflowStatusResponse:
-        state_keys = [
-            "workflow:last_premarket_scan_at",
-            "workflow:last_market_open_scan_at",
-            "workflow:last_intelligent_scan_at",
-            "workflow:last_swing_scan_at",
-            "workflow:last_intraday_scan_at",
-            "workflow:last_end_of_day_scan_at",
-            "workflow:last_open_signal_check_at",
-            "workflow:last_ledger_cycle_at",
-            "workflow:last_daily_summary_at",
-        ]
+        _scan_keys = ("premarket_scan", "market_open_scan", "intelligent_scan", "swing_scan", "intraday_scan", "end_of_day_scan", "open_signal_check", "ledger_cycle", "daily_summary")
+        state_keys = [f"workflow:last_{name}_at" for name in _scan_keys]
         state = self._runtime_state_get_many(state_keys)
         return WorkflowStatusResponse(
             scheduler_enabled=bool(self.settings.screener_scheduler_enabled),
@@ -518,15 +498,9 @@ class SignalWorkflowService:
         return run_scan_task(self, **kwargs)
 
     def _intraday_scan_symbols(self) -> list[str]:
-        universe = resolve_universe(
-            self.settings,
-            limit=int(
-                max(
-                    int(getattr(self.settings, "market_universe_limit", 100) or 100),
-                    int(getattr(self.settings, "intraday_active_mover_scan_limit", 80) or 80),
-                )
-            ),
-        )
+        limit = max(int(getattr(self.settings, "market_universe_limit", 100) or 100),
+                    int(getattr(self.settings, "intraday_active_mover_scan_limit", 80) or 80))
+        universe = resolve_universe(self.settings, limit=limit)
         if not universe:
             return []
         batch_size = max(1, int(getattr(self.settings, "scalp_scan_batch_size", 20) or 20))
@@ -761,6 +735,8 @@ class SignalWorkflowService:
             return self._named_scan_due("workflow:last_market_open_scan_at", True, self.settings.market_open_scan_time_local)
         if bucket_name == "intraday_rotation":
             return self._intraday_scan_due()
+        if bucket_name == "crypto_rotation":
+            return crypto_scan_due(self)
         if bucket_name == "swing_hourly":
             return self._swing_scan_due()
         if bucket_name == "end_of_day_scan":
@@ -789,7 +765,7 @@ class SignalWorkflowService:
         end = self._combine_local_time(now_local, self.settings.end_of_day_scan_time_local)
         if now_local < start or now_local > end:
             return False
-        return self._is_due("workflow:last_swing_scan_at", int(getattr(self.settings, "swing_scan_interval_minutes", 60)))
+        return self._is_due("workflow:last_swing_scan_at", swing_interval_minutes(self.settings))
 
     def _check_open_signals_impl(self, *, notify: bool, force_refresh: bool) -> WorkflowTaskResponse:
         return check_open_signals_impl(self, notify=notify, force_refresh=force_refresh)
@@ -880,6 +856,8 @@ class SignalWorkflowService:
             return bool(getattr(self.settings, "market_open_scan_enabled", False))
         if bucket_name == "intraday_rotation":
             return bool(getattr(self.settings, "intraday_repeated_scan_enabled", False))
+        if bucket_name == "crypto_rotation":
+            return crypto_bucket_enabled(self)
         if bucket_name == "swing_hourly":
             return int(getattr(self.settings, "swing_scan_interval_minutes", 0) or 0) > 0
         if bucket_name == "end_of_day_scan":
@@ -976,7 +954,7 @@ class SignalWorkflowService:
         if bucket_name == "swing_hourly":
             return self._next_interval_due_at(
                 "workflow:last_swing_scan_at",
-                int(getattr(self.settings, "swing_scan_interval_minutes", 60)),
+                swing_interval_minutes(self.settings),
                 self.settings.market_open_scan_time_local,
                 self.settings.end_of_day_scan_time_local,
                 now_local,

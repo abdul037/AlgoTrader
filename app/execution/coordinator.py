@@ -5,20 +5,27 @@ from __future__ import annotations
 import hashlib
 import math
 import sqlite3
+import threading
 from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 
+from app.broker import crypto as crypto_symbols
+from app.broker.etoro_live_room import room_verdict
 from app.broker.router import BrokerRouter, NoBrokerForAssetClass
 from app.models.approval import ApprovalStatus
 from app.models.execution import ExecutionRecord, ExecutionStatus
 from app.models.execution_queue import ExecutionQueueRecord, ExecutionQueueStatus
+from app.models.trade import AssetClass
 from app.risk.context import build_risk_context
 from app.risk.guardrails import RiskManager
+from app.risk.market_direction import market_direction_reasons
 from app.risk.volatility_target import daily_drawdown_pct, drawdown_governor_multiplier
 from app.utils.time import utc_now
+
+_ENTRY_LOCK = threading.RLock()
 
 
 class ExecutionCoordinator:
@@ -70,7 +77,7 @@ class ExecutionCoordinator:
             signal_id=getattr(proposal.signal, "id", None),
             symbol=proposal.order.symbol.upper(),
             strategy_name=proposal.order.strategy_name,
-            timeframe=(proposal.signal.metadata.get("timeframe") if proposal.signal is not None else None),
+            timeframe=_proposal_timeframe(proposal),
             mode=self.settings.execution_mode,
             requested_entry_price=proposal.order.proposed_price,
             payload={"order": proposal.order.model_dump(), "signal": proposal.signal.model_dump() if proposal.signal else None},
@@ -84,6 +91,12 @@ class ExecutionCoordinator:
         return record
 
     def process_queue_item(self, queue_id: str) -> ExecutionQueueRecord:
+        # Option 3 review 2026-10-06: one entry at a time from the eToro room verdict to the
+        # copy, so two concurrent entries cannot both use eToro's last slot to skip paper room.
+        with _ENTRY_LOCK:
+            return self._process_queue_item(queue_id)
+
+    def _process_queue_item(self, queue_id: str) -> ExecutionQueueRecord:
         record = self.queue.get(queue_id)
         if record is None:
             raise LookupError(f"Execution queue item {queue_id} was not found")
@@ -154,7 +167,7 @@ class ExecutionCoordinator:
 
         automation_blockers = self._automation_blockers()
 
-        timeframe = record.timeframe or (proposal.signal.metadata.get("timeframe") if proposal.signal is not None else "1d") or "1d"
+        timeframe = record.timeframe or _proposal_timeframe(proposal) or "1d"
         quote_provider = broker_name if broker_name in {"alpaca", "etoro"} else None
         quote = self.market_data.get_quote(proposal.order.symbol, timeframe=timeframe, provider=quote_provider, force_refresh=True)
         quote_price = float(quote.last_execution or quote.ask or quote.bid or proposal.order.proposed_price)
@@ -167,6 +180,14 @@ class ExecutionCoordinator:
                 symbol=proposal.order.symbol,
             ),
             *self._quote_validation_reasons(quote, expected_broker=broker_name),
+            *market_direction_reasons(
+                self.settings,
+                self.market_data,
+                symbol=proposal.order.symbol,
+                timeframe=timeframe,
+                side=str(getattr(proposal.order.side, "value", proposal.order.side)),
+                logs=self.logs,
+            ),
         ]
         start_of_day = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
         if self.executions.count_since(start_of_day) >= int(getattr(self.settings, "max_trades_per_day", 999999)):
@@ -202,7 +223,8 @@ class ExecutionCoordinator:
             return record
 
         risk_context = self.risk_context_factory(self.settings, broker, self.executions)
-        risk = self.risk_manager.validate_order(proposal.order, risk_context)
+        room = room_verdict(getattr(self, "etoro_live_mirror", None), proposal.order, signal=proposal.signal, primary_broker=broker_name)
+        risk = self.risk_manager.validate_order(proposal.order, risk_context, etoro_room=room)
         if not risk.passed:
             record.status = ExecutionQueueStatus.BLOCKED
             record.ready_for_execution = False
@@ -223,7 +245,11 @@ class ExecutionCoordinator:
         self._apply_drawdown_governor(proposal, risk_context)
 
         if broker_name == "alpaca" and bool(getattr(self.settings, "alpaca_require_bracket_orders", True)):
-            bracket_reasons = self._alpaca_bracket_reasons(proposal, quote_price)
+            # The paper-only manual smoke path already bypasses drift; drift is what moves R:R.
+            min_rr = 0.0 if self._can_bypass_entry_drift_for_smoke(proposal) else float(
+                getattr(self.settings, "execution_min_reward_to_risk_at_quote", 0.0) or 0.0
+            )
+            bracket_reasons = self._alpaca_bracket_reasons(proposal, quote_price, min_rr)
             if bracket_reasons:
                 record.status = ExecutionQueueStatus.BLOCKED
                 record.ready_for_execution = False
@@ -270,7 +296,8 @@ class ExecutionCoordinator:
                     client_order_id=record.client_order_id,
                 )
             except Exception as exc:
-                if self.settings.execution_mode == "paper" and bool(getattr(self.settings, "paper_simulated_fallback_enabled", False)):
+                # A simulated fallback is never copied, so it may not use eToro's room.
+                if self.settings.execution_mode == "paper" and bool(getattr(self.settings, "paper_simulated_fallback_enabled", False)) and risk.room_authority == "paper":
                     paper_position = self.paper.open_from_approved_proposal(proposal, live_quote=quote)
                     execution = ExecutionRecord(
                         proposal_id=proposal.id,
@@ -458,13 +485,32 @@ class ExecutionCoordinator:
                 float(proposal.order.amount_usd),
                 float(getattr(self.settings, "max_trade_amount_usd", 1000.0)),
             )
-            if broker_name == "alpaca":
+            order_asset_class = getattr(proposal.order, "asset_class", None)
+            is_crypto = (
+                order_asset_class == AssetClass.CRYPTO
+                or crypto_symbols.is_crypto_symbol(proposal.order.symbol)
+            )
+            if broker_name == "alpaca" and not is_crypto:
                 qty = math.floor(capped_amount / max(float(quote_price), 0.01))
                 if qty < 1:
                     raise ValueError("one_share_exceeds_max_trade_amount")
             else:
+                # Crypto (and non-Alpaca brokers) trade fractional quantities.
                 qty = capped_amount / max(float(quote_price), 0.01)
-            if (
+            if is_crypto and broker_name == "alpaca" and hasattr(broker, "submit_crypto_protected_order"):
+                # Alpaca has no crypto bracket orders: entry + separate stop,
+                # backed by the reconciliation auto-flatten of any unprotected
+                # owned position. Crypto is exempt from the regular-hours gate.
+                if qty <= 0:
+                    raise ValueError("crypto_notional_below_min_order")
+                broker_execution = broker.submit_crypto_protected_order(
+                    symbol=proposal.order.symbol,
+                    qty=qty,
+                    stop_loss_price=float(proposal.order.stop_loss),
+                    take_profit_price=float(proposal.order.take_profit) if proposal.order.take_profit else None,
+                    client_order_id=client_order_id,
+                )
+            elif (
                 broker_name == "alpaca"
                 and bool(getattr(self.settings, "alpaca_require_bracket_orders", True))
                 and hasattr(broker, "submit_bracket_order")
@@ -475,7 +521,10 @@ class ExecutionCoordinator:
                     qty=int(qty),
                     take_profit_price=float(proposal.order.take_profit),
                     stop_loss_price=float(proposal.order.stop_loss),
-                    time_in_force="day",
+                    # GTC: with "day" the protective legs expire at the close and
+                    # an overnight position is left with no stop (GOOGL, 2026-09-08
+                    # -> its stop was cancelled and the TP expired at 20:00 UTC).
+                    time_in_force="gtc",
                     client_order_id=client_order_id,
                 )
             else:
@@ -551,6 +600,12 @@ class ExecutionCoordinator:
         raise TypeError(f"Selected broker {broker_name!r} does not expose a supported order submission method")
 
     def _mirror_parallel(self, proposal: Any, execution: ExecutionRecord, broker_name: str) -> None:
+        live_mirror = getattr(self, "etoro_live_mirror", None)
+        failed = str(getattr(execution, "status", "")) in {ExecutionStatus.FAILED, ExecutionStatus.BLOCKED}
+        if live_mirror is not None and not failed:  # never put real money behind a failed paper order
+            # Capped real-money test mirror; it handles its own failures and never
+            # raises into the paper execution path.
+            live_mirror.mirror(proposal=proposal, primary_execution=execution, primary_broker=broker_name)
         if self.parallel_broker is None:
             return
         self.parallel_broker.mirror(
@@ -605,7 +660,7 @@ class ExecutionCoordinator:
         )
 
     @staticmethod
-    def _alpaca_bracket_reasons(proposal: Any, quote_price: float) -> list[str]:
+    def _alpaca_bracket_reasons(proposal: Any, quote_price: float, min_reward_to_risk: float = 0.0) -> list[str]:
         order = proposal.order
         reasons: list[str] = []
         if str(getattr(order.side, "value", order.side)).lower() != "buy":
@@ -618,6 +673,10 @@ class ExecutionCoordinator:
             reasons.append("stop_loss_not_below_entry")
         if order.take_profit is not None and float(order.take_profit) <= float(quote_price):
             reasons.append("take_profit_not_above_entry")
+        if not reasons and min_reward_to_risk > 0:
+            risk = float(quote_price) - float(order.stop_loss)
+            if (float(order.take_profit) - float(quote_price)) / risk < min_reward_to_risk:
+                reasons.append("reward_to_risk_below_min_at_quote")
         return reasons
 
     @staticmethod
@@ -628,3 +687,14 @@ class ExecutionCoordinator:
         if normalized == ExecutionStatus.BLOCKED:
             return ExecutionStatus.BLOCKED
         return ExecutionStatus.SUBMITTED
+
+
+def _proposal_timeframe(proposal: Any) -> str | None:
+    """Timeframe of a proposal: the order's metadata first (scanner proposals carry no
+    signal), then the signal's. Review 2026-10-05: defaulting to "1d" switched the
+    market-direction filter off for intraday entries."""
+
+    order_meta = getattr(getattr(proposal, "order", None), "metadata", None) or {}
+    signal = getattr(proposal, "signal", None)
+    signal_meta = (getattr(signal, "metadata", None) or {}) if signal is not None else {}
+    return order_meta.get("timeframe") or signal_meta.get("timeframe") or None

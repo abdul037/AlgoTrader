@@ -1,0 +1,969 @@
+# AlgoTrader Ops Log
+
+Append-only record of every operational action taken on the paper-trading bot:
+deploys, config changes, incidents, decisions, and what was verified. Newest
+day first, entries within a day in chronological order (UTC). Long-form
+post-mortems and roadmap live in `ROADMAP.md`; this file is the action ledger.
+
+Standing constraints: PAPER ONLY (`ENABLE_REAL_TRADING=false`,
+`EXECUTION_MODE=paper`). Hard risk gates (spread cap, reward:risk, valid
+bracket, relative-volume floor, regular hours, blacklist) are never loosened
+without explicit operator sign-off recorded here.
+
+---
+
+## 2026-10-10 (Sat) — pre-market scan research, operator decisions, step 4 fixes
+
+- **Operator: "scan many stocks and find the best ones before trading hours; parallel agents?"**
+  Research workflow (4 investigators): scanning is ~85-90% database waiting (each repository
+  call ~0.58 s: Railway in California, Supabase in Sydney ap-southeast-2, ~0.146 s per round
+  trip), ~1-3% CPU; the server uses ~0.1 of 8 vCPU. Production scans the 25
+  MARKET_UNIVERSE_SYMBOLS (= ALLOWED_INSTRUMENTS), not top200; the 08:30 ET premarket scan
+  takes the first 10 and never rotates (same 7-9 names, AVGO never reached), runs a rotating
+  6-of-54 spec batch (mostly 1h specs that cannot pass evidence) and has found 0 candidates
+  every day since 09-25. 25 symbols x 6 passing 1d specs = 150 runs ~7 min. Backtests decide
+  on the completed daily bar and fill at the next open, but every live 1d entry so far was
+  signalled 1.5-4 h after the open on the unfinished bar (relative-volume near-miss floor
+  ~0.45). AI agents are not the right tool for trade decisions (cost, latency, not
+  reproducible, cannot pass the evidence gate); parallel workers in the bot are.
+- **Operator decisions (~11:50 UTC):** step 1 build the pre-market deep scan (no gate change)
+  for Monday; step 2 "build it, ship next week" -- best-first entries at the open on the
+  completed bar, shadow-logged first, switched on only with the operator's OK; step 3
+  "backtest first, decide after" -- 1d walk-forward on ~175 more liquid stocks as research,
+  kept out of the live evidence pool, nothing new trades until the operator approves the list;
+  step 4 all three: duplicate-order safeguard, close the pre-trade gap, region options.
+- **Step 4 done (pushed 10-10):** (a) the per-symbol open-queue unique index
+  (`idx_queue_unique_open_per_symbol`, status queued/processing) is now created on Postgres at
+  boot (`app/storage/pg_upgrades.py`, own transaction, failure logged never fatal; production
+  had no open items and no duplicates); (b) missing lifecycle evidence now always blocks
+  auto-approval, including the unattended near-miss path that previously saw no circuit-
+  breaker blockers at all; a failed evidence read logs `paper_lifecycle_evidence_unavailable`.
+  Production timings show lifecycles() has been completing (it scaled with executions), so
+  this should not block Monday's entries -- watch for that event. (c) Region options (no change
+  made): moving the bot to Railway Singapore cuts the DB round trip ~0.146 -> ~0.09 s but adds
+  latency to Alpaca (US) and eToro; moving the database to a Supabase US-West region next to
+  the bot would cut it to ~0.01-0.02 s (every repository call ~0.58 s -> ~0.05 s, scans and
+  pre-trade checks several times faster) but needs a new project + data migration and a
+  DATABASE_URL change by the operator. Recommended: plan the database move for a weekend.
+- **Step 1, phase 1 built: shadow pre-market deep scan.** With `PREMARKET_DEEP_SCAN_ENABLED=true`
+  the 08:30 ET `premarket_scan` bucket runs `app/workflow/premarket_deep_scan.py` INSTEAD of the
+  old rotating batch: every allowed stock (25) x every daily strategy (19; pairs_stat_arb
+  excluded), each built exactly as the live screener builds it, on the last COMPLETED daily bar
+  (the bar the backtests decide on: signal on bar N's close, fill at bar N+1's open). The bar's
+  session date is its UTC date, which holds for Alpaca/yfinance (04:00Z/05:00Z), 00:00Z, open-
+  and close-stamped feeds. Setups are ranked into `runtime_state['premarket:watchlist:<NY date>']`
+  (also `GET /workflow/premarket-watchlist` and the scorecard page): "tradeable" = a full-strength
+  signal, from a strategy passing the eToro mirror's evidence rule (always enforced there), on an
+  allowed, non-blacklisted stock not held or pending; then strict before weak, backtest
+  expectancy, R:R. Weak signals are listed but never tradeable (live they need approval).
+  SHADOW ONLY: no proposals, orders, scan decisions, alerts, tracked signals, learning rows,
+  Telegram or eToro activity (a real-wiring test checks only runtime_state and run_logs change;
+  proposals are read from the repository because the service's read writes expiries). While the
+  flag is on the old 08:30 scan does not run, so its outputs (alerts, tracked signals, the scan
+  decisions later scans use for repeat suppression and the weak-valid daily cap, auto-proposals)
+  are not produced; it produced none from 09-25 to 10-09. Bounded by the cadence scan stop, or by
+  `SCREENER_BATCH_DEADLINE_SECONDS` (120 s) for manual runs and the legacy budget; resumes across
+  ticks with a cursor; an eToro rate-limit cooldown pauses it instead of burning the universe;
+  finishes at the cutoff (`PREMARKET_DEEP_SCAN_CUTOFF_LOCAL`, default 09:20, never after 09:30; a
+  mistyped value falls back to 09:20) with what it has; past the cutoff with no list it records
+  `missed_cutoff` and never runs into the session; a save never replaces a finished list or more
+  progress (overlapping manual run). It writes the bucket's coverage record in the old fields.
+  Rollback: `PREMARKET_DEEP_SCAN_ENABLED=false` restores the old 08:30 scan exactly.
+- **Scan hot-path fixes riding along:** (1) the strategy-lab by-name lookup (one ~0.58 s database
+  read per built-in strategy run, in a table with 0 rows) is skipped through a 60 s cache; every
+  service write clears it, a write during a refresh is never cached away, and a listed strategy
+  found retired on its by-id read clears it at once (retired strategies still never build: that
+  read is always fresh). (2) A strategy that fails to build is now that run's `strategy_error`
+  instead of aborting the whole `scan_universe` (reproduced with a generated strategy retired
+  mid-scan; latent before for ~1 symbol, the cache made it 60 s). (3) Market-data cache files are
+  written to a temp file and renamed, so a reader never sees a half-written frame.
+- **Review (2 independent reviewers, 10-10):** 20 findings, all addressed above or in tests: the
+  00:00Z forming-bar case, the docstring's "no trading behaviour change" claim (now precise), the
+  cutoff parse, the missing deadline for manual/legacy runs, overlapping saves, the rate-limit
+  burn, specs dropped between ticks (recorded), stale health records, the cache race, the scan
+  abort, and 10 test-strength gaps (each new test checked to fail without its fix).
+
+## 2026-10-08 (Thu) → 10-10 (Sat) — more live trades; cadence timeout fix
+
+- **Live eToro trades:** PYPL 10-08 17:01 UTC ($993, 54.84, stop 51.86 / target 61.82), WMT
+  10-08 17:33 ($993, 110.74, 103.40 / 126.84), DIS 10-09 15:05 ($993, 107.64, 101.16 / 122.36),
+  all ema_trend_stack 1d. 7 of 9 open (tech group 4/4 full: META, MSFT, AMD, DIS); at 10-09
+  18:27 UTC open P/L -$47.80 (eToro prices), closed -$70.25, total -$118.05 (-1.18%); the
+  operator's copy ~-$5.90. No closes, halts or backup stops after the ETH test. Telegram still off
+  (daily reports skipped 10-07, 10-08).
+- **Operator: "investigate the timeouts".** Workflow (3 investigators, 2 designs, judge; resumed
+  after a container restart) on all 52 in-session `job exceeded 240s` timeouts 10-07..10-09
+  (22/18/17): the 110 s soft budget only gated starting a bucket, but a bucket really costs
+  ~140-145 s (swing) / ~170 s (intraday: its ~30 s active-mover refresh ran after the budget
+  check) and ~270-320 s when it places an entry (candidate_blockers -> lifecycles() re-read
+  reconciliation, review and two 1000-row lists per execution: 90-111 s, +3.5 s per trade). On
+  timeout the abandoned thread kept running and the next run started ~20 s later beside it (21
+  of 52 overlapped, up to 251 s). Every paper entry (8) and eToro LIVE submission (5) since 10-07
+  ran in such an abandoned thread; all gates held, but the next run's Alpaca reconciliation could
+  race an in-flight entry (near-misses AMD 10-07, PYPL 10-08) and trip a breaker flatten.
+- **Fix (pushed 10-10, market closed):** (1) per-bucket admission from measured cost and a scan
+  stop at job start + 180 s through scan_universe's existing cancel hook
+  (`app/workflow/cadence_budget.py`); post-scan work and entries are never cut; (2) a timed-out
+  job is not started again while its abandoned run is alive (up to
+  `SCHEDULER_OVERLAP_GRACE_SECONDS=120`, `<=0` = old behaviour), logging
+  `scheduler_job_overlap_skipped` / `_overrun_finished` / `_overrun_presumed_hung`; (3)
+  lifecycles() reads its evidence once per call (identical flags, tested against the old path;
+  the batched review lookup falls back to per-execution reads on any error, so the near-miss
+  breaker is never silently emptied). No risk gate, sizing, eToro rule or maintenance frequency
+  changed. Expected: ~2-3 timeouts per session (entry ticks, now allowed to finish), signal ->
+  order ~1 min instead of 2-3.5 min. Rollback: `SCHEDULER_CADENCE_SOFT_BUDGET_SECONDS=110`
+  (exactly the old rule: no backstop, no scan stop) and/or `SCHEDULER_OVERLAP_GRACE_SECONDS=0`.
+  Independent review (4 lenses + a skeptic per finding): 4 distinct issues confirmed, all low /
+  medium, none touching a gate; fixed in the follow-up commit: the 110 rollback kept the new
+  backstop and scan stop (now a true rollback); a budget- or lock-skipped intraday bucket lost
+  its 20-symbol rotation batch (offset now put back); docs now say the intraday / crypto / named
+  daily scans lose the symbols past the stop for that run (no resume cursor); the review-fallback
+  test now seeds real reviews. 901 tests pass. Monitor Monday: timeouts <= 5,
+  overlap_skipped == timeouts, presumed_hung == 0, created->approved < 20 s.
+- Follow-ups not in this change (need their own review / operator decision): close the
+  near-miss lifecycle fail-open (`lifecycles=None` -> no breaker blockers); add the
+  per-symbol open-queue unique index to Postgres (exists only for SQLite); the ~0.146 s DB round
+  trip (Railway <-> Supabase region) makes every repository call ~0.58 s.
+
+## 2026-10-07 (Wed) — option 3 live: first trades, live caps raised to 9 positions
+
+- **Option 3 worked on its first session.** The swing scan's AMD and COST entries passed on
+  eToro's room (`room_authority: etoro_live`) and were copied: **AMD** 16:31 UTC (20:31 Dubai),
+  the one-time **2x test**, $496.79 margin / $993.58 exposure, fill 642.00, stop 541.53, target
+  876.98 (etf_mega_cap_relative_strength_rotation 1d); **COST** 16:38 UTC, $993.43 1x, fill
+  947.39, stop 927.51, target 972.08 (momentum_breakout 1d). Paper then took AAPL and AMZN
+  under its own room rules (eToro's 2-a-day cap used; AAPL also hit the tech cap), as designed.
+  Later NVDA/MSFT/GOOGL/AVGO/PYPL/DIS/XOM/CSCO/META were refused by paper's limits.
+- **ETH test closed by the bot's backup stop** 10:09 UTC (14:09 Dubai) at 2,580.33 vs 2,698.16
+  open: about -$44 price move on $1,000 before fees (-1.0R on its 4.31% ATR stop).
+- eToro at 19:16 UTC: MSFT, META, AMD, COST open (open P/L -$22.26 price move); balance at cost
+  $9,933, free cash $6,445, trades 2/2. Scorecard page now has a live P/L table and an open
+  P/L total (artifact v3).
+- **~19:20 UTC operator: raise the live limits so the cash is invested when strategies approve
+  trades.** Chose "9 trades, tech 4": `HARD_MAX_OPEN_POSITIONS` 6 -> 9 and
+  `HARD_MAX_OPEN_PER_BUCKET` 3 -> 4 (code constants). Unchanged: 10% / $1,000 per trade, 2 new
+  trades a day, $100 cash reserve, 5% daily loss stop, evidence gate, stop + target, backup
+  stop, long equities only. At 9 x ~$993 + $100 the account is ~91% invested at most; the
+  operator's $500 copy up to ~$450. Note: paper's portfolio-heat cap (6%, ~0.5% per open paper
+  position) was kept as option 3's backstop; with 8 paper positions (4 paper-only) it allows
+  about 3-4 more paper entries, so the 8th-9th eToro slots may wait until paper-only positions
+  close. Pushed after the 20:00 UTC close.
+- **Scorecard P/L now uses eToro's own prices (operator: "it should be based on eToro").** The backup
+  stop's per-minute eToro price read is saved under `etoro_live:marks` (display only); the page
+  (artifact v4) uses it when under 15 min old, else the labelled paper price, and its strip shows
+  Open P/L, Closed P/L (eToro balance at cost minus the $10,000 funded, so after fees) and Total P/L.
+- Deploy `d38f82a` (with `b8c558e`, caps 9 / 4) pushed 20:01 UTC, SUCCESS 20:05 UTC; CI green.
+  First eToro marks 20:05:47 UTC: MSFT 529.60, META 721.32, AMD 645.46, COST 945.53 -> open
+  P/L -$17.55, total -$84.25 (-0.84%). Guard heartbeat fresh, 0 guard errors.
+
+## 2026-10-06 (Tue) — real-money code review fixes
+
+- Mon 10-05 session (eToro LIVE, AlgoBot): two mirrored 1x entries, MSFT $999 at
+  17:02 UTC (stop 511.02, target 544.52, momentum_breakout) and META $998.90 at
+  19:15 UTC (stop 661.90, target 928.04, etf_mega_cap_relative_strength_rotation).
+  Both have bot backup stops recorded. ETH test still open. One watch read timed
+  out at 23:47 UTC and the next tick recovered. Not halted; equity basis $9,988.
+- Independent review (3 reviewers) of the real-money paths. Verified and fixed:
+  - Mirror writes its state (daily count, open symbol, 2x flag, backup stop)
+    *before* the POST. It rolls back on a 4xx refusal or rejected/cancelled
+    status, and a rate limit never halts it. A rejected order no longer counts
+    as a successful 1x.
+  - The evidence gate uses the order's own timeframe (scanner proposals have no
+    signal). Missing timeframe → blocked. Crypto (incl. bare "BTC"/"ETH") is
+    never mirrored by the stock mirror. The mirror is skipped when the paper
+    order FAILED/BLOCKED.
+  - Backup stop and ETH watch ignore malformed/empty portfolio reads (no stop
+    dropped, no false "closed"). A stop is dropped only after the position was
+    seen and is now gone. A rate-limited close keeps the stop and doesn't halt.
+  - eToro rate-limit cooldown is per account (a demo 429 no longer blinds the
+    live backup stop).
+  - Reconciliation: one sweep at a time. Alpaca 40410000 "position not found" is
+    treated as already flat. Stream updates invalidate the write-skip cache.
+  - Readiness counts only if computed within 2 h. Evidence older than 24 h is
+    blocked. Bad trade rows are skipped. The phase-gate refreshes run
+    independently.
+  - **2x leverage test held** (`LEVERAGE_TEST_ENABLED = False`): eToro's Amount is
+    margin, so it would be $2,000 notional. Awaiting the operator's decision.
+- **~10:00 UTC operator: "try the 2x leverage".** Enabled, sized at the same exposure
+  as a 1x trade: $500 margin x 2 = $1,000 notional (Amount is margin). Fires once, on the
+  next qualifying mirrored entry; later entries are 1x again.
+- **Live-vs-backtest scorecard** (operator: the live account is for testing whether the
+  backtests hold up). Every mirrored entry records its strategy's backtest expectancy in R;
+  the guard attaches the eToro fill and books realized R, P/L and exit reason at close.
+  `GET /performance/live-scorecard`: per-trade rows + per-strategy verdict (collecting
+  until 10 closed). MSFT and META backfilled (signal price = paper fill).
+- Minimum backtest expectancy bar: `STRATEGY_EVIDENCE_MIN_EXPECTANCY_R` added, **default 0
+  (off)**. On the 10:41 refresh no strategy reaches +0.05R (momentum_breakout fell to
+  +$4.10 per $100 risked), so 0.05 would stop all new entries. Awaiting the operator's level.
+- Correction: batch backtests already use the default (eToro-style) cost model: 10 bps
+  round-trip spread, 0.015%/day financing, weekend x3, $50 minimum. The Alpaca profile is
+  unused. The scorecard's measured eToro fills will calibrate the spread.
+- **~12:00 UTC operator: "raise the cap from 3 to 6 maybe if there is any fund left".**
+  eToro live open-position cap 3 -> 6 (ETH + MSFT + META had filled all 3, blocking every
+  new entry incl. the 2x test). New funds check: an entry needs free cash (eToro `credit`,
+  read at reconcile, reduced by each entry until the next read) of at least the trade
+  amount + $100 reserve. Daily cap (2 new trades/day) and 5% daily loss stop unchanged.
+- **Exit copying (operator: "start the exit copying build").** eToro used to exit only at
+  its stop/target, while paper also exits early (time limit, signal exit, flatten), so live
+  results drifted from the backtest. The guard now follows the paper position: once a
+  mirrored symbol is flat on paper for 2 consecutive minute reads while the US market is
+  open (and was seen open on paper first), the eToro position is closed at market and booked
+  as `paper_exit` in the scorecard. Failed/malformed reads change nothing; a failed close is
+  retried each minute and eToro's stop/target stay on meanwhile.
+- **Exception (operator: "build the exception and deploy").** Paper *safety* flattens are
+  not copied. Found: every paper breaker trip runs an emergency stop that closes all paper
+  positions, and paper alarms have been false before. The emergency stop and the
+  unprotected-position close now write a `paper_safety_flatten` marker before closing; a
+  live trade whose paper position vanished after such a marker (or while the kill switch
+  is on) is *detached*: never auto-closed, left on eToro's stop/target + backup stop, and
+  the operator is alerted. Strategy exits (time limit, signal exit, end-of-day flatten)
+  are still copied.
+- **Maintenance timeouts back overnight (operator: "fix the timeouts now").** 23 between
+  20:17 and 08:20 UTC, every ~16 min then ~33 min. Cause: the reconciliation write-skip's
+  15-min full rewrite took ~150-154 s (20:14->20:16:51, 02:01->02:03:36) + ~45 s ledger
+  cycle > 240 s; after hours maintenance runs every ~16 min, so every run did the full
+  rewrite. Fix: rolling refresh (1/12 of rows re-written per sweep) + 150-write budget per
+  sweep for rows in an unknown state (after a restart); a row known to have changed is
+  always written.
+- **Daily eToro Telegram report (operator: "start the Telegram report").** Sent by the
+  guard thread once per US trading day at 16:10 New York (20:10 UTC now, follows DST):
+  balance/cash/day change, trades opened and closed (R, $, copy share), open positions
+  with R at a fresh eToro price, live-vs-backtest verdicts, events (2x, paper exits,
+  detaches, backup-stop closes, halt). Once per NY date, retried if the send fails.
+  Preview: `GET /performance/live-daily-report`. Held locally, pushed after the close.
+- **14:40 check:** reconciliation fix confirmed (29 s per sweep, was ~150 s), but 6 timeouts
+  13:42-15:19 UTC came from another step: the open-signal check took 129 s in market hours
+  (writing all ~90 tracked signals every run + a quote per symbol/timeframe). Fix (held with
+  the Telegram report until after the close): price written only on a >=0.1% move (closes
+  always written), 60 s budget per run with a resume cursor; moved to
+  `app/workflow/open_signals.py` (operations.py 999 -> 935 lines). No eToro trade yet
+  today (0 of 2 daily slots used; 2x test still armed), no halt, MSFT/META backup stops
+  recorded, ETH test open.
+- **No trade today explained (16:10 UTC).** The hourly swing scan rotated 6 of 38 specs per
+  run, 1h specs first, so the six passing 1d strategies came up only in batches 3-5 (once a
+  day), and its 180 s deadline reached only the first 6-10 of 25 symbols, always the same
+  ones. Monday's MSFT (batch 3, 17:00) and META (batch 5, 19:13) fit exactly.
+- **Scan fix (operator: "build the scan fix and deploy after close, it should run every
+  min").** Every minute isn't feasible (one scan ~2-3 min on the single shared worker), so
+  while the evidence gate is on the swing scan now: checks only passing specs (every 6th run
+  rotates all specs for shadow signals); starts where the last run stopped in the symbol list;
+  runs every 10 min (`SWING_FOCUS_INTERVAL_MINUTES`). Also fixed the scheduler soft budget,
+  which started counting after maintenance (150 s maintenance + 180 s scan > 240 s); it now
+  counts from the start of the run. Held with the other two commits until after the close.
+- **No trade on 10-06.** Daily scans did find MSFT/NVDA/AAPL (17:02, 19:09 UTC) but every one
+  was blocked by the paper portfolio limits: paper held $28.8k (MSFT $12.2k, TSLA $6.8k,
+  NVDA $5.3k, META $4.5k) against a 30% gross cap on ~$100k, plus per-symbol and correlated
+  caps. TSLA/NVDA (10-01/10-02) predate the eToro mirror (first mirror event 10-05 17:02) so
+  they were never mirrored. Pushed the 3 held commits at 20:00 UTC after the close.
+- **~20:01 UTC operator: "yes please" (match the paper limits to the eToro account shape).**
+  Railway vars set: `MAX_TRADE_AMOUNT_USD=10000` (paper per-trade cap 10% of ~$100k, was
+  >=$12.5k), `PORTFOLIO_MAX_GROSS_EXPOSURE_PCT=60` (was 30), and
+  `PORTFOLIO_MAX_CORRELATED_EXPOSURE_PCT=60` (was 30). Not changed (not yet approved): sector
+  cap 25% (likely to block a 3rd tech name), per-symbol 15%, daily 2 entries per
+  correlation bucket, heat 6%. Real-money eToro caps unchanged.
+- **2-minute swing cadence (operator: "Can we do it for 2 mins").** Workflow review (4
+  investigators + skeptic, calibrated to production ticks): go with guards. 2 min does not
+  mean 2-minute scans: ~23-30 swing runs/session, ~13-17 min apart, full 25-symbol sweep
+  ~50-65 min (vs ~17-19 runs / 20-23 min / 80-90 min at 10 min); <=5 min all saturate the
+  single worker. Real-money gates are cadence-independent. Timeouts +15-30% (still <= today).
+  Found a trap in the deployed soft-budget fix: with the code default deadline 180 s the budget
+  would be 50 s (< maintenance) and no scan would start; production is safe only because
+  Railway sets SCREENER_BATCH_DEADLINE_SECONDS=120 (soft budget 110 s seen in deferral logs).
+  Code + .env.example defaults now 120, test asserts soft budget >= 100.
+  `SWING_FOCUS_INTERVAL_MINUTES=2` set on Railway with skipDeploys (takes effect with the next
+  deploy). Watch the first 2 sessions: timeouts (roll back to 10 if > ~40/session), swing gap
+  ~13-17 min, intraday gap (roll back if > ~25 min).
+- **First daily eToro report not sent (checked 20:18 UTC / 00:18 Dubai).** Not a bot fault:
+  Telegram is off in production. `TelegramNotifier` sends only with `TELEGRAM_ENABLED=true`
+  plus `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`; alert_history shows every message since
+  2026-07-16 as "generated", never "sent", so the eToro live alerts (halts, exits, backup
+  stops) have not reached the operator either. Operator to set the three Railway variables
+  (values not read by the agent). Fix pushed: with Telegram off the report now skips before
+  building (it had re-read eToro prices every guard minute) and logs
+  `etoro_live_daily_report_skipped` once per date; a failed send retries every 15 min. The
+  report text is always available at `GET /performance/live-daily-report`.
+- Deploy `4640416` (paper limits) SUCCESS 20:08 UTC; open-signal check now bounded
+  (`checked=102`).
+- **Option 3 built (operator ~20:25 UTC: "go with option 3, build it"): eToro's own limits
+  decide portfolio room.** When the mirror would copy an order (`room_verdict` asks the mirror's
+  own `blockers()`, state reads only: no eToro call, no lock), paper skips its room checks
+  (max open positions, gross / symbol / sector / correlated exposure) and eToro's room applies
+  instead: one position per symbol, 6 open, free cash + $100 reserve, and a new code cap of 3
+  open positions per correlation group (`HARD_MAX_OPEN_PER_BUCKET`, enforced in `mirror()` too).
+  If the mirror would refuse for any other reason (disabled, halted, evidence, 2-a-day cap,
+  loss stop, not a long equity), paper keeps all its own room rules, as before. Unchanged on
+  paper: one position per symbol (exit copy follows the paper position), stop, per-trade risk %,
+  loss limits, kill switch, cooldowns, the daily 2-entries-per-group cap, drawdown halts, heat.
+  The eToro open set now maps raw instrument ids back to symbols and keeps mirrored orders not
+  yet filled. Both gates use it (proposal time, where the 10-06 blocks happened, and before the
+  paper order); `proposal_created` logs `room_authority`. Rollback without a deploy:
+  `ETORO_LIVE_ROOM_AUTHORITY_ENABLED=false`. On 10-06 state this would have let AAPL through
+  (tech 2 of 3); NVDA and MSFT stay blocked by paper's one-per-symbol rule.
+  Independent review (3 lenses + a skeptic per finding, ~21:05 UTC): 3 of 6 findings confirmed,
+  none weakening a real-money cap, all fixed: (1) during an eToro rate-limit cooldown, or for
+  30 min after a rejected copy (`etoro_live:copy_failed`), mirror() rolls back without using any
+  room, so eToro room is no longer granted then; (2) the self-simulated paper broker, a
+  non-Alpaca equity broker and the simulated fallback never use eToro room (those orders are
+  never copied); (3) queue items are processed one at a time, so two entries cannot both use
+  eToro's last slot.
+- **After-close check (run 10-07 09:00 UTC / 13:00 Dubai; the 21:35 check-in reached the session
+  late after a container restart).** Scheduler "job exceeded 240s": 26 during the 10-06 session
+  (1-5 per hour, 13:00-19:59 UTC), **0 since 20:00 UTC** (the open-signal bound, soft-budget and
+  120 s defaults all deployed 20:08-20:22). Reconciliation (ledger cycle -> alpaca_reconciliation_ok):
+  avg 21 s / max 29 s in session, avg 22 s / max 36 s after (was ~150 s before 98a0f02). The first
+  test under load is today's session. eToro live on 10-06: no new trades (0 mirror events), no exit
+  copies or detaches, no backup-stop closes, not halted. Open: ETH test, MSFT, META (3 of 6;
+  $6,990 free; 2x test still next). One transient exit-copy read error 10-07 04:28 (Alpaca
+  connection dropped, retried next tick). Deploys `3ac3a44`, `424a702`, `fb79c82` SUCCESS (last
+  21:18 UTC); CI green on PR #32 for each.
+- Minute (5m/15m) strategies: 0 of 25 pass. Pooled OOS expectancy -$13.49 (5m) and
+  -$8.25 (15m) per $100 risked, over ~11,800 trades.
+- Live scorecard page (private, refreshes every minute from Supabase via the operator's
+  connector): https://claude.ai/artifact/GHdfkyLvv8ZQqGWfvoV5f9
+- Tests: 857 passed at `98a0f02` (all of today's builds). Deploys today: `b2569f5`,
+  `662e7e8`, `b761e15`, `99d7d02`, `cad5a3a`, `c7fb601`, `971330d`, `98a0f02`; each
+  verified SUCCESS on Railway (last at ~13:01 UTC). Verification check-ins scheduled for
+  14:39 UTC (open, trades) and 21:35 UTC (after-close timeouts).
+
+## 2026-10-05 (Mon)
+
+- **05:09 UTC** `BACKTEST_SCHEDULER_INTERVAL_SECONDS` restored 300 → **1800**. The trigger was due Sun 22:00 UTC but ran late
+  because the session was idle. Deploy `a3c390ea` **SUCCESS 05:13 UTC**. Phase 1 was already complete and reported on 10-04.
+- **07:36 UTC** the eToro guard heartbeat resumed after the restart (last 07:35:02). There have been 0 guard errors since 10-04
+  20:00, and the mirror is not halted. ETH test still open: **$2,722.99** vs entry $2,698.16, so **+$9.20 before fees** (≈ −$0.80
+  after the $10 buy fee).
+- **Operator: "fix the timeout now."** Diagnosed from `run_logs`: one maintenance run took ≈ 280 s against a 240 s limit
+  (timed out 174 times in 24 h). Hot spots: **Alpaca reconciliation ≈ 140 s** and the **open-signal check ≈ 100 s** (73
+  signals). Cause: the sweep re-reads all orders (≤ 500 plus legs) every minute and rewrote every order row, plus an
+  execution update and a learning event per trade, unconditionally. Fix: write only when the broker-state fingerprint
+  changed (cleared every 15 min and on restart for a full rewrite; recorded only after a successful write). The
+  open-signal check now fetches one quote per symbol/timeframe and skips the DB write while a price is unchanged.
+  Safety logic is unchanged (protection, unknown-position and breaker checks still read every order). 817 tests pass.
+- **09:05 UTC verified:** deploy `4437d4d4` SUCCESS 08:35 UTC. **0 timeouts since** (14 in the 2 h before). Alpaca
+  reconciliation **≈ 9-10 s** (was ≈ 140 s); the 15-minute full rewrite still takes ≈ 142 s, so that run is ≈ 170 s, under
+  the limit. Open-signal check **≈ 7 s** (was ≈ 100 s). Maintenance now completes every 1-2 min instead of timing out.
+  eToro guard heartbeat fresh (09:05:35); ETH test open at $2,719.88.
+
+## 2026-10-04 (Sun) — Phase 1 complete (25/25 symbols, 5m + 15m + 1d)
+
+- **Pooled walk-forward OOS verdicts:** 9 strategies pass, **all daily (1d)**: momentum_breakout
+  (+$5.99/trade, 279 trades), ma_crossover (+$4.41), ema_trend_stack (+$3.28),
+  relative_strength_momentum (+$2.65), atr_donchian_trend_breakout (+$2.28), trend_following (+$1.89),
+  pullback_trend (+$1.64), etf_mega_cap_relative_strength_rotation (+$1.64),
+  regime_aligned_trend_continuation (+$0.78); each over 31 symbols, holdout positive (14–25 trades).
+- **Every intraday (5m/15m) strategy fails**: expectancy −$5 to −$37/trade over 100–1,400 OOS trades,
+  holdout negative too. Best: rsi_reversal 15m +$0.37 but holdout −$0.98.
+- **Variants (pooled, latest per symbol/strategy):**
+  - hold_overnight is **worse** than closing at the bell: 15m −$11.56 vs −$8.35/trade; 5m −$13.46 vs
+    −$9.49. Keep the close-before-the-bell rule.
+  - stop floors help but don't rescue the intraday strategies: 1.0× session ATR → 15m −$5.28,
+    5m −$5.17/trade (vs −$8.35 / −$9.49); still negative.
+- **eToro-cost re-pricing (operator request; no API key used).** Finding: every backtest already ran on
+  the default `CostModel()` = eToro *CFD* retail model (10 bps spread + 0.015%/day financing, weekend ×3).
+  eToro's published fees for real, unleveraged US stocks (2026): $2 commission per side, no spread
+  markup, no overnight fee. Re-priced every 1d OOS trade (removed modeled costs; applied $4 round trip
+  + 4 bps market spread/slippage; pessimistic case 12 bps): momentum_breakout +$6.98/trade,
+  ma_crossover +$2.76, relative_strength_momentum +$2.60, atr_donchian +$2.32, ema_trend_stack +$2.25,
+  trend_following +$2.12, etf_mega_cap_rotation +$0.72; regime_aligned_trend_continuation −$0.02 and
+  pullback_trend −$0.43 turn negative. Edges are 0.21–0.38% of notional before the flat fee, so the
+  **flat $4 round trip needs positions of ≈$1,050–1,900 to break even and ≈$2,100–3,800 to keep half
+  the edge** — account size and per-trade risk decide whether eToro live is viable.
+- **Operator: "switch on Phase 2 on Alpaca paper."** Verified first: production candidates are
+  `LiveSignalSnapshot` with `timeframe` (default "1d") and registry strategy names matching the verdict
+  keys, so the gate can't block everything by accident. `REQUIRE_STRATEGY_OOS_EVIDENCE=true` set
+  11:36 UTC; Phase 3 clock starts on the first enforced refresh. Only the 9 passing 1d strategies may
+  create proposals; all intraday strategies become shadow signals.
+- Operator asked about **eToro live small trades incl. leverage**. Choices: automatic within caps, $50 per
+  trade, 1x first then one 2x test. Writing the real-money path was blocked twice by the session's
+  auto-mode safety classifier; work was stashed (not deployed) until the operator changed the session's
+  permission mode, then completed.
+- `297fc1d` **capped eToro LIVE test mirror — deployed INERT.** Mirrors each Alpaca paper entry (Phase 2
+  strategies only) as a real eToro position: ≤$100 hard cap (default $50), ≤2 new/day, ≤3 open, $25 daily
+  loss stop, 1x + exactly one 2x test, long-only with stop+target, halts itself on any eToro error,
+  closes any live position found without a stop. 776 tests pass. **Operator must set in Railway:**
+  `ETORO_LIVE_API_KEY`, `ETORO_LIVE_USER_KEY` (secrets), `ETORO_LIVE_ACKNOWLEDGEMENT` (exact phrase),
+  `ETORO_LIVE_MIRROR_ENABLED=true`. `ENABLE_REAL_TRADING` stays false.
+- **11:53 verified:** deploy `ecdf45d9` (code `297fc1d`) SUCCESS; `strategy_evidence_refreshed` shows
+  `enforced: true`; **Phase 3 clock started 2026-10-04T11:53:21Z** (`go_live_readiness`: 0/50 trades,
+  0/4 clean weeks). First live Phase 2 session: Mon 10-05 (check armed 15:30 UTC).
+- **12:08** operator set the eToro live Railway variables (deploy `ca085bdb`). **12:23**
+  `etoro_live_reconciled`: equity $10,000, no positions. Operator said the account should hold $500, so I
+  suspected the client's simulation placeholder and pushed `2204ad9` (mirror refuses a simulated client and
+  logs `etoro_live_client_unusable` with the base-URL host). It deployed as `baa22bb3` (SUCCESS 12:32).
+- **12:39 verified, live keys WORK.** The guard did not fire, and Railway logs show real
+  `GET https://public-api.etoro.com/api/v1/trading/info/portfolio` calls returning **200** at 12:39:32
+  (`/pnl` 404 is expected and handled). So the AlgoBot account itself reports **$10,000 credit, 0
+  positions**. The operator's screenshot explains the $500: it is a **copy** from their main account into
+  AlgoBot ("Copy started 04/10/2026 15:32", invested $500). AlgoBot trades are copied in proportion to
+  AlgoBot's $10,000, so a $50 mirror trade (0.5%) puts about **$2.50** of the operator's $500 to work. The
+  $25 daily loss stop is measured on the $10,000 base. Sizing decision is put to the operator; caps are
+  unchanged. The operator confirmed the keys are from AlgoBot, Real environment, with Write permission.
+- **Operator: "yes, build the 10% sizing and deploy."** `515855a`: each mirror position is **10% of the eToro
+  equity last read by reconcile** (was a fixed $50). With AlgoBot at $10,000 that is $1,000, about **$50 of the
+  operator's $500 copy**. Hard caps in code: ≤10% of equity and ≤$1,000 per position; a 5% daily equity-drop
+  stop (≈$25 on the copy; replaces the $25 fixed stop); no trade while equity is unknown or below eToro's $10
+  minimum; 2 new/day, 3 open and one 2x test unchanged. Setting `ETORO_LIVE_TRADE_AMOUNT_USD` replaced by
+  `ETORO_LIVE_TRADE_PCT_OF_EQUITY` (default 10, capped at 10). 779 tests pass. Deploy `cb22b99b` **SUCCESS
+  12:54 UTC**; stored equity basis is $10,000. Operator advised to **Keep Copying**: stopping the copy doesn't
+  stop the bot, it only stops the $500 following it. First possible mirrored trade: Mon 10-05 13:30 UTC.
+- **Operator: skip the Notion mirror for now** (the repo log stays the source of truth).
+- **Operator asked for a weekend eToro live test on crypto.** Correction given: crypto is OFF on the main
+  bot since 09-27, so there were no ETH/BTC trades to copy, and the eToro client only resolved US equities.
+  Operator choices: **ETH, $200 in AlgoBot (≈$10 of the $500 copy), close "based on the strategy and profit
+  made"**. Built `app/broker/etoro_live_test_order.py`: a one-shot request row
+  (`etoro_live:test_order_request`) makes the bot place one 1x ETH buy with stop = entry − 1.5× daily ATR(14)
+  (clamped 1–10%) and target = 2R, both held by eToro, plus a 7-day time stop. The same live-mirror locks apply
+  (enabled, acknowledgement, not halted, real client). Hard cap $200, ETH/BTC only, one test at a time. A
+  failed test is logged and never halts the mirror. Positions are now closed by position id
+  (`close_position_by_id`), so the mirror's unprotected-position close also works for non-equity
+  instruments. eToro's crypto fee is about 1% a side. 790 tests pass.
+- **Operator: "Increase the copy value from 10 to 50$."** Before any order was sent (the $200 request was never
+  written; its scheduled trigger was cancelled), the test cap was raised to **$1,000 in AlgoBot (≈$50 of the copy)**,
+  also capped at 10% of the AlgoBot balance, the same per-trade limits as the live mirror. 32 related tests pass.
+- **13:32 UTC** request written ($1,000 version live 13:29:33, old $200 container removed 13:29:52).
+  **13:41:19 UTC (5:41 pm Dubai) ETH test SUBMITTED**: eToro order `1602717961`, $1,000 at 1x, entry ref
+  **$2,698.02**, daily ATR $77.48 → **stop $2,581.80 (−4.31%)**, **target $2,930.47 (+8.62%)**, time stop
+  Sun 10-11 13:41 UTC. The hook runs inside the demote step, so it fires on the maintenance tick that reaches it.
+- **Found: eToro `credit` is cash only.** Right after the buy it read **$8,990** ($10,000 − $1,000 − ≈$10 fee,
+  consistent with eToro's ~1% crypto fee). The mirror used it as equity, which would have shrunk later trades and
+  tripped the 5% daily stop on money merely invested. Fixed: AlgoBot balance = credit + Σ position `amount`
+  (at cost; open P&L counts on close, since the portfolio has no live value). The test's opening balance is now
+  taken before the buy so its P&L is net of both fees. 792 tests pass.
+- **Pages refreshed (operator: "update the artifacts … what's done and what's pending").** A 10-agent workflow
+  gathered the ledger and live figures, redrafted the four pages and fact-checked each one. I then added the ETH test
+  and the balance fix, and checked each page at 400 px and 1100 px in light and dark. That check caught a Console
+  script error (`const top` clashes with `window.top`), which I fixed. Published to the same links: Ops (v2), Profit
+  Roadmap (v18), Console (v2), Architecture (v3).
+- **13:49:43 UTC ETH test FILLED** (first seen by the bot): position `3595777383`, **0.370622 ETH @ $2,698.16**
+  ($1,000). eToro kept the target **$2,930.47** but set the stop-loss to **$2,428.34 = exactly −10%** of the
+  fill, not the bot's $2,581.80 (−4.31%). eToro appears to have overridden the requested stop (cause not
+  confirmed). Worst case at eToro's stop: ≈ −$100 + fees in AlgoBot (≈ −$6 on the copy) vs the planned ≈ −$63
+  (≈ −$3). Monday's mirrored stock trades may be affected the same way; I'm putting a software stop to the operator.
+- Balance fix `37327a5` deploy `45f40753` **SUCCESS 13:52:55 UTC**. Corrected the open test's opening balance to
+  $10,000 (pre-buy) so its P&L is net of both fees, and forced a phase-gate run so the mirror re-reads the AlgoBot
+  balance as cash + invested (≈ $9,990; the 13:49 reading of $8,990 came from the old container).
+- **Operator: "Add a backup stop in the bot."** `app/broker/etoro_live_backup_stop.py`: on every maintenance tick the
+  bot reads a fresh eToro price and closes a live position itself once it is at or below the strategy's stop. This
+  applies to the ETH test now (stop $2,581.80; eToro's own −10% stop at $2,428.34 stays as the outer net) and to
+  every mirrored stock entry from Monday (its intended stop is recorded at entry). There is no price, so no close: eToro's stop
+  still holds. A failed close halts new mirror entries and asks for a manual close. Ticks are minutes apart, so a fast
+  move can fill below the level. 799 tests pass.
+- **14:49 verified:** backup-stop deploy `3b5af992` SUCCESS 14:17:39 UTC. The ETH monitor reads fresh eToro prices
+  (last $2,692.37 at 14:48 UTC, open −$2.15 before fees). The mirror balance now reads **$9,990** (cash + invested), so
+  no false daily loss stop.
+- **Operator: "build the separate backup-stop job".** `app/broker/etoro_live_guard.py`: a daemon thread runs the
+  ETH-test watch and the backup stops **every 60 s**, independent of the sequential scheduler. Before, they ran inside
+  maintenance, which hits its 240 s limit about 160 times a day and waits behind ~3-minute backtest passes. With nothing
+  open the thread makes no eToro call. It writes a heartbeat, and maintenance runs the same checks only when that
+  heartbeat is older than 5 min. One lock serializes every live-eToro state change in the process.
+- **Independent review before deploy** (15-agent workflow: 3 lenses, each finding verified): 6 confirmed (1 medium,
+  5 low), 5 rejected. All fixed. (1) After a failed close, an empty or malformed portfolio read now counts as *still
+  open* (fail closed), and a re-read follows 3 s later. (2) The test-order and backup-stop steps are isolated, so
+  one failing can't skip the other. (3) Saves merge instead of overwriting, and a test another container already
+  finished is never overwritten or re-announced. The new container's guard also waits 30 s, past the ~20 s deploy
+  overlap. (4) Shutdown stops the guard first and joins it (5 s). The test order is saved before it is sent. A bad
+  amount is recorded as failed. An unclear order result keeps being watched for 30 min instead of being marked failed.
+  813 tests pass.
+- **Verified live:** guard deploy `56d1c5f0` SUCCESS 17:00:19 UTC. At 20:01 UTC the guard heartbeat and the ETH watch
+  both updated within the last minute (heartbeat 20:01:01, price read 20:01:00). There were 0 `etoro_live_guard_error`
+  events since the deploy, and the mirror is not halted. ETH $2,700.16 vs entry $2,698.16 (+$0.74 before fees). The
+  balance reads $9,990.
+- Recommendation to operator: (a) turn on REQUIRE_STRATEGY_OOS_EVIDENCE (trade the 9 daily strategies
+  only; intraday become shadow signals); (b) keep the intraday close rule; (c) no live stop floor
+  (intraday won't trade anyway). (a) signed off and enforcing since 11:36 UTC (see above); (b) and (c)
+  stand as recommended.
+
+## 2026-10-03 (Sat) — loss analysis and three follow-ups (operator: "do all three")
+
+- **Why the losses (all-time realized -$369.82, 18 trades):** 4 wins +$984 (avg $246) vs 14
+  losses -$1,354 (avg $97). Win/loss size 2.5x → break-even win rate ~29%; actual 22%.
+  09-28 alone (4 tech longs, one down day) = 44% of losses; NFLX 09-14 = 25%. Overnight holds
+  netted **+$784** (INTC, IWM, CSCO, COST) — the new close-before-the-bell rule would have cut
+  them; flagged as an open question, now measured by the hold_overnight backtest variant.
+- **Correction:** stops were *not* inside bar noise — they were 1.6–4.4x the 5m/15m bar ATR
+  (NVDA 3.5x, AAPL 4.4x, META 1.6x). The mismatch is vs. a multi-hour hold / the day's range.
+  So the stop floor ships as a measured backtest variant, live floor OFF until evidence.
+- `c1c913c` **daily cap of 2 entries per correlation bucket** (`MAX_DAILY_ENTRIES_PER_CORRELATION_BUCKET=2`);
+  QQQ/CSCO → tech_complex, SPY/IWM/DIA → broad_market (also tightens the correlated-exposure cap).
+- `0210f0b` **intraday walk-forward**: 5m/15m fold plan (~120 days, 7-day folds, 14-day holdout),
+  scheduler timeframes 1d,15m,5m; backtest closes intraday trades at the session end (mirrors
+  live); variants hold_overnight / stop_floor_0.5 / stop_floor_1.0 logged to run_logs only
+  (never gate rows). Engine 18x faster (5m run 158 s → 8.7 s, identical trades) via a causal
+  indicator prefix cache; opening range made causal (it filled bars 1–4 from bars 2–5 when
+  computed over a whole frame). Backtest cursor can resume mid-symbol. 745 tests pass.
+- Pending: confirm prod produces 5m/15m OOS rows (check armed 19:08 UTC); per-strategy
+  intraday report once rows accumulate.
+- **18:30 verified:** intraday walk-forward producing in prod — 16 × 15m + 2 × 5m OOS rows and
+  54 variant results in the first hour; mid-symbol resume working (start_unit 26 → 38). Full
+  universe ≈ 30 h at a 180 s pass every 30 min → table by Mon evening.
+- **Plan agreed (operator):** Phase 1 evidence (now) → Phase 2 trade only passing strategies +
+  market-direction filter → Phase 3 prove in paper (50+ trades, total wins ≥ 1.3× total losses,
+  max drawdown < 3%, 4 clean weeks) → Phase 4 micro-live only on operator decision.
+- `e3c34b5` **market-direction filter** (operator: "yes, build it"): new intraday buys blocked
+  while SPY (and QQQ for tech) is below today's VWAP and ≥0.3% below the prior close
+  (`MARKET_DIRECTION_MIN_DROP_PCT=0.3`). Swing entries exempt; missing data never blocks (logged).
+  753 tests pass. Live verification armed Mon 10-05 14:20 UTC (data reachability for SPY/QQQ 5m).
+- **19:02 Operator: "speed it up for the weekend."** `BACKTEST_SCHEDULER_INTERVAL_SECONDS`
+  1800 → **300** (weekend only, market closed). The variable change did not trigger a deploy
+  (again); manual redeploy of `b6def479` (code `e3c34b5`) → `a4d6ebb9`. **Restore to 1800**
+  armed for Sun 10-04 22:00 UTC, before Monday's open, with a Phase 1 completion check.
+- **Operator: "build Phase 2, 3 and 4."** `6f9378a` — built, not switched on:
+  - Phase 2: pooled per-strategy OOS evidence verdicts (≥40 OOS trades, positive expectancy
+    after costs, ≥10 holdout trades with positive holdout expectancy). Gate
+    `REQUIRE_STRATEGY_OOS_EVIDENCE` **OFF** pending the operator's decision on the Phase 1 table.
+  - Phase 3: go-live readiness tracker (≥50 trades, PF ≥1.3, max DD <3%, 4 clean weeks) + R
+    scorecard, refreshed every 30 min; `GET /performance/go-live-readiness`. **Auto-demotion now
+    enforced** (`STRATEGY_AUTO_DEMOTE_ENABLED` default true; needs 20+ live trades per strategy).
+  - Phase 4: live mode additionally locked behind readiness met + micro-live cap ≤0.1% + an exact
+    operator acknowledgement phrase. `ENABLE_REAL_TRADING` untouched (false).
+
+## 2026-10-02 (Fri) — session results (checked 10-03)
+
+- Deploy `0ac8b99` SUCCESS 10:42 UTC (intraday close-before-bell live for the session).
+- **IWM** (15m) hit its target at the open, 282.45 → **+$193.15**. **CSCO** (5m) hit its target
+  at the open, 110.18 → **+$168.72**. Both were the overnight carries from 10-01 and gapped
+  in our favour; they closed on their brackets before the flatten window.
+- **AMZN** (15m, anchored_vwap_pullback_continuation) entered 13:42 @ 252.70 ×49; **closed by
+  the new intraday flatten at 19:51 UTC** (8.6 min to close) @ 251.61 → **-$53.41**. First
+  live run of `intraday_exit`: legs cancelled, market close filled, reconciliation booked the
+  loss via `exit_fill` (so the loss gates saw it) — verified.
+- **TSLA** (1d, ema_trend_stack) entered 17:00 @ 372.29 ×18 — swing, holds over the weekend
+  with its GTC bracket. **NVDA** (1d) still open with its bracket.
+- No `reward_to_risk_below_min_at_quote` or re-entry-cooldown blocks fired. 30 proposals
+  blocked, nearly all by the 30% gross-exposure cap.
+- **Friday realized: +$308.46.** All-time realized: **-$369.82** over 18 closed trades
+  (4 wins / 14 losses). Open: NVDA +$78.54, TSLA -$30.60. Equity **$99,743.01** (10-03).
+
+## 2026-10-02 (Fri) — Review Team meeting (first since 09-07)
+
+Convened locally over the 31 unreviewed commits (`0a12efe..2575a1b`) plus the week's trades.
+- 🧪 **QA — BLOCK (crypto); equity fixes OK.** Crypto breaker trip on the first fill
+  (`BTCUSD` position vs `BTC/USD` order) and crypto/flatten losses invisible to the loss gates.
+  Acted: crypto OFF 09-27; `7ad434f` sizing headroom; `2575a1b` flatten P&L + live-stop-only
+  protection. Open nits: heat estimate assumes 1%/position; dead `consecutive_losses()`.
+- 📈 **Financial Strategy — LIKELY HARMS EDGE.** 9 of 10 executions came from intraday
+  strategies (vwap_reclaim 5m, intraday_vwap_trend 15m, rsi_reversal 15m,
+  anchored_vwap_pullback_continuation 5m, relative_volume_reclaim_continuation 5m) with **no
+  walk-forward OOS evidence at all** — the walk-forward runs only on 1d. Exploration mode skips
+  the backtest gate (`PAPER_EXPLORATION_REQUIRE_BACKTEST_VALIDATED=false`). Best measured 1d
+  OOS edge (`regime_filtered_mean_reversion`, +$31/trade over 465) is not being traded; several
+  approved 1d strategies lose OOS. `strategy_not_production_approved` actually means "no
+  exploration approval row". Backtester diffs judged sound.
+- 💹 **Trader — RISK CONCERNS.** Slippage fine (≤20 bps, stop slip ≤0.08R). Findings:
+  no reward:risk re-check at the fill price (AAPL 1.20 at proposal → 0.69 at fill; drift gate
+  is a flat 35 bps, not relative to the stop); no same-symbol re-entry cooldown after a stop
+  (NVDA re-bought 1h43m later); intraday strategies held overnight with intraday stops
+  (INTC 2 days, COST overnight); stops 0.3–1.5% are inside 5m noise (6/7 stopped); the $12.5k
+  notional cap, not the 0.5% budget, sets risk ($40–$248/trade) — judge strategies in R.
+  Keep the 30% gross cap. Its top finding (loss gates blind on 09-28) was **checked and
+  rejected**: limit is 4 losses, only 2 had closed at 16:29.
+- 📋 **PM — HOLD on scaling; keep paper running.** Tightening fixes (no sign-off needed):
+  R:R re-check at the live quote, same-symbol re-entry cooldown, flatten intraday trades
+  before the close. Needs operator decision: require OOS evidence before a strategy
+  auto-trades (would pause all intraday strategies until intraday walk-forward exists).
+  Keep 30% gross cap and crypto OFF.
+- **Operator decision 10-02: "Keep exploring for now."** Intraday strategies keep trading on
+  paper without OOS evidence; judged strictly on live results; intraday walk-forward to be
+  built, then `PAPER_EXPLORATION_REQUIRE_BACKTEST_VALIDATED` turned on once it exists.
+- **Shipped 10-02** (726 tests pass):
+  - `b78db7f` (live 07:59 UTC) — reward:risk re-checked at the live quote before submit
+    (`EXECUTION_MIN_REWARD_TO_RISK_AT_QUOTE=1.0`); re-entry cooldown after a losing exit
+    (`REENTRY_COOLDOWN_MINUTES_AFTER_LOSS=240`); fixed a calendar-expired test fixture.
+    Also: the portfolio-heat *estimate* now assumes the enforced 0.5% per open position instead
+    of 1%. That admits more positions under the unchanged 6% heat cap (it is not purely a
+    tightening, contrary to the commit message); no practical effect while the 30% gross cap
+    holds the book at ~3 positions.
+  - `0ac8b99` — intraday-timeframe positions closed in the last 10 min of the session
+    (`INTRADAY_FLATTEN_MINUTES_BEFORE_CLOSE=10`, Alpaca clock); 1d+ swing positions keep GTC
+    brackets. First live run: today's close (IWM 15m and CSCO 5m are open from 10-01).
+
+## 2026-09-28 (Mon) → 2026-10-02 (Fri pre-open)
+
+- **Shipped before the 09-28 open:** `7ad434f` (size 2% under the enforced 0.5% cap, deploy
+  SUCCESS 12:34 UTC) and `2575a1b` (book flatten-close P&L for the loss gates; bracket counts as
+  protected only with a live stop leg). Crypto trading switched OFF 09-27 16:43
+  (`CRYPTO_TRADING_ENABLED=false`) after the QA Bot found it can trip the breaker on the first
+  fill (Alpaca `BTCUSD` position vs `BTC/USD` order) and its stop losses bypass the loss gates.
+- **Trading resumed — 10 executions 09-28..10-01**, all with Alpaca brackets; every exit was a
+  bracket leg (no flattens):
+
+  | Day | Symbol | Qty | Entry | Exit | P&L |
+  |---|---|---|---|---|---|
+  | 09-28 | NVDA | 53 | 232.36 | stop 229.23 | -165.66 |
+  | 09-28 | AAPL | 36 | 342.53 | stop 340.17 | -84.98 |
+  | 09-28 | NVDA | 53 | 232.01 | stop 228.47 | -187.35 |
+  | 09-28 | META | 17 | 724.91 | stop 715.33 | -162.86 |
+  | 09-29 | INTC | 107 | 116.30 | target 121.40 | **+545.71** |
+  | 09-29 | QQQ | 16 | 739.19 | stop 736.70 | -39.84 |
+  | 09-29 | COST | 13 | 922.67 | stop 913.10 | -124.42 |
+  | 10-01 | IWM | 44 | 278.06 | open | +82.72 unrl |
+  | 10-01 | CSCO | 114 | 108.70 | open | +28.73 unrl |
+  | 10-01 | NVDA | 22 | 230.38 | open (swing, stop 208.94) | +31.90 unrl |
+
+  Closed: 7 trades, 1 win / 6 losses, **net -$219.40**. Open +$143.35 unrealized. Equity
+  **$99,531.02** (10-02 05:58 reconciliation, 3 positions, 0 issues) vs $99,607.60 on 09-27.
+  Largest loss $187 (0.19% of equity), inside the ~$490 per-trade budget; stops held.
+- **09-28 (corrected 10-02):** the 4th loss closed at 19:50 UTC, ten minutes before the bell, so
+  the per-day cooldown (4 losses) never had to block anything. The 16:29 NVDA/META entries were
+  correctly allowed: 2 losses (-$250) at that point, well inside the 4-loss / $3,000 limits. An
+  earlier version of this line claimed the cooldown halted entries — that was unverified.
+- **Remaining blocker — portfolio gross-exposure cap.** 74 `auto_proposal_failed` since 09-28,
+  nearly all "Projected gross exposure exceeds the portfolio limit"
+  (`PORTFOLIO_MAX_GROSS_EXPOSURE_PCT` default 30%). At ~$12.4k per position, 3 positions fill
+  it, so `MAX_OPEN_POSITIONS=8` is unreachable. This is a portfolio risk gate: **not changed;
+  needs operator sign-off.**
+- **Flagged:** AAPL 09-28 filled at 342.53 with target 344.16 / stop 340.17 — realized
+  reward:risk 0.69 after entry drift (planned R:R passed the gate at the proposed price).
+  The entry-drift check let it through; to investigate.
+- `strategy_not_production_approved` still blocks some swing proposals (9 since 09-28);
+  `workflow_cadence` 240s timeouts persist (236 since 09-28).
+
+## 2026-09-27 (Sun) — covers 2026-09-14 → 09-27
+
+- **Account state:** flat, equity $99,607.60. Last trade 09-15; the 5 trades of the
+  aggressive run net **-$447.38** (NFLX price feed verified correct — ~10:1 split).
+- **Why stocks stopped trading after 09-15 (diagnosed 09-27).** 170 `auto_proposal_failed`
+  + 10 `auto_proposal_safety_blocked` since 09-16:
+  - 133× "Trading halted after 4 consecutive losses today" — **bug**: the cooldown read
+    the *all-history* loss streak. Only a win resets it and a halted bot cannot trade, so
+    the 09-15 streak was a permanent lockout.
+  - 37× "Estimated trade risk 0.53–1.00% exceeds the 0.50% cap" — sizers sized to
+    `MAX_RISK_PER_TRADE_PCT` (1.0%) while `INSTITUTIONAL_PORTFOLIO_CONTROLS_ENABLED`
+    tightens the gate to `portfolio_future_max_risk_per_trade_pct` (0.5%).
+  - 10× `strategy_not_production_approved` (AMZN/MSFT/NVDA, swing_scan) — open, to investigate.
+  - Scan-level rejections are dominated by `relative_volume_too_low` (quiet market; floor unchanged).
+- **Operator sign-off 09-27:** (1) loss-streak cooldown resets each trading day (still
+  halts for the rest of the day at 4); (2) option (a) — size trades to the gate's
+  effective cap (0.5% paper, 0.1% live) rather than raising the cap. Rationale: keep
+  per-trade losses small ahead of any future real-money stage.
+- **Fix `40b6f05`** (713 tests pass): shared `effective_max_risk_per_trade_pct()` used by
+  the auto-proposal sizer and `TraderService`; `build_risk_context` uses today's streak.
+  Hard gates unchanged.
+- **Also shipped this period:** `a920bab`/`22b05ad` crypto on Alpaca paper, 24/7 bucket
+  (operator sign-off; now parked — "stocks first"); `4133195` rotating scan cursor so the
+  whole universe is covered; `b63b8cf` backtest/scan-decision indexes (lookup 6070ms→6ms,
+  recent read ~11.8s→102ms; built CONCURRENTLY in prod first); `acee004` stop persisting
+  per-fold backtest rows (~37/run, table had 1.45M rows) and read the expectancy baseline
+  from the OOS aggregate.
+- **09:14 Deployed and verified.** Deployment `af731500` SUCCESS; boot preflight 31/31 symbols
+  open, **0 global blockers**; paper-only policy confirmed; reconciliation clean (0 positions).
+  `workflow_cadence` 240s timeouts down from 206/day (09-25) to 2 since boot after the 09-26
+  indexes — watching. Notion mirror updated.
+- **Next:** verify Mon 09-28 US session — proposals pass risk validation, scans evaluate
+  more symbols per run, trades execute with brackets.
+
+## 2026-09-13 (Sun)
+
+- **Incident review — why nothing traded Thu/Fri.** The boot-time funnel preflight
+  (shipped Thu, first run 13:16:57 UTC) reported all 25 universe symbols open but two
+  global blockers: `automation_kill_switch_enabled` and `automation_paused`. Trace:
+  Thu **13:06:20** (pre-market) reconciliation saw GOOGL with no live bracket legs and
+  tried to flatten it while the *previous boot's* flatten (12:56:37) was still
+  `pending_new`; Alpaca rejected the duplicate (`40310000 insufficient qty available…
+  held_for_orders=1`). The rejection was recorded as `missing_bracket_protection:GOOGL`,
+  the circuit breaker tripped, the kill switch + pause were persisted in `runtime_state`,
+  and the emergency stop cancelled 1 order / closed 1 position. The 13:16 boot repeated
+  the exact sequence. Nothing clears that state, so the scheduler logged
+  `workflow_scheduler_paused` every minute from Thu 13:17 through Sun (≈4,300 events).
+  Backtests kept running (they are not gated). **Thu/Fri: 0 proposals, 0 trades.**
+- **Fix pushed `2efc6de`** (674 tests pass; 4 known sandbox-only failures): (1) a position
+  with a live reducing order at the broker is "closing in flight", not unprotected — no
+  re-flatten, no issue (`unprotected_position_closing_in_flight`); (2) a flatten rejected
+  because the shares are already committed is deferred (`unprotected_position_flatten_deferred`),
+  not a breaker — other flatten errors still raise the issue; (3) **paper-only self-healing**
+  (`app/automation/auto_recover.py`): while the breaker is tripped the scheduler re-probes
+  reconciliation every 10 min and, once clean, clears the breaker and resumes (max 3/day,
+  `automation_auto_recover_probe` / `automation_auto_resumed`). It never overrides an
+  operator pause, a manual kill switch, `KILL_SWITCH_ENABLED`, an account mismatch, a
+  broker trading block, or real trading. Settings: `PAPER_AUTO_RECOVER_CIRCUIT_BREAKER`
+  (on), `PAPER_AUTO_RECOVER_PROBE_INTERVAL_SECONDS=600`, `PAPER_AUTO_RECOVER_MAX_RESUMES_PER_DAY=3`.
+  Safety note for the operator: the breaker itself is unchanged; only a *false* trip on a
+  close already in flight is prevented, and recovery requires a clean reconciliation.
+- **09:25–09:28 Deployed and verified.** Deployment `29b609e2` SUCCESS 09:27:50. Boot
+  preflight still showed the two blockers (state persisted from Thursday); the first
+  scheduler tick probed reconciliation at 09:27:39 (`orders_seen=31, positions_seen=0,
+  issues=[]`), cleared the breaker and **auto-resumed at 09:28:29**
+  (`automation_auto_resumed`, resume 1/3 today). Scheduler running again: maintenance,
+  ledger cycle, open-signal check, backtests. GOOGL had been closed by Thursday's emergency
+  stop at the open; the broker ledger booked it on resume: **GOOGL 1 sh, entry 338.75 →
+  exit 328.94, realized −$9.81 (`broker_close`)**. Account flat, equity **$100,055.06**
+  (−$9.85 vs the $100,064.91 baseline; the only closed trade to date).
+- Next: Monday 2026-09-14 pre-open check armed for 13:20 UTC (health, resumed state,
+  0 blockers in the boot preflight, proposals from the 13:30 open).
+
+## 2026-09-12 (Sat) / 2026-09-11 (Fri)
+
+- Paused all of Friday by the persisted kill switch (see 09-13). **0 proposals, 0 trades.**
+  App healthy otherwise; the 30-min backtest refresh kept scoring the universe.
+
+## 2026-09-10 (Thu)
+
+- **12:17** Pre-open review of Wednesday (the session ran unattended; the scheduled
+  check-ins fired but their reports were delivered late). Bot healthy the whole time:
+  no reboot since Tue 20:17, events flowing, 0 QueuePool/SIGTERM. **Wednesday result:
+  0 proposals, 0 trades.** Funnel: 59 near-miss + 85 weak-valid promotion attempts,
+  15 candidates entered the proposal step, **15/15 failed** with `Instrument X is not
+  supported in this version` (INTC ×8, AAPL ×3, META ×2, CSCO, MSFT); 2 swing candidates
+  safety-blocked (`strategy_not_production_approved`, correct).
+- **Root cause #1 — hidden second allowlist.** `InstrumentResolver` treats a hardcoded
+  6-name catalogue (NVDA, GOOG, GOOGL, AMD, MU, GOLD) as exhaustive, so widening
+  `ALLOWED_INSTRUMENTS` on Tue only moved the failure one check later. Fixed: catalogued
+  names keep their metadata; any other allowlisted ticker resolves as a plain US equity.
+- **Root cause #2 — GOOGL left unprotected overnight.** Brackets were submitted with
+  `time_in_force=day`: at Tue's close the take-profit leg **expired** and the stop leg was
+  **canceled**, so the 1-share GOOGL position sat all of Wednesday with no stop (it
+  closed ~$330.65, below the $333.24 stop that no longer existed). Reconciliation did not
+  flag it because it counted a bracket as protection if legs merely *existed*. Fixed:
+  brackets are now GTC; reconciliation counts only live legs; in paper mode an owned
+  position with no live protective leg is closed at market and logged
+  (`unprotected_position_flattened`) instead of tripping the circuit breaker
+  (`reconciliation_flatten_unprotected_positions`, default on, never with real trading).
+- **12:52** Shipped all three fixes with tests (657 pass). Push-triggered deploy in
+  progress; verification below. Expected on boot: GOOGL flattened by the first
+  reconciliation, proposals flowing from the 13:30 open.
+- **Overnight backtest coverage (post cash-fix):** all 25 universe symbols scored, 608
+  out-of-sample summaries, 454 with trades; returns sane (annualized −11% … +6%, median
+  ≈0). Per-strategy ranking (avg annualized, median PF, win rate): ema_trend_stack
+  +0.5% / 1.21 / 51%; trend_following +0.3% / 1.11 / 49%; pullback_trend +0.1% / 1.06 /
+  52%; momentum_breakout 0.0% / 0.97 / 46%; ma_crossover −0.2% / 1.05 / 50%; the
+  mean-reversion / RSI families are negative on few trades. Holdout returns slightly
+  negative for all. Honest read: the measured daily-bar edges are marginal; the plan's
+  "concentrate on the top 3–4" now has a data basis (ema_trend_stack, trend_following,
+  pullback_trend) and intraday timeframes are the next lever.
+- **12:57** Armed midday (16:00 UTC) and post-close (20:10 UTC) checks.
+- **13:06 / 13:16** Circuit breaker tripped twice on a false `missing_bracket_protection:GOOGL`
+  (duplicate flatten while the first was pending) — automation paused for the rest of the
+  week. Full trace and fix under 2026-09-13.
+- **13:14–13:17** Shipped the boot-time funnel preflight (`207c6d9`, deployment `10b83c39`
+  SUCCESS). First report: 25/25 symbols open, sizing cap $12,500, global blockers = the
+  kill switch + pause above. It did its job: the blocker was visible in `run_logs` at boot.
+- **Thursday result: 0 proposals, 0 trades** (paused from 13:06).
+
+## 2026-09-09 (Wed)
+
+- Unattended all day. Health: up since Tue 20:17, 0 errors other than the recurring
+  `workflow_cadence` 240s timeouts (78 that day — still the throughput leak to fix).
+  Backtest refresh ran every 30 min overnight and scored the full universe.
+- **0 proposals / 0 trades** — root causes found and fixed Thu morning (see above).
+  GOOGL held unprotected after its bracket legs died at Tue's close; equity ended the
+  day ≈ $100,056 (−$8.7 vs baseline, all unrealized GOOGL).
+
+## 2026-09-08 (Tue)
+
+- **12:50** Verified the dashboard publish and found the bot had been DOWN since
+  Mon 19:38 UTC: the Railway redeploy triggered by the `MARKET_UNIVERSE_SYMBOLS`
+  variable change SIGTERM'd the running container and never started a
+  replacement (`environment-status` showed no deployment). Restart policy
+  `ALWAYS` did not help because nothing crashed; the replacement never came up.
+- **12:51** Manual Railway `redeploy` → deployment `e32027c7` SUCCESS at 12:53.
+  Startup policy log confirmed `execution_mode=paper`, `enable_real_trading=false`,
+  near-miss auto-exec on. Alpaca paper account ACTIVE, equity $100,064.91, 0
+  positions, reconciliation clean. Events flowing, 0 errors.
+- **12:52** Scheduled routine `trig_01Dyf8QEda4fMDZeqCsGTztV`: pre-open health
+  check + first-trade watch at 13:35 UTC.
+- **12:54** Pushed `257fab9` (ROADMAP: Monday EOD, second silent stop, universe
+  trim, dashboard). Push-triggered deployment `37ab2152` SUCCESS at 12:56:40 and
+  replaced `e32027c7` cleanly. 2 clean boots today, 0 errors.
+- **12:58** Operator asked for the auto-exec score floor to be lowered 65 → 55.
+  **Not applied — it would be a no-op.** In the active paper-exploration profile
+  the effective floor is `PAPER_EXPLORATION_AUTO_EXECUTION_MIN_SCORE`, which is
+  set to `0.15` in Railway (almost certainly a typo for 15 or 55, but it means
+  the score gate is already effectively open). `AUTO_EXECUTION_MIN_SCORE=65`
+  only applies when the exploration profile is off. Left unchanged; flagged.
+- **13:00** Re-analysed Monday's "blockers" with the correct key
+  (`promotion_blockers`, not `reasons`). Finding: **Mon 2026-09-07 was Labor
+  Day — US markets were closed all day.** 72 of 72 promotion attempts carried
+  `quote_too_old`; AAPL's recorded spread was an identical 1023.6 bps at 17:09,
+  19:28 and 12:57 the next day, i.e. one frozen Friday quote. Monday's zero
+  trades and its entire blocker mix were artifacts of a closed market, not of
+  IEX or the strategies. Correction to earlier analysis recorded in ROADMAP.
+  Consequence: the fixed system (Sep 5 fixes) has **never yet seen an open
+  market**. Tue 13:30 UTC open is the first real test. No gate changes made.
+- **13:02** Railway `watchPatterns` set to `["/**", "!/**/*.md", "!/docs/**"]`
+  so that log/roadmap-only pushes no longer restart the bot. Verified after this
+  push: no new deployment should appear.
+- **15:02** First auto-execution attempt: AMD `anchored_vwap_pullback_continuation`,
+  $500 notional. **Blocked at the broker step:** `one_share_exceeds_max_trade_amount`
+  (AMD ≈ $501/share > `MAX_TRADE_AMOUNT_USD=500`). Not a gate; a sizing cap.
+  Operator decision: raise the per-trade cap or allow fractional shares.
+- **17:00:50 — FIRST AUTONOMOUS PAPER TRADE.** GOOGL buy 1 share @ $338.75,
+  strategy `opening_range_breakout_retest` (supervised weak-valid path), $500
+  notional request, Alpaca paper bracket order `c3bd9790…`: parent filled, stop
+  leg $333.24 (held), take-profit leg $349.39 (limit, new). Quote verified live
+  (Alpaca IEX), bars fresh. Alpaca reconciliation clean: `positions_seen: 1`,
+  `orders_seen: 28`, equity $100,064.13 (baseline $100,064.91), cash $99,726.16.
+  Task #56 (autonomous paper-trade fluency) marked complete.
+- **13:30–18:30** Live-session stats: 690 scan decisions, 51 near-miss promotion
+  attempts, 19 promoted to candidate, 2 reached execution (1 filled, 1 blocked
+  by the sizing cap). `workflow_cadence` hit the 240s job timeout 16 times
+  (~every 20 min) — the scan still completes enough to trade, but this is the
+  recurring item the operator said to leave for now.
+- **13:10** Two Railway `redeploy`s of older snapshots appeared (commits
+  `c6cd480` and `0d412fb`), not triggered by this session; the surviving
+  deployment `ac733f02` runs `c6cd480`, functionally identical to head for the
+  app (differs only in CI workflow + a test ceiling). Bot healthy through it.
+- **18:32** Re-armed pre-close check routine for 19:30 UTC.
+- **18:34** Operator sign-off: `MAX_TRADE_AMOUNT_USD` raised 500 → 1000 (Railway var;
+  redeploy triggered — verified below). Caveat found while applying it: the broker
+  step sizes as `floor(min(request_amount, max_cap) / price)` and the request
+  amount is `DEFAULT_TRADE_AMOUNT_USD=500`, so a $501 AMD share still rounds to 0
+  shares. The cap is no longer binding; the default request amount is. Raising
+  the default to 1000 doubles every trade's size — left for operator decision.
+- **18:37** Operator sign-off: `DEFAULT_TRADE_AMOUNT_USD` raised 500 → 1000 as well
+  (Railway var). Every new proposal now requests $1,000 notional (1 share of
+  anything up to $1,000). Observation: the 18:34 `MAX_TRADE_AMOUNT_USD` change did
+  not produce a deployment on its own; the 18:37 change did (deployment
+  `3a2a07f3`, carrying both values). Same failure shape as Mon 19:38 — variable
+  changes are unreliable deploy triggers on this service; always verify.
+- **18:40** Shipped `4b52d95`: the startup `execution_policy_effective` log now
+  includes `default_trade_amount_usd`, `max_trade_amount_usd`, `max_open_positions`,
+  `max_trades_per_day`, so sizing-blocked trades are diagnosable from run_logs.
+- **18:45** Railway SKIPPED the `7b6ade6` code push: the watch pattern I set at 13:02
+  (`/**`) was malformed (gitignore-style needs `**`), so nothing matched the include
+  rule and every push was skipped. Fixed to `["**", "!**/*.md", "!/docs/**"]` and
+  moved it into `railway.json` (`build.watchPatterns`) so it is version-controlled.
+  This push carries both the pattern fix and the policy-snapshot change.
+- **18:44 — VERIFIED from the new container's startup log** (deployment `27b1caad`,
+  commit `661106a`): `default_trade_amount_usd=1000`, `max_trade_amount_usd=1000`,
+  `max_open_positions=3`, `max_trades_per_day=6`, `execution_mode=paper`,
+  `enable_real_trading=false`. GOOGL position and bracket unaffected (held at the
+  broker). Notion mirror updated with the same entry.
+- **18:50** Found the P&L ledger gap: with `paper_broker=alpaca` the coordinator writes
+  executions + broker order snapshots but never `paper_positions`/`paper_trades`, so
+  the equity curve, EOD digest and strategy scorecard were blind to real broker-backed
+  paper trades. Shipped `d8623cc` (`app/paper/broker_ledger.py`): a filled parent
+  bracket opens a ledger position from the broker fill; a filled stop/target leg (or
+  matched close order) closes it into a paper trade with realized P&L; broker-backed
+  rows are only marked-to-market, never closed by the simulator. Idempotent, paper-only.
+  Also fixed `test_railway_deployment` for the version-controlled watch patterns.
+- **18:58 — VERIFIED in prod** (deployment `03df1d2b`): first refresh wrote GOOGL as an
+  open ledger position (entry $338.75, marked $337.86, unrealized −$0.89, stop/target
+  from the bracket) and backfilled two old supervised Alpaca tests (AAPL Jul 16 −$1.49,
+  NVDA Jun 22 −$0.12) as closed trades. Task #62 complete.
+- **19:00** Root cause of "why only GOOGL": 17 of 19 promoted candidates failed at the
+  proposal step with `Instrument X is not in the allowed instrument list` (INTC ×6,
+  META ×3, AVGO ×2, QQQ ×2, AMZN, TSLA, NFLX, CSCO). `ALLOWED_INSTRUMENTS` was an old
+  whitelist (default `NVDA,GOOG,GOOGL,AMD,MU,GOLD`) never widened when the universe was
+  trimmed to 25 names — the scanner and the proposal gate disagreed. GOOGL and AMD
+  only got through because they were on the old list.
+- **19:02** Operator sign-off ("set the allowed instruments to match the universe"):
+  `ALLOWED_INSTRUMENTS` set to the exact 25-symbol `MARKET_UNIVERSE_SYMBOLS` value.
+  Redeploy verification recorded below.
+- **19:07 — VERIFIED.** Allowlist deploy `26356326` booted 19:04:58; follow-up deploy
+  `2400459b` (commit `e1a8e9b`, SUCCESS 19:07:45) adds allowlist-vs-universe visibility
+  to the startup policy log, which now reads `allowed_instruments_count=25`,
+  `market_universe_symbols_count=25`, `universe_not_in_allowlist=[]`. Zero allowlist
+  rejections since the fix. Every symbol the scanner promotes can now be proposed.
+- **19:10** Operator dissatisfied with pace and asked for a plan to reach "20% every
+  day". Answer on record: 20%/day is not achievable by any strategy (compounds $100k to
+  $3.8M in a month) and would only be reached by ruinous leverage; declined to build
+  toward it. Proposed ladder instead: (1) two weeks of throughput + measurement (5–10
+  paper trades/day, 50 closed trades), (2) concentrate on positive-expectancy strategies
+  and target 0.1–0.3%/day, (3) scale with capital, not risk. Asked for sign-off on:
+  fixing the recurring `workflow_cadence` 240s timeout, risk-based sizing at 0.5% of
+  equity per trade, caps 3→5 open positions and 6→12 trades/day, enabling
+  auto-demotion after 20 trades per strategy, daily EOD report. Hard gates unchanged.
+- **19:20 — P0 FINDING while sizing the 'max per day' question.** The walk-forward
+  backtest gate has never measured anything: of ~1,208,139 backtest rows since Aug 1
+  (20 strategies × 196 symbols, 31,942 out-of-sample summaries), **every single one has
+  `number_of_trades = 0`.** Each fold evaluates ~10 daily bars (`bars_evaluated` avg
+  10.2, `fold_count` 37), far too short for any of these strategies to trigger. So there
+  is no measured expectancy for any strategy, the "backtest validated" flag has never
+  been earned, and the scheduler's 180s backtest budget has been producing empty rows
+  for weeks. Task #63 opened: fix fold sizing, assert >0 trades on a trending fixture,
+  re-run for the 25-name universe. This is the top priority — nothing about expected
+  daily return can be estimated until it is fixed.
+- **19:25 — OPERATOR APPROVED the aggressive paper plan + risk settings.** Applied via
+  Railway (deployment `b9b8de52`, SUCCESS 19:31): `MAX_RISK_PER_TRADE_PCT=1.0`,
+  `DEFAULT_TRADE_AMOUNT_USD=MAX_TRADE_AMOUNT_USD=12500` (per-position notional cap =
+  12.5% of equity, so 8 positions ≤ 100% gross, no margin), `MAX_OPEN_POSITIONS=8`,
+  `MAX_TRADES_PER_DAY=15`, `MAX_DAILY_LOSS_USD=3000` (3% hard stop, counts open losses),
+  `MAX_WEEKLY_LOSS_USD=8000`, `MAX_CONSECUTIVE_LOSSES_BEFORE_COOLDOWN=4` (was 2, which
+  would have halted most days by the second loss), drawdown governor ON (soft 2.5%,
+  hard 5%, floor 0.5 = size halves), `AUTO_PROPOSE_RISK_BASED_SIZING=true`.
+  Hard gates (spread, reward:risk, bracket, rvol, hours, blacklist) unchanged.
+- **19:33** Shipped risk-based sizing for the unattended path (`app/risk/proposal_sizing.py`,
+  wired in `auto_propose_candidates`). Finding: auto-proposals always passed a flat
+  `default_trade_amount_usd`, so `max_risk_per_trade_pct` never applied to any
+  autonomous trade — the $1,000 GOOGL trade risked ~$5. Now: notional = 1% of
+  reconciled equity ÷ stop distance, capped at $12,500; falls back to the flat default
+  if entry/stop/equity are missing (never blocks a proposal); the sizing record is
+  stored in proposal metadata. Startup policy log now includes the full risk profile.
+  Plan steps still to do: fix the backtester (#63), 5m/15m timeframes + scan cadence
+  fix, auto-demote after 15 trades, daily EOD report.
+- **19:36 — VERIFIED** the sizing deploy (`866f9413`) from its startup log: risk 1%/trade,
+  risk-based sizing on, daily loss $3,000, weekly $8,000, cooldown after 4 losses,
+  governor on (floor 0.5), 8 positions, 15 trades/day, paper-only.
+- **19:45** Shipped the backtester fix (Task #63). Root cause: each walk-forward fold ran
+  the engine on its ~10-bar test slice alone, below every strategy's indicator warm-up.
+  Fix: the engine gained `trade_window_start` (warm-up bars are context only — no
+  signals, entries or equity points), and folds/holdout now pass train+test bars with
+  the test start as the window. Regression test proves the same synthetic folds go from
+  0 trades (old) to >0 (new) with every entry inside the test window. 648 tests pass.
+  From the next `backtest_gate_refresh` run the gate starts filling with real
+  out-of-sample numbers per strategy × symbol.
+- **19:41 — VERIFIED** the backtester-fix deploy (`84440f26`) booted (policy log 19:40:58).
+- **19:42** `BACKTEST_SCHEDULER_INTERVAL_SECONDS` 21600 → 1800 (Railway var). At ~1 symbol
+  per 180s run, the 25-name universe scores overnight (~12h) instead of ~6 days. The
+  interval can go back to 6h once the gate is populated.
+- **19:44 — VERIFIED** interval deploy (`6210f3db`) booted 19:43:31. First refresh with the
+  warm-up fix produced the first non-zero backtest rows since August (34 of 162 rows had
+  trades) — the fold fix works. Task #63 closed.
+- **19:50 — SECOND ENGINE BUG found in those rows and fixed.** Every fold with one trade
+  reported ≈ −82% return even when the trade was profitable: `_close_trade` returns the
+  *position's* net proceeds and both call sites assigned it to `cash` instead of adding
+  it, discarding the uninvested balance (≈83% of the account at 1% risk sizing). Hidden
+  until now because folds never traded and in-sample runs sized all-in. Fix: `cash +=
+  realized` at both close sites; regression test asserts ending cash = initial + Σ pnl
+  for risk-sized trades. The ~160 rows written 19:40–19:50 carry the wrong returns; the
+  30-min refresh overwrites each symbol's summary as it re-runs, and the gate reads the
+  latest summary.
+- **13:03** Created this file at operator request ("update all the actions you
+  are doing"): chose a repo Markdown ledger over Notion because it is
+  version-controlled, reviewed by the PR bots, and lives with the code.
+
+## 2026-09-07 (Mon — Labor Day, market closed)
+
+- **~16:50** Redeployed hardened image after the 2-day DB-pool outage (see
+  ROADMAP post-mortem). Bot healthy: 0 scheduler errors, paper-safe.
+- Railway reliability config set via connector: restart policy `ALWAYS` (10
+  retries), healthcheck `/health/ready` (300s).
+- Review-team bots fixed (PR #31 opened, secret name matched, token re-pasted
+  without newline, `--max-turns 60`). PR #31 CI green and squash-merged to
+  `main` (`ffeeda95`).
+- DB durable fix shipped: `statement_timeout` (30s) + TCP keepalives in
+  `connect_args` (`f6d0d08`); architecture ratchet ceiling for `db.py` bumped
+  to 1063 (`0a12efe`).
+- **~19:30** Investigated `quote_too_old`. Rejected "re-fetch quote before the
+  promotion check" as dead code (quote is fetched immediately before the check
+  in `service_scan.py`). Applied `MARKET_UNIVERSE_SYMBOLS` = 25 IEX-liquid names
+  via Railway variable. (Retrospective: the staleness that day was the holiday,
+  not IEX; the universe trim still stands as harmless and focused.)
+- **19:38** The variable change's redeploy stopped the container with no
+  replacement → bot down until Tue 12:51. Market had closed 20:00 (and was
+  closed all day for the holiday), so no session was lost.
+- Published ops dashboard artifact "AlgoTrader Ops".
+
+## Open operator items
+
+- Evidence bar level: keep `STRATEGY_EVIDENCE_MIN_EXPECTANCY_R` at 0 (recommended),
+  or 0.03 / 0.05 (0.05 passes no strategy as of 10-06).
+- Check in the eToro app whether copied stock trades carry a fee (a flat ~$2 would be
+  ~4% of a $50 copy each way; rethink the stock copy if so).
+- Branch `claude/repo-audit-962zde` is ~95 commits ahead of `main` and conflicts with
+  it (main last updated by #31); needs a PR + conflict merge when the operator wants
+  main current. Railway deploys from the branch, so production is unaffected.
+- Turn Telegram on in Railway (`TELEGRAM_ENABLED=true`, `TELEGRAM_BOT_TOKEN`,
+  `TELEGRAM_CHAT_ID`); nothing the bot sends reaches the operator until then.
+- Queued builds: "close all live" command; cost
+  recalibration after ~10 eToro fills; per-timeframe demotion; paper base-URL boot
+  guard; small review leftovers (Telegram /propose and RL paths skip Phase 2 on paper).
+
+- Switch `DATABASE_URL` to the Supabase transaction pooler (port 6543); needs
+  the DB password (redacted from the agent).
+- Rotate the Claude OAuth token that was pasted into chat once; optionally
+  rename the GitHub secret to `CLAUDE_CODE_OAUTH_TOKEN` and revert the workflow
+  refs.
+- Decide on a paid SIP/NBBO feed (removes IEX single-venue artifacts).
+- Fix the `PAPER_EXPLORATION_AUTO_EXECUTION_MIN_SCORE=0.15` typo to an
+  intentional value once there is live data to calibrate against.

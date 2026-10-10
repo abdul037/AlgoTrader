@@ -160,6 +160,79 @@ def _frame(closes: list[float], *, start: str = "2026-01-01T00:00:00Z", step: st
     return pd.DataFrame(rows)
 
 
+def test_scan_cursor_rotates_universe_across_scans(tmp_path) -> None:
+    # A scan that hits its wall-clock deadline after only the first symbol must
+    # not scan the SAME first symbol forever: the rotating cursor makes each
+    # scan of a task resume where the last stopped, so the whole universe --
+    # including the crypto pairs appended last -- is covered over time. Before
+    # this, only the front of the list was ever scanned and the tail never
+    # produced a candidate or a trade.
+    syms = ["AAA", "BBB", "CCC", "DDD"]
+    ramp = _frame([100 + (index * 0.1) for index in range(130)])
+    frames = {(s, "1d"): ramp for s in syms}
+    quotes = {
+        s: MarketQuote(symbol=s, bid=100.0, ask=100.1, last_execution=100.05, timestamp="2026-04-11T10:00:00Z")
+        for s in syms
+    }
+
+    class SlowEngine(FakeMarketDataEngine):
+        def __init__(self, frames, quotes, *, delay):
+            super().__init__(frames, quotes)
+            self.delay = delay
+            self.history_calls: list[str] = []
+
+        def get_history(self, symbol, *, timeframe="1d", bars=250, provider=None, force_refresh=False):
+            self.history_calls.append(symbol.upper())
+            time.sleep(self.delay)
+            return super().get_history(symbol, timeframe=timeframe, bars=bars)
+
+    engine = SlowEngine(frames, quotes, delay=0.08)
+    service = MarketScreenerService(
+        settings=make_settings(
+            tmp_path,
+            market_universe_symbols=syms,
+            screener_default_timeframes=["1d"],
+            screener_batch_deadline_seconds=0.05,
+        ),
+        market_data_engine=engine,
+        signal_state_repository=FakeSignalStateRepository(),
+        run_log_repository=FakeRunLogRepository(),
+        backtest_repository=FakeBacktestRepository(summary=None),
+        telegram_notifier=FakeTelegramNotifier(),
+    )
+
+    covered: set[str] = set()
+    for _ in range(len(syms)):
+        engine.history_calls.clear()
+        response = service.scan_universe(scan_task="swing_scan")
+        assert response.evaluated_symbols >= 1
+        covered.update(engine.history_calls)
+
+    # Every symbol was reached over successive scans; without rotation only the
+    # first ("AAA") would ever be scanned.
+    assert covered == set(syms)
+
+
+def test_scan_cursor_is_per_task_and_not_used_for_explicit_symbol_lists(tmp_path) -> None:
+    ramp = _frame([100 + (index * 0.1) for index in range(130)])
+    frames = {(s, "1d"): ramp for s in ("AAA", "BBB")}
+    quotes = {
+        s: MarketQuote(symbol=s, bid=100.0, ask=100.1, last_execution=100.05, timestamp="2026-04-11T10:00:00Z")
+        for s in ("AAA", "BBB")
+    }
+    service = MarketScreenerService(
+        settings=make_settings(tmp_path, market_universe_symbols=["AAA", "BBB"], screener_default_timeframes=["1d"]),
+        market_data_engine=FakeMarketDataEngine(frames, quotes),
+        signal_state_repository=FakeSignalStateRepository(),
+        run_log_repository=FakeRunLogRepository(),
+        backtest_repository=FakeBacktestRepository(summary=None),
+        telegram_notifier=FakeTelegramNotifier(),
+    )
+    # An explicit symbol list is never rotated (single-symbol analysis, manual scans).
+    service.scan_universe(symbols=["AAA"], scan_task="manual_scan")
+    assert getattr(service, "_scan_cursors", {}).get("manual_scan", 0) == 0
+
+
 def test_primary_strategy_mode_limits_specs_to_confluence(tmp_path) -> None:
     settings = make_settings(
         tmp_path,

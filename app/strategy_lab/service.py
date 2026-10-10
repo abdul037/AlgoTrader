@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import math
 import time
@@ -126,6 +127,33 @@ class StrategyLabService:
         self.backtests = backtest_repository
         self.logs = run_log_repository
         self.strategy_governance = strategy_governance
+        self._paper_generated_cache: tuple[float, tuple[Any, ...]] | None = None
+        self._generated_writes = itertools.count()  # next() is atomic under the GIL
+        self._generated_generation = next(self._generated_writes)
+
+    _PAPER_GENERATED_TTL_SECONDS = 60.0
+    _PAPER_GENERATED_LIMIT = 500
+
+    def _paper_generated(self) -> tuple[Any, ...]:
+        """The paper_generated rows, cached for 60 s (2026-10-10: every scan strategy run
+        looked its spec up by name -- ~0.58 s per run -- in a table with 0 rows)."""
+
+        cached = self._paper_generated_cache
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < self._PAPER_GENERATED_TTL_SECONDS:
+            return cached[1]
+        generation = self._generated_generation
+        items = tuple(
+            self.repository.list_generated(status="paper_generated", limit=self._PAPER_GENERATED_LIMIT)
+        )
+        # A write that landed while the SELECT ran makes its result stale: use it, don't keep it.
+        if generation == self._generated_generation:
+            self._paper_generated_cache = (now, items)  # one atomic replace: safe across threads
+        return items
+
+    def _invalidate_generated_cache(self) -> None:
+        self._generated_generation = next(self._generated_writes)
+        self._paper_generated_cache = None
 
     def status(self) -> dict[str, Any]:
         generated = self.repository.list_generated(limit=1000)
@@ -159,7 +187,7 @@ class StrategyLabService:
             return []
         normalized = timeframe.strip().lower()
         specs: list[StrategySpec] = []
-        for item in self.repository.list_generated(status="paper_generated", limit=500):
+        for item in self._paper_generated():
             if item.dsl.timeframe != normalized:
                 continue
             specs.append(
@@ -174,7 +202,17 @@ class StrategyLabService:
 
     def build_strategy_for_spec(self, spec: Any) -> GeneratedRuleStrategy | None:
         generated_id = (getattr(spec, "default_kwargs", {}) or {}).get("generated_strategy_id")
-        item = self.repository.get_generated(str(generated_id)) if generated_id else self.repository.get_generated_by_name(spec.name)
+        if generated_id:
+            item = self.repository.get_generated(str(generated_id))
+            if item is None or item.status != "paper_generated":
+                self._invalidate_generated_cache()  # listed but gone or retired: stop listing it
+        else:
+            # Only a paper_generated row can build a strategy. If none carries this name the
+            # by-name read could only return None, so skip it (unless the cached list is full).
+            cached = self._paper_generated()
+            if len(cached) < self._PAPER_GENERATED_LIMIT and spec.name not in {i.name for i in cached}:
+                return None
+            item = self.repository.get_generated_by_name(spec.name)
         if item is None or item.status != "paper_generated":
             return None
         return GeneratedRuleStrategy(item.dsl)
@@ -188,6 +226,7 @@ class StrategyLabService:
         dsl = request.dsl or self._generate_dsl_from_prompt(request.prompt)
         item = GeneratedStrategyRecord(name=dsl.name, dsl=dsl, source=request.source or "strategy_lab")
         created = self.repository.create_generated(item)
+        self._invalidate_generated_cache()
         self.logs.log("strategy_lab_generated", {"id": created.id, "name": created.name, "source": created.source})
         return created
 
@@ -207,6 +246,7 @@ class StrategyLabService:
                 GeneratedStrategyRecord(name=dsl.name, dsl=dsl, source=request.source)
             )
             created.append(item)
+        self._invalidate_generated_cache()
         self.logs.log(
             "strategy_lab_concept_pack_generated",
             {"requested": request.count, "created": len(created), "existing": len(existing)},
@@ -272,6 +312,7 @@ class StrategyLabService:
         )
         saved = self.repository.record_backtest(record)
         self.repository.update_generated_status(item.id, status=item.status, latest_backtest_id=saved.id)
+        self._invalidate_generated_cache()
         self.logs.log(
             "strategy_lab_backtest_completed",
             {"id": saved.id, "generated_strategy_id": item.id, "status": saved.status, "blockers": blockers},
@@ -319,6 +360,7 @@ class StrategyLabService:
             )
         )
         promoted = self.repository.update_generated_status(item.id, status="paper_generated", latest_backtest_id=backtest.id)
+        self._invalidate_generated_cache()
         self.logs.log(
             "strategy_lab_promoted_paper",
             {"generated_strategy_id": item.id, "version_id": version.id, "promotion_id": decision.id},

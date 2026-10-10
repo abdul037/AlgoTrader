@@ -62,6 +62,39 @@ def effective_execution_policy(settings: Any) -> dict[str, Any]:
         "screener_batch_deadline_seconds": float(_get("screener_batch_deadline_seconds", 0.0) or 0.0),
         "market_universe_limit": int(_get("market_universe_limit", 0) or 0),
         "alpaca_data_feed": str(_get("alpaca_data_feed", "")),
+        # Position sizing caps (non-secret; the broker step sizes as
+        # floor(min(default_trade_amount, max_trade_amount) / price), so both
+        # decide whether a >$500/share name can trade at all).
+        "default_trade_amount_usd": float(_get("default_trade_amount_usd", 0.0) or 0.0),
+        "max_trade_amount_usd": float(_get("max_trade_amount_usd", 0.0) or 0.0),
+        "max_open_positions": int(_get("max_open_positions", 0) or 0),
+        "max_trades_per_day": int(_get("max_trades_per_day", 0) or 0),
+        # Risk profile (operator-approved aggressive paper profile, 2026-09-08).
+        "max_risk_per_trade_pct": float(_get("max_risk_per_trade_pct", 0.0) or 0.0),
+        "auto_propose_risk_based_sizing": bool(_get("auto_propose_risk_based_sizing", False)),
+        "max_daily_loss_usd": float(_get("max_daily_loss_usd", 0.0) or 0.0),
+        "max_weekly_loss_usd": float(_get("max_weekly_loss_usd", 0.0) or 0.0),
+        "max_consecutive_losses_before_cooldown": int(
+            _get("max_consecutive_losses_before_cooldown", 0) or 0
+        ),
+        "drawdown_governor_enabled": bool(_get("drawdown_governor_enabled", False)),
+        "drawdown_governor_soft_pct": float(_get("drawdown_governor_soft_pct", 0.0) or 0.0),
+        "drawdown_governor_hard_pct": float(_get("drawdown_governor_hard_pct", 0.0) or 0.0),
+        "drawdown_governor_floor": float(_get("drawdown_governor_floor", 0.0) or 0.0),
+        # Tradeable-instrument allowlist vs the scanned universe. On 2026-09-08 the
+        # two disagreed and 17 of 19 promoted candidates died at the proposal step
+        # ("not in the allowed instrument list") — invisible until someone read the
+        # run_logs by hand. Counts + an agreement flag only; the lists themselves
+        # are not secret but are long, and the flag is what matters.
+        "allowed_instruments_count": len(list(_get("allowed_instruments", []) or [])),
+        "market_universe_symbols_count": len(list(_get("market_universe_symbols", []) or [])),
+        "universe_not_in_allowlist": sorted(
+            {str(s).upper() for s in (_get("market_universe_symbols", []) or [])}
+            - {str(s).upper() for s in (_get("allowed_instruments", []) or [])}
+        )[:50],
+        # Shadow pre-market deep scan (2026-10-10): on = the 08:30 bucket runs it instead of
+        # the old rotating scan. It never trades; logged so the switch is checkable at boot.
+        "premarket_deep_scan_enabled": bool(_get("premarket_deep_scan_enabled", False)),
         # A boolean only — never the account number itself.
         "alpaca_expected_account_configured": bool(
             str(_get("alpaca_expected_account_number", "") or "").strip()
