@@ -1137,3 +1137,54 @@ def test_open_signal_check_closes_target_hit(tmp_path) -> None:
     assert tracked.list(status="open") == []
     assert tracked.items[0].status == "target_hit"
     assert alerts.count() == 1
+
+
+def test_explicit_soft_budget_restores_the_old_rule_exactly(tmp_path, monkeypatch) -> None:
+    # Review 2026-10-10: the documented rollback (SCHEDULER_CADENCE_SOFT_BUDGET_SECONDS=110)
+    # must not keep the new backstop or the 180 s scan stop.
+    from app.models.workflow import WorkflowTaskResponse
+    from app.workflow import cadence_budget as cb
+
+    now = {"t": 0.0}
+    monkeypatch.setattr(cb.time, "monotonic", lambda: now["t"])
+    screener = DeadlineAwareScreener([])
+    workflow = _cadence_workflow(
+        tmp_path,
+        screener=screener,
+        scheduler_cadence_soft_budget_seconds=110.0,
+        intraday_active_mover_shortlist_enabled=True,
+    )
+
+    def maintenance(*, notify=True):
+        now["t"] += 100.0
+        return WorkflowTaskResponse(task="maintenance", status="ok", detail="")
+
+    def symbols_after_mover_refresh():
+        now["t"] += 30.0  # the active-mover refresh, before the guard
+        return ["NVDA"]
+
+    monkeypatch.setattr(workflow, "run_maintenance", maintenance)
+    monkeypatch.setattr(workflow, "_intraday_scan_symbols", symbols_after_mover_refresh)
+    monkeypatch.setattr(workflow, "_bucket_due", lambda name: name in {"maintenance", "intraday_rotation"})
+    workflow.run_scheduled_tasks()
+    assert len(screener.calls) == 1  # admitted at 100 s < 110 s and scanned at ~130 s
+    assert screener.calls[0]["cancel_event"] is None
+
+
+def test_budget_skip_puts_the_intraday_offset_back(tmp_path, monkeypatch) -> None:
+    from app.workflow import cadence_budget as cb
+
+    now = {"t": 0.0}
+    monkeypatch.setattr(cb.time, "monotonic", lambda: now["t"])
+    state = FakeState()
+    state.set("workflow:intraday_scan_offset", "5")
+    screener = DeadlineAwareScreener([])
+    workflow = _cadence_workflow(
+        tmp_path, screener=screener, state=state, intraday_active_mover_shortlist_enabled=False
+    )
+    budget = cb.CadenceBudget.for_tick(workflow.settings, 0.0)
+    now["t"] = 150.0  # too late for a useful scan
+    with cb.tick_budget(budget):
+        result = workflow.run_intraday_scan(notify=False)
+    assert result.status == "skipped" and screener.calls == []
+    assert state.get("workflow:intraday_scan_offset") == "5"  # this batch is retried next tick

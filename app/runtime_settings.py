@@ -192,8 +192,8 @@ class AppSettings(BaseSettings):
     # bucket from scheduler_job_timeout_seconds in app/workflow/cadence_budget.py: a
     # bucket starts only if its pre-work + a useful scan + the post-scan reserve fit,
     # and its scan stops in time for that reserve. A number > 0 restores the old rule
-    # (stop starting buckets once that many seconds have elapsed; scans still stop for
-    # the reserve); <= 0 disables deferral and the derived scan stop.
+    # exactly (stop starting buckets once that many seconds have elapsed; no backstop,
+    # no scan stop); <= 0 disables deferral and the derived scan stop.
     scheduler_cadence_soft_budget_seconds: float | None = None
     # How long a timed-out job's still-running (abandoned) thread blocks its next run, so
     # two cadence runs never overlap (10-09: 21 of 52 did). <= 0 disables the guard.

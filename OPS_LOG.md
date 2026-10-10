@@ -41,7 +41,13 @@ without explicit operator sign-off recorded here.
   breaker is never silently emptied). No risk gate, sizing, eToro rule or maintenance frequency
   changed. Expected: ~2-3 timeouts per session (entry ticks, now allowed to finish), signal ->
   order ~1 min instead of 2-3.5 min. Rollback: `SCHEDULER_CADENCE_SOFT_BUDGET_SECONDS=110`
-  (old rule) and/or `SCHEDULER_OVERLAP_GRACE_SECONDS=0`. Monitor Monday: timeouts <= 5,
+  (exactly the old rule: no backstop, no scan stop) and/or `SCHEDULER_OVERLAP_GRACE_SECONDS=0`.
+  Independent review (4 lenses + a skeptic per finding): 4 distinct issues confirmed, all low /
+  medium, none touching a gate; fixed in the follow-up commit: the 110 rollback kept the new
+  backstop and scan stop (now a true rollback); a budget- or lock-skipped intraday bucket lost
+  its 20-symbol rotation batch (offset now put back); docs now say the intraday / crypto / named
+  daily scans lose the symbols past the stop for that run (no resume cursor); the review-fallback
+  test now seeds real reviews. 901 tests pass. Monitor Monday: timeouts <= 5,
   overlap_skipped == timeouts, presumed_hung == 0, created->approved < 20 s.
 - Follow-ups not in this change (need their own review / operator decision): close the
   near-miss lifecycle fail-open (`lifecycles=None` -> no breaker blockers); add the

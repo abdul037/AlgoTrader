@@ -131,8 +131,15 @@ def test_lifecycle_reads_do_not_grow_with_the_number_of_executions(tmp_path) -> 
 
 def test_review_batch_failure_falls_back_without_raising(tmp_path) -> None:
     # A raise out of lifecycles() would leave the near-miss path with no breaker blockers.
+    from app.models.learning import TradeReview
+
     service = _seeded_service(tmp_path, 6)
+    for execution_id in ("exec_1", "exec_4"):
+        service.learning_repository.record_review(TradeReview(execution_id=execution_id))
     expected = {i.execution_id: i.flags.model_dump() for i in service.lifecycles(limit=1000)}
+    assert expected["exec_1"]["review_created"] is True
+    assert expected["exec_4"]["review_created"] is True
+    assert expected["exec_0"]["review_created"] is False
 
     def broken(ids):
         raise RuntimeError("db hiccup")

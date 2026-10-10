@@ -13,7 +13,13 @@ A tick now (1) starts a bucket only if its pre-work, a useful scan and the post-
 reserve still fit before the job cap, and (2) stops the scan core in time for that
 reserve, through ``scan_universe``'s existing ``cancel_event`` hook. Which candidates
 pass, and how they are sized, approved or executed, does not change: a shorter scan
-evaluates fewer symbol/spec pairs and the rotation cursors resume where it stopped.
+evaluates fewer symbol/spec pairs. The swing scan's cursors resume where it stopped; the
+intraday batch, the crypto scan and the once-a-day premarket / market-open / end-of-day
+scans pass explicit lists, so the symbols past the stop are simply not scanned that run
+(the intraday offset is put back only when the whole bucket is skipped).
+
+An explicit ``scheduler_cadence_soft_budget_seconds`` > 0 restores the old rule exactly
+(admission by elapsed time only, no backstop, no scan stop); <= 0 disables deferral.
 """
 
 from __future__ import annotations
@@ -58,6 +64,13 @@ class CadenceBudget:
         return cls(started_at, job_timeout, None if explicit is None else float(explicit))
 
     @property
+    def enforces_scan_stop(self) -> bool:
+        """False in the legacy mode (explicit soft budget > 0): then only the old
+        'elapsed < N' admission applies -- no backstop and no scan stop (review 10-10)."""
+
+        return self.legacy_soft_budget is None
+
+    @property
     def scan_stop_at(self) -> float:
         return self.started_at + self.job_timeout - POST_SCAN_RESERVE_SECONDS
 
@@ -77,6 +90,8 @@ class CadenceBudget:
     def scan_fits(self) -> bool:
         """Backstop in run_scan_task, where the bucket's real pre-work is already spent."""
 
+        if not self.enforces_scan_stop:
+            return True
         return self.scan_seconds_left(SCAN_SETUP_SECONDS) >= MIN_USEFUL_SCAN_SECONDS
 
     def describe(self) -> dict[str, float]:

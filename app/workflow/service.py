@@ -209,8 +209,9 @@ class SignalWorkflowService:
         )
 
     def run_intraday_scan(self, *, notify: bool = True, force_refresh: bool = False) -> WorkflowTaskResponse:
-        symbols = self._intraday_scan_symbols()
-        return self._execute_guarded(
+        prior_offset = self.runtime_state.get("workflow:intraday_scan_offset")
+        symbols = self._intraday_scan_symbols()  # advances the offset
+        result = self._execute_guarded(
             "intraday_scan",
             lambda: self._run_scan_task(
                 task="intraday_scan",
@@ -223,6 +224,9 @@ class SignalWorkflowService:
             ),
             bucket_name="intraday_rotation",
         )
+        if result.skipped:  # budget or lock skip: the batch was never scanned, retry it
+            self.runtime_state.set("workflow:intraday_scan_offset", prior_offset or "0")
+        return result
 
     def run_end_of_day_scan(self, *, notify: bool = True, force_refresh: bool = False) -> WorkflowTaskResponse:
         timeframes = ["15m", "1h", "1d", "1w"]
@@ -494,15 +498,9 @@ class SignalWorkflowService:
         return run_scan_task(self, **kwargs)
 
     def _intraday_scan_symbols(self) -> list[str]:
-        universe = resolve_universe(
-            self.settings,
-            limit=int(
-                max(
-                    int(getattr(self.settings, "market_universe_limit", 100) or 100),
-                    int(getattr(self.settings, "intraday_active_mover_scan_limit", 80) or 80),
-                )
-            ),
-        )
+        limit = max(int(getattr(self.settings, "market_universe_limit", 100) or 100),
+                    int(getattr(self.settings, "intraday_active_mover_scan_limit", 80) or 80))
+        universe = resolve_universe(self.settings, limit=limit)
         if not universe:
             return []
         batch_size = max(1, int(getattr(self.settings, "scalp_scan_batch_size", 20) or 20))

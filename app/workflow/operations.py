@@ -34,7 +34,7 @@ def run_scan_task(
 
     budget = current_budget()  # set only inside a scheduled cadence tick
     if budget is not None and not budget.scan_fits():
-        # Checked before the spec batch and swing symbol cursors move, so nothing is skipped.
+        # Before the spec batch and swing cursors move; run_intraday_scan restores its offset.
         service.run_logs.log("workflow_scan_budget_deferred", {"task": task, **budget.describe()})
         return WorkflowTaskResponse(
             task=task, status="skipped", skipped=True,
@@ -64,7 +64,7 @@ def run_scan_task(
     scan_params = inspect.signature(service.market_screener.scan_universe).parameters
     if "scan_task" in scan_params:
         kwargs["scan_task"] = task
-    if budget is not None and "cancel_event" in scan_params:
+    if budget is not None and budget.enforces_scan_stop and "cancel_event" in scan_params:
         kwargs["cancel_event"] = ScanDeadline(budget.scan_stop_at)  # stop in time for the post-scan work
     try:
         response = service.market_screener.scan_universe(**kwargs)
