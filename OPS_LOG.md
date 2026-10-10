@@ -12,6 +12,40 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-10-10 (Sat) — pre-market scan research, operator decisions, step 4 fixes
+
+- **Operator: "scan many stocks and find the best ones before trading hours; parallel agents?"**
+  Research workflow (4 investigators): scanning is ~85-90% database waiting (each repository
+  call ~0.58 s: Railway in California, Supabase in Sydney ap-southeast-2, ~0.146 s per round
+  trip), ~1-3% CPU; the server uses ~0.1 of 8 vCPU. Production scans the 25
+  MARKET_UNIVERSE_SYMBOLS (= ALLOWED_INSTRUMENTS), not top200; the 08:30 ET premarket scan
+  takes the first 10 and never rotates (same 7-9 names, AVGO never reached), runs a rotating
+  6-of-54 spec batch (mostly 1h specs that cannot pass evidence) and has found 0 candidates
+  every day since 09-25. 25 symbols x 6 passing 1d specs = 150 runs ~7 min. Backtests decide
+  on the completed daily bar and fill at the next open, but every live 1d entry so far was
+  signalled 1.5-4 h after the open on the unfinished bar (relative-volume near-miss floor
+  ~0.45). AI agents are not the right tool for trade decisions (cost, latency, not
+  reproducible, cannot pass the evidence gate); parallel workers in the bot are.
+- **Operator decisions (~11:50 UTC):** step 1 build the pre-market deep scan (no gate change)
+  for Monday; step 2 "build it, ship next week" -- best-first entries at the open on the
+  completed bar, shadow-logged first, switched on only with the operator's OK; step 3
+  "backtest first, decide after" -- 1d walk-forward on ~175 more liquid stocks as research,
+  kept out of the live evidence pool, nothing new trades until the operator approves the list;
+  step 4 all three: duplicate-order safeguard, close the pre-trade gap, region options.
+- **Step 4 done (pushed 10-10):** (a) the per-symbol open-queue unique index
+  (`idx_queue_unique_open_per_symbol`, status queued/processing) is now created on Postgres at
+  boot (`app/storage/pg_upgrades.py`, own transaction, failure logged never fatal; production
+  had no open items and no duplicates); (b) missing lifecycle evidence now always blocks
+  auto-approval, including the unattended near-miss path that previously saw no circuit-
+  breaker blockers at all; a failed evidence read logs `paper_lifecycle_evidence_unavailable`.
+  Production timings show lifecycles() has been completing (it scaled with executions), so
+  this should not block Monday's entries -- watch for that event. (c) Region options (no change
+  made): moving the bot to Railway Singapore cuts the DB round trip ~0.146 -> ~0.09 s but adds
+  latency to Alpaca (US) and eToro; moving the database to a Supabase US-West region next to
+  the bot would cut it to ~0.01-0.02 s (every repository call ~0.58 s -> ~0.05 s, scans and
+  pre-trade checks several times faster) but needs a new project + data migration and a
+  DATABASE_URL change by the operator. Recommended: plan the database move for a weekend.
+
 ## 2026-10-08 (Thu) → 10-10 (Sat) — more live trades; cadence timeout fix
 
 - **Live eToro trades:** PYPL 10-08 17:01 UTC ($993, 54.84, stop 51.86 / target 61.82), WMT

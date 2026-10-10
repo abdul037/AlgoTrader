@@ -927,6 +927,10 @@ class Database:
             self._ensure_column(connection, "executions", "strategy_name", "TEXT")
             if self.is_sqlite:
                 self._apply_schema_upgrades(connection)
+        if not self.is_sqlite:  # own transactions, never fatal (app/storage/pg_upgrades.py)
+            from app.storage.pg_upgrades import apply_postgres_upgrades
+
+            apply_postgres_upgrades(self)
 
     def exists(self) -> bool:
         """Return whether the backing SQLite file already exists."""
@@ -934,11 +938,7 @@ class Database:
         return True if not self.is_sqlite else Path(self.path).exists()
 
     def _apply_schema_upgrades(self, connection: sqlite3.Connection) -> None:
-        """Apply SQLite-only schema upgrades (partial indexes) for existing files.
-
-        Column back-fills now happen dialect-agnostically in ``initialize`` via
-        ``_ensure_column``; this keeps only the SQLite-specific partial index.
-        """
+        """SQLite partial index for existing files (Postgres: app/storage/pg_upgrades.py)."""
 
         connection.execute(
             """

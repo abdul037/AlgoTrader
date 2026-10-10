@@ -65,6 +65,8 @@ def _service(
             is_regular_market_open=lambda: True,
             is_supported_equity=lambda _symbol: True,
         ),
+        # Production wires a paper service; no lifecycle evidence now blocks (10-10).
+        paper_trading_service=SimpleNamespace(lifecycles=lambda limit=1000: []),
         strategy_governance=SimpleNamespace(
             strategy_production_approved=lambda _strategy: strategy_approved,
             strategy_paper_exploration_approved=lambda _strategy: strategy_paper_approved,

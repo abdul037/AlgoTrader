@@ -174,7 +174,11 @@ def auto_approval_tier_blockers(
             clean_count = sum(1 for item in lifecycles if lifecycle_complete(item))
             if clean_count < minimum:
                 blockers.append("insufficient_clean_supervised_lifecycles")
-    # The lifecycle-failure circuit-breaker is a hard safety stop; it always runs.
+    # The lifecycle-failure circuit-breaker is a hard safety stop; it always runs. Without
+    # its evidence it cannot run, so that blocks too -- also on the unattended near-miss
+    # path, which used to see no blockers at all (operator-approved fix 2026-10-10).
+    if lifecycles is None:
+        blockers.append("paper_lifecycle_evidence_unavailable")
     blockers.extend(lifecycle_safety_blockers(lifecycles or []))
     return sorted(set(blockers))
 

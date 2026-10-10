@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import suppress
 from typing import Any
 
 from app.automation.reliability import (
@@ -296,7 +297,10 @@ class PaperAutoTradingService:
             return None
         try:
             return list(self.paper_trading.lifecycles(limit=1000))
-        except Exception:  # noqa: BLE001 - lack of evidence must block auto, not crash scans
+        except Exception as exc:  # noqa: BLE001 - lack of evidence must block auto, not crash scans
+            if self.logs is not None:
+                with suppress(Exception):
+                    self.logs.log("paper_lifecycle_evidence_unavailable", {"error": str(exc)[:300]})
             return None
 
     def process_ready_queue(self) -> list[Any]:
