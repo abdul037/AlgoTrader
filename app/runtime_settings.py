@@ -188,12 +188,16 @@ class AppSettings(BaseSettings):
     # BELOW the self-heal stale threshold so a genuinely hung job is still
     # bounded before a full worker restart. 240 > 180 batch deadline, < 300 heal.
     scheduler_job_timeout_seconds: int = 240
-    # Soft budget for one workflow-cadence tick: once this much wall-clock has
-    # elapsed the tick stops starting new scan buckets and defers the rest to the
-    # next tick, so a burst of due buckets can't sum past the per-job timeout
-    # above. None -> derived as ~60% of scheduler_job_timeout_seconds; <= 0
-    # disables deferral (buckets always all run).
+    # Soft budget for one workflow-cadence tick. None (production) -> derived per
+    # bucket from scheduler_job_timeout_seconds in app/workflow/cadence_budget.py: a
+    # bucket starts only if its pre-work + a useful scan + the post-scan reserve fit,
+    # and its scan stops in time for that reserve. A number > 0 restores the old rule
+    # (stop starting buckets once that many seconds have elapsed; scans still stop for
+    # the reserve); <= 0 disables deferral and the derived scan stop.
     scheduler_cadence_soft_budget_seconds: float | None = None
+    # How long a timed-out job's still-running (abandoned) thread blocks its next run, so
+    # two cadence runs never overlap (10-09: 21 of 52 did). <= 0 disables the guard.
+    scheduler_overlap_grace_seconds: float = 120.0
     # Scheduled refresh of the internal (self-simulated) paper position ledger.
     paper_position_refresh_enabled: bool = True
     paper_position_refresh_interval_seconds: int = 60

@@ -15,6 +15,7 @@ from app.models.workflow import WorkflowTaskResponse
 from app.risk.proposal_sizing import risk_based_proposal_notional
 from app.universe import resolve_universe
 from app.utils.time import utc_now
+from app.workflow.cadence_budget import ScanDeadline, current_budget
 from app.workflow.open_signals import check_open_signals_impl  # noqa: F401 - re-export
 
 
@@ -31,6 +32,14 @@ def run_scan_task(
 ) -> WorkflowTaskResponse:
     from app.workflow.swing_focus import advance_symbols, focused_spec_batch, rotate_symbols
 
+    budget = current_budget()  # set only inside a scheduled cadence tick
+    if budget is not None and not budget.scan_fits():
+        # Checked before the spec batch and swing symbol cursors move, so nothing is skipped.
+        service.run_logs.log("workflow_scan_budget_deferred", {"task": task, **budget.describe()})
+        return WorkflowTaskResponse(
+            task=task, status="skipped", skipped=True,
+            detail=f"{task.replace('_', ' ').title()} deferred to the next tick (cadence budget).",
+        )
     spec_batch = focused_spec_batch(service, task=task, timeframes=timeframes) or (
         _rotating_spec_batch(service, task=task, timeframes=timeframes)
     )
@@ -52,8 +61,11 @@ def run_scan_task(
     kwargs["symbols"] = rotate_symbols(service, task=task, symbols=list(kwargs["symbols"]))
     if spec_batch:
         kwargs["strategy_spec_keys"] = spec_batch["strategy_spec_keys"]
-    if "scan_task" in inspect.signature(service.market_screener.scan_universe).parameters:
+    scan_params = inspect.signature(service.market_screener.scan_universe).parameters
+    if "scan_task" in scan_params:
         kwargs["scan_task"] = task
+    if budget is not None and "cancel_event" in scan_params:
+        kwargs["cancel_event"] = ScanDeadline(budget.scan_stop_at)  # stop in time for the post-scan work
     try:
         response = service.market_screener.scan_universe(**kwargs)
     except Exception as exc:  # noqa: BLE001 - workflow must not block future runs

@@ -13,6 +13,7 @@ from app.execution.interfaces import SignalApprovalAdapter
 from app.models.workflow import WorkflowBucketStatus, WorkflowStatusResponse, WorkflowTaskResponse
 from app.universe import resolve_universe
 from app.utils.time import utc_now
+from app.workflow.cadence_budget import CadenceBudget, tick_budget
 from app.workflow.crypto_scan import crypto_bucket_enabled, crypto_scan_due, run_crypto_scan
 from app.workflow.operations import (
     candidate_with_ledger_outcome,
@@ -123,46 +124,25 @@ class SignalWorkflowService:
         if not self.settings.screener_scheduler_enabled:
             return summary
 
-        # Budget-aware dispatch: buckets coming due together (open/close burst) can
-        # sum past the worker's per-job timeout, so stop starting new ones once the
-        # soft budget is spent; _bucket_due keeps the rest due for the next tick.
-        soft_budget = self._cadence_soft_budget_seconds()
+        # Budget-aware dispatch (app/workflow/cadence_budget.py): a bucket starts only if its
+        # pre-work, a useful scan and the post-scan reserve fit inside the job's wall-clock
+        # cap, and its scan then stops in time for that reserve (10-07..10-09 timeouts).
+        budget = CadenceBudget.for_tick(self.settings, started_at)
         deferred: list[str] = []
         for bucket_name in self.SCAN_BUCKETS:
             if not self._bucket_due(bucket_name):
                 continue
-            if soft_budget > 0 and (time.monotonic() - started_at) >= soft_budget:
+            if budget is not None and not budget.admits(bucket_name, self.settings):
                 deferred.append(bucket_name)
                 continue
-            result = self.run_bucket(bucket_name, notify=True, force_refresh=bucket_name in {"premarket_scan", "market_open_scan", "end_of_day_scan"})
+            with tick_budget(budget):
+                result = self.run_bucket(bucket_name, notify=True, force_refresh=bucket_name in {"premarket_scan", "market_open_scan", "end_of_day_scan"})
             summary["alerts_sent"] += result.alerts_sent
             if result.status == "ok":
                 summary["buckets_run"] += 1
-        if deferred:
-            self.run_logs.log(
-                "workflow_cadence_deferred",
-                {"deferred_buckets": deferred, "soft_budget_seconds": soft_budget},
-            )
+        if deferred and budget is not None:
+            self.run_logs.log("workflow_cadence_deferred", {"deferred_buckets": deferred, **budget.describe()})
         return summary
-
-    def _cadence_soft_budget_seconds(self) -> float:
-        """How long ``run_scheduled_tasks`` may keep starting new buckets before
-        deferring the rest to the next tick.
-
-        Derived so the invariant ``soft_budget + one_batch_deadline < job_timeout``
-        holds: the last bucket may start just before the soft budget and then run
-        up to its own batch deadline, and that must still finish before the job
-        wall-clock cap. Otherwise a single deep bucket started late would trip the
-        timeout — which is exactly the failure this guards against. Overridable
-        via ``scheduler_cadence_soft_budget_seconds`` (<= 0 disables deferral)."""
-
-        explicit = getattr(self.settings, "scheduler_cadence_soft_budget_seconds", None)
-        if explicit is not None:
-            return float(explicit)
-        job_timeout = float(getattr(self.settings, "scheduler_job_timeout_seconds", 240) or 240)
-        batch_deadline = float(getattr(self.settings, "screener_batch_deadline_seconds", 120) or 120)
-        # Leave room for one in-flight batch to finish, plus a 10s margin.
-        return max(job_timeout - batch_deadline - 10.0, 30.0)
 
     def run_premarket_scan(self, *, notify: bool = True, force_refresh: bool = False) -> WorkflowTaskResponse:
         return self._execute_guarded(

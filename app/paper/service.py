@@ -214,10 +214,9 @@ class PaperTradingService:
         autonomous_only: bool = False,
         complete_only: bool = False,
     ) -> list[PaperTradeLifecycleRecord]:
-        records = [
-            self._lifecycle_from_execution(record)
-            for record in self.broker_executions(limit=max(limit, 1))
-        ]
+        executions = self.broker_executions(limit=max(limit, 1))
+        evidence = self._lifecycle_evidence([record.execution_id for record in executions])
+        records = [self._lifecycle_from_execution(record, evidence=evidence) for record in executions]
         if source:
             records = [record for record in records if record.source == source]
         if autonomous_only:
@@ -232,17 +231,51 @@ class PaperTradingService:
                 return record
         return None
 
-    def _lifecycle_from_execution(self, execution: PaperBrokerExecutionRecord) -> PaperTradeLifecycleRecord:
+    def _lifecycle_evidence(self, execution_ids: list[str]) -> dict[str, Any]:
+        """Inputs every lifecycle of one ``lifecycles()`` call shares, read once.
+
+        Read per execution they cost ~3.5 s each (four or five DB round trips plus two
+        1000-row lists), so candidate_blockers took 90-111 s at 24-31 executions and grew
+        with every trade (timeouts review 2026-10-09). Same rows, same flags."""
+
+        # None -> per-execution get_review, as before. The batch must never raise out of
+        # lifecycles(): on the near-miss path a None lifecycle list means no breaker blockers.
+        reviewed: set[str] | None = None
+        batch = getattr(self.learning_repository, "reviewed_execution_ids", None)
+        if callable(batch):
+            try:
+                reviewed = set(batch(execution_ids))
+            except Exception:  # noqa: BLE001 - fall back to the per-execution reads
+                reviewed = None
+        return {
+            "reconciliation": self._latest_reconciliation(),
+            "client_order_counts": self._client_order_counts(),
+            "reviewed": reviewed,
+        }
+
+    def _lifecycle_from_execution(
+        self, execution: PaperBrokerExecutionRecord, *, evidence: dict[str, Any] | None = None
+    ) -> PaperTradeLifecycleRecord:
+        evidence = evidence or {}
+        latest = evidence["reconciliation"] if "reconciliation" in evidence else self._latest_reconciliation()
         entry_submitted = bool(execution.broker_order_id)
         entry_filled = bool(execution.filled_qty > 0 and execution.entry_fill_price is not None)
         bracket_legs_verified = self._bracket_legs_verified(execution)
         exit_filled_or_position_flat = bool(
             execution.exit_fill_price is not None
-            or (entry_filled and self._latest_reconciliation_positions_seen() == 0)
+            or (entry_filled and self._reconciliation_positions_seen(latest) == 0)
         )
-        reconciled = self._latest_reconciliation_ok()
-        review_created = self._review_created(execution.execution_id)
-        duplicate_order_absent = self._duplicate_client_order_absent(execution.client_order_id)
+        reconciled = self._reconciliation_ok(latest)
+        reviewed = evidence.get("reviewed")
+        review_created = (
+            execution.execution_id in reviewed if reviewed is not None else self._review_created(execution.execution_id)
+        )
+        counts = evidence.get("client_order_counts")
+        duplicate_order_absent = (
+            self._duplicate_client_order_absent(execution.client_order_id)
+            if counts is None
+            else (not execution.client_order_id or counts[execution.client_order_id] <= 2)
+        )
         flags = PaperLifecycleFlags(
             entry_submitted=entry_submitted,
             entry_filled=entry_filled,
@@ -300,13 +333,12 @@ class PaperTradingService:
             return {}
         return dict(self.safety_state.latest_reconciliation() or {})
 
-    def _latest_reconciliation_ok(self) -> bool:
-        latest = self._latest_reconciliation()
+    def _reconciliation_ok(self, latest: dict[str, Any]) -> bool:
         issues = self._json_or_empty(latest.get("issues_json"), [])
         return str(latest.get("status") or "") == "ok" and not issues
 
-    def _latest_reconciliation_positions_seen(self) -> int:
-        latest = self._latest_reconciliation()
+    @staticmethod
+    def _reconciliation_positions_seen(latest: dict[str, Any]) -> int:
         try:
             return int(latest.get("positions_seen") or 0)
         except (TypeError, ValueError):
@@ -318,28 +350,26 @@ class PaperTradingService:
         return self.learning_repository.get_review(execution_id) is not None
 
     def _duplicate_client_order_absent(self, client_order_id: str | None) -> bool:
-        if not client_order_id:
-            return True
-        count = 0
+        return not client_order_id or self._client_order_counts()[client_order_id] <= 2
+
+    def _client_order_counts(self) -> Counter[str]:
+        """Execution rows and broker snapshots per client_order_id; a row counts once even
+        when both of its id fields hold the same id."""
+
+        counts: Counter[str] = Counter()
         if self.executions is not None:
             for execution in self.executions.list(limit=1000):
                 request_payload = dict(getattr(execution, "request_payload", {}) or {})
                 response_payload = dict(getattr(execution, "response_payload", {}) or {})
                 broker_execution = dict(response_payload.get("broker_execution") or {})
-                if client_order_id in {
-                    str(request_payload.get("client_order_id") or ""),
-                    str(broker_execution.get("client_order_id") or ""),
-                }:
-                    count += 1
+                ids = {str(request_payload.get("client_order_id") or ""), str(broker_execution.get("client_order_id") or "")}
+                counts.update(ids - {""})
         if self.broker_orders is not None:
             for snapshot in self.broker_orders.list(limit=1000):
                 payload = self._json_or_empty(snapshot.get("payload_json"), {})
-                if client_order_id in {
-                    str(snapshot.get("client_order_id") or ""),
-                    str(payload.get("client_order_id") or ""),
-                }:
-                    count += 1
-        return count <= 2
+                ids = {str(snapshot.get("client_order_id") or ""), str(payload.get("client_order_id") or "")}
+                counts.update(ids - {""})
+        return counts
 
     def _close_position(
         self,

@@ -12,6 +12,42 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-10-08 (Thu) → 10-10 (Sat) — more live trades; cadence timeout fix
+
+- **Live eToro trades:** PYPL 10-08 17:01 UTC ($993, 54.84, stop 51.86 / target 61.82), WMT
+  10-08 17:33 ($993, 110.74, 103.40 / 126.84), DIS 10-09 15:05 ($993, 107.64, 101.16 / 122.36),
+  all ema_trend_stack 1d. 7 of 9 open (tech group 4/4 full: META, MSFT, AMD, DIS); at 10-09
+  18:27 UTC open P/L -$47.80 (eToro prices), closed -$70.25, total -$118.05 (-1.18%); the
+  operator's copy ~-$5.90. No closes, halts or backup stops after the ETH test. Telegram still off
+  (daily reports skipped 10-07, 10-08).
+- **Operator: "investigate the timeouts".** Workflow (3 investigators, 2 designs, judge; resumed
+  after a container restart) on all 52 in-session `job exceeded 240s` timeouts 10-07..10-09
+  (22/18/17): the 110 s soft budget only gated starting a bucket, but a bucket really costs
+  ~140-145 s (swing) / ~170 s (intraday: its ~30 s active-mover refresh ran after the budget
+  check) and ~270-320 s when it places an entry (candidate_blockers -> lifecycles() re-read
+  reconciliation, review and two 1000-row lists per execution: 90-111 s, +3.5 s per trade). On
+  timeout the abandoned thread kept running and the next run started ~20 s later beside it (21
+  of 52 overlapped, up to 251 s). Every paper entry (8) and eToro LIVE submission (5) since 10-07
+  ran in such an abandoned thread; all gates held, but the next run's Alpaca reconciliation could
+  race an in-flight entry (near-misses AMD 10-07, PYPL 10-08) and trip a breaker flatten.
+- **Fix (pushed 10-10, market closed):** (1) per-bucket admission from measured cost and a scan
+  stop at job start + 180 s through scan_universe's existing cancel hook
+  (`app/workflow/cadence_budget.py`); post-scan work and entries are never cut; (2) a timed-out
+  job is not started again while its abandoned run is alive (up to
+  `SCHEDULER_OVERLAP_GRACE_SECONDS=120`, `<=0` = old behaviour), logging
+  `scheduler_job_overlap_skipped` / `_overrun_finished` / `_overrun_presumed_hung`; (3)
+  lifecycles() reads its evidence once per call (identical flags, tested against the old path;
+  the batched review lookup falls back to per-execution reads on any error, so the near-miss
+  breaker is never silently emptied). No risk gate, sizing, eToro rule or maintenance frequency
+  changed. Expected: ~2-3 timeouts per session (entry ticks, now allowed to finish), signal ->
+  order ~1 min instead of 2-3.5 min. Rollback: `SCHEDULER_CADENCE_SOFT_BUDGET_SECONDS=110`
+  (old rule) and/or `SCHEDULER_OVERLAP_GRACE_SECONDS=0`. Monitor Monday: timeouts <= 5,
+  overlap_skipped == timeouts, presumed_hung == 0, created->approved < 20 s.
+- Follow-ups not in this change (need their own review / operator decision): close the
+  near-miss lifecycle fail-open (`lifecycles=None` -> no breaker blockers); add the
+  per-symbol open-queue unique index to Postgres (exists only for SQLite); the ~0.146 s DB round
+  trip (Railway <-> Supabase region) makes every repository call ~0.58 s.
+
 ## 2026-10-07 (Wed) — option 3 live: first trades, live caps raised to 9 positions
 
 - **Option 3 worked on its first session.** The swing scan's AMD and COST entries passed on

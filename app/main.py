@@ -667,6 +667,7 @@ def create_app(
             stale_restart_seconds=max(int(app_settings.scheduler_self_heal_stale_seconds), 1),
             monitor_interval_seconds=max(int(app_settings.scheduler_self_heal_check_seconds), 1),
             default_job_timeout_seconds=max(int(app_settings.scheduler_job_timeout_seconds), 1),
+            overlap_grace_seconds=float(app_settings.scheduler_overlap_grace_seconds),
         )
 
     app.state.build_scheduler_worker = _build_scheduler_worker

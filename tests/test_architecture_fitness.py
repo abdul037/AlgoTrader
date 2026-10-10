@@ -171,7 +171,7 @@ FILE_LINE_BUDGET = 1000
 KNOWN_LARGE_FILES: dict[str, int] = {
     "app/storage/repositories.py": 2871,
     "app/notifications/telegram_bot.py": 1951,
-    "app/workflow/service.py": 1061,
+    "app/workflow/service.py": 1041,
     "app/storage/db.py": 1063,
 }
 
