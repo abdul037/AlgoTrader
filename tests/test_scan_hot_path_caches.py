@@ -185,7 +185,9 @@ def test_a_strategy_that_cannot_be_built_does_not_abort_the_scan(tmp_path, monke
     screener._strategy_specs_for_timeframe = lambda timeframe, strategy_spec_keys=None: listed
     response = screener.scan_universe(symbols=["NVDA", "AMD"], timeframes=["1d"], limit=5)
     assert response.evaluated_strategy_runs == 2 * len(listed)  # every other strategy still ran
-    assert any("generated_x" in error for error in response.errors)
+    assert any(
+        "generated strategy generated_x could not build" in error for error in response.errors
+    )
     screener._strategy_specs_for_timeframe = real_specs
     assert "generated_x" not in {s.name for s in real_specs("1d")}  # and it is no longer listed
 
@@ -198,11 +200,22 @@ def test_an_unreadable_generated_row_never_stops_built_ins_building(tmp_path, mo
     def broken(**kwargs):
         raise ValueError("4 validation errors for StrategyLabDsl")
 
-    monkeypatch.setattr(repository, "list_generated", broken)
+    lists: list[int] = []
+
+    def counted_broken(**kwargs):
+        lists.append(1)
+        broken()
+
+    monkeypatch.setattr(repository, "list_generated", counted_broken)
     looked: list[str] = []
     monkeypatch.setattr(repository, "get_generated_by_name", lambda name: looked.append(name))
-    assert service.build_strategy_for_spec(_by_name("trend_following")) is None
-    assert looked == ["trend_following"]
+    for name in ("trend_following", "ema_trend_stack", "momentum_breakout"):
+        assert service.build_strategy_for_spec(_by_name(name)) is None
+    assert looked == ["trend_following", "ema_trend_stack", "momentum_breakout"]
+    assert len(lists) == 1  # the failure is remembered for the TTL: one read per build, as before
+    service._invalidate_generated_cache()
+    service.build_strategy_for_spec(_by_name("trend_following"))
+    assert len(lists) == 2  # a write clears it
 
 
 def test_only_a_generated_strategy_that_cannot_build_is_skipped() -> None:
@@ -214,7 +227,8 @@ def test_only_a_generated_strategy_that_cannot_build_is_skipped() -> None:
         raise ValueError(f"Unknown strategy '{spec.name}'")
 
     service = SimpleNamespace(_build_strategy=failing)
-    assert _build_for_run(service, SimpleNamespace(name="generated_x", style="generated")) is None
+    strategy, why = _build_for_run(service, SimpleNamespace(name="generated_x", style="generated"))
+    assert strategy is None and why == "ValueError: Unknown strategy 'generated_x'"  # cause kept
     with pytest.raises(ValueError):  # a built-in that cannot build still aborts the scan
         _build_for_run(service, SimpleNamespace(name="trend_following", style="swing"))
 

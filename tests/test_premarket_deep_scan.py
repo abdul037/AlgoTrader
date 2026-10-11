@@ -102,17 +102,30 @@ class _Screener:
 
 
 class _MarketData:
-    def __init__(self, *, fail=(), rate_limited=(), stamp="04:00"):
+    """``fail``: symbols that never have data (dead tickers); ``down_from``: the feed goes
+    down for every symbol once this one is requested, until ``down`` is cleared."""
+
+    def __init__(
+        self, *, fail=(), rate_limited=(), stale=(), down_from=None, down_empty=False, stamp="04:00"
+    ):
         self.calls: list[str] = []
-        self.fail, self.rate_limited, self.stamp = set(fail), set(rate_limited), stamp
+        self.fail, self.rate_limited, self.stale = set(fail), set(rate_limited), set(stale)
+        self.down_from, self.down, self.down_empty, self.stamp = down_from, False, down_empty, stamp
 
     def get_history(self, symbol, *, timeframe="1d", bars=250, force_refresh=False):
         self.calls.append(symbol)
+        if symbol == self.down_from:
+            self.down_from, self.down = None, True
         if symbol in self.rate_limited:
             raise EToroRateLimitError("eToro cooldown")
-        if symbol in self.fail:
+        if self.down and self.down_empty:  # some feeds answer an outage with no rows
+            return _frame(1, stamp=self.stamp).iloc[0:0]
+        if self.down or symbol in self.fail:
             raise RuntimeError("feed down")
-        return _frame(1, stamp=self.stamp)
+        frame = _frame(1, stamp=self.stamp)
+        if symbol in self.stale:  # a halted ticker: its last bar is weeks old
+            return frame[frame["timestamp"] < pd.Timestamp("2026-09-01", tz="UTC")]
+        return frame
 
 
 class _Boom:
@@ -760,16 +773,20 @@ def test_on_the_real_wiring_it_writes_only_the_watchlist(tmp_path, monkeypatch) 
     assert all(s00[name]["kind"] == "weak" for name in set(direct) - set(bare))
 
 
-def test_a_feed_outage_pauses_and_retries_instead_of_closing_the_day(tmp_path, monkeypatch) -> None:
-    market = _MarketData(fail={"S03", "S04", "S05"})
+@pytest.mark.parametrize("empty", [False, True])
+def test_a_feed_outage_pauses_and_retries_instead_of_closing_the_day(
+    tmp_path, monkeypatch, empty
+) -> None:
+    market = _MarketData(down_from="S03", down_empty=empty)
     service = _service(tmp_path, monkeypatch, market=market)
     _run(service)
     partial = _watchlist(service)
     assert partial["status"] == "partial" and partial["cursor"] == 3
     assert partial["paused_reason"] == "market_data_unavailable" and partial["outage_pauses"] == 1
     assert partial["errors"] == [] and partial["failed_symbols"] == []  # retried, not counted
+    assert market.calls[-1] == "S02"  # the known-good probe failed too: a real outage
     assert service.runtime_state.get(STATE_KEY) is None
-    market.fail.clear()  # the feed comes back
+    market.down = False  # the feed comes back
     _run(service)
     done = _watchlist(service)
     assert done["status"] == "complete" and done["failed_symbols"] == []
@@ -778,12 +795,48 @@ def test_a_feed_outage_pauses_and_retries_instead_of_closing_the_day(tmp_path, m
 
 def test_close_to_the_cutoff_missing_data_is_a_gap_not_a_retry(tmp_path, monkeypatch) -> None:
     late = datetime(2026, 10, 12, 13, 6, tzinfo=UTC)  # 09:06 EDT: under 15 min to the cutoff
-    market = _MarketData(fail={"S03", "S04", "S05"})
+    market = _MarketData(down_from="S22")
     service = _service(tmp_path, monkeypatch, now=late, market=market)
     _run(service)
     watchlist = _watchlist(service)
     assert watchlist["status"] == "complete_with_gaps"
+    assert watchlist["failed_symbols"] == ["S22", "S23", "S24"]
+
+
+def test_dead_tickers_side_by_side_are_gaps_not_an_outage(tmp_path, monkeypatch) -> None:
+    # Review 2026-10-11: three bad symbols in a row stalled the scan until 09:05.
+    market = _MarketData(fail={"S03", "S04", "S05"})
+    service = _service(tmp_path, monkeypatch, market=market)
+    _run(service)
+    watchlist = _watchlist(service)
+    assert watchlist["status"] == "complete_with_gaps" and "paused_reason" not in watchlist
     assert watchlist["failed_symbols"] == ["S03", "S04", "S05"]
+    assert market.calls.count("S02") == 2  # scanned once, probed once: the feed is up
+
+
+def test_an_outage_spanning_two_ticks_is_retried_whole(tmp_path, monkeypatch) -> None:
+    market = _MarketData(down_from="S23")
+    service = _service(tmp_path, monkeypatch, market=market)
+    _run(service, stop=_StopAfter(24))  # S23 fails, then the budget stop ends the tick
+    assert _watchlist(service)["no_data_streak"] == 1
+    _run(service)  # S24 fails at the end of the list; the S22 probe fails: rewind both
+    partial = _watchlist(service)
+    assert partial["status"] == "partial" and partial["cursor"] == 23
+    assert partial["failed_symbols"] == [] and partial["paused_reason"] == "market_data_unavailable"
+    market.down = False
+    _run(service)
+    done = _watchlist(service)
+    assert done["status"] == "complete" and done["failed_symbols"] == []
+
+
+def test_a_halted_tickers_old_bars_are_a_gap_not_a_setup(tmp_path, monkeypatch) -> None:
+    market = _MarketData(stale={"S07"})
+    service = _service(tmp_path, monkeypatch, market=market)
+    _run(service)
+    watchlist = _watchlist(service)
+    assert watchlist["status"] == "complete_with_gaps" and watchlist["failed_symbols"] == ["S07"]
+    assert any(e.startswith("S07: stale_bars (last 2026-08-31)") for e in watchlist["errors"])
+    assert not any(i["symbol"] == "S07" for i in watchlist["signals"])
 
 
 def test_a_pause_that_lasts_to_the_cutoff_stays_on_the_record(tmp_path, monkeypatch) -> None:
@@ -888,20 +941,43 @@ def test_it_sends_telegram_only_when_asked(tmp_path, monkeypatch) -> None:
     assert loud.notifier.messages[0].startswith("SHADOW pre-market setups 2026-10-12")
 
 
-def test_a_dead_runs_lock_goes_stale_in_6_minutes_for_the_deep_scan(tmp_path, monkeypatch) -> None:
+def test_a_dead_runs_lock_goes_stale_in_7_minutes_for_the_deep_scan(tmp_path, monkeypatch) -> None:
     # Review 2026-10-10: a deploy mid-scan left a 45-minute lock that outlived the cutoff.
     from app.workflow.cadence_budget import stale_lock_minutes
 
     on = make_settings(tmp_path, premarket_deep_scan_enabled=True, workflow_lock_timeout_minutes=45)
     off = make_settings(tmp_path, workflow_lock_timeout_minutes=45)
-    assert stale_lock_minutes(on, "premarket_scan") == 6
+    slow = make_settings(
+        tmp_path,
+        premarket_deep_scan_enabled=True,
+        scheduler_job_timeout_seconds=600,
+        workflow_lock_timeout_minutes=45,
+    )
+    assert stale_lock_minutes(on, "premarket_scan") == 7  # 240 s timeout + 120 s grace, + 1 min
+    assert stale_lock_minutes(slow, "premarket_scan") == 13  # follows a longer job timeout
     assert stale_lock_minutes(off, "premarket_scan") == 45  # flag off: exactly as before
     assert stale_lock_minutes(on, "swing_scan") == 45
     ran = _record_deep_runs(monkeypatch)
     flow, _, state = _workflow(tmp_path, True)
     lock = flow._lock_key("premarket_scan")
-    state.set(lock, (datetime.now(UTC) - timedelta(minutes=5)).isoformat())
+    state.set(lock, (datetime.now(UTC) - timedelta(minutes=6)).isoformat())
     assert flow.run_premarket_scan(notify=False).skipped and ran == []  # maybe still running
-    state.set(lock, (datetime.now(UTC) - timedelta(minutes=7)).isoformat())
+    state.set(lock, (datetime.now(UTC) - timedelta(minutes=8)).isoformat())
     flow.run_premarket_scan(notify=False)
     assert len(ran) == 1  # a dead run's lock no longer blocks the resume
+    assert state.get(lock) == ""  # released after the run
+
+
+def test_a_run_that_outlived_a_takeover_never_frees_the_newer_runs_lock(tmp_path) -> None:
+    from app.workflow.cadence_budget import acquire_workflow_lock, release_workflow_lock
+
+    state, key = FakeState(), "workflow:lock:premarket_scan"
+    settings = make_settings(tmp_path, premarket_deep_scan_enabled=True)
+    stamp_a = (datetime.now(UTC) - timedelta(minutes=8)).isoformat()  # run A, blocked 8 min
+    state.set(key, stamp_a)
+    stamp_b = acquire_workflow_lock(state, settings, "premarket_scan", key)  # B takes over
+    assert stamp_b and acquire_workflow_lock(state, settings, "premarket_scan", key) is None
+    release_workflow_lock(state, key, stamp_a)  # A finally finishes
+    assert state.get(key) == stamp_b  # B's lock stands, so a third run stays out
+    release_workflow_lock(state, key, stamp_b)
+    assert state.get(key) == ""

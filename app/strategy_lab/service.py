@@ -130,6 +130,7 @@ class StrategyLabService:
         self._paper_generated_cache: tuple[float, tuple[Any, ...]] | None = None
         self._generated_generation = 0  # bumped by every write, under _generated_lock
         self._generated_lock = threading.Lock()
+        self._paper_generated_failed_at: float | None = None  # a failed list read, kept for the TTL
 
     _PAPER_GENERATED_TTL_SECONDS = 60.0
     _PAPER_GENERATED_LIMIT = 500
@@ -156,6 +157,7 @@ class StrategyLabService:
         with self._generated_lock:
             self._generated_generation += 1
             self._paper_generated_cache = None
+            self._paper_generated_failed_at = None
 
     def status(self) -> dict[str, Any]:
         generated = self.repository.list_generated(limit=1000)
@@ -211,10 +213,16 @@ class StrategyLabService:
         else:
             # Only a paper_generated row can build a strategy. If none carries this name the
             # by-name read could only return None, so skip it (unless the cached list is full).
-            try:
-                cached: tuple[Any, ...] | None = self._paper_generated()
-            except Exception:  # noqa: BLE001 - e.g. one unparseable row: built-ins must still build,
-                cached = None  # and the per-name read below only ever parses this name's row
+            cached: tuple[Any, ...] | None = None
+            failed_at = self._paper_generated_failed_at
+            if failed_at is None or time.monotonic() - failed_at >= self._PAPER_GENERATED_TTL_SECONDS:
+                try:
+                    cached = self._paper_generated()
+                    self._paper_generated_failed_at = None
+                except Exception:  # noqa: BLE001 - e.g. one unparseable row: built-ins must still
+                    # build; the per-name read below only parses this name's row. Not retried for
+                    # the TTL, so a bad row costs one read per build, as before the cache.
+                    self._paper_generated_failed_at = time.monotonic()
             if (
                 cached is not None
                 and len(cached) < self._PAPER_GENERATED_LIMIT

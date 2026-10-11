@@ -101,6 +101,18 @@ without explicit operator sign-off recorded here.
   mutations caught. Kept as designed after two skeptics each refuted them: the eToro room flags stay
   hints (eToro's room decides only at order time and only in some states); the overlapping-save race
   cannot get past the workflow lock in the deployed setup.
+- **10-11 10:01 UTC `2234a95` deployed** (boot snapshot: deep scan off, paper, real trading off).
+  Round-2 verification (20 agents): live path identical to before this work for every successful
+  build and every built-in failure; retired strategies can never build; lock timing unchanged with the
+  flag off; outage, restart and rate-limit walks all end the day correctly. Follow-up fixes (round 3):
+  dead tickers side by side are gaps, not an outage (before rewinding, a symbol known to have data is
+  re-fetched; only if it fails too is the feed down); the no-data streak carries across ticks and the
+  end of the list, so an outage at a tick boundary is retried whole; a last completed bar more than 7
+  days old (halted or delisted ticker) is a gap, not a setup; a workflow run clears its lock only while
+  the lock is still its own, and the deep scan's stale-lock window follows the job timeout + overlap
+  grace (7 min by default); a failed strategy-lab list read is remembered for the TTL (one read per
+  build, as before); a generated strategy's build error keeps its cause. 12 of 12 targeted mutations
+  caught; full suite 970 passed.
 
 ## 2026-10-08 (Thu) → 10-10 (Sat) — more live trades; cadence timeout fix
 

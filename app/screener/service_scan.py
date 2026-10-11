@@ -194,10 +194,10 @@ def scan_universe(
                     break
                 evaluated_strategy_runs += 1
                 evaluated_spec_keys.add(_spec_key(spec))
-                strategy = _build_for_run(service, spec)
+                strategy, build_error = _build_for_run(service, spec)
                 try:
-                    if strategy is None:  # a generated strategy retired mid-scan: this run's error
-                        raise RuntimeError(f"generated strategy {spec.name} is no longer available")
+                    if strategy is None:  # e.g. a generated strategy retired mid-scan: this run's error
+                        raise RuntimeError(f"generated strategy {spec.name} could not build: {build_error}")
                     signal = strategy.generate_signal(history.copy(), symbol)
                 except Exception as exc:
                     if isinstance(exc, ScanTimeoutError):

@@ -24,6 +24,7 @@ An explicit ``scheduler_cadence_soft_budget_seconds`` > 0 restores the old rule 
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections.abc import Iterator
@@ -127,18 +128,54 @@ def current_budget() -> CadenceBudget | None:
     return getattr(_local, "budget", None)
 
 
-PREMARKET_DEEP_SCAN_LOCK_MINUTES = 6  # > the 240 s job timeout + the 120 s overlap grace
-
-
 def stale_lock_minutes(settings: Any, task: str) -> int:
     """How old a workflow lock must be before a new run may take it over.
 
     A deploy or crash kills a run without releasing its lock. The shadow pre-market scan
-    has a short window before its 09:20 cutoff, so its lock goes stale after 6 minutes,
-    longer than any run can last (240 s job timeout + 120 s overlap grace), instead of
-    the 45-minute default; its saves are guarded against overlap as well (review 10-10)."""
+    has a short window before its 09:20 cutoff, so its lock goes stale one minute after the
+    longest a run can be waited for (the job timeout plus the overlap grace: 7 minutes by
+    default) instead of the 45-minute default (review 2026-10-10). A run that outlives even
+    that cannot clear the newer run's lock (release_workflow_lock), and its saves are
+    guarded against overlap."""
 
     default = max(int(settings.workflow_lock_timeout_minutes), 1)
     if task == "premarket_scan" and bool(getattr(settings, "premarket_deep_scan_enabled", False)):
-        return min(default, PREMARKET_DEEP_SCAN_LOCK_MINUTES)
+        waited = float(getattr(settings, "scheduler_job_timeout_seconds", 240) or 240) + max(
+            float(getattr(settings, "scheduler_overlap_grace_seconds", 120.0) or 0.0), 0.0
+        )
+        return min(default, math.ceil(waited / 60.0) + 1)
     return default
+
+
+def acquire_workflow_lock(runtime_state: Any, settings: Any, task: str, key: str) -> str | None:
+    """Take the task's lock unless a live run holds it; the stamp identifies this run."""
+
+    from datetime import datetime, timedelta
+
+    from app.utils.time import utc_now
+
+    current = runtime_state.get(key)
+    if current:
+        try:
+            started_at = datetime.fromisoformat(current)
+        except ValueError:
+            started_at = None
+        if started_at is not None and (utc_now() - started_at) < timedelta(
+            minutes=stale_lock_minutes(settings, task)
+        ):
+            return None
+    stamp = utc_now().isoformat()
+    runtime_state.set(key, stamp)
+    return stamp
+
+
+def release_workflow_lock(runtime_state: Any, key: str, stamp: str | None) -> None:
+    """Clear the lock only while it is still this run's: a run that outlived a stale-lock
+    takeover must not clear the newer run's lock (review 2026-10-11)."""
+
+    try:
+        if stamp and runtime_state.get(key) not in (stamp, None, ""):
+            return
+    except Exception:  # noqa: BLE001 - an unreadable lock is cleared, as before
+        pass
+    runtime_state.set(key, "")

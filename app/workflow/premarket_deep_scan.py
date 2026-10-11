@@ -20,9 +20,10 @@ none of these from 09-25 to 10-09. ``tradeable`` is a pre-filter, not a promise:
 the live screener's scores, eToro's room and every risk gate still decide.
 
 It is resumable: a scan stopped by its deadline saves a cursor and the bucket stays due. A
-feed outage (an eToro rate-limit cooldown, or three symbols in a row with no data) pauses it
-and the next tick retries; at the cutoff (09:20 ET by default, never later than the 09:30
-open) it finishes with what it has.
+feed outage pauses it and the next tick retries: an eToro rate-limit cooldown, or symbols in
+a row with no data while a symbol known to have data has none either (dead tickers next to
+each other are gaps, not an outage). At the cutoff (09:20 ET by default, never later than
+the 09:30 open) it finishes with what it has.
 """
 
 from __future__ import annotations
@@ -50,6 +51,7 @@ DEFAULT_CUTOFF = (9, 20)
 LATEST_CUTOFF = (9, 30)  # the session opens: a shadow scan never runs into it
 OUTAGE_STREAK = 3  # symbols in a row with no usable data: a feed outage, not bad symbols
 OUTAGE_RETRY_ENDS = timedelta(minutes=15)  # before the cutoff; later, missing data is a gap
+STALE_AFTER = timedelta(days=7)  # a last completed bar older than this: halted or delisted
 
 
 def completed_daily_bars(frame: Any, now_ny: datetime) -> Any:
@@ -112,7 +114,7 @@ def run_premarket_deep_scan(
     if now_ny >= cutoff and not watchlist:
         # e.g. the bot was down at 08:30: record the missed day, never run into the session
         missed = _new_watchlist(session_date, [], [])
-        missed.update(status="missed_cutoff", computed_at=utc_now().isoformat())
+        missed.update(status="missed_cutoff", computed_at=utc_now().isoformat(), run_id=uuid4().hex)
         missed.update(items=[], shadow_items=[])
         _save(service, key, missed)
         _record_coverage(service, missed)
@@ -137,6 +139,7 @@ def run_premarket_deep_scan(
     if not watchlist:
         symbols = [s for s in resolve_universe(settings) if not crypto_symbols.is_crypto_symbol(s)]
         watchlist = _new_watchlist(session_date, symbols, list(specs_by_key))
+    resumed_run_id = watchlist.get("run_id")  # the stored list this run picked up, if any
     watchlist["run_id"] = uuid4().hex  # each save checks no other run got further
     for spec_key in watchlist["specs"]:  # demoted or regime-routed out since the first run
         note = f"spec_unavailable_on_resume: {spec_key}"
@@ -145,7 +148,7 @@ def run_premarket_deep_scan(
     context = _prefetch(service)
     started = utc_now()
     universe = list(watchlist.get("universe") or [])
-    streak = 0  # this run's symbols in a row with no usable data
+    watchlist.setdefault("no_data_streak", 0)  # kept across ticks: an outage can span two
     while int(watchlist["cursor"]) < len(universe):
         if now_ny >= cutoff or stop.is_set():
             break
@@ -157,25 +160,32 @@ def run_premarket_deep_scan(
             watchlist["paused_reason"] = "etoro_rate_limit"  # retry this symbol next tick
             break
         watchlist["cursor"] = int(watchlist["cursor"]) + 1
-        streak = streak + 1 if outcome == "no_data" else 0
         if outcome == "ok":
+            watchlist.update(no_data_streak=0, last_ok_symbol=symbol)
             watchlist.pop("paused_reason", None)
-        elif streak >= OUTAGE_STREAK and now_ny < cutoff - OUTAGE_RETRY_ENDS:
-            _rewind(watchlist, streak)  # a feed outage: retry these symbols next tick
-            break
+        else:
+            watchlist["no_data_streak"] = int(watchlist["no_data_streak"]) + 1
+            if watchlist["no_data_streak"] >= OUTAGE_STREAK and _check_outage(
+                service, watchlist, universe, now_ny, cutoff, force_refresh
+            ):
+                break
         now_ny = utc_now().astimezone(zone)
+    at_end = int(watchlist["cursor"]) >= len(universe)
+    if at_end and int(watchlist["no_data_streak"]) and not stop.is_set():
+        # The last symbols had no data: the feed may have dropped at the end of the list.
+        _check_outage(service, watchlist, universe, now_ny, cutoff, force_refresh)
 
     finished = int(watchlist["cursor"]) >= len(universe)
     if not finished and utc_now().astimezone(zone) < cutoff:
         watchlist["status"] = "partial"  # the bucket stays due; the next tick resumes here
-        if _ahead_of(service, key, watchlist) is None:
+        if _ahead_of(service, key, watchlist, resumed_run_id) is None:
             _save(service, key, watchlist)
             _record_coverage(service, watchlist)
         return _response(
             "ok", f"Pre-market deep scan paused at {watchlist['cursor']}/{len(universe)}."
         )
 
-    ahead = _ahead_of(service, key, watchlist)
+    ahead = _ahead_of(service, key, watchlist, resumed_run_id)
     if ahead is not None and ahead.get("status") in FINAL_STATUSES:
         service.runtime_state.set(state_key, utc_now().isoformat())
         return _response("skipped", f"Pre-market watchlist for {session_date} already done.")
@@ -245,14 +255,68 @@ def _resumable(watchlist: dict[str, Any]) -> bool:
     )
 
 
+def _check_outage(service, watchlist, universe, now_ny, cutoff, force_refresh) -> bool:
+    """After a no-data streak: rewind it for a retry next tick when the feed is down.
+
+    The feed counts as down when a symbol that should have data (the last one that had
+    some, else the next in the list) has none either. Otherwise the streak's symbols really
+    have no data (dead tickers next to each other): they stay gaps and the scan goes on.
+    Within 15 minutes of the cutoff missing data is a gap, not a reason to wait."""
+
+    count = int(watchlist.get("no_data_streak") or 0)
+    if not count or now_ny >= cutoff - OUTAGE_RETRY_ENDS:
+        return False
+    cursor = int(watchlist["cursor"])
+    probe = watchlist.get("last_ok_symbol") or (
+        universe[cursor] if cursor < len(universe) else None
+    )
+    if probe is not None:
+        try:
+            history = _fetch_completed(service, probe, now_ny, force_refresh)
+            if history is not None and len(history) >= 20 and not _stale(history, now_ny):
+                watchlist["no_data_streak"] = 0  # the feed is up: these symbols are gaps
+                return False
+        except Exception:  # noqa: BLE001 - the probe failing too is the outage signal
+            pass
+    _rewind(watchlist, count)
+    return True
+
+
 def _rewind(watchlist: dict[str, Any], count: int) -> None:
-    """Undo the last ``count`` no-data symbols (one error and one gap each) for a retry."""
+    """Undo the last ``count`` no-data symbols (one error and one gap each) for a retry.
+
+    Nothing else appends to ``errors`` between them: strategy errors only follow a symbol
+    that had data (which ends a streak) and notes are kept apart."""
 
     watchlist["cursor"] = int(watchlist["cursor"]) - count
     del watchlist["errors"][-count:]
     del watchlist["failed_symbols"][-count:]
+    watchlist["no_data_streak"] = 0
     watchlist["outage_pauses"] = int(watchlist.get("outage_pauses") or 0) + 1
     watchlist["paused_reason"] = "market_data_unavailable"
+
+
+def _fetch_completed(service: Any, symbol: str, now_ny: datetime, force_refresh: bool) -> Any:
+    from app.screener.scan_support import _bounded_call
+
+    timeout = float(getattr(service.settings, "screener_market_data_timeout_seconds", 20.0) or 0.0)
+    history = _bounded_call(
+        f"{symbol}_1d_history",
+        timeout,
+        service.market_data.get_history,
+        symbol,
+        timeframe="1d",
+        bars=service.market_screener._bars_for_timeframe("1d"),
+        force_refresh=force_refresh,
+    )
+    return completed_daily_bars(history, now_ny)
+
+
+def _stale(history: Any, now_ny: datetime) -> bool:
+    import pandas as pd
+
+    last = pd.to_datetime(history["timestamp"].iloc[-1], utc=True).date()
+    return last < now_ny.date() - STALE_AFTER
 
 
 def _scan_symbol(service, watchlist, symbol, specs_by_key, context, now_ny, force_refresh) -> str:
@@ -261,21 +325,10 @@ def _scan_symbol(service, watchlist, symbol, specs_by_key, context, now_ny, forc
     from app.broker.etoro_rate_limit import EToroRateLimitError
     from app.indicators import precomputed_indicators
     from app.risk.sectors import correlation_bucket_for_symbol
-    from app.screener.scan_support import _bounded_call
 
     screener = service.market_screener
-    timeout = float(getattr(service.settings, "screener_market_data_timeout_seconds", 20.0) or 0.0)
     try:
-        history = _bounded_call(
-            f"{symbol}_1d_history",
-            timeout,
-            service.market_data.get_history,
-            symbol,
-            timeframe="1d",
-            bars=screener._bars_for_timeframe("1d"),
-            force_refresh=force_refresh,
-        )
-        history = completed_daily_bars(history, now_ny)
+        history = _fetch_completed(service, symbol, now_ny, force_refresh)
     except EToroRateLimitError:
         return "rate_limited"  # in a cooldown every fetch fails at once: never burn the list
     except Exception as exc:  # noqa: BLE001 - one symbol never stops the scan
@@ -284,6 +337,11 @@ def _scan_symbol(service, watchlist, symbol, specs_by_key, context, now_ny, forc
         return "no_data"
     if history is None or len(history) < 20:
         watchlist["errors"].append(f"{symbol}: too_few_completed_bars")
+        watchlist["failed_symbols"].append(symbol)
+        return "no_data"
+    if _stale(history, now_ny):  # a halted or delisted ticker: its old bars are not a setup
+        last_day = str(history["timestamp"].iloc[-1])[:10]
+        watchlist["errors"].append(f"{symbol}: stale_bars (last {last_day})")
         watchlist["failed_symbols"].append(symbol)
         return "no_data"
     last = history.iloc[-1]
@@ -441,6 +499,7 @@ def _finalize(watchlist: dict[str, Any], settings: Any, *, complete: bool) -> No
     )
     watchlist["computed_at"] = utc_now().isoformat()
     watchlist["errors"] = list(watchlist.get("errors") or [])[:20]
+    watchlist.pop("no_data_streak", None)
 
 
 def _maybe_notify(service: Any, watchlist: dict[str, Any], top: list[dict[str, Any]]) -> None:
@@ -454,7 +513,9 @@ def _maybe_notify(service: Any, watchlist: dict[str, Any], top: list[dict[str, A
         return
 
 
-def _ahead_of(service: Any, key: str, watchlist: dict[str, Any]) -> dict[str, Any] | None:
+def _ahead_of(
+    service: Any, key: str, watchlist: dict[str, Any], resumed_run_id: str | None = None
+) -> dict[str, Any] | None:
     """The stored watchlist when another run finished it or got further (else None).
 
     Runs normally never overlap (the workflow lock), but a manual run can slip past the
@@ -462,7 +523,8 @@ def _ahead_of(service: Any, key: str, watchlist: dict[str, Any]) -> dict[str, An
     itself a read before a write, so it narrows that window to one database round trip."""
 
     stored = _load(service.runtime_state, key)
-    if not stored or stored.get("run_id") == watchlist.get("run_id"):
+    ours = {watchlist.get("run_id")} | ({resumed_run_id} if resumed_run_id else set())
+    if not stored or stored.get("run_id") in ours:  # unchanged since we loaded it, or ours
         return None
     if stored.get("status") in FINAL_STATUSES:
         return stored

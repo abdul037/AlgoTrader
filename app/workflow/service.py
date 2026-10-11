@@ -13,7 +13,12 @@ from app.execution.interfaces import SignalApprovalAdapter
 from app.models.workflow import WorkflowBucketStatus, WorkflowStatusResponse, WorkflowTaskResponse
 from app.universe import resolve_universe
 from app.utils.time import utc_now
-from app.workflow.cadence_budget import CadenceBudget, stale_lock_minutes, tick_budget
+from app.workflow.cadence_budget import (
+    CadenceBudget,
+    acquire_workflow_lock,
+    release_workflow_lock,
+    tick_budget,
+)
 from app.workflow.crypto_scan import crypto_bucket_enabled, crypto_scan_due, run_crypto_scan
 from app.workflow.operations import (
     candidate_with_ledger_outcome,
@@ -798,7 +803,8 @@ class SignalWorkflowService:
 
     def _execute_guarded(self, task: str, runner, *, bucket_name: str | None = None) -> WorkflowTaskResponse:
         bucket = bucket_name or task
-        if not self._acquire_lock(task):
+        lock_stamp = self._acquire_lock(task)
+        if not lock_stamp:
             result = WorkflowTaskResponse(
                 task=task,
                 status="skipped",
@@ -830,7 +836,7 @@ class SignalWorkflowService:
             self._record_bucket_state(bucket, status=result.status, error=str(exc))
             return result
         finally:
-            self.runtime_state.set(self._lock_key(task), "")
+            release_workflow_lock(self.runtime_state, self._lock_key(task), lock_stamp)
 
     def _bucket_status(self, bucket_name: str) -> WorkflowBucketStatus:
         prefix = self._bucket_state_prefix(bucket_name)
@@ -996,18 +1002,8 @@ class SignalWorkflowService:
             return self._combine_local_time(next_day, start_time).isoformat()
         return max(next_due, now_local).isoformat()
 
-    def _acquire_lock(self, task: str) -> bool:
-        lock_key = self._lock_key(task)
-        current = self.runtime_state.get(lock_key)
-        if current:
-            try:
-                started_at = datetime.fromisoformat(current)
-            except ValueError:
-                started_at = None
-            if started_at is not None and (utc_now() - started_at) < timedelta(minutes=stale_lock_minutes(self.settings, task)):
-                return False
-        self.runtime_state.set(lock_key, utc_now().isoformat())
-        return True
+    def _acquire_lock(self, task: str) -> str | None:
+        return acquire_workflow_lock(self.runtime_state, self.settings, task, self._lock_key(task))
 
     @staticmethod
     def _lock_key(task: str) -> str:
