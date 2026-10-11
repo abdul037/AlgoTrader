@@ -12,15 +12,17 @@ N+1's open).
 It writes one ranked watchlist to ``runtime_state['premarket:watchlist:<NY date>']``, the
 bucket's coverage record and one ``premarket_deep_scan_completed`` run log. It never creates
 proposals, orders, scan decisions, signal states, alerts, tracked signals or learning rows,
-and never touches the eToro mirror. Because the old 08:30 scan does not run while the flag is
-on, what it would have produced is not produced: alerts, tracked signals, the scan decisions
-later scans use for repeat suppression and the weak-valid daily cap, and auto-proposals. It
-produced none of these from 09-25 to 10-09. ``tradeable`` is a pre-filter, not a promise:
-at the open the live screener's scores and every risk gate still decide.
+and never touches the eToro mirror; it sends Telegram only if ``premarket_deep_scan_notify``
+is set. Because the old 08:30 scan does not run while the flag is on, what it would have
+produced is not produced: alerts, tracked signals, learning captures, the scan decisions later
+scans use for repeat suppression and the weak-valid daily cap, and auto-proposals. It produced
+none of these from 09-25 to 10-09. ``tradeable`` is a pre-filter, not a promise: at the open
+the live screener's scores, eToro's room and every risk gate still decide.
 
-It is resumable: a scan stopped by its deadline saves a cursor and the bucket stays due; at
-the cutoff (09:20 ET by default, never later than the 09:30 open) it finishes with what it
-has.
+It is resumable: a scan stopped by its deadline saves a cursor and the bucket stays due. A
+feed outage (an eToro rate-limit cooldown, or three symbols in a row with no data) pauses it
+and the next tick retries; at the cutoff (09:20 ET by default, never later than the 09:30
+open) it finishes with what it has.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ from __future__ import annotations
 import json
 import math
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -41,9 +43,13 @@ COVERAGE_KEY = "workflow:premarket_scan:last_scan_coverage"
 SCHEMA_VERSION = 1
 EXCLUDED_SPECS = frozenset({"pairs_stat_arb"})
 TASK = "premarket_scan"
-FINAL_STATUSES = frozenset({"complete", "incomplete_at_cutoff", "missed_cutoff"})
+FINAL_STATUSES = frozenset(
+    {"complete", "complete_with_gaps", "incomplete_at_cutoff", "missed_cutoff"}
+)
 DEFAULT_CUTOFF = (9, 20)
 LATEST_CUTOFF = (9, 30)  # the session opens: a shadow scan never runs into it
+OUTAGE_STREAK = 3  # symbols in a row with no usable data: a feed outage, not bad symbols
+OUTAGE_RETRY_ENDS = timedelta(minutes=15)  # before the cutoff; later, missing data is a gap
 
 
 def completed_daily_bars(frame: Any, now_ny: datetime) -> Any:
@@ -98,12 +104,18 @@ def run_premarket_deep_scan(
     if watchlist.get("status") in FINAL_STATUSES:
         service.runtime_state.set(state_key, utc_now().isoformat())
         return _response("skipped", f"Pre-market watchlist for {session_date} already done.")
+    if watchlist and not _resumable(watchlist):
+        watchlist = {}  # edited or an older shape: start over instead of failing every tick
+    for optional in ("notes", "failed_symbols"):
+        if watchlist:
+            watchlist.setdefault(optional, [])
     if now_ny >= cutoff and not watchlist:
         # e.g. the bot was down at 08:30: record the missed day, never run into the session
         missed = _new_watchlist(session_date, [], [])
         missed.update(status="missed_cutoff", computed_at=utc_now().isoformat())
         missed.update(items=[], shadow_items=[])
         _save(service, key, missed)
+        _record_coverage(service, missed)
         service.runtime_state.set(state_key, utc_now().isoformat())
         service.run_logs.log(
             "premarket_deep_scan_skipped", {"session_date": session_date, "reason": "past_cutoff"}
@@ -126,22 +138,31 @@ def run_premarket_deep_scan(
         symbols = [s for s in resolve_universe(settings) if not crypto_symbols.is_crypto_symbol(s)]
         watchlist = _new_watchlist(session_date, symbols, list(specs_by_key))
     watchlist["run_id"] = uuid4().hex  # each save checks no other run got further
-    watchlist.pop("paused_reason", None)
     for spec_key in watchlist["specs"]:  # demoted or regime-routed out since the first run
         note = f"spec_unavailable_on_resume: {spec_key}"
-        if spec_key not in specs_by_key and note not in watchlist["errors"]:
-            watchlist["errors"].append(note)
+        if spec_key not in specs_by_key and note not in watchlist["notes"]:
+            watchlist["notes"].append(note)
     context = _prefetch(service)
     started = utc_now()
     universe = list(watchlist.get("universe") or [])
+    streak = 0  # this run's symbols in a row with no usable data
     while int(watchlist["cursor"]) < len(universe):
         if now_ny >= cutoff or stop.is_set():
             break
         symbol = universe[int(watchlist["cursor"])]
-        if _scan_symbol(service, watchlist, symbol, specs_by_key, context, now_ny, force_refresh):
+        outcome = _scan_symbol(
+            service, watchlist, symbol, specs_by_key, context, now_ny, force_refresh
+        )
+        if outcome == "rate_limited":
             watchlist["paused_reason"] = "etoro_rate_limit"  # retry this symbol next tick
             break
         watchlist["cursor"] = int(watchlist["cursor"]) + 1
+        streak = streak + 1 if outcome == "no_data" else 0
+        if outcome == "ok":
+            watchlist.pop("paused_reason", None)
+        elif streak >= OUTAGE_STREAK and now_ny < cutoff - OUTAGE_RETRY_ENDS:
+            _rewind(watchlist, streak)  # a feed outage: retry these symbols next tick
+            break
         now_ny = utc_now().astimezone(zone)
 
     finished = int(watchlist["cursor"]) >= len(universe)
@@ -181,6 +202,9 @@ def run_premarket_deep_scan(
             "tradeable_items": len(watchlist["items"]),
             "seconds_this_run": round((utc_now() - started).total_seconds(), 1),
             "errors": len(watchlist.get("errors") or []),
+            "symbols_without_data": len(watchlist.get("failed_symbols") or []),
+            "paused_reason": watchlist.get("paused_reason"),
+            "notes": list(watchlist.get("notes") or [])[:10],
             "top": top,
             "shadow_only": True,
         },
@@ -206,11 +230,33 @@ def _new_watchlist(session_date: str, symbols: list[str], spec_keys: list[str]) 
         "evaluated_runs": 0,
         "signals": [],
         "errors": [],
+        "notes": [],
+        "failed_symbols": [],
     }
 
 
-def _scan_symbol(service, watchlist, symbol, specs_by_key, context, now_ny, force_refresh) -> bool:
-    """Scan one symbol into the watchlist; True when eToro's rate limit stopped the fetch."""
+def _resumable(watchlist: dict[str, Any]) -> bool:
+    """A stored list this code can resume (an edited or older-shaped one starts over)."""
+
+    lists = ("universe", "specs", "signals", "errors")
+    counters = ("cursor", "evaluated_runs")
+    return all(isinstance(watchlist.get(k), list) for k in lists) and all(
+        isinstance(watchlist.get(k), int) and watchlist[k] >= 0 for k in counters
+    )
+
+
+def _rewind(watchlist: dict[str, Any], count: int) -> None:
+    """Undo the last ``count`` no-data symbols (one error and one gap each) for a retry."""
+
+    watchlist["cursor"] = int(watchlist["cursor"]) - count
+    del watchlist["errors"][-count:]
+    del watchlist["failed_symbols"][-count:]
+    watchlist["outage_pauses"] = int(watchlist.get("outage_pauses") or 0) + 1
+    watchlist["paused_reason"] = "market_data_unavailable"
+
+
+def _scan_symbol(service, watchlist, symbol, specs_by_key, context, now_ny, force_refresh) -> str:
+    """Scan one symbol into the watchlist: "ok", "no_data" or "rate_limited" (not fetched)."""
 
     from app.broker.etoro_rate_limit import EToroRateLimitError
     from app.indicators import precomputed_indicators
@@ -231,13 +277,15 @@ def _scan_symbol(service, watchlist, symbol, specs_by_key, context, now_ny, forc
         )
         history = completed_daily_bars(history, now_ny)
     except EToroRateLimitError:
-        return True  # in a cooldown every fetch fails at once: never burn the universe on it
+        return "rate_limited"  # in a cooldown every fetch fails at once: never burn the list
     except Exception as exc:  # noqa: BLE001 - one symbol never stops the scan
         watchlist["errors"].append(f"{symbol}: history: {exc}"[:200])
-        return False
+        watchlist["failed_symbols"].append(symbol)
+        return "no_data"
     if history is None or len(history) < 20:
         watchlist["errors"].append(f"{symbol}: too_few_completed_bars")
-        return False
+        watchlist["failed_symbols"].append(symbol)
+        return "no_data"
     last = history.iloc[-1]
     prior_volume = _finite(history["volume"].iloc[-21:-1].mean())
     last_volume = _finite(last["volume"])
@@ -259,7 +307,7 @@ def _scan_symbol(service, watchlist, symbol, specs_by_key, context, now_ny, forc
             item = _item(signal, symbol, spec, spec_key, last, relative_volume, bucket, context)
             if item is not None:
                 watchlist["signals"].append(item)
-    return False
+    return "ok"
 
 
 def _item(signal, symbol, spec, spec_key, last, relative_volume, bucket, context) -> dict | None:
@@ -387,7 +435,10 @@ def _finalize(watchlist: dict[str, Any], settings: Any, *, complete: bool) -> No
     max_items = max(int(getattr(settings, "premarket_deep_scan_max_items", 25) or 25), 1)
     watchlist["items"] = [s for s in signals if s.get("tradeable")][:max_items]
     watchlist["shadow_items"] = [s for s in signals if not s.get("tradeable")][:25]
-    watchlist["status"] = "complete" if complete else "incomplete_at_cutoff"
+    gaps = bool(watchlist.get("failed_symbols"))  # symbols with no usable data
+    watchlist["status"] = (
+        ("complete_with_gaps" if gaps else "complete") if complete else "incomplete_at_cutoff"
+    )
     watchlist["computed_at"] = utc_now().isoformat()
     watchlist["errors"] = list(watchlist.get("errors") or [])[:20]
 
@@ -407,14 +458,15 @@ def _ahead_of(service: Any, key: str, watchlist: dict[str, Any]) -> dict[str, An
     """The stored watchlist when another run finished it or got further (else None).
 
     Runs normally never overlap (the workflow lock), but a manual run can slip past the
-    lock's read-then-write; a save must never replace more progress with less."""
+    lock's read-then-write; a save must never replace more progress with less. This check is
+    itself a read before a write, so it narrows that window to one database round trip."""
 
     stored = _load(service.runtime_state, key)
     if not stored or stored.get("run_id") == watchlist.get("run_id"):
         return None
     if stored.get("status") in FINAL_STATUSES:
         return stored
-    if int(stored.get("cursor") or 0) > int(watchlist.get("cursor") or 0):
+    if _resumable(stored) and stored["cursor"] > int(watchlist.get("cursor") or 0):
         return stored
     return None
 
@@ -437,7 +489,10 @@ def _record_coverage(service: Any, watchlist: dict[str, Any]) -> None:
                     "symbols_evaluated": int(watchlist.get("cursor") or 0),
                     "expected_strategy_runs": len(specs) * len(universe),
                     "evaluated_strategy_runs": int(watchlist.get("evaluated_runs") or 0),
-                    "deadline_exceeded": watchlist.get("status") != "complete",
+                    "deadline_exceeded": watchlist.get("status")
+                    in {"partial", "incomplete_at_cutoff"},
+                    "symbols_without_data": len(watchlist.get("failed_symbols") or []),
+                    "paused_reason": watchlist.get("paused_reason"),
                     "candidates_found": len(watchlist.get("signals") or []),
                     "tradeable_found": len(watchlist.get("items") or []),
                     "proposals_created": 0,

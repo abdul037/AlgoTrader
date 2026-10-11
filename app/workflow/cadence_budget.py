@@ -125,3 +125,20 @@ def tick_budget(budget: CadenceBudget | None) -> Iterator[None]:
 
 def current_budget() -> CadenceBudget | None:
     return getattr(_local, "budget", None)
+
+
+PREMARKET_DEEP_SCAN_LOCK_MINUTES = 6  # > the 240 s job timeout + the 120 s overlap grace
+
+
+def stale_lock_minutes(settings: Any, task: str) -> int:
+    """How old a workflow lock must be before a new run may take it over.
+
+    A deploy or crash kills a run without releasing its lock. The shadow pre-market scan
+    has a short window before its 09:20 cutoff, so its lock goes stale after 6 minutes,
+    longer than any run can last (240 s job timeout + 120 s overlap grace), instead of
+    the 45-minute default; its saves are guarded against overlap as well (review 10-10)."""
+
+    default = max(int(settings.workflow_lock_timeout_minutes), 1)
+    if task == "premarket_scan" and bool(getattr(settings, "premarket_deep_scan_enabled", False)):
+        return min(default, PREMARKET_DEEP_SCAN_LOCK_MINUTES)
+    return default

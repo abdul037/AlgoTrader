@@ -120,6 +120,15 @@ class _Boom:
         raise AssertionError(f"shadow scan touched {name}")
 
 
+class _Notifier:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def send_text(self, message, **kwargs):
+        self.messages.append(message)
+        return True
+
+
 class _StopAfter:
     """A scan deadline that passes after ``n`` symbols."""
 
@@ -167,7 +176,7 @@ def _service(tmp_path, monkeypatch, *, now=MONDAY_0835_NY, verdicts=None, market
         run_logs=FakeLogs(),
         proposal_service=None,
         reconciliation=None,
-        notifier=_Boom(),
+        notifier=_Notifier(),
         auto_trading=_Boom(),
         tracked_signals=_Boom(),
         alert_history=_Boom(),
@@ -375,6 +384,7 @@ def test_past_the_cutoff_with_no_list_it_records_a_missed_day(tmp_path, monkeypa
     result = _run(service)
     assert result.status == "ok" and service.market_data.calls == []  # never runs into the session
     assert _watchlist(service)["status"] == "missed_cutoff"
+    assert json.loads(service.runtime_state.get(deep.COVERAGE_KEY))["status"] == "missed_cutoff"
     assert service.runtime_state.get(STATE_KEY) is not None
     assert [e for e, _ in service.run_logs.items] == ["premarket_deep_scan_skipped"]
     assert _run(service).skipped and service.market_data.calls == []
@@ -432,7 +442,7 @@ def test_one_symbol_or_strategy_failure_is_isolated(tmp_path, monkeypatch) -> No
     monkeypatch.setattr(service.market_screener, "_build_strategy", build)
     _run(service)
     watchlist = _watchlist(service)
-    assert watchlist["status"] == "complete"
+    assert watchlist["status"] == "complete_with_gaps" and watchlist["failed_symbols"] == ["S03"]
     assert any(err.startswith("S03: history") for err in watchlist["errors"])
     assert any(err.startswith("S00 ema_trend_stack:1d: boom") for err in watchlist["errors"])
     assert watchlist["evaluated_runs"] == 24 * DAILY_SPECS
@@ -461,8 +471,7 @@ def test_a_strategy_dropped_between_ticks_is_recorded(tmp_path, monkeypatch) -> 
     screener.specs = [s for s in screener.specs if s.name != "ma_crossover"]  # e.g. demoted
     _run(service)
     watchlist = _watchlist(service)
-    notes = [e for e in watchlist["errors"] if e.startswith("spec_unavailable_on_resume")]
-    assert notes == ["spec_unavailable_on_resume: ma_crossover:1d"]
+    assert watchlist["notes"] == ["spec_unavailable_on_resume: ma_crossover:1d"]
     assert watchlist["evaluated_runs"] == 5 * DAILY_SPECS + 20 * (DAILY_SPECS - 1)
 
 
@@ -527,7 +536,11 @@ def test_etoro_room_hints(tmp_path, monkeypatch) -> None:
 def test_the_saved_watchlist_is_strict_json(tmp_path, monkeypatch) -> None:
     # The scorecard casts the list to jsonb, which rejects NaN and Infinity.
     nan_verdict = {
-        "trend_following:1d": {"passed": True, "oos_expectancy_r": float("nan"), "oos_trades": 300}
+        "trend_following:1d": {
+            "passed": True,
+            "oos_expectancy_r": float("nan"),
+            "oos_trades": float("nan"),  # copied as-is: only the save's cleaner can catch it
+        }
     }
     service = _service(tmp_path, monkeypatch, verdicts=nan_verdict)
     real_build = service.market_screener._build_strategy
@@ -551,6 +564,7 @@ def test_the_saved_watchlist_is_strict_json(tmp_path, monkeypatch) -> None:
     assert watchlist["status"] == "complete"
     trend = next(i for i in watchlist["items"] if i["strategy"] == "trend_following")
     assert trend["evidence_passing"] is True and trend["oos_expectancy_r"] is None
+    assert trend["oos_trades"] is None
     assert not any(i["strategy"] == "ma_crossover" for i in watchlist["signals"])  # infinite target
 
 
@@ -655,7 +669,7 @@ def test_watchlist_route(tmp_path, missing) -> None:
         assert response.json()["status"] == "complete"
 
 
-def _row_counts(db_path) -> dict[str, int]:
+def _table_rows(db_path) -> dict[str, list]:
     import sqlite3
 
     with sqlite3.connect(db_path) as conn:
@@ -666,8 +680,18 @@ def _row_counts(db_path) -> dict[str, int]:
             )
         ]
         return {
-            table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0] for table in tables
+            table: sorted(repr(row) for row in conn.execute(f'SELECT * FROM "{table}"'))
+            for table in tables
         }
+
+
+def _no_network(monkeypatch) -> None:
+    import socket
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("the test tried to reach the network")
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
 
 
 def test_on_the_real_wiring_it_writes_only_the_watchlist(tmp_path, monkeypatch) -> None:
@@ -677,8 +701,10 @@ def test_on_the_real_wiring_it_writes_only_the_watchlist(tmp_path, monkeypatch) 
     from app.main import create_app
     from tests.conftest import MockBroker
 
+    _no_network(monkeypatch)
     monkeypatch.setattr(deep, "utc_now", lambda: MONDAY_0835_NY)
     symbols = SYMBOLS[:4]
+    weak_allowed = ["ema_trend_stack", "etf_mega_cap_relative_strength_rotation"]
     settings = make_settings(
         tmp_path,
         premarket_deep_scan_enabled=True,
@@ -688,11 +714,17 @@ def test_on_the_real_wiring_it_writes_only_the_watchlist(tmp_path, monkeypatch) 
         ledger_cycle_enabled=False,
         learning_worker_enabled=False,
         paper_position_refresh_enabled=False,
+        # Weak-signal emission on, so the live builder differs from a bare get_strategy.
+        paper_strategy_weak_signal_emission_enabled=True,
+        paper_supervised_weak_valid_enabled=True,
+        paper_strategy_weak_signal_allowed_strategies=weak_allowed,
     )
     app = create_app(settings, broker=MockBroker(), enable_background_jobs=False)
-    monkeypatch.setattr(app.state.market_data_engine, "get_history", lambda symbol, **kw: _frame(1))
+    monkeypatch.setattr(
+        app.state.market_data_engine, "get_history", lambda symbol, **kw: _frame(17)
+    )
     db_path = tmp_path / "test.db"
-    before = _row_counts(db_path)
+    before = _table_rows(db_path)
     with sqlite3.connect(db_path) as conn:
         last_log = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM run_logs").fetchone()[0]
         keys_before = {row[0] for row in conn.execute("SELECT state_key FROM runtime_state")}
@@ -700,7 +732,7 @@ def test_on_the_real_wiring_it_writes_only_the_watchlist(tmp_path, monkeypatch) 
     result = app.state.workflow_service.run_premarket_scan(notify=False)
 
     assert result.status == "ok", result.detail
-    after = _row_counts(db_path)
+    after = _table_rows(db_path)
     assert {t for t in after if after[t] != before.get(t)} <= {"runtime_state", "run_logs"}
     with sqlite3.connect(db_path) as conn:
         events = [
@@ -719,7 +751,157 @@ def test_on_the_real_wiring_it_writes_only_the_watchlist(tmp_path, monkeypatch) 
     # Parity with the LIVE builder (default kwargs, liquidity floor, weak-signal emission).
     screener = app.state.market_screener_service
     specs = [s for s in screener._strategy_specs_for_timeframe("1d") if s.name != "pairs_stat_arb"]
-    direct = _direct_buys(_completed(1), specs, build=screener._build_strategy)
+    direct = _direct_buys(_completed(17), specs, build=screener._build_strategy)
+    bare = _direct_buys(_completed(17), specs)
+    assert set(direct) - set(bare), "the live builder emits buys a bare get_strategy never does"
     s00 = {i["strategy"]: i for i in watchlist["signals"] if i["symbol"] == "S00"}
-    assert direct and set(s00) == set(direct)
+    assert set(s00) == set(direct)
     assert all(s00[name]["entry"] == round(sig.price, 4) for name, sig in direct.items())
+    assert all(s00[name]["kind"] == "weak" for name in set(direct) - set(bare))
+
+
+def test_a_feed_outage_pauses_and_retries_instead_of_closing_the_day(tmp_path, monkeypatch) -> None:
+    market = _MarketData(fail={"S03", "S04", "S05"})
+    service = _service(tmp_path, monkeypatch, market=market)
+    _run(service)
+    partial = _watchlist(service)
+    assert partial["status"] == "partial" and partial["cursor"] == 3
+    assert partial["paused_reason"] == "market_data_unavailable" and partial["outage_pauses"] == 1
+    assert partial["errors"] == [] and partial["failed_symbols"] == []  # retried, not counted
+    assert service.runtime_state.get(STATE_KEY) is None
+    market.fail.clear()  # the feed comes back
+    _run(service)
+    done = _watchlist(service)
+    assert done["status"] == "complete" and done["failed_symbols"] == []
+    assert "paused_reason" not in done and done["evaluated_runs"] == 25 * DAILY_SPECS
+
+
+def test_close_to_the_cutoff_missing_data_is_a_gap_not_a_retry(tmp_path, monkeypatch) -> None:
+    late = datetime(2026, 10, 12, 13, 6, tzinfo=UTC)  # 09:06 EDT: under 15 min to the cutoff
+    market = _MarketData(fail={"S03", "S04", "S05"})
+    service = _service(tmp_path, monkeypatch, now=late, market=market)
+    _run(service)
+    watchlist = _watchlist(service)
+    assert watchlist["status"] == "complete_with_gaps"
+    assert watchlist["failed_symbols"] == ["S03", "S04", "S05"]
+
+
+def test_a_pause_that_lasts_to_the_cutoff_stays_on_the_record(tmp_path, monkeypatch) -> None:
+    service = _service(tmp_path, monkeypatch, market=_MarketData(rate_limited={"S03"}))
+    _run(service)
+    monkeypatch.setattr(deep, "utc_now", lambda: datetime(2026, 10, 12, 13, 25, tzinfo=UTC))
+    _run(service)
+    watchlist = _watchlist(service)
+    assert watchlist["status"] == "incomplete_at_cutoff"
+    assert watchlist["paused_reason"] == "etoro_rate_limit"
+    coverage = json.loads(service.runtime_state.get(deep.COVERAGE_KEY))
+    assert coverage["paused_reason"] == "etoro_rate_limit" and coverage["deadline_exceeded"] is True
+
+
+def test_a_dropped_strategy_note_survives_the_error_cap(tmp_path, monkeypatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    _run(service, stop=_StopAfter(5))
+    screener = service.market_screener
+    real_build = screener._build_strategy
+    screener.specs = [s for s in screener.specs if s.name != "ma_crossover"]
+
+    def build(spec):  # 20 more symbols x 1 failing strategy: 20 errors, the cap
+        if spec.name == "ema_trend_stack":
+            raise RuntimeError("boom")
+        return real_build(spec)
+
+    monkeypatch.setattr(screener, "_build_strategy", build)
+    _run(service)
+    watchlist = _watchlist(service)
+    assert len(watchlist["errors"]) == 20
+    assert watchlist["notes"] == ["spec_unavailable_on_resume: ma_crossover:1d"]
+
+
+def test_a_stored_list_it_cannot_resume_starts_over(tmp_path, monkeypatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    service.runtime_state.set(
+        deep.WATCHLIST_KEY.format(date="2026-10-12"),
+        json.dumps({"status": "partial", "cursor": "7"}),
+    )
+    assert _run(service).status == "ok"
+    assert _watchlist(service)["status"] == "complete" and service.market_data.calls == SYMBOLS
+
+
+def _overlap(monkeypatch, at_symbol, nested_run):
+    """Run ``nested_run`` once, as a second run that slipped past the lock, at ``at_symbol``."""
+
+    real_scan = deep._scan_symbol
+    fired = {"done": False}
+
+    def scan(service_, watchlist, symbol, *args):
+        if symbol == at_symbol and not fired["done"]:
+            fired["done"] = True
+            nested_run(service_)
+        return real_scan(service_, watchlist, symbol, *args)
+
+    monkeypatch.setattr(deep, "_scan_symbol", scan)
+
+
+def test_a_run_behind_another_never_saves_over_its_progress(tmp_path, monkeypatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    _overlap(monkeypatch, "S02", lambda svc: _run(svc, stop=_StopAfter(10)))  # B saves at 10
+    _run(service, stop=_StopAfter(5))  # A pauses at 5, behind B
+    watchlist = _watchlist(service)
+    assert watchlist["status"] == "partial" and watchlist["cursor"] == 10
+
+
+def test_a_run_finishing_after_another_finished_keeps_the_first_list(tmp_path, monkeypatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+    first = {}
+
+    def run_b(svc):
+        _run(svc)
+        first["run_id"] = _watchlist(svc)["run_id"]
+
+    _overlap(monkeypatch, "S02", run_b)
+    result = _run(service)  # A finishes too, after B
+    assert result.skipped and _watchlist(service)["run_id"] == first["run_id"]
+    assert [e for e, _ in service.run_logs.items] == ["premarket_deep_scan_completed"]  # B's only
+
+
+def test_at_the_cutoff_a_run_behind_finishes_the_further_list(tmp_path, monkeypatch) -> None:
+    service = _service(tmp_path, monkeypatch)
+
+    def run_b(svc):
+        _run(svc, stop=_StopAfter(10))  # B saves a partial at 10...
+        monkeypatch.setattr(deep, "utc_now", lambda: datetime(2026, 10, 12, 13, 21, tzinfo=UTC))
+
+    _overlap(monkeypatch, "S02", run_b)  # ...then the cutoff passes while A is at S02
+    _run(service)
+    watchlist = _watchlist(service)
+    assert watchlist["status"] == "incomplete_at_cutoff" and watchlist["cursor"] == 10
+    assert service.runtime_state.get(STATE_KEY) is not None
+
+
+def test_it_sends_telegram_only_when_asked(tmp_path, monkeypatch) -> None:
+    quiet = _service(tmp_path, monkeypatch)
+    _run(quiet)
+    assert quiet.notifier.messages == []
+    loud = _service(tmp_path / "n", monkeypatch, premarket_deep_scan_notify=True)
+    _run(loud)
+    assert len(loud.notifier.messages) == 1
+    assert loud.notifier.messages[0].startswith("SHADOW pre-market setups 2026-10-12")
+
+
+def test_a_dead_runs_lock_goes_stale_in_6_minutes_for_the_deep_scan(tmp_path, monkeypatch) -> None:
+    # Review 2026-10-10: a deploy mid-scan left a 45-minute lock that outlived the cutoff.
+    from app.workflow.cadence_budget import stale_lock_minutes
+
+    on = make_settings(tmp_path, premarket_deep_scan_enabled=True, workflow_lock_timeout_minutes=45)
+    off = make_settings(tmp_path, workflow_lock_timeout_minutes=45)
+    assert stale_lock_minutes(on, "premarket_scan") == 6
+    assert stale_lock_minutes(off, "premarket_scan") == 45  # flag off: exactly as before
+    assert stale_lock_minutes(on, "swing_scan") == 45
+    ran = _record_deep_runs(monkeypatch)
+    flow, _, state = _workflow(tmp_path, True)
+    lock = flow._lock_key("premarket_scan")
+    state.set(lock, (datetime.now(UTC) - timedelta(minutes=5)).isoformat())
+    assert flow.run_premarket_scan(notify=False).skipped and ran == []  # maybe still running
+    state.set(lock, (datetime.now(UTC) - timedelta(minutes=7)).isoformat())
+    flow.run_premarket_scan(notify=False)
+    assert len(ran) == 1  # a dead run's lock no longer blocks the resume

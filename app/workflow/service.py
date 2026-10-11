@@ -13,7 +13,7 @@ from app.execution.interfaces import SignalApprovalAdapter
 from app.models.workflow import WorkflowBucketStatus, WorkflowStatusResponse, WorkflowTaskResponse
 from app.universe import resolve_universe
 from app.utils.time import utc_now
-from app.workflow.cadence_budget import CadenceBudget, tick_budget
+from app.workflow.cadence_budget import CadenceBudget, stale_lock_minutes, tick_budget
 from app.workflow.crypto_scan import crypto_bucket_enabled, crypto_scan_due, run_crypto_scan
 from app.workflow.operations import (
     candidate_with_ledger_outcome,
@@ -1004,7 +1004,7 @@ class SignalWorkflowService:
                 started_at = datetime.fromisoformat(current)
             except ValueError:
                 started_at = None
-            if started_at is not None and (utc_now() - started_at) < timedelta(minutes=max(int(self.settings.workflow_lock_timeout_minutes), 1)):
+            if started_at is not None and (utc_now() - started_at) < timedelta(minutes=stale_lock_minutes(self.settings, task)):
                 return False
         self.runtime_state.set(lock_key, utc_now().isoformat())
         return True

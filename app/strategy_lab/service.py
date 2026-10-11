@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-import itertools
 import json
 import math
+import threading
 import time
 from typing import Any
 
@@ -128,8 +128,8 @@ class StrategyLabService:
         self.logs = run_log_repository
         self.strategy_governance = strategy_governance
         self._paper_generated_cache: tuple[float, tuple[Any, ...]] | None = None
-        self._generated_writes = itertools.count()  # next() is atomic under the GIL
-        self._generated_generation = next(self._generated_writes)
+        self._generated_generation = 0  # bumped by every write, under _generated_lock
+        self._generated_lock = threading.Lock()
 
     _PAPER_GENERATED_TTL_SECONDS = 60.0
     _PAPER_GENERATED_LIMIT = 500
@@ -147,13 +147,15 @@ class StrategyLabService:
             self.repository.list_generated(status="paper_generated", limit=self._PAPER_GENERATED_LIMIT)
         )
         # A write that landed while the SELECT ran makes its result stale: use it, don't keep it.
-        if generation == self._generated_generation:
-            self._paper_generated_cache = (now, items)  # one atomic replace: safe across threads
+        with self._generated_lock:
+            if generation == self._generated_generation:
+                self._paper_generated_cache = (now, items)
         return items
 
     def _invalidate_generated_cache(self) -> None:
-        self._generated_generation = next(self._generated_writes)
-        self._paper_generated_cache = None
+        with self._generated_lock:
+            self._generated_generation += 1
+            self._paper_generated_cache = None
 
     def status(self) -> dict[str, Any]:
         generated = self.repository.list_generated(limit=1000)
@@ -209,8 +211,15 @@ class StrategyLabService:
         else:
             # Only a paper_generated row can build a strategy. If none carries this name the
             # by-name read could only return None, so skip it (unless the cached list is full).
-            cached = self._paper_generated()
-            if len(cached) < self._PAPER_GENERATED_LIMIT and spec.name not in {i.name for i in cached}:
+            try:
+                cached: tuple[Any, ...] | None = self._paper_generated()
+            except Exception:  # noqa: BLE001 - e.g. one unparseable row: built-ins must still build,
+                cached = None  # and the per-name read below only ever parses this name's row
+            if (
+                cached is not None
+                and len(cached) < self._PAPER_GENERATED_LIMIT
+                and spec.name not in {i.name for i in cached}
+            ):
                 return None
             item = self.repository.get_generated_by_name(spec.name)
         if item is None or item.status != "paper_generated":

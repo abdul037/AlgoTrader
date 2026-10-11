@@ -116,7 +116,7 @@ def test_a_listed_strategy_retired_elsewhere_stops_being_listed(tmp_path) -> Non
     assert service.active_specs(timeframe="1d") == []  # and the miss clears the cache at once
 
 
-def test_a_strategy_that_cannot_be_built_does_not_abort_the_scan(tmp_path) -> None:
+def test_a_strategy_that_cannot_be_built_does_not_abort_the_scan(tmp_path, monkeypatch) -> None:
     # Review 2026-10-10 repro: a listed generated strategy retired mid-scan made
     # _build_strategy raise outside the per-strategy try, failing the whole scan_universe.
     import numpy as np
@@ -154,9 +154,25 @@ def test_a_strategy_that_cannot_be_built_does_not_abort_the_scan(tmp_path) -> No
         strategy_lab_paper_trading_enabled=True,
         market_data_cache_dir=str(tmp_path / "cache"),
     )
+    import socket
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("the test tried to reach the network")
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
     app = create_app(settings, broker=MockBroker(), enable_background_jobs=False)
     repository, screener = app.state.strategy_lab_repository, app.state.market_screener_service
-    screener.market_data = _Data()
+    data = _Data()
+    for engine in {
+        id(screener.market_data): screener.market_data,
+        id(app.state.market_data_engine): app.state.market_data_engine,
+    }.values():
+        monkeypatch.setattr(engine, "get_history", data.get_history)
+        monkeypatch.setattr(engine, "get_quote", data.get_quote)
+    lab = app.state.strategy_lab_service
+    monkeypatch.setattr(
+        lab, "_PAPER_GENERATED_TTL_SECONDS", 3600.0
+    )  # only the invalidation clears it
     record = repository.create_generated(
         GeneratedStrategyRecord(
             name="generated_x", dsl=_dsl("generated_x"), status="paper_generated"
@@ -172,6 +188,35 @@ def test_a_strategy_that_cannot_be_built_does_not_abort_the_scan(tmp_path) -> No
     assert any("generated_x" in error for error in response.errors)
     screener._strategy_specs_for_timeframe = real_specs
     assert "generated_x" not in {s.name for s in real_specs("1d")}  # and it is no longer listed
+
+
+def test_an_unreadable_generated_row_never_stops_built_ins_building(tmp_path, monkeypatch) -> None:
+    # Review 2026-10-10: the cached list parses every paper_generated row; one bad row made
+    # every built-in build fail. The old per-name read only parsed this name's row.
+    service, repository, _ = _lab_service(tmp_path)
+
+    def broken(**kwargs):
+        raise ValueError("4 validation errors for StrategyLabDsl")
+
+    monkeypatch.setattr(repository, "list_generated", broken)
+    looked: list[str] = []
+    monkeypatch.setattr(repository, "get_generated_by_name", lambda name: looked.append(name))
+    assert service.build_strategy_for_spec(_by_name("trend_following")) is None
+    assert looked == ["trend_following"]
+
+
+def test_only_a_generated_strategy_that_cannot_build_is_skipped() -> None:
+    import pytest
+
+    from app.screener.scan_support import _build_for_run
+
+    def failing(spec):
+        raise ValueError(f"Unknown strategy '{spec.name}'")
+
+    service = SimpleNamespace(_build_strategy=failing)
+    assert _build_for_run(service, SimpleNamespace(name="generated_x", style="generated")) is None
+    with pytest.raises(ValueError):  # a built-in that cannot build still aborts the scan
+        _build_for_run(service, SimpleNamespace(name="trend_following", style="swing"))
 
 
 def _bars(count: int) -> pd.DataFrame:

@@ -20,6 +20,7 @@ from app.screener.scan_promotion import (
 from app.screener.scan_support import (
     ScanTimeoutError,
     _bounded_call,
+    _build_for_run,
     _normalize_spec_keys,
     _spec_key,
     _strategy_specs_for_timeframe,
@@ -193,8 +194,10 @@ def scan_universe(
                     break
                 evaluated_strategy_runs += 1
                 evaluated_spec_keys.add(_spec_key(spec))
-                try:  # a failed build (e.g. a generated strategy retired mid-scan) is one run's error
-                    strategy = service._build_strategy(spec)
+                strategy = _build_for_run(service, spec)
+                try:
+                    if strategy is None:  # a generated strategy retired mid-scan: this run's error
+                        raise RuntimeError(f"generated strategy {spec.name} is no longer available")
                     signal = strategy.generate_signal(history.copy(), symbol)
                 except Exception as exc:
                     if isinstance(exc, ScanTimeoutError):

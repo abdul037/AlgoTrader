@@ -82,6 +82,25 @@ without explicit operator sign-off recorded here.
   cutoff parse, the missing deadline for manual/legacy runs, overlapping saves, the rate-limit
   burn, specs dropped between ticks (recorded), stale health records, the cache race, the scan
   abort, and 10 test-strength gaps (each new test checked to fail without its fix).
+- **21:38 UTC pushed (`6afbe0f`); Railway deploy SUCCESS 21:43 UTC.** Boot snapshot
+  (`execution_policy_effective`): `premarket_deep_scan_enabled=false`, paper, real trading off.
+- **Verification workflow (4 verifiers, 44 skeptic checks) on `6afbe0f`:** flag-off live decisions
+  byte-identical to the previous commit on synthetic data (scan decisions, signals, learning rows,
+  run logs) except two edge cases, both fixed in the follow-up commit: (1) with the strategy lab off,
+  one unreadable generated row (or a failing list query) made every built-in strategy fail to build;
+  the by-name path now falls back to the old per-name read; (2) a built-in strategy that cannot build
+  again aborts the scan as before (only a generated strategy retired mid-scan is that run's error).
+  Deep-scan fixes: a dead run's lock (deploy or crash mid-scan) goes stale after 6 minutes for this
+  bucket instead of 45 (only with the flag on); three symbols in a row with no data pause the scan for
+  a retry next tick (until 15 min before the cutoff, then they count as gaps) instead of closing the
+  day "complete" with nothing scanned; a day with missing symbols ends `complete_with_gaps`; a pause
+  reason stays on the record if the cutoff comes first; notes are kept outside the 20-error cap; a
+  missed day writes the coverage record; a stored list the code cannot resume starts over. Seven test
+  gaps closed (NaN cleaning, overlap branches, Telegram off by default, full-table no-write check,
+  live-builder parity made sensitive with weak signals on, a no-network guard); 20 of 20 targeted
+  mutations caught. Kept as designed after two skeptics each refuted them: the eToro room flags stay
+  hints (eToro's room decides only at order time and only in some states); the overlapping-save race
+  cannot get past the workflow lock in the deployed setup.
 
 ## 2026-10-08 (Thu) → 10-10 (Sat) — more live trades; cadence timeout fix
 
