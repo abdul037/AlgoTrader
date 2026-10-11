@@ -149,31 +149,16 @@ def run_premarket_deep_scan(
     started = utc_now()
     universe = list(watchlist.get("universe") or [])
     watchlist.setdefault("no_data_streak", 0)  # kept across ticks: an outage can span two
-    while int(watchlist["cursor"]) < len(universe):
-        if now_ny >= cutoff or stop.is_set():
-            break
-        symbol = universe[int(watchlist["cursor"])]
-        outcome = _scan_symbol(
-            service, watchlist, symbol, specs_by_key, context, now_ny, force_refresh
-        )
-        if outcome == "rate_limited":
-            watchlist["paused_reason"] = "etoro_rate_limit"  # retry this symbol next tick
-            break
-        watchlist["cursor"] = int(watchlist["cursor"]) + 1
-        if outcome == "ok":
-            watchlist.update(no_data_streak=0, last_ok_symbol=symbol)
-            watchlist.pop("paused_reason", None)
-        else:
-            watchlist["no_data_streak"] = int(watchlist["no_data_streak"]) + 1
-            if watchlist["no_data_streak"] >= OUTAGE_STREAK and _check_outage(
-                service, watchlist, universe, now_ny, cutoff, force_refresh
-            ):
-                break
+    while True:
+        _scan_loop(service, watchlist, universe, specs_by_key, context, cutoff, stop, force_refresh)
         now_ny = utc_now().astimezone(zone)
-    at_end = int(watchlist["cursor"]) >= len(universe)
-    if at_end and int(watchlist["no_data_streak"]) and not stop.is_set():
+        at_end = int(watchlist["cursor"]) >= len(universe)
+        if not (at_end and int(watchlist["no_data_streak"]) and not stop.is_set()):
+            break
         # The last symbols had no data: the feed may have dropped at the end of the list.
-        _check_outage(service, watchlist, universe, now_ny, cutoff, force_refresh)
+        rewound = _check_outage(service, watchlist, universe, now_ny, cutoff, force_refresh)
+        if rewound or int(watchlist["cursor"]) >= len(universe):
+            break  # paused for the next tick, or kept as gaps; else retry them once, now
 
     finished = int(watchlist["cursor"]) >= len(universe)
     if not finished and utc_now().astimezone(zone) < cutoff:
@@ -228,6 +213,34 @@ def run_premarket_deep_scan(
     )
 
 
+def _scan_loop(service, watchlist, universe, specs_by_key, context, cutoff, stop, force_refresh):
+    """Scan from the cursor until the list ends, the cutoff or stop passes, or a pause."""
+
+    zone = cutoff.tzinfo
+    now_ny = utc_now().astimezone(zone)
+    while int(watchlist["cursor"]) < len(universe):
+        if now_ny >= cutoff or stop.is_set():
+            return
+        symbol = universe[int(watchlist["cursor"])]
+        outcome = _scan_symbol(
+            service, watchlist, symbol, specs_by_key, context, now_ny, force_refresh
+        )
+        if outcome == "rate_limited":
+            watchlist["paused_reason"] = "etoro_rate_limit"  # retry this symbol next tick
+            return
+        watchlist["cursor"] = int(watchlist["cursor"]) + 1
+        if outcome == "ok":
+            watchlist.update(no_data_streak=0, last_ok_symbol=symbol)
+            watchlist.pop("paused_reason", None)
+        else:
+            watchlist["no_data_streak"] = int(watchlist["no_data_streak"]) + 1
+            if watchlist["no_data_streak"] >= OUTAGE_STREAK and _check_outage(
+                service, watchlist, universe, now_ny, cutoff, force_refresh
+            ):
+                return
+        now_ny = utc_now().astimezone(zone)
+
+
 def _new_watchlist(session_date: str, symbols: list[str], spec_keys: list[str]) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -259,9 +272,11 @@ def _check_outage(service, watchlist, universe, now_ny, cutoff, force_refresh) -
     """After a no-data streak: rewind it for a retry next tick when the feed is down.
 
     The feed counts as down when a symbol that should have data (the last one that had
-    some, else the next in the list) has none either. Otherwise the streak's symbols really
-    have no data (dead tickers next to each other): they stay gaps and the scan goes on.
-    Within 15 minutes of the cutoff missing data is a gap, not a reason to wait."""
+    some, else the next in the list) has none either. Otherwise the feed answers: the
+    streak's symbols get one more try right away (a blip of a few seconds may just have
+    ended), and if they fail again they really have no data (dead tickers next to each
+    other) and stay gaps. Within 15 minutes of the cutoff missing data is a gap, not a
+    reason to wait. Returns True only when it paused the scan for the next tick."""
 
     count = int(watchlist.get("no_data_streak") or 0)
     if not count or now_ny >= cutoff - OUTAGE_RETRY_ENDS:
@@ -274,7 +289,13 @@ def _check_outage(service, watchlist, universe, now_ny, cutoff, force_refresh) -
         try:
             history = _fetch_completed(service, probe, now_ny, force_refresh)
             if history is not None and len(history) >= 20 and not _stale(history, now_ny):
-                watchlist["no_data_streak"] = 0  # the feed is up: these symbols are gaps
+                streak = list(watchlist["failed_symbols"][-count:])
+                retried = watchlist.setdefault("retried_symbols", [])
+                if any(symbol not in retried for symbol in streak):
+                    retried.extend(symbol for symbol in streak if symbol not in retried)
+                    _rewind(watchlist, count, pause=False)  # the feed is up: try them once more
+                else:
+                    watchlist["no_data_streak"] = 0  # tried twice with the feed up: gaps
                 return False
         except Exception:  # noqa: BLE001 - the probe failing too is the outage signal
             pass
@@ -282,7 +303,7 @@ def _check_outage(service, watchlist, universe, now_ny, cutoff, force_refresh) -
     return True
 
 
-def _rewind(watchlist: dict[str, Any], count: int) -> None:
+def _rewind(watchlist: dict[str, Any], count: int, *, pause: bool = True) -> None:
     """Undo the last ``count`` no-data symbols (one error and one gap each) for a retry.
 
     Nothing else appends to ``errors`` between them: strategy errors only follow a symbol
@@ -292,8 +313,9 @@ def _rewind(watchlist: dict[str, Any], count: int) -> None:
     del watchlist["errors"][-count:]
     del watchlist["failed_symbols"][-count:]
     watchlist["no_data_streak"] = 0
-    watchlist["outage_pauses"] = int(watchlist.get("outage_pauses") or 0) + 1
-    watchlist["paused_reason"] = "market_data_unavailable"
+    if pause:
+        watchlist["outage_pauses"] = int(watchlist.get("outage_pauses") or 0) + 1
+        watchlist["paused_reason"] = "market_data_unavailable"
 
 
 def _fetch_completed(service: Any, symbol: str, now_ny: datetime, force_refresh: bool) -> Any:

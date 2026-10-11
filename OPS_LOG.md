@@ -113,6 +113,14 @@ without explicit operator sign-off recorded here.
   grace (7 min by default); a failed strategy-lab list read is remembered for the TTL (one read per
   build, as before); a generated strategy's build error keeps its cause. 12 of 12 targeted mutations
   caught; full suite 970 passed.
+- **10-11 12:16 UTC `200d2e0` deployed; 12:23 `PREMARKET_DEEP_SCAN_ENABLED=true` set on Railway
+  (operator-approved 10-10); boot snapshot 12:27 shows `premarket_deep_scan_enabled=true`, paper,
+  real trading off.** First list: Mon 10-12 08:30 ET (12:30 UTC, 16:30 Dubai). Scorecard page v7
+  shows it (same link). The round-3 verification was cut off by the account usage limit; from its
+  partial work, two small fixes: a dead-ticker verdict now gets one immediate retry first (a blip of
+  a few seconds that ended before the known-good check had marked three stocks dead); a hand-edited
+  lock stamp without a time zone is read as UTC instead of raising on every tick, and a release keeps
+  only a real aware stamp of another run. 4 of 4 mutations caught; full suite 973 passed.
 
 ## 2026-10-08 (Thu) → 10-10 (Sat) — more live trades; cadence timeout fix
 

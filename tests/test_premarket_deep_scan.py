@@ -106,11 +106,20 @@ class _MarketData:
     down for every symbol once this one is requested, until ``down`` is cleared."""
 
     def __init__(
-        self, *, fail=(), rate_limited=(), stale=(), down_from=None, down_empty=False, stamp="04:00"
+        self,
+        *,
+        fail=(),
+        rate_limited=(),
+        stale=(),
+        down_from=None,
+        down_empty=False,
+        recover_after=None,
+        stamp="04:00",
     ):
         self.calls: list[str] = []
         self.fail, self.rate_limited, self.stale = set(fail), set(rate_limited), set(stale)
         self.down_from, self.down, self.down_empty, self.stamp = down_from, False, down_empty, stamp
+        self.recover_after = recover_after  # a blip: the feed is back after this many failures
 
     def get_history(self, symbol, *, timeframe="1d", bars=250, force_refresh=False):
         self.calls.append(symbol)
@@ -118,6 +127,9 @@ class _MarketData:
             self.down_from, self.down = None, True
         if symbol in self.rate_limited:
             raise EToroRateLimitError("eToro cooldown")
+        if self.down and self.recover_after is not None:
+            self.recover_after -= 1
+            self.down = self.recover_after >= 0
         if self.down and self.down_empty:  # some feeds answer an outage with no rows
             return _frame(1, stamp=self.stamp).iloc[0:0]
         if self.down or symbol in self.fail:
@@ -811,7 +823,18 @@ def test_dead_tickers_side_by_side_are_gaps_not_an_outage(tmp_path, monkeypatch)
     watchlist = _watchlist(service)
     assert watchlist["status"] == "complete_with_gaps" and "paused_reason" not in watchlist
     assert watchlist["failed_symbols"] == ["S03", "S04", "S05"]
-    assert market.calls.count("S02") == 2  # scanned once, probed once: the feed is up
+    assert market.calls.count("S02") == 3  # scanned, then probed before and after one retry
+    assert all(market.calls.count(s) == 2 for s in ("S03", "S04", "S05"))  # one retry each
+
+
+def test_a_blip_that_ends_before_the_check_is_not_three_dead_tickers(tmp_path, monkeypatch) -> None:
+    # Round-3 review: the feed failed S03-S05 and was back for the known-good check.
+    market = _MarketData(down_from="S03", recover_after=3)
+    service = _service(tmp_path, monkeypatch, market=market)
+    _run(service)
+    watchlist = _watchlist(service)
+    assert watchlist["status"] == "complete" and watchlist["failed_symbols"] == []
+    assert "paused_reason" not in watchlist and watchlist["evaluated_runs"] == 25 * DAILY_SPECS
 
 
 def test_an_outage_spanning_two_ticks_is_retried_whole(tmp_path, monkeypatch) -> None:
@@ -981,3 +1004,21 @@ def test_a_run_that_outlived_a_takeover_never_frees_the_newer_runs_lock(tmp_path
     assert state.get(key) == stamp_b  # B's lock stands, so a third run stays out
     release_workflow_lock(state, key, stamp_b)
     assert state.get(key) == ""
+
+
+def test_a_hand_edited_lock_without_a_time_zone_never_blocks_a_task(tmp_path) -> None:
+    # Round-3 review: a naive stamp raised on every acquire, and the owner-only release
+    # would have left it in place for good. Every task uses these locks, live ones included.
+    from app.workflow.cadence_budget import acquire_workflow_lock, release_workflow_lock
+
+    state, key = FakeState(), "workflow:lock:swing_scan"
+    settings = make_settings(tmp_path, workflow_lock_timeout_minutes=45)
+    old_naive = (datetime.now(UTC) - timedelta(hours=2)).replace(tzinfo=None).isoformat()
+    state.set(key, old_naive)
+    stamp = acquire_workflow_lock(state, settings, "swing_scan", key)  # read as UTC: stale
+    assert stamp
+    state.set(key, "2026-10-12 09:30:00")  # hand-edited mid-run
+    release_workflow_lock(state, key, stamp)
+    assert state.get(key) == ""  # not a real lock of another run: cleared, as before
+    state.set(key, "not a time")
+    assert acquire_workflow_lock(state, settings, "swing_scan", key)  # unreadable: taken

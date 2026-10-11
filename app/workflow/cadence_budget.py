@@ -150,23 +150,38 @@ def stale_lock_minutes(settings: Any, task: str) -> int:
 def acquire_workflow_lock(runtime_state: Any, settings: Any, task: str, key: str) -> str | None:
     """Take the task's lock unless a live run holds it; the stamp identifies this run."""
 
-    from datetime import datetime, timedelta
+    from datetime import timedelta
 
     from app.utils.time import utc_now
 
-    current = runtime_state.get(key)
-    if current:
-        try:
-            started_at = datetime.fromisoformat(current)
-        except ValueError:
-            started_at = None
-        if started_at is not None and (utc_now() - started_at) < timedelta(
-            minutes=stale_lock_minutes(settings, task)
-        ):
-            return None
+    started_at = _lock_time(runtime_state.get(key))
+    if started_at is not None and (utc_now() - started_at) < timedelta(
+        minutes=stale_lock_minutes(settings, task)
+    ):
+        return None
     stamp = utc_now().isoformat()
     runtime_state.set(key, stamp)
     return stamp
+
+
+def _lock_time(value: Any, *, strict: bool = False) -> Any:
+    """A stored lock's start time, or None when there is none or it cannot be read.
+
+    A stamp without a time zone (only a hand edit writes one) is read as UTC: it used to
+    raise on every tick and block the task for good. ``strict`` reads only the aware
+    stamps this code writes, so a release never keeps anything else."""
+
+    from datetime import UTC, datetime
+
+    if not value:
+        return None
+    try:
+        started_at = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    if started_at.tzinfo is None:
+        return None if strict else started_at.replace(tzinfo=UTC)
+    return started_at
 
 
 def release_workflow_lock(runtime_state: Any, key: str, stamp: str | None) -> None:
@@ -174,7 +189,9 @@ def release_workflow_lock(runtime_state: Any, key: str, stamp: str | None) -> No
     takeover must not clear the newer run's lock (review 2026-10-11)."""
 
     try:
-        if stamp and runtime_state.get(key) not in (stamp, None, ""):
+        current = runtime_state.get(key)
+        # Keep only another run's real lock; anything else is cleared, as before.
+        if stamp and current not in (stamp, None, "") and _lock_time(current, strict=True):
             return
     except Exception:  # noqa: BLE001 - an unreadable lock is cleared, as before
         pass
