@@ -81,20 +81,28 @@ def _settings(tmp_path, **overrides):
 
 def _state(passing=("momentum_breakout:1d",), equity=10_000.0):
     state = _State()
-    state.set(VERDICTS_KEY, json.dumps({"verdicts": {key: {"passed": True} for key in passing}}))
+    # +0.05 R: above the live copy's +0.03 R bar (operator 2026-10-16).
+    verdict = {"passed": True, "oos_expectancy_r": 0.05}
+    state.set(VERDICTS_KEY, json.dumps({"verdicts": {key: verdict for key in passing}}))
     if equity is not None:
         state.set(STATE_KEY, json.dumps({"last_equity": equity}))
     return state
 
 
 def _proposal(
-    symbol="AAPL", strategy="momentum_breakout", timeframe="1d", side="buy", stop=95.0, target=110.0
+    symbol="AAPL",
+    strategy="momentum_breakout",
+    timeframe="1d",
+    side="buy",
+    stop=95.0,
+    target=110.0,
+    price=100.0,
 ):
     order = TradeOrder(
         symbol=symbol,
         amount_usd=12_500,
         leverage=1,
-        proposed_price=100.0,
+        proposed_price=price,
         stop_loss=stop,
         take_profit=target,
         strategy_name=strategy,
@@ -235,7 +243,10 @@ def test_daily_trade_cap_and_symbol_dedupe(tmp_path) -> None:
     assert "etoro_live_daily_trade_cap" in logs.events[-1][1]["reasons"]
 
 
-def test_one_2x_test_after_two_1x_trades_at_the_same_exposure(tmp_path) -> None:
+def test_one_2x_test_after_two_1x_trades_at_the_same_exposure(tmp_path, monkeypatch) -> None:
+    import app.broker.etoro_live_mirror as live
+
+    monkeypatch.setattr(live, "LEVERAGE_TEST_ENABLED", True)  # how the 10-07 AMD test ran
     client = _Client()
     state = _state()
     state.set(
@@ -248,6 +259,91 @@ def test_one_2x_test_after_two_1x_trades_at_the_same_exposure(tmp_path) -> None:
     assert client.orders[0].leverage == 2 and client.orders[0].amount_usd == 500.0
     assert _run(service, _proposal("MSFT"))["leverage"] == 1  # only one 2x test, ever
     assert client.orders[1].amount_usd == 1_000.0
+
+
+def test_the_one_2x_test_cannot_be_re_armed(tmp_path) -> None:
+    # The operator's one 2x test ran on 2026-10-07 (AMD). A lost or reset state must not
+    # arm a second one.
+    client = _Client()
+    state = _state()
+    state.set(
+        STATE_KEY,
+        json.dumps({"successful_1x": 5, "leverage_2x_done": False, "last_equity": 10_000.0}),
+    )
+    service, _ = _mirror(tmp_path, client=client, state=state)
+    assert _run(service, _proposal("AAPL"))["leverage"] == 1
+    assert (client.orders[0].leverage, client.orders[0].amount_usd) == (1, 1_000.0)
+
+
+def test_each_copy_is_sized_from_its_stop(tmp_path) -> None:
+    # Operator 2026-10-16: a stop-out costs at most 0.5% of equity ($50 of $10,000). Wide
+    # stops get smaller positions; tight stops keep the 10% / $1,000 cap.
+    for stop, amount in ((98.6, 1_000.0), (95.0, 1_000.0), (93.0, 714.29), (92.5, 666.67)):
+        client = _Client()
+        service, _ = _mirror(tmp_path, client=client)
+        record = _run(service, _proposal("AAPL", stop=stop))
+        assert record["amount_usd"] == amount == client.orders[0].amount_usd, stop
+        assert amount * (100.0 - stop) / 100.0 <= 50.01, stop  # dollars lost at the stop
+
+
+def test_stops_more_than_8_pct_below_the_entry_are_not_copied(tmp_path) -> None:
+    client = _Client()
+    service, logs = _mirror(tmp_path, client=client)
+    assert _run(service, _proposal("AAPL", stop=91.9)) is None and client.orders == []  # 8.1%
+    assert logs.events[-1][1]["reasons"] == ["etoro_live_stop_too_wide"]
+    record = _run(service, _proposal("MSFT", stop=92.1))  # 7.9%: copied, sized to its stop
+    assert record["amount_usd"] == round(10_000 * 0.5 / 7.9, 2) == 632.91
+
+
+def test_the_amd_trade_of_10_07_would_not_be_copied(tmp_path) -> None:
+    # Fill 642.00, stop 541.53 (15.65% below): it lost $155 on a flat $994 copy.
+    client = _Client()
+    service, logs = _mirror(tmp_path, client=client)
+    proposal = _proposal("AMD", stop=541.53, target=876.98, price=643.18)
+    assert _run(service, proposal) is None and client.orders == []
+    assert logs.events[-1][1]["reasons"] == ["etoro_live_stop_too_wide"]
+
+
+def test_a_stop_at_or_above_the_entry_is_not_copied(tmp_path) -> None:
+    client = _Client()
+    service, logs = _mirror(tmp_path, client=client)
+    assert _run(service, _proposal("AAPL", stop=100.0)) is None and client.orders == []
+    assert logs.events[-1][1]["reasons"] == ["etoro_live_stop_distance_unknown"]
+
+
+def test_copy_needs_a_backtest_edge_of_at_least_0_03_r(tmp_path) -> None:
+    # Operator 2026-10-16: AMD was copied at +0.024 R and META at 0.00 R; both were "> 0".
+    cases = (
+        ({"oos_expectancy_r": 0.0237}, False),
+        ({"oos_expectancy_r": 0.0}, False),
+        ({}, False),  # no figure: refused
+        ({"oos_expectancy_r": float("nan")}, False),
+        ({"oos_expectancy_r": 0.03}, True),
+        ({"oos_expectancy_usd": 7.16}, True),  # $ per $100 risked when R is missing
+    )
+    for edge, copied in cases:
+        state = _state()
+        verdicts = {"momentum_breakout:1d": {"passed": True, **edge}}
+        state.set(VERDICTS_KEY, json.dumps({"verdicts": verdicts}))
+        client = _Client()
+        service, logs = _mirror(tmp_path, client=client, state=state)
+        assert bool(_run(service)) is copied, edge
+        if not copied:
+            assert logs.events[-1][1]["reasons"] == ["strategy_edge_below_bar"], edge
+
+
+def test_paper_keeps_its_own_evidence_bar(tmp_path) -> None:
+    from app.performance.strategy_evidence import evidence_blocker
+
+    state = _state()
+    thin = {"momentum_breakout:1d": {"passed": True, "oos_expectancy_r": 0.0237}}
+    state.set(VERDICTS_KEY, json.dumps({"verdicts": thin}))
+    paper = SimpleNamespace(require_strategy_oos_evidence=True)
+    kwargs = dict(strategy="momentum_breakout", timeframe="1d")
+    assert evidence_blocker(paper, state, **kwargs) is None
+    assert evidence_blocker(paper, state, **kwargs, min_expectancy_r=0.03) == (
+        "strategy_edge_below_bar"
+    )
 
 
 def test_daily_loss_stop(tmp_path) -> None:

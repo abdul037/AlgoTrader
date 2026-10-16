@@ -404,6 +404,7 @@ def _item(signal, symbol, spec, spec_key, last, relative_volume, bucket, context
     )
     verdict = context["verdicts"].get(spec_key) or {}
     evidence_passing = context["evidence_ok"](str(spec.name))
+    stop_pct = (price - stop) / price * 100.0
     held = symbol in context["held_paper"]
     pending = symbol in context["pending"]
     allowed = symbol in context["allowed"]
@@ -420,6 +421,7 @@ def _item(signal, symbol, spec, spec_key, last, relative_volume, bucket, context
         "stop": round(stop, 4),
         "target": round(target, 4),
         "rr": round((target - price) / (price - stop), 3),
+        "stop_pct": round(stop_pct, 3),
         "relative_volume": relative_volume,
         "evidence_passing": evidence_passing,
         "oos_expectancy_r": _finite(verdict.get("oos_expectancy_r")),
@@ -430,6 +432,10 @@ def _item(signal, symbol, spec, spec_key, last, relative_volume, bucket, context
         "pending_proposal": pending,
         "etoro_symbol_open": symbol in context["etoro_open"],
         "etoro_bucket_full": bool(context["etoro_bucket_full"](symbol)),
+        # The live copy's own per-trade rules (2026-10-16): edge >= +0.03 R and stop <= 8%.
+        "etoro_copy_rules_ok": bool(
+            context["copy_edge_ok"](str(spec.name)) and stop_pct <= context["max_stop_pct"]
+        ),
         "allowed": allowed,
         "blacklisted": blacklisted,
         # Weak signals never auto-trade (they need the operator's approval).
@@ -447,7 +453,12 @@ def _item(signal, symbol, spec, spec_key, last, relative_volume, bucket, context
 def _prefetch(service: Any) -> dict[str, Any]:
     """Everything the items need, read once (no per-run database calls)."""
 
-    from app.broker.etoro_live_mirror import STATE_KEY, _StrictEvidence
+    from app.broker.etoro_live_mirror import (
+        HARD_MAX_STOP_DISTANCE_PCT,
+        MIRROR_MIN_EXPECTANCY_R,
+        STATE_KEY,
+        _StrictEvidence,
+    )
     from app.broker.etoro_live_room import bucket_blockers, effective_open_symbols
     from app.models.approval import ApprovalStatus
     from app.performance.strategy_evidence import VERDICTS_KEY, evidence_blocker
@@ -463,6 +474,18 @@ def _prefetch(service: Any) -> dict[str, Any]:
 
     def evidence_ok(strategy: str) -> bool:  # the live gate itself, on the one cached read
         return evidence_blocker(strict, one_key, strategy=strategy, timeframe="1d") is None
+
+    def copy_edge_ok(strategy: str) -> bool:  # the eToro copy's higher bar
+        return (
+            evidence_blocker(
+                strict,
+                one_key,
+                strategy=strategy,
+                timeframe="1d",
+                min_expectancy_r=MIRROR_MIN_EXPECTANCY_R,
+            )
+            is None
+        )
 
     reconciliation = getattr(service, "reconciliation", None)
     held = _symbols(
@@ -496,6 +519,8 @@ def _prefetch(service: Any) -> dict[str, Any]:
         "blacklisted": blacklisted,
         "verdicts": verdicts,
         "evidence_ok": evidence_ok,
+        "copy_edge_ok": copy_edge_ok,
+        "max_stop_pct": HARD_MAX_STOP_DISTANCE_PCT,
         "held_paper": held,
         "pending": pending,
         "etoro_open": set(etoro_open),

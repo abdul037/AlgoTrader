@@ -584,7 +584,8 @@ class AppSettings(BaseSettings):
     etoro_live_api_key: str = ""
     etoro_live_user_key: str = ""
     etoro_live_acknowledgement: str = ""
-    etoro_live_trade_pct_of_equity: float = 10.0  # hard-capped at 10% / $1,000 in code
+    # Hard-capped at 10% / $1,000 in code, and cut so a stop-out costs <= 0.5% of equity.
+    etoro_live_trade_pct_of_equity: float = 10.0
     etoro_live_guard_interval_seconds: int = 60  # backup stop / test watch cadence (min 10)
     # Option 3 (operator 2026-10-06): while the mirror would copy an order, eToro's own room
     # (6 positions, 3 per group, free cash) replaces paper's gross/sector/correlated limits.

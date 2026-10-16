@@ -558,6 +558,37 @@ def test_etoro_room_hints(tmp_path, monkeypatch) -> None:
     assert trend["GOOGL"]["tradeable"]  # a hint: paper may still trade it, eToro will not copy
 
 
+def test_items_carry_the_etoro_copy_rules_as_a_hint(tmp_path, monkeypatch) -> None:
+    # 2026-10-16: the live copy needs a stop <= 8% below the entry and a +0.03 R backtest
+    # edge. Paper may still trade the rest, so ``tradeable`` is unchanged.
+    for edge, rules_ok in ((0.046, {"S00": True, "S01": False}), (0.02, {})):
+        verdicts = {"trend_following:1d": {"passed": True, "oos_expectancy_r": edge}}
+        service = _service(tmp_path, monkeypatch, verdicts=verdicts)
+        real_build = service.market_screener._build_strategy
+
+        def stop_for(symbol):
+            return 9.0 if symbol == "S01" else 9.5  # S01: 10% below the entry, others 5%
+
+        fixed = SimpleNamespace(
+            generate_signal=lambda frame, symbol: SimpleNamespace(
+                action="buy", price=10.0, stop_loss=stop_for(symbol), take_profit=12.0, metadata={}
+            )
+        )
+        monkeypatch.setattr(
+            service.market_screener,
+            "_build_strategy",
+            lambda spec, real=real_build, fixed=fixed: (
+                fixed if spec.name == "trend_following" else real(spec)
+            ),
+        )
+        _run(service)
+        trend = _trend(_watchlist(service))
+        assert (trend["S00"]["stop_pct"], trend["S01"]["stop_pct"]) == (5.0, 10.0)
+        for symbol in ("S00", "S01"):
+            assert trend[symbol]["tradeable"] and trend[symbol]["evidence_passing"], edge
+            assert trend[symbol]["etoro_copy_rules_ok"] is rules_ok.get(symbol, False), (edge, symbol)
+
+
 def test_the_saved_watchlist_is_strict_json(tmp_path, monkeypatch) -> None:
     # The scorecard casts the list to jsonb, which rejects NaN and Infinity.
     nan_verdict = {

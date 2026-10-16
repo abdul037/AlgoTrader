@@ -10,6 +10,11 @@ account equity last read by ``reconcile`` -- not a fixed dollar amount --
 because the AlgoBot account is funded by copying and eToro copies its trades
 in proportion. 10% of AlgoBot's $10,000 = $1,000, so about $50 of the
 operator's $500 copy; if AlgoBot is ever funded directly, 10% of $500 = $50.
+Operator 2026-10-16 (AMD's 15.65% stop lost $155 on a flat $994 copy while SPY's 1.4% stop
+risked $14): each copy is also cut so a stop-out costs at most
+``HARD_MAX_RISK_PCT_OF_EQUITY`` of equity, a stop more than ``HARD_MAX_STOP_DISTANCE_PCT``
+below the entry is not copied, and the strategy needs a pooled OOS expectancy of at least
+``MIRROR_MIN_EXPECTANCY_R`` (paper keeps its own "> 0" bar, so it keeps collecting evidence).
 
 Real money. The mirror only acts when ALL of these hold:
 
@@ -18,16 +23,19 @@ Real money. The mirror only acts when ALL of these hold:
   secrets; never committed, never pasted in chat);
 * ``ETORO_LIVE_ACKNOWLEDGEMENT`` equals ``LIVE_OPERATOR_ACKNOWLEDGEMENT``;
 * the primary trade is an Alpaca *paper* long equity entry, with stop and
-  target, from a strategy that passes the Phase 2 evidence gate;
+  target, from a strategy that passes the Phase 2 evidence gate by at least
+  ``MIRROR_MIN_EXPECTANCY_R``, with its stop at most ``HARD_MAX_STOP_DISTANCE_PCT``
+  below the entry;
 * the mirror is not halted.
 
 Hard caps are code constants, not settings: at most
 ``HARD_MAX_TRADE_PCT_OF_EQUITY`` of equity and never more than
-``HARD_MAX_TRADE_USD`` per position, ``HARD_MAX_TRADES_PER_DAY`` new positions
+``HARD_MAX_TRADE_USD`` per position, at most ``HARD_MAX_RISK_PCT_OF_EQUITY`` of equity
+lost at the stop, ``HARD_MAX_TRADES_PER_DAY`` new positions
 per UTC day, ``HARD_MAX_OPEN_POSITIONS`` open, a ``HARD_DAILY_LOSS_STOP_PCT``
-equity drop per day, no trade until equity has been read, and leverage 1
-except one 2x test after ``LEVERAGE_TEST_AFTER_1X_TRADES`` successful 1x
-entries. Any eToro error halts the mirror -- it never touches the
+equity drop per day, no trade until equity has been read, and leverage 1 (the one
+2x test the operator asked for ran on 2026-10-07; ``LEVERAGE_TEST_ENABLED`` is off so a
+reset state cannot re-arm it). Any eToro error halts the mirror -- it never touches the
 Alpaca paper bot or its circuit breaker -- until the operator clears
 ``etoro_live:halted``. The global ``ENABLE_REAL_TRADING`` stays false: the
 mirror's own client gets a private settings copy with real mode enabled.
@@ -37,6 +45,7 @@ from __future__ import annotations
 
 import functools
 import json
+import math
 import threading
 from contextlib import suppress
 from typing import Any
@@ -52,10 +61,17 @@ HARD_MAX_TRADES_PER_DAY = 2
 HARD_MAX_OPEN_POSITIONS = 9
 CASH_RESERVE_USD = 100.0  # free cash kept back for fees; an entry must fit in the rest
 HARD_DAILY_LOSS_STOP_PCT = 5.0
+# Operator 2026-10-16: size each copy from its stop (a stop-out costs <= 0.5% of equity,
+# about $50 on $10,000), skip stops wider than 8%, and copy only strategies whose pooled
+# out-of-sample backtest earns at least +0.03 R per trade.
+HARD_MAX_RISK_PCT_OF_EQUITY = 0.5
+HARD_MAX_STOP_DISTANCE_PCT = 8.0
+MIRROR_MIN_EXPECTANCY_R = 0.03
 LEVERAGE_TEST_AFTER_1X_TRADES = 2
 # Operator 2026-10-06 "try the 2x leverage": eToro's Amount is margin, so the 2x test sends
 # half the usual amount -- same $ exposure as a 1x trade ($500 x 2 = $1,000 notional).
-LEVERAGE_TEST_ENABLED = True
+# The one test ran on 2026-10-07 (AMD); off since 2026-10-16 so a reset state can't re-arm it.
+LEVERAGE_TEST_ENABLED = False
 
 HALTED_KEY = "etoro_live:halted"
 STATE_KEY = "etoro_live:state"
@@ -112,6 +128,18 @@ def client_problem(client: Any | None) -> str | None:
     return None
 
 
+def stop_distance_pct(entry: Any, stop: Any) -> float | None:
+    """How far a long's stop sits below its entry, in % of the entry (None: not a valid stop)."""
+
+    try:
+        entry, stop = float(entry), float(stop)
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(entry) and math.isfinite(stop)) or not 0 < stop < entry:
+        return None
+    return (entry - stop) / entry * 100.0
+
+
 def _serialized(method: Any) -> Any:
     """Run a mirror method under the mirror's lock."""
 
@@ -147,7 +175,7 @@ class EtoroLiveMirrorService:
     # -- gates -----------------------------------------------------------------
     def blockers(self, proposal: Any, primary_broker: str) -> list[str]:
         from app.automation.service import LIVE_OPERATOR_ACKNOWLEDGEMENT
-        from app.performance.strategy_evidence import evidence_blocker
+        from app.performance.strategy_evidence import EDGE_BELOW_BAR, evidence_blocker
 
         settings = self.settings
         if not bool(getattr(settings, "etoro_live_mirror_enabled", False)):
@@ -181,8 +209,13 @@ class EtoroLiveMirrorService:
             "unknown",
         }:
             reasons.append("mirror_equities_only")
+        stop_pct = stop_distance_pct(order.proposed_price, order.stop_loss)
         if order.stop_loss is None or order.take_profit is None:
             reasons.append("mirror_requires_stop_and_target")
+        elif stop_pct is None:  # no entry price, or a "stop" at/above it: can't size the risk
+            reasons.append("etoro_live_stop_distance_unknown")
+        elif stop_pct > HARD_MAX_STOP_DISTANCE_PCT:
+            reasons.append("etoro_live_stop_too_wide")
         metadata = (
             (getattr(proposal.signal, "metadata", None) or {})
             if proposal.signal is not None
@@ -196,13 +229,16 @@ class EtoroLiveMirrorService:
         strict = _StrictEvidence(settings)
         if not timeframe:
             reasons.append("mirror_timeframe_unknown")
-        elif evidence_blocker(
+        elif evidence := evidence_blocker(
             strict,
             self.state,
             strategy=str(order.strategy_name or ""),
             timeframe=str(timeframe),
+            min_expectancy_r=MIRROR_MIN_EXPECTANCY_R,
         ):
-            reasons.append("strategy_lacks_oos_evidence")
+            reasons.append(
+                evidence if evidence == EDGE_BELOW_BAR else "strategy_lacks_oos_evidence"
+            )
         state = self._state()
         if state["trades_today"] >= HARD_MAX_TRADES_PER_DAY:
             reasons.append("etoro_live_daily_trade_cap")
@@ -221,25 +257,29 @@ class EtoroLiveMirrorService:
             and float(start) - float(last) >= float(start) * HARD_DAILY_LOSS_STOP_PCT / 100.0
         ):
             reasons.append("etoro_live_daily_loss_stop")
-        amount = self._trade_amount(state)
-        if amount is None:
+        equity = state.get("last_equity")
+        if equity is None or float(equity) <= 0:
             reasons.append("etoro_live_equity_unknown")
-        elif amount < MIN_TRADE_USD:
+        amount = self._trade_amount(state, stop_pct)  # None: an unknown stop is refused above
+        if amount is not None and amount < MIN_TRADE_USD:
             reasons.append("etoro_live_trade_below_minimum")
         cash = state.get("last_cash")
         if amount and cash is not None and float(cash) - CASH_RESERVE_USD < amount:
             reasons.append("etoro_live_insufficient_cash")  # only trade with money left
         return reasons
 
-    def _trade_amount(self, state: dict[str, Any]) -> float | None:
-        """Position size: a share of the last equity reading, capped in code."""
+    def _trade_amount(self, state: dict[str, Any], stop_pct: float | None) -> float | None:
+        """Exposure for one copy: a share of the last equity reading, cut so a stop
+        ``stop_pct`` % below the entry costs at most ``HARD_MAX_RISK_PCT_OF_EQUITY`` of
+        equity, capped in code. None when the equity or the stop distance is unknown."""
 
         equity = state.get("last_equity")
-        if equity is None or float(equity) <= 0:
+        if equity is None or float(equity) <= 0 or stop_pct is None or not stop_pct > 0:
             return None
         pct = float(getattr(self.settings, "etoro_live_trade_pct_of_equity", 10.0) or 0.0)
         pct = min(max(pct, 0.0), HARD_MAX_TRADE_PCT_OF_EQUITY)
-        return round(min(float(equity) * pct / 100.0, HARD_MAX_TRADE_USD), 2)
+        at_risk = float(equity) * HARD_MAX_RISK_PCT_OF_EQUITY / stop_pct  # loses 0.5% at stop
+        return round(min(float(equity) * pct / 100.0, HARD_MAX_TRADE_USD, at_risk), 2)
 
     # -- mirror ----------------------------------------------------------------
     @_serialized
@@ -269,8 +309,15 @@ class EtoroLiveMirrorService:
             )
             else 1
         )
-        amount = self._trade_amount(state)
-        if amount and leverage > 1:
+        order = proposal.order
+        amount = self._trade_amount(state, stop_distance_pct(order.proposed_price, order.stop_loss))
+        if not amount:  # backstop: blockers() already refuses an order it cannot size
+            self.logs.log(
+                "etoro_live_mirror_blocked",
+                {"symbol": symbol, "proposal_id": proposal.id, "reasons": ["etoro_live_unsized"]},
+            )
+            return None
+        if leverage > 1:
             amount = round(amount / leverage, 2)  # Amount is margin: keep the 1x exposure
         order = proposal.order.model_copy(update={"amount_usd": amount, "leverage": leverage})
         from app.broker.etoro_live_backup_stop import forget_stop, remember_stop

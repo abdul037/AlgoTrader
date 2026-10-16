@@ -155,7 +155,8 @@ def test_mirror_entry_records_its_strategy_stop(tmp_path) -> None:
         order_id="e1", status="submitted"
     )
     state = _State()
-    state.set(VERDICTS_KEY, json.dumps({"verdicts": {"momentum_breakout:1d": {"passed": True}}}))
+    passing = {"momentum_breakout:1d": {"passed": True, "oos_expectancy_r": 0.05}}
+    state.set(VERDICTS_KEY, json.dumps({"verdicts": passing}))
     state.set("etoro_live:state", json.dumps({"last_equity": 10_000.0}))
     mirror, _ = _mirror(tmp_path, client, state=state)
     mirror.settings = mirror.settings.model_copy(update={"allowed_instruments": ["AAPL"]})

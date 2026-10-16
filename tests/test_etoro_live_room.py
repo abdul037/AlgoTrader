@@ -129,6 +129,18 @@ def test_non_room_refusals_keep_paper_room_rules(tmp_path) -> None:
     assert room_verdict(unknown, _order("AAPL")) is None  # equity unknown
 
 
+def test_the_copys_own_rules_leave_paper_room_rules_in_charge(tmp_path) -> None:
+    # 2026-10-16: a copy refused for a wide stop or a thin edge must not cost paper its trade.
+    from app.performance.strategy_evidence import VERDICTS_KEY
+
+    mirror, _ = _live(tmp_path)
+    assert room_verdict(mirror, _order("JPM")) == []  # copyable: eToro's room decides
+    assert room_verdict(mirror, _order("JPM", stop=90.0)) is None  # 10% stop: not copied
+    thin = {"momentum_breakout:1d": {"passed": True, "oos_expectancy_r": 0.02}}
+    mirror.state.set(VERDICTS_KEY, json.dumps({"verdicts": thin}))
+    assert room_verdict(mirror, _order("JPM")) is None
+
+
 def test_per_trade_checks_still_apply_with_etoro_room(tmp_path) -> None:
     order = _order("AAPL")
     risk = _risk(tmp_path, kill_switch_enabled=True).validate_order(

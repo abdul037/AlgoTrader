@@ -12,6 +12,43 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-10-12 (Mon) → 10-16 (Fri) — trade review, AMD stop-out, eToro copy safeguards
+
+- **Evidence thinned and flickered (from `strategy_evidence_refreshed` logs):** 6-8 daily
+  strategies passed 10-10 → 10-12 19:00 UTC; 4 at 10-12 20:14; only inside_bar 23:20 → 10-13
+  02:28; none 10-13 03:00-19:12; inside_bar + momentum_breakout 10-13 20:14 → 10-14 11:21;
+  etf_mega_cap_relative_strength_rotation again 10-14 14:27 → 10-15 17:14 (+0.012 R, the
+  window in which SPY and MSFT were copied); inside_bar 10-15 21:26-23:00; **no daily strategy
+  since 10-16 00:04 UTC**; rsi_reversal:15m passes from 18:28 at +0.0011 R. A pooled edge
+  hovering around zero flips pass/fail as the 7-day walk-forward rows refresh.
+- **Live eToro in the period:** XOM 10-12 17:27 UTC (inside_bar, $993); MSFT closed at its target
+  10-13 13:04 (+3.63%, +$36, +1.31 R); COST closed at its target 972.08 10-14 15:28 (+2.61%; the
+  scorecard booked the 966.82 it saw a minute later as "other"); SPY 16:24 and MSFT 16:32 on
+  10-14 (rotation, $999 each); **AMD stopped at 541.53 on 10-15 13:27 UTC (17:27 Dubai), three
+  minutes before the open** (the 10-07 2x test, $496.79 margin / $993.58 exposure): -31.30% of
+  margin = -15.65% price ≈ -$155 (≈ -$8 on the $500 copy), -1.0 R; paper stopped out too.
+- **Operator asked for the justification of every trade (10-16 ~19:40 UTC).** Every entry was
+  automatic: swing scan → paper auto-approval (`paper_auto`) → mirror (strategy passed the pooled
+  OOS gate). 7 of 10 stock copies were "supervised weak-valid"; all 10 had `backtest_validated:
+  false` on the per-signal check; the planner had marked SPY/COST/PYPL "no_trade" and AMD "wait
+  for a retest"; 9 of 10 had a pooled edge of 0.00-0.045 R (META 0.00 R; only MSFT #1 +0.07 R).
+  The flat ~$1,000 copy meant AMD's 15.65% stop risked $155 while SPY's 1.4% stop risks $14
+  (paper sizes from the stop, ~$490 at risk each). All four losing stock copies are the rotation
+  strategy (≈ -$235); the other six ≈ +$224; net ≈ -$54 before fees at the operator's
+  screenshot (-$136 booked incl. the ETH test, +$82 open).
+- **Operator approved three copy safeguards (10-16 ~19:53 UTC), all code constants:**
+  (1) each copy is sized from its stop so a stop-out costs <= 0.5% of equity
+  (`HARD_MAX_RISK_PCT_OF_EQUITY`), still <= 10% / $1,000; (2) a stop more than 8% below the entry
+  is not copied (`HARD_MAX_STOP_DISTANCE_PCT`); (3) only strategies with a pooled OOS edge >=
+  +0.03 R are copied (`MIRROR_MIN_EXPECTANCY_R`; paper keeps "> 0" and keeps collecting). Declined:
+  copy strict signals only. The new refusals are not room reasons, so paper keeps its own room
+  rules for those trades (option 3 unchanged). Also in code: the one-time 2x test is off
+  (`LEVERAGE_TEST_ENABLED=False`) so a reset state cannot re-arm it. Deep-scan items gain
+  `stop_pct` and `etoro_copy_rules_ok` (hints; `tradeable` unchanged). On these 10 trades the
+  sizing rule alone would have made AMD ≈ $320 (-$50) and the stocks ≈ +$104 instead of ≈ -$12;
+  the 8% cap would have skipped AMD and META. Open positions keep their eToro stops/targets; the
+  rules apply to new copies only. 10 of 10 targeted mutations caught; full suite 982 passed.
+
 ## 2026-10-10 (Sat) — pre-market scan research, operator decisions, step 4 fixes
 
 - **Operator: "scan many stocks and find the best ones before trading hours; parallel agents?"**

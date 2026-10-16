@@ -21,6 +21,7 @@ way back in.
 from __future__ import annotations
 
 import json
+import math
 from datetime import timedelta
 from typing import Any
 
@@ -126,10 +127,22 @@ def refresh_verdicts(
     return verdicts
 
 
+EDGE_BELOW_BAR = "strategy_edge_below_bar"
+
+
 def evidence_blocker(
-    settings: Any, runtime_state: Any, *, strategy: str, timeframe: str | None
+    settings: Any,
+    runtime_state: Any,
+    *,
+    strategy: str,
+    timeframe: str | None,
+    min_expectancy_r: float = 0.0,
 ) -> str | None:
-    """``"strategy_lacks_oos_evidence"`` when enforcement is on and the strategy fails."""
+    """``"strategy_lacks_oos_evidence"`` when enforcement is on and the strategy fails.
+
+    ``min_expectancy_r`` > 0 also asks a passing strategy for at least that pooled OOS
+    expectancy in R (``EDGE_BELOW_BAR`` otherwise) -- the eToro live copy's own bar.
+    """
 
     if not bool(getattr(settings, "require_strategy_oos_evidence", False)) or runtime_state is None:
         return None
@@ -142,7 +155,27 @@ def evidence_blocker(
         return "strategy_lacks_oos_evidence"
     if _stale(cached.get("computed_at")):  # refreshed every 30 min; a day-old pass is not trusted
         return "strategy_evidence_stale"
+    if min_expectancy_r > 0 and not _edge_r(verdict) >= min_expectancy_r:
+        return EDGE_BELOW_BAR
     return None
+
+
+def _edge_r(verdict: dict[str, Any]) -> float:
+    """The verdict's pooled OOS expectancy in R; NaN (fails every bar) when unreadable."""
+
+    for value, scale in (
+        (verdict.get("oos_expectancy_r"), 1.0),
+        (verdict.get("oos_expectancy_usd"), BACKTEST_RISK_USD),
+    ):
+        if value is None:
+            continue
+        try:
+            number = float(value) / scale
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            return number
+    return math.nan
 
 
 EVIDENCE_MAX_AGE_HOURS = 24.0
