@@ -81,7 +81,11 @@ def live_scorecard(request: Request):
                 continue
             if fill > 0:
                 fills[str(row["proposal_id"])] = fill
-    return scorecard_report(state, fills)
+    from app.workflow.shadow_ledger import shadow_ledger_report
+
+    report = scorecard_report(state, fills)
+    report["shadow_ledger"] = shadow_ledger_report(state)  # watchlist setups on later bars
+    return report
 
 
 @router.get("/live-daily-report")

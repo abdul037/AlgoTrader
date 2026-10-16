@@ -56,8 +56,23 @@ without explicit operator sign-off recorded here.
   rate seen a minute later, the bot's backup-stop price, a paper-exit copy) is re-read from it
   every 15 min for 7 days, keeping a bot exit's reason and the seen price as `seen_close_rate`.
   A trade with several positions waits for all of them (units-weighted). Read-only GET; any
-  failure keeps the estimate. AMD, COST and MSFT should re-book on the first tick after deploy.
-  10 of 10 targeted mutations caught; full suite 988 passed.
+  failure keeps the estimate. 10 of 10 targeted mutations caught; full suite 988 passed.
+- **20:34 UTC pushed `b201325`; deploy SUCCESS 20:38.** The first tick (20:39) re-booked all
+  three closes from eToro's history: MSFT 544.60 target +1.32 R +$36.29; COST 972.09 **target**
+  (was "other") +1.24 R +$25.90; AMD 541.52 stop -1.00 R -$155.51. eToro fees: $0.00 on the 1x
+  stock copies, $2.13 on the 2x AMD CFD (overnight) -- answers the open fee question below.
+- **Phase 2: shadow forward ledger** (`app/workflow/shadow_ledger.py`): once a day after 09:35 ET
+  every signal of each finished deep-scan watchlist is followed on later completed daily bars
+  with the engine's fill rules (next-open entry; stop first, gap-through at the open; target at
+  the target; default spread both ways), reporting `stop_target` (the live rule, no time exit)
+  and `time_14d` (the walk-forward fold length; 56-85% of pooled OOS trades end at the fold
+  boundary). One trade per symbol+strategy at a time, as in the backtest (`skipped_open`).
+  Strategy sell signals, financing and max-hold metadata are not replayed. Runs on the 30-min
+  phase-gates step with a 60 s budget (the rest on the next run), reads the deep scan's bar
+  request (usually cached), writes only `premarket:shadow_ledger` (+ its state key), keeps 60
+  days. `GET /performance/live-scorecard` now includes `shadow_ledger` (per strategy, per cohort
+  tradeable/strict/weak, vs the backtest's expected R). First data: Mon 10-19 after 09:35 ET
+  (10-12..10-16 watchlists). 17 of 17 targeted mutations caught; full suite 1000 passed.
 
 ## 2026-10-10 (Sat) — pre-market scan research, operator decisions, step 4 fixes
 
@@ -1032,10 +1047,10 @@ Convened locally over the 31 unreviewed commits (`0a12efe..2575a1b`) plus the we
 
 ## Open operator items
 
-- Evidence bar level: keep `STRATEGY_EVIDENCE_MIN_EXPECTANCY_R` at 0 (recommended),
-  or 0.03 / 0.05 (0.05 passes no strategy as of 10-06).
-- Check in the eToro app whether copied stock trades carry a fee (a flat ~$2 would be
-  ~4% of a $50 copy each way; rethink the stock copy if so).
+- Evidence bar level: paper keeps `STRATEGY_EVIDENCE_MIN_EXPECTANCY_R` at 0; the eToro copy
+  needs +0.03 R in code since 2026-10-16 (operator decision).
+- ~~Stock copy fees~~: answered 10-16 from eToro's trade history: $0.00 on 1x stock copies
+  (MSFT, COST); $2.13 overnight on the 2x AMD CFD.
 - Branch `claude/repo-audit-962zde` is ~95 commits ahead of `main` and conflicts with
   it (main last updated by #31); needs a PR + conflict merge when the operator wants
   main current. Railway deploys from the branch, so production is unaffected.
