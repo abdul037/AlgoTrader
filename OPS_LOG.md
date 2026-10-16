@@ -48,6 +48,16 @@ without explicit operator sign-off recorded here.
   sizing rule alone would have made AMD ≈ $320 (-$50) and the stocks ≈ +$104 instead of ≈ -$12;
   the 8% cap would have skipped AMD and META. Open positions keep their eToro stops/targets; the
   rules apply to new copies only. 10 of 10 targeted mutations caught; full suite 982 passed.
+- **20:19 UTC pushed `51be8a8`; deploy SUCCESS 20:25 UTC** (boot snapshot 20:25: paper, real
+  trading off; no eToro errors after it).
+- **Scorecard books eToro's own fills:** eToro's documented closed-trade history (`GET
+  /trading/info/trade/history`: `closeRate`, `closeTimestamp`, `netProfit`, `fees`, `units`)
+  now gives the close price when eToro closed a position; a close booked from an estimate (the
+  rate seen a minute later, the bot's backup-stop price, a paper-exit copy) is re-read from it
+  every 15 min for 7 days, keeping a bot exit's reason and the seen price as `seen_close_rate`.
+  A trade with several positions waits for all of them (units-weighted). Read-only GET; any
+  failure keeps the estimate. AMD, COST and MSFT should re-book on the first tick after deploy.
+  10 of 10 targeted mutations caught; full suite 988 passed.
 
 ## 2026-10-10 (Sat) — pre-market scan research, operator decisions, step 4 fixes
 

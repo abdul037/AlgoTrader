@@ -11,9 +11,13 @@ strategy's walk-forward backtest expected, then followed to its close:
   is about -1 R whatever its size, and live trades compare directly with the backtest;
 * the exit reason (target, stop, the bot's backup stop, or other).
 
-eToro's API offers no closed-trade history here, so a close is detected when a position
-that was seen disappears; its price is the bot's own close price when the backup stop
-closed it, otherwise a fresh eToro rate read at detection (within one guard tick, 60 s).
+A close is detected when a position that was seen disappears. Its price is eToro's own fill
+from the trade history (``GET /trading/info/trade/history``) when the position is there;
+otherwise the bot's own close price when the backup stop closed it, or a fresh eToro rate
+read at detection (within one guard tick, 60 s). Those estimates are re-read from the history
+every ``REFINE_EVERY_MINUTES`` for ``REFINE_DAYS`` (2026-10-16: AMD was booked at the 539.00
+seen a minute after eToro's stop filled at 541.53, and COST as "other" at 966.82 after its
+target filled at 972.08).
 """
 
 from __future__ import annotations
@@ -30,6 +34,13 @@ SCORECARD_KEY = "etoro_live:scorecard"
 NOT_FILLED_AFTER_HOURS = 24
 MIN_TRADES_FOR_VERDICT = 10
 LEVEL_TOLERANCE = 0.003  # a close within 0.3% of the stop/target counts as hitting it
+HISTORY_SOURCE = "etoro_history"
+REFINE_DAYS = 7
+REFINE_EVERY_MINUTES = 15
+HISTORY_PAGE_SIZE = 100
+HISTORY_MAX_PAGES = 5
+_BOT_EXITS = {"bot_backup_stop", "paper_exit"}  # the reason is known even when the price is not
+_ESTIMATED_SOURCES = {"rate_when_seen_closed", *_BOT_EXITS}
 
 
 def record_entry(mirror: Any, record: dict[str, Any], *, timeframe: Any, entry_price: Any) -> None:
@@ -81,15 +92,21 @@ def update_scorecard(mirror: Any, bot_closes: list[dict[str, Any]] | None = None
     with _lock(mirror):
         cards = _load(mirror)
         active = {k: t for k, t in cards.items() if t.get("status") in {"pending_fill", "open"}}
-        if not active or client_problem(mirror.client):
+        refinable = {k: t for k, t in cards.items() if _refinable(t)}
+        if not (active or refinable) or client_problem(mirror.client):
             return 0
         client = mirror.client
-        positions = portfolio_positions(client.fetch_raw_portfolio())
+        history = _History(client, [*active.values(), *refinable.values()])
+        changed = 0
+        for trade in refinable.values():
+            if _refine(trade, history.close(trade.get("position_ids"))):
+                changed += 1
+                mirror.logs.log("etoro_live_scorecard_refined", {**trade})
+        positions = portfolio_positions(client.fetch_raw_portfolio()) if active else None
         if positions is None:
-            return 0
+            active, positions = {}, []  # a malformed read changes no open trade
         closed_by_bot = {str(c.get("symbol") or "").upper(): c for c in bot_closes or []}
         stale = (utc_now() - timedelta(hours=NOT_FILLED_AFTER_HOURS)).isoformat()
-        changed = 0
         for trade in active.values():
             instrument_id = trade.get("instrument_id") or _instrument_id(client, trade["symbol"])
             if not instrument_id:
@@ -107,8 +124,11 @@ def update_scorecard(mirror: Any, bot_closes: list[dict[str, Any]] | None = None
                     changed += 1
                 continue
             bot = closed_by_bot.get(trade["symbol"])
+            filled = None if bot is not None else history.close(trade.get("position_ids"))
             if bot is not None:
                 rate, source = _float(bot.get("rate")), "bot_backup_stop"
+            elif filled is not None:
+                rate, source = filled["rate"], HISTORY_SOURCE
             else:
                 try:
                     rate, source = fresh_rate(client, trade["symbol"]), "rate_when_seen_closed"
@@ -117,11 +137,14 @@ def update_scorecard(mirror: Any, bot_closes: list[dict[str, Any]] | None = None
             if rate is None:
                 continue
             _mark_closed(trade, rate, source)
+            trade.update(_etoro_fields(filled))
+            if source != HISTORY_SOURCE:  # re-read once eToro has had time to list it
+                trade["history_checked_at"] = trade["closed_seen_at"]
             changed += 1
             mirror.logs.log("etoro_live_scorecard_closed", {**trade})
-        if changed:
+        if changed or refinable:  # a refinable card also carries its new check time
             current = _load(mirror)
-            current.update({k: t for k, t in active.items() if k in current})
+            current.update({k: t for k, t in {**refinable, **active}.items() if k in current})
             _save(mirror, current)
         return changed
 
@@ -215,19 +238,39 @@ def _mark_filled(trade: dict[str, Any], held: list[dict[str, Any]]) -> None:
 
 
 def _mark_closed(trade: dict[str, Any], rate: float, source: str) -> None:
-    open_rate = trade.get("open_rate")
-    stop, target = trade.get("stop_loss"), trade.get("take_profit")
     trade.update(status="closed", closed_seen_at=utc_now().isoformat(), close_rate=rate)
     trade["close_rate_source"] = source
-    if source in {"bot_backup_stop", "paper_exit"}:
-        reason = source
-    elif stop and rate <= stop * (1 + LEVEL_TOLERANCE):
-        reason = "stop"
-    elif target and rate >= target * (1 - LEVEL_TOLERANCE):
-        reason = "target"
-    else:
-        reason = "other"
-    trade["exit_reason"] = reason
+    trade["exit_reason"] = source if source in _BOT_EXITS else _level_reason(trade, rate)
+    _book(trade, rate)
+
+
+def _refine(trade: dict[str, Any], filled: dict[str, Any] | None) -> bool:
+    """Re-book an estimated close at eToro's own fill; True when the trade changed."""
+
+    trade["history_checked_at"] = utc_now().isoformat()
+    if filled is None:
+        return False
+    trade["seen_close_rate"] = trade.get("close_rate")
+    trade["close_rate"] = filled["rate"]
+    if trade.get("exit_reason") not in _BOT_EXITS:
+        trade["exit_reason"] = _level_reason(trade, filled["rate"])
+    trade["close_rate_source"] = HISTORY_SOURCE
+    trade.update(_etoro_fields(filled))
+    _book(trade, filled["rate"])
+    return True
+
+
+def _level_reason(trade: dict[str, Any], rate: float) -> str:
+    stop, target = trade.get("stop_loss"), trade.get("take_profit")
+    if stop and rate <= stop * (1 + LEVEL_TOLERANCE):
+        return "stop"
+    if target and rate >= target * (1 - LEVEL_TOLERANCE):
+        return "target"
+    return "other"
+
+
+def _book(trade: dict[str, Any], rate: float) -> None:
+    open_rate, stop = trade.get("open_rate"), trade.get("stop_loss")
     if open_rate:
         trade["return_pct"] = round((rate / open_rate - 1.0) * 100, 3)
         trade["pnl_usd"] = round(
@@ -235,6 +278,98 @@ def _mark_closed(trade: dict[str, Any], rate: float, source: str) -> None:
         )
         if stop and open_rate > stop:
             trade["realized_r"] = round((rate - open_rate) / (open_rate - stop), 3)
+
+
+def _refinable(trade: dict[str, Any]) -> bool:
+    """A recent close booked from an estimate, not checked against the history lately."""
+
+    if trade.get("status") != "closed" or trade.get("close_rate_source") not in _ESTIMATED_SOURCES:
+        return False
+    if not trade.get("position_ids"):
+        return False
+    now, closed = utc_now(), _when(trade.get("closed_seen_at"))
+    if closed is None or now - closed > timedelta(days=REFINE_DAYS):
+        return False
+    checked = _when(trade.get("history_checked_at"))
+    return checked is None or now - checked >= timedelta(minutes=REFINE_EVERY_MINUTES)
+
+
+class _History:
+    """eToro's closed positions, read at most once per update and only when one is needed."""
+
+    def __init__(self, client: Any, trades: list[dict[str, Any]]) -> None:
+        self._client = client
+        dates = sorted(str(t.get("opened_at") or "")[:10] for t in trades if t.get("opened_at"))
+        floor = (utc_now() - timedelta(days=364)).date().isoformat()  # eToro: under a year
+        self._since = max(dates[0], floor) if dates else None
+        self._rows: dict[str, dict[str, Any]] | None = None
+
+    def close(self, position_ids: Any) -> dict[str, Any] | None:
+        """eToro's fill for every one of these positions (units-weighted), or None."""
+
+        ids = [str(i) for i in position_ids or []]
+        if not ids or self._since is None:
+            return None
+        rows = self._load()
+        found = [rows[i] for i in ids if i in rows]
+        rates = [_float(r.get("closeRate")) for r in found]
+        if len(found) != len(ids) or any(rate is None for rate in rates):
+            return None  # not (all) closed yet, or no usable rate: keep the estimate
+        units = [_float(r.get("units")) or 0.0 for r in found]
+        total = sum(units)
+        weighted = sum(u * float(r or 0.0) for u, r in zip(units, rates, strict=True))
+        rate = weighted / total if total else sum(float(r or 0.0) for r in rates) / len(rates)
+        return {
+            "rate": round(rate, 6),
+            "closed_at": max(str(r.get("closeTimestamp") or "") for r in found) or None,
+            "net_profit_usd": round(sum(_signed(r.get("netProfit")) for r in found), 2),
+            "fees_usd": round(sum(_signed(r.get("fees")) for r in found), 2),
+        }
+
+    def _load(self) -> dict[str, dict[str, Any]]:
+        if self._rows is not None:
+            return self._rows
+        rows: dict[str, dict[str, Any]] = {}
+        try:
+            for page in range(1, HISTORY_MAX_PAGES + 1):
+                batch = self._client.fetch_trade_history(
+                    self._since, page=page, page_size=HISTORY_PAGE_SIZE
+                )
+                rows.update({str(r["positionId"]): r for r in batch if r.get("positionId")})
+                if len(batch) < HISTORY_PAGE_SIZE:
+                    break
+        except Exception:  # noqa: BLE001 - no history this tick: estimates stand, retried later
+            rows = {}
+        self._rows = rows
+        return rows
+
+
+def _etoro_fields(filled: dict[str, Any] | None) -> dict[str, Any]:
+    if filled is None:
+        return {}
+    return {
+        "etoro_closed_at": filled["closed_at"],
+        "etoro_net_profit_usd": filled["net_profit_usd"],
+        "etoro_fees_usd": filled["fees_usd"],
+    }
+
+
+def _when(value: Any) -> Any:
+    from datetime import UTC, datetime
+
+    try:
+        moment = datetime.fromisoformat(str(value)) if value else None
+    except (TypeError, ValueError):
+        return None
+    return moment.replace(tzinfo=UTC) if moment and moment.tzinfo is None else moment
+
+
+def _signed(value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return number if math.isfinite(number) else 0.0
 
 
 def _held(positions: list[dict[str, Any]], trade: dict[str, Any], instrument_id: int) -> list:

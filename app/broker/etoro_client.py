@@ -134,6 +134,29 @@ class EToroClient(BrokerClient):
             return {"clientPortfolio": {"positions": [], "credit": 10000.0}}
         return self._request("GET", self._trading_info_path("portfolio"))
 
+    def fetch_trade_history(
+        self, min_date: str, *, page: int = 1, page_size: int = 100
+    ) -> list[dict[str, Any]]:
+        """Closed positions since ``min_date`` (YYYY-MM-DD, under a year back), one page.
+
+        eToro's ``GET /trading/info/trade/history`` (api-portal.etoro.com, "List trading
+        history"): each row has ``positionId``, ``closeRate``, ``closeTimestamp``,
+        ``netProfit``, ``fees`` and ``units``.
+        """
+        if self.settings.broker_simulation_enabled:
+            return []
+        payload: Any = self._request(
+            "GET",
+            self._trading_info_path("trade/history"),
+            params={"minDate": min_date, "page": page, "pageSize": page_size},
+        )
+        if isinstance(payload, dict):  # tolerate a wrapped list
+            wrapped = (payload.get(k) for k in ("items", "trades", "data"))
+            payload = next((rows for rows in wrapped if isinstance(rows, list)), [])
+        if not isinstance(payload, list):
+            return []
+        return [row for row in payload if isinstance(row, dict)]
+
     def open_market_order_by_amount(
         self,
         order: TradeOrder,
