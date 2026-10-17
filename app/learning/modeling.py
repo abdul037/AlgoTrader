@@ -170,7 +170,7 @@ class LearningModelService:
             sort_keys=True,
         ).encode()
         uri, digest = self.artifacts.put("lightgbm-challenger.json", artifact)
-        champion = self.repository.champion()
+        champion = self.repository.champion(force_refresh=True)
         model = MetaModelVersion(
             dataset_version_id=dataset.id,
             parent_version_id=champion.id if champion else None,
@@ -189,7 +189,7 @@ class LearningModelService:
         metrics = dict(model.metrics)
         metrics["shadow_sessions"] = self.repository.shadow_sessions_for_model(model_id)
         blockers: list[str] = []
-        champion = self.repository.champion()
+        champion = self.repository.champion(force_refresh=True)
         integrity = self.repository.status_counts()
         checks = (
             (
@@ -274,7 +274,7 @@ class LearningModelService:
             )
         )
         if approved:
-            champion = self.repository.champion()
+            champion = self.repository.champion(force_refresh=True)
             if champion and champion.id != model_id:
                 self.repository.update_model_status(
                     champion.id,
@@ -304,7 +304,7 @@ class LearningModelService:
         )
 
     def rollback_if_unsafe(self) -> ModelPromotionDecision | None:
-        champion = self.repository.champion()
+        champion = self.repository.champion(force_refresh=True)
         if champion is None:
             return None
         integrity = self.repository.status_counts()

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from typing import Any
 
 from app.models.learning import (
@@ -25,6 +27,9 @@ from app.utils.time import utc_now
 class LearningRepository:
     def __init__(self, db: Database):
         self.db = db
+        self._champion_cache: tuple[float, dict[str, Any] | None] | None = None  # (stamp, row)
+        self._champion_generation = 0  # bumped by every model write, under _champion_lock
+        self._champion_lock = threading.Lock()
 
     def record_decision(self, item: DecisionSnapshot) -> DecisionSnapshot:
         with self.db.connect() as connection:
@@ -313,7 +318,7 @@ class LearningRepository:
         return item
 
     def record_model(self, item: MetaModelVersion) -> MetaModelVersion:
-        self._insert_model(
+        self._write_model_version(
             """
             INSERT INTO learning_meta_model_versions (
                 id, dataset_version_id, parent_version_id, model_type, status,
@@ -338,11 +343,10 @@ class LearningRepository:
         return item
 
     def update_model_status(self, model_id: str, *, status: str, deployment_mode: str) -> None:
-        with self.db.connect() as connection:
-            connection.execute(
-                "UPDATE learning_meta_model_versions SET status = ?, deployment_mode = ? WHERE id = ?",
-                (status, deployment_mode, model_id),
-            )
+        self._write_model_version(
+            "UPDATE learning_meta_model_versions SET status = ?, deployment_mode = ? WHERE id = ?",
+            (status, deployment_mode, model_id),
+        )
 
     def get_model(self, model_id: str) -> MetaModelVersion | None:
         return self._one(
@@ -351,16 +355,47 @@ class LearningRepository:
             self._model,
         )
 
-    def champion(self) -> MetaModelVersion | None:
-        return self._one(
-            """
-            SELECT * FROM learning_meta_model_versions
-            WHERE status = 'champion' AND deployment_mode IN ('paper','live')
-            ORDER BY created_at DESC LIMIT 1
-            """,
-            (),
-            self._model,
-        )
+    _CHAMPION_TTL_SECONDS = 60.0
+
+    def champion(self, *, force_refresh: bool = False) -> MetaModelVersion | None:
+        """The serving champion. Its row is cached for 60 s (2026-10-17: the scan read it two or
+        three times per decision, from a table with 0 rows); a cached "none" expires the same way.
+
+        Every model write through this repository drops the cache at once. A write by another
+        process (a separate learning worker or cron) shows within 60 s, so callers that decide
+        a model write or report the champion pass ``force_refresh``."""
+
+        cached = None if force_refresh else self._champion_cache
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < self._CHAMPION_TTL_SECONDS:
+            row = cached[1]
+        else:
+            generation = self._champion_generation
+            row = self._one(
+                """
+                SELECT * FROM learning_meta_model_versions
+                WHERE status = 'champion' AND deployment_mode IN ('paper','live')
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (),
+                dict,
+            )
+            # A model write landing while the SELECT ran makes its row stale: use it, don't keep it.
+            with self._champion_lock:
+                if generation == self._champion_generation:
+                    self._champion_cache = (now, row)
+        return None if row is None else self._model(row)  # a new object per call, as before
+
+    def _write_model_version(self, query: str, values: tuple[Any, ...]) -> None:
+        """Every write to the model table: it can change the champion, so the cache goes."""
+
+        try:
+            with self.db.connect() as connection:
+                connection.execute(query, values)
+        finally:  # committed or not (a lost COMMIT reply), never keep the old champion
+            with self._champion_lock:
+                self._champion_generation += 1
+                self._champion_cache = None
 
     def list_models(self, *, limit: int = 200) -> list[MetaModelVersion]:
         return self._many(
@@ -548,7 +583,7 @@ class LearningRepository:
                 "excessive_drift": "SELECT COUNT(*) FROM learning_drift_snapshots WHERE excessive = 1",
             }.items():
                 result[key] = int(connection.execute(query).fetchone()[0])
-        champion = self.champion()
+        champion = self.champion(force_refresh=True)
         result["active_model_version"] = champion.id if champion else None
         result["model_deployment_mode"] = champion.deployment_mode if champion else "shadow"
         result["review_cost_today_usd"] = self.usage_cost_since(utc_now().date().isoformat())
