@@ -24,8 +24,47 @@ These are permanent guardrails, not goals:
 
 ---
 
-## Current status (as of 2026-09-07)
+## Current status (as of 2026-09-13)
 
+- **Three sessions lost to a persisted kill switch (Thu 2026-09-10 13:06 → Sun 09-13).**
+  A pre-market duplicate flatten of the unprotected GOOGL share was rejected by Alpaca
+  (shares already held by the first flatten), reconciliation recorded it as
+  `missing_bracket_protection`, the circuit breaker tripped, and the kill switch sat in
+  `runtime_state` with nothing to clear it: Thu/Fri 0 proposals, 0 trades. The boot-time
+  funnel preflight shipped that morning exposed the blocker in `run_logs`. Fixed in
+  `2efc6de`: a position with a live reducing order is "closing in flight" (no re-flatten,
+  no issue); a qty-held rejection is deferred, not a breaker; and a **paper-only
+  self-healing loop** re-probes reconciliation every 10 min while the breaker is tripped
+  and resumes once clean (max 3/day, never over an operator pause / manual kill switch /
+  `KILL_SWITCH_ENABLED` / account mismatch / real trading). Lesson recorded: any safety
+  state that persists across deploys needs an owner that clears it, or the unattended
+  bot dies silently. Details: `OPS_LOG.md` 2026-09-13.
+- **🎉 FIRST AUTONOMOUS PAPER TRADE (2026-09-08 17:00:50 UTC).** GOOGL buy 1 @ $338.75,
+  `opening_range_breakout_retest`, Alpaca paper bracket (stop $333.24 / target $349.39),
+  reconciliation clean. The unattended pipeline is end-to-end proven: scan → near-miss /
+  weak-valid promotion → auto-approval → execution queue → broker bracket → fill →
+  reconciliation. Stage 1 (live track record) has begun. Also surfaced: the $500
+  per-trade cap blocks any stock over $500/share (AMD attempt failed
+  `one_share_exceeds_max_trade_amount`) — operator decision pending. Ledger: `OPS_LOG.md`.
+- **Same day, two more funnel fixes (2026-09-08 pm).** (1) Per-trade sizing raised to
+  $1,000 (default + cap) so >$500/share names can trade as one share. (2) The internal
+  P&L ledger now mirrors real Alpaca-paper fills (`app/paper/broker_ledger.py`), so
+  equity curve / EOD digest / scorecard see broker-backed trades; verified with GOOGL.
+  (3) `ALLOWED_INSTRUMENTS` aligned to the 25-name universe — it had silently rejected
+  17 of 19 promoted candidates at the proposal step. Expect materially more paper
+  trades from Wed 2026-09-09.
+- **Aggressive paper plan APPROVED (2026-09-08 19:25 UTC) and the measurement tool
+  fixed.** Operator approved: 1% equity risk per trade with risk-based sizing (was a
+  flat $1,000 that risked ~$5), $12,500 per-position cap, 8 open positions, 15
+  trades/day, $3,000 daily / $8,000 weekly loss stops, cooldown after 4 consecutive
+  losses, drawdown governor on (halves size past 5%). Hard gates unchanged. Same
+  session, P0 found and fixed: the walk-forward backtester had recorded **zero trades
+  in 1.2M runs** because each fold evaluated ~10 bars with no indicator warm-up — no
+  strategy ever had a measured expectancy. Folds now carry train-bar warm-up
+  (`trade_window_start`). Target: ranked per-strategy expectancy for the 25-name
+  universe within 48h, then concentrate on the top 3–4 and add 5m/15m timeframes.
+  Real-money readiness gate (60 days, 100 trades, Sharpe ≥ 1.5, drawdown ≤ 8%,
+  positive expectancy) stays the bar for any live decision.
 - **Review-team bots wired on (2026-09-07).** The QA/Strategy/Trader/PM review workflow
   had been silently skipping for weeks due to a chain of three issues, all now fixed:
   (1) no open PR (the workflow only triggers on `pull_request`) — opened PR #31;
@@ -56,6 +95,37 @@ These are permanent guardrails, not goals:
   booted clean; 0 scheduler errors, events flowing, paper-safe (`enable_real_trading:
   false`, `execution_mode: paper`), near-miss auto-exec on. **0 trades today** — the bot
   was down for the whole morning session; watching for the first trade into the afternoon.
+- **EOD Mon 2026-09-07: 0 autonomous trades.** Infra was healthy 16:50–19:38 UTC; 60
+  promotion attempts, all stopped at hard gates. Dominant blockers were `quote_too_old`
+  (64) and `spread_too_wide` (67) — both artifacts of the single-venue IEX feed (stale
+  last-quote timestamps and IEX-only spreads), not of the strategies. Investigated and
+  rejected "re-fetch the quote before the promotion check": the quote is already fetched
+  immediately before `_market_data_status` (`service_scan.py`), so a re-fetch returns the
+  same stale IEX quote. Applied instead: `MARKET_UNIVERSE_SYMBOLS` trimmed to 25
+  IEX-liquid mega-caps (Railway var) so the scan spends its budget where IEX quotes are
+  fresh and tight. Structural fix remains an operator decision: paid SIP/NBBO feed.
+- **SECOND SILENT STOP (Mon 19:38 → Tue 2026-09-08 12:51 UTC).** Setting the universe
+  variable triggered a Railway redeploy that SIGTERM'd the running container and never
+  started a replacement (the replacement deploy never appeared in the deployment list;
+  `environment-status` showed the service with no deployment). The `ALWAYS` restart
+  policy did not help — it restarts a crashed container, not a deploy that never came
+  up. Market had closed 22 min later so no session was lost, but this is the same
+  failure shape as the 2-day outage. Recovered with a manual `redeploy` at 12:51 UTC
+  before Tuesday's open. Rule from now on: after ANY Railway variable change or push,
+  verify a new deployment reaches SUCCESS and `run_logs` resumes — never assume.
+- **CORRECTION (2026-09-08): Mon 2026-09-07 was Labor Day — the market was closed.**
+  All 72 promotion attempts that day carried `quote_too_old`, and recorded spreads
+  were a single frozen Friday quote (AAPL 1023.6 bps, identical for 20 hours). The
+  Monday "blocker" analysis above (quote_too_old / spread_too_wide as IEX artifacts)
+  is therefore void for that day: nothing could have traded. The fixed system has
+  not yet run through an open market; Tue 2026-09-08 13:30 UTC is the first real
+  test. No gates were changed. Also found: the effective auto-exec score floor in
+  the active exploration profile is `PAPER_EXPLORATION_AUTO_EXECUTION_MIN_SCORE=0.15`
+  (typo, effectively open), so `AUTO_EXECUTION_MIN_SCORE` is not the binding gate.
+  Action ledger from now on: `OPS_LOG.md`.
+- **Ops dashboard published (2026-09-07):** a private Claude artifact "AlgoTrader Ops"
+  (blockers chart, shipped ledger, what's next, bots table, where work is recorded).
+  Snapshot, not live; regenerate on request.
 - **Operator follow-up still open:** point `DATABASE_URL` at the Supabase **transaction
   pooler (port 6543)** (same string, `:5432`→`:6543`). The statement-timeout fix stops the
   pool from wedging; 6543 removes the failure class entirely. Needs the DB password

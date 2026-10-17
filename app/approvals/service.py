@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.broker.etoro_client import BrokerClient
+from app.broker.etoro_live_room import room_verdict
 from app.config import AppSettings
 from app.models.approval import ApprovalDecisionRequest, ApprovalStatus, TradeProposal, TradeProposalCreate
 from app.models.trade import TradeOrder
@@ -41,7 +42,9 @@ class ProposalService:
 
         order = self._prepare_order(request.to_order())
         risk_context = self._risk_context()
-        risk = self.risk_manager.validate_order(order, risk_context)
+        # Option 3: the live eToro account decides room for orders it would copy.
+        room = room_verdict(getattr(self, "etoro_live_mirror", None), order, signal=request.signal)
+        risk = self.risk_manager.validate_order(order, risk_context, etoro_room=room)
         if not risk.passed:
             raise ValueError("; ".join(risk.reasons))
 
@@ -63,6 +66,7 @@ class ProposalService:
                 "symbol": proposal.order.symbol,
                 "risk_pct_of_balance": risk.risk_pct_of_balance,
                 "risk_amount_usd": risk.risk_amount_usd,
+                "room_authority": risk.room_authority,
             },
         )
         return proposal

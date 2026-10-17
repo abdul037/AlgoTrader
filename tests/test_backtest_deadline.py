@@ -115,3 +115,53 @@ def test_run_start_offset_wraps_modulo_universe_size() -> None:
     _service(record).run(symbols=["A", "B", "C", "D"], timeframes=["1d"], start_offset=6)
 
     assert seen == ["C", "D", "A", "B"]
+
+
+def _unit_service(monkeypatch, clock_values):
+    from app.backtesting import batch as batch_mod
+
+    monkeypatch.setattr(
+        batch_mod,
+        "strategy_specs_for",
+        lambda settings, timeframe, requested: [SimpleNamespace(name=f"{timeframe}-s{i}") for i in (1, 2, 3)],
+    )
+    monkeypatch.setattr(batch_mod, "strategy_kwargs_for", lambda settings, spec: {})
+    monkeypatch.setattr(batch_mod, "get_strategy", lambda name, **kw: SimpleNamespace(name=name))
+    monkeypatch.setattr(batch_mod, "leakage_tripwire_triggered", lambda summary: (False, ""))
+    clock = iter(clock_values)
+    monkeypatch.setattr(batch_mod.time, "monotonic", lambda: next(clock, 1e9))
+    ran: list[str] = []
+    service = BatchBacktestService(
+        settings=SimpleNamespace(primary_market_data_provider="test", max_risk_per_trade_pct=1.0),
+        market_data_engine=SimpleNamespace(get_history=lambda *a, **k: SimpleNamespace(copy=lambda: None)),
+        backtest_repository=None,
+        run_log_repository=SimpleNamespace(log=lambda *a, **k: None),
+    )
+
+    def fake_run(**kw):
+        ran.append(kw["strategy"].name)
+        return {"strategy_name": kw["strategy"].name, "annualized_return_pct": 0.0}
+
+    monkeypatch.setattr(service, "_run_strategy", fake_run)
+    return service, ran
+
+
+def test_mid_symbol_stop_reports_resume_point_and_resumes_there(monkeypatch) -> None:
+    # 2026-10-03: one symbol's intraday sweep (strategies x variants) exceeds a
+    # pass's deadline; advancing by whole symbols would never reach its later
+    # strategies. Pass 1: started_at, symbol-top, then units 1-4 under budget, 5th trips.
+    service, ran = _unit_service(monkeypatch, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 100.0])
+    first = service.run(symbols=["ONLY"], timeframes=["1d", "5m"], deadline_seconds=50.0)
+    assert ran == ["1d-s1", "1d-s2", "1d-s3", "5m-s1"]
+    assert first.stopped_mid_symbol and first.resume_unit == 4
+
+    service, ran = _unit_service(monkeypatch, [0.0] * 20)
+    second = service.run(symbols=["ONLY"], timeframes=["1d", "5m"], deadline_seconds=50.0, start_unit=4)
+    assert ran == ["5m-s2", "5m-s3"]
+    assert not second.stopped_mid_symbol
+
+
+def test_stop_before_first_unit_is_still_mid_symbol(monkeypatch) -> None:
+    service, ran = _unit_service(monkeypatch, [0.0, 0.0, 100.0])
+    summary = service.run(symbols=["ONLY"], timeframes=["5m"], deadline_seconds=50.0)
+    assert ran == [] and summary.stopped_mid_symbol and summary.resume_unit == 0

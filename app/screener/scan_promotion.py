@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from app.broker import crypto as crypto_symbols
 from app.models.signal import Signal, SignalAction
 from app.runtime_settings import DEFAULT_PAPER_NEAR_MISS_ALLOWED_REASONS
 from app.screener.filters import FilterOutcome
@@ -24,6 +25,7 @@ from app.screener.profiles import (
     paper_exploration_profile_enabled,
 )
 from app.utils.time import utc_now
+
 
 def _is_unattended_paper_exploration(settings: Any) -> bool:
     """True when the bot is running fully autonomous paper exploration.
@@ -247,7 +249,15 @@ def _weak_valid_symbol_blockers(service: Any, symbol: str) -> list[str]:
         except Exception:  # noqa: BLE001
             blockers.append("symbol_blacklist_check_failed")
     alpaca = getattr(auto_trading, "alpaca", None)
-    if alpaca is not None and hasattr(alpaca, "is_supported_equity"):
+    if crypto_symbols.is_crypto_symbol(normalized):
+        # Crypto trades on Alpaca 24/7; check crypto support, not equity support.
+        if alpaca is not None and hasattr(alpaca, "is_supported_crypto"):
+            try:
+                if not bool(alpaca.is_supported_crypto(normalized)):
+                    blockers.append("unsupported_crypto")
+            except Exception:  # noqa: BLE001
+                blockers.append("unsupported_crypto_check_failed")
+    elif alpaca is not None and hasattr(alpaca, "is_supported_equity"):
         try:
             if not bool(alpaca.is_supported_equity(normalized)):
                 blockers.append("unsupported_equity")

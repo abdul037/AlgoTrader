@@ -237,6 +237,7 @@ def create_app(
             etoro_client=broker,
             broker_for_equities=app_settings.broker_for_equities,
             broker_for_non_equities=app_settings.broker_for_non_equities,
+            broker_for_crypto=app_settings.broker_for_crypto,
         )
     if market_data_client is None:
         from app.broker.etoro_market_data import EtoroMarketDataClient
@@ -452,6 +453,18 @@ def create_app(
         parallel_broker_service=app.state.parallel_broker_comparison_service,
         learning_service=app.state.learning_service,
     )
+    from app.broker.etoro_live_mirror import EtoroLiveMirrorService, build_live_client
+
+    app.state.execution_coordinator.etoro_live_mirror = EtoroLiveMirrorService(
+        settings=app_settings,
+        client=build_live_client(app_settings),
+        runtime_state=runtime_state_repository,
+        run_logs=run_log_repository,
+        notifier=app.state.telegram_notifier,
+    )
+    from app.broker.etoro_live_guard import attach_live_guard
+
+    attach_live_guard(app.state.execution_coordinator, settings=app_settings, bars=getattr(alpaca_client, "get_bars", None), paper=alpaca_client)
     app.state.safety_state_repository = safety_state_repository
     app.state.broker_order_repository = broker_order_repository
     app.state.broker_position_repository = broker_position_repository
@@ -610,10 +623,12 @@ def create_app(
                 limit = app_settings.backtest_scheduler_symbol_limit or None
                 universe_size = len(resolve_universe(app_settings, limit=limit))
                 cursor_key = "backtest_gate_refresh:cursor"
+                unit_key = "backtest_gate_refresh:unit"
                 try:
                     cursor = int(runtime_state_repository.get(cursor_key) or "0")
+                    unit = int(runtime_state_repository.get(unit_key) or "0")
                 except (TypeError, ValueError):
-                    cursor = 0
+                    cursor, unit = 0, 0
                 summary = app.state.batch_backtest_service.run(
                     timeframes=list(app_settings.backtest_scheduler_timeframes) or ["1d"],
                     limit=limit,
@@ -622,11 +637,17 @@ def create_app(
                         float(app_settings.backtest_scheduler_deadline_seconds), 1.0
                     ),
                     start_offset=cursor,
+                    start_unit=unit,
                 )
                 covered = int(getattr(summary, "symbols_evaluated", 0) or 0)
+                mid_symbol = bool(getattr(summary, "stopped_mid_symbol", False))
+                resume = int(getattr(summary, "resume_unit", 0) or 0) if mid_symbol else 0
                 if universe_size > 0:
-                    next_cursor = (cursor + max(covered, 1)) % universe_size
+                    # Stopped mid-symbol: stay on it and resume at that strategy.
+                    advance = covered - 1 if mid_symbol else max(covered, 1)
+                    next_cursor = (cursor + advance) % universe_size
                     runtime_state_repository.set(cursor_key, str(next_cursor))
+                    runtime_state_repository.set(unit_key, str(resume))
 
             jobs.append(
                 ScheduledJob(
@@ -646,6 +667,7 @@ def create_app(
             stale_restart_seconds=max(int(app_settings.scheduler_self_heal_stale_seconds), 1),
             monitor_interval_seconds=max(int(app_settings.scheduler_self_heal_check_seconds), 1),
             default_job_timeout_seconds=max(int(app_settings.scheduler_job_timeout_seconds), 1),
+            overlap_grace_seconds=float(app_settings.scheduler_overlap_grace_seconds),
         )
 
     app.state.build_scheduler_worker = _build_scheduler_worker
@@ -721,6 +743,7 @@ def create_app(
         worker = app.state.build_scheduler_worker()
         worker.start()
         app.state.scheduler_worker = worker
+        app.state.execution_coordinator.etoro_live_guard.start()  # backup stops, every minute
         logger.info(
             "Scheduler worker started with %d jobs", len(worker.jobs)
         )
@@ -736,6 +759,30 @@ def create_app(
             )
         except Exception as exc:  # noqa: BLE001 - observability must not break boot
             logger.exception("Failed to log effective execution policy: %s", exc)
+
+        # End-to-end funnel preflight: with THIS configuration, can a candidate
+        # for each universe symbol reach the broker? Logs the first blocker per
+        # symbol so a config mismatch is visible before the open, not after a
+        # lost session. Diagnostic only; never blocks boot.
+        try:
+            from app.automation.funnel_preflight import run_funnel_preflight
+
+            report = run_funnel_preflight(
+                app_settings,
+                automation=app.state.automation_service,
+                alpaca=app.state.alpaca_client,
+            )
+            run_log_repository.log("funnel_preflight", report)
+            if report["global_blockers"] or report["blocked_symbols"]:
+                logger.warning(
+                    "Funnel preflight: %s/%s symbols open, global=%s, blockers=%s",
+                    report["open_symbols"],
+                    report["universe_size"],
+                    report["global_blockers"],
+                    report["blocker_histogram"],
+                )
+        except Exception as exc:  # noqa: BLE001 - observability must not break boot
+            logger.exception("Funnel preflight failed: %s", exc)
 
         # Real-time order fill/exit stream (optional; sweep is the backstop).
         if (
@@ -761,6 +808,7 @@ def create_app(
     def shutdown_tasks() -> None:
         worker = getattr(app.state, "scheduler_worker", None)
         if worker is not None:
+            app.state.execution_coordinator.etoro_live_guard.stop()  # before the scheduler
             worker.stop()
         stream = getattr(app.state, "alpaca_trade_stream", None)
         if stream is not None:

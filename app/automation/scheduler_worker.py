@@ -49,6 +49,12 @@ class ScheduledJob:
     last_run_at: datetime | None = field(default=None, init=False)
     last_error: str | None = field(default=None, init=False)
     run_count: int = field(default=0, init=False)
+    # A run that overran its timeout keeps going on its abandoned daemon thread. While
+    # it is alive the job is not started again, so two runs never overlap (2026-10-09:
+    # 21 of 52 timed-out cadence runs overlapped the next one, incl. 5 eToro LIVE entries).
+    overrun_thread: Thread | None = field(default=None, init=False, repr=False)
+    overrun_since: datetime | None = field(default=None, init=False, repr=False)
+    overrun_reported: bool = field(default=False, init=False, repr=False)
 
     def is_due(self, now: datetime) -> bool:
         if self.last_run_at is None:
@@ -71,8 +77,12 @@ class SchedulerWorker:
         stale_restart_seconds: float = 300.0,
         monitor_interval_seconds: float = 30.0,
         default_job_timeout_seconds: float | None = None,
+        overlap_grace_seconds: float = 120.0,
     ) -> None:
         self.jobs: list[ScheduledJob] = list(jobs)
+        # How long a timed-out job's still-running thread blocks its next run; <= 0
+        # restores the old behaviour (the next run starts beside it).
+        self.overlap_grace_seconds = float(overlap_grace_seconds or 0.0)
         self.runtime_state = runtime_state
         self.run_logs = run_logs
         self.tick_interval_seconds = max(float(tick_interval_seconds), 1.0)
@@ -225,7 +235,7 @@ class SchedulerWorker:
         now = now or self._clock()
         ran: list[str] = []
         for job in self.jobs:
-            if not job.is_due(now):
+            if not job.is_due(now) or self._previous_run_alive(job, now):
                 continue
             ran.append(job.name)
             # Refresh liveness before each job so a tick that runs several jobs
@@ -237,7 +247,7 @@ class SchedulerWorker:
             self._mark_alive(self._clock())
             timeout = job.timeout_seconds or self.default_job_timeout_seconds
             try:
-                self._invoke_job(job.func, timeout)
+                self._invoke_job(job.func, timeout, job=job)
                 job.last_error = None
             except Exception as exc:  # noqa: BLE001 - isolation is the whole point
                 job.last_error = f"{type(exc).__name__}: {exc}"
@@ -249,7 +259,37 @@ class SchedulerWorker:
         self._heartbeat(self._clock())
         return ran
 
-    def _invoke_job(self, func: Callable[[], Any], timeout: float | None) -> None:
+    def _previous_run_alive(self, job: ScheduledJob, now: datetime) -> bool:
+        """True while an abandoned (timed-out) run of ``job`` is still running.
+
+        The job then waits instead of starting a second, overlapping run. The wait is
+        capped at ``overlap_grace_seconds`` (120 s): a thread still alive by then is
+        presumed hung on a blocking call, and the job resumes beside it, as before.
+        The cap bounds how long the next maintenance (reconciliation, the intraday
+        flatten) can be held back.
+        """
+
+        thread = job.overrun_thread
+        if thread is None:
+            return False
+        waited = (now - job.overrun_since).total_seconds() if job.overrun_since else 0.0
+        payload = {"job": job.name, "seconds_after_timeout": round(waited, 1)}
+        if not thread.is_alive():
+            job.overrun_thread = None
+            self._log("scheduler_job_overrun_finished", payload)
+            return False
+        if waited >= self.overlap_grace_seconds:
+            job.overrun_thread = None
+            self._log("scheduler_job_overrun_presumed_hung", payload)
+            return False
+        if not job.overrun_reported:
+            job.overrun_reported = True
+            self._log("scheduler_job_overlap_skipped", payload)
+        return True
+
+    def _invoke_job(
+        self, func: Callable[[], Any], timeout: float | None, *, job: ScheduledJob | None = None
+    ) -> None:
         """Run ``func``, enforcing a wall-clock ``timeout`` when one is set.
 
         Runs on the calling thread when no timeout applies (cheap, and what tests
@@ -273,6 +313,12 @@ class SchedulerWorker:
         worker.start()
         worker.join(float(timeout))
         if worker.is_alive():
+            if job is not None and self.overlap_grace_seconds > 0:
+                job.overrun_thread, job.overrun_since, job.overrun_reported = (
+                    worker,
+                    self._clock(),
+                    False,
+                )
             raise TimeoutError(f"job exceeded {timeout:.0f}s wall-clock timeout")
         error = box.get("error")
         if error is not None:
@@ -321,6 +367,14 @@ class SchedulerWorker:
             except Exception:  # noqa: BLE001 - logging must never break the loop
                 logger.debug("scheduler worker could not record run log", exc_info=True)
 
+    def _log(self, event: str, payload: dict[str, Any]) -> None:
+        if self.run_logs is None:
+            return
+        try:
+            self.run_logs.log(event, payload)
+        except Exception:  # noqa: BLE001 - logging must never break the loop
+            logger.debug("scheduler worker could not log %s", event, exc_info=True)
+
     def _persist(self, key: str, value: str) -> None:
         if self.runtime_state is None:
             return
@@ -352,6 +406,7 @@ class SchedulerWorker:
                     "run_count": job.run_count,
                     "last_run_at": job.last_run_at.isoformat() if job.last_run_at else None,
                     "last_error": job.last_error,
+                    "overrun_running": bool(job.overrun_thread and job.overrun_thread.is_alive()),
                 }
                 for job in self.jobs
             ],

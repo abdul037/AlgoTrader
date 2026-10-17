@@ -378,7 +378,7 @@ class ExecutionRepository:
             filled_at = next(
                 (
                     leg.get("filled_at")
-                    for leg in list(broker_execution.get("legs") or [])
+                    for leg in [*(broker_execution.get("legs") or []), dict(payload.get("exit_fill") or {})]
                     if str(leg.get("status") or "").lower() == "filled" and leg.get("filled_at")
                 ),
                 row["updated_at"],
@@ -647,15 +647,15 @@ class BacktestRepository:
         """Average backtest ``expectancy_usd`` per strategy across recent runs.
 
         The live-vs-backtest decay monitor compares a strategy's live paper
-        expectancy against this baseline. Averaged across the strategy's backtest
-        rows (all symbols) so a single symbol's run does not define the baseline.
+        expectancy against this baseline, averaged over walk-forward OOS
+        aggregate rows (all symbols). Legacy per-fold rows are excluded.
         """
 
         with self.db.connect() as connection:
             rows = connection.execute(
                 "SELECT strategy_name, metrics_json FROM backtests "
-                "ORDER BY completed_at DESC LIMIT ?",
-                (max(limit, 1),),
+                "WHERE file_path LIKE ? ORDER BY completed_at DESC LIMIT ?",
+                ("%:walk_forward_oos", max(limit, 1)),
             ).fetchall()
         buckets: dict[str, list[float]] = {}
         for row in rows:

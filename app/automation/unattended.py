@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import suppress
 from typing import Any
 
 from app.automation.reliability import (
@@ -10,6 +11,7 @@ from app.automation.reliability import (
     auto_approval_tier_blockers,
     proposal_quality_label,
 )
+from app.broker import crypto as crypto_symbols
 from app.models.approval import ApprovalDecisionRequest
 from app.models.execution import ExecutionStatus
 from app.screener.profiles import effective_auto_execution_min_score
@@ -91,7 +93,14 @@ class PaperAutoTradingService:
         regular_hours_required = bool(getattr(self.settings, "auto_execution_regular_hours_only", True))
         if paper_exploration:
             regular_hours_required = bool(getattr(self.settings, "paper_exploration_require_regular_hours", True))
-        if regular_hours_required and (
+        # Crypto trades 24/7, so it is exempt from the regular-hours gate (and
+        # only that gate). Every other hard gate still applies to crypto.
+        is_crypto = (
+            bool(getattr(self.settings, "crypto_trading_enabled", False))
+            and bool(getattr(self.settings, "crypto_regular_hours_exempt", True))
+            and crypto_symbols.is_crypto_symbol(symbol)
+        )
+        if regular_hours_required and not is_crypto and (
             self.alpaca is None or not self.alpaca.is_regular_market_open()
         ):
             blockers.append("outside_regular_market_hours")
@@ -170,6 +179,15 @@ class PaperAutoTradingService:
             and not self._paper_exploration_strategy_approved(strategy)
         ):
             blockers.append("strategy_not_production_approved")
+        # Phase 2: only strategies with pooled out-of-sample evidence create
+        # proposals (when enabled); the rest stay scanned/tracked as shadow signals.
+        from app.performance.strategy_evidence import evidence_blocker
+
+        evidence = evidence_blocker(
+            self.settings, self.runtime_state, strategy=strategy, timeframe=getattr(candidate, "timeframe", None)
+        )
+        if strategy and evidence:
+            blockers.append(evidence)
         return blockers
 
     def _paper_exploration_strategy_approved(self, strategy: str) -> bool:
@@ -279,7 +297,10 @@ class PaperAutoTradingService:
             return None
         try:
             return list(self.paper_trading.lifecycles(limit=1000))
-        except Exception:  # noqa: BLE001 - lack of evidence must block auto, not crash scans
+        except Exception as exc:  # noqa: BLE001 - lack of evidence must block auto, not crash scans
+            if self.logs is not None:
+                with suppress(Exception):
+                    self.logs.log("paper_lifecycle_evidence_unavailable", {"error": str(exc)[:300]})
             return None
 
     def process_ready_queue(self) -> list[Any]:

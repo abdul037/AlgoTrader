@@ -32,6 +32,11 @@ import pandas as pd
 from pydantic import BaseModel, Field
 
 from app.backtesting.cost_model import CostModel, is_extended_hours
+from app.backtesting.intraday import (
+    floored_stop_and_target,
+    last_bar_of_session,
+    session_atr_by_bar,
+)
 from app.backtesting.metrics import (
     DAILY_BARS_PER_YEAR,
     compute_expectancy,
@@ -39,6 +44,7 @@ from app.backtesting.metrics import (
     compute_sharpe_like,
     summarize_trades,
 )
+from app.indicators import precomputed_indicators
 from app.storage.repositories import BacktestRepository
 from app.strategies.base import valid_trade_plan
 from app.utils.ids import generate_id
@@ -75,6 +81,12 @@ class EngineConfig:
     cost_model: CostModel = field(default_factory=CostModel)
     allow_extended_hours: bool = False
     """When False, fills outside 09:30-16:00 ET are dropped entirely."""
+    flatten_at_session_end: bool = False
+    """Intraday only: close at the last bar of each session and take no entry on
+    it, mirroring the live close-before-the-bell rule."""
+    min_stop_session_atr_multiple: float = 0.0
+    """Intraday only: widen a stop to at least this many prior-session ATRs below
+    the fill (target widened to keep the signal's R:R). 0 = off."""
 
 
 class BacktestResult(BaseModel):
@@ -112,10 +124,24 @@ class BacktestEngine:
         file_path: str,
         initial_cash: float | None = None,
         config: EngineConfig | None = None,
+        trade_window_start: Any | None = None,
     ) -> BacktestResult:
+        """Run ``strategy`` over ``data``.
+
+        ``trade_window_start`` lets a caller pass warm-up history (bars the
+        strategy's indicators need) without evaluating it: bars before that
+        timestamp are fed to the strategy as context only — no signals, no
+        entries, no equity points — so metrics and ``bars_evaluated`` describe
+        just the window from ``trade_window_start`` on. Walk-forward folds rely
+        on this: a 14-day test fold on its own is ~10 daily bars, which is below
+        every strategy's indicator warm-up, so without warm-up context no fold
+        could ever produce a trade.
+        """
+
         run_config = config or self.config
         if initial_cash is not None:
             run_config = _override_cash(run_config, initial_cash)
+        window_start = _ensure_utc(pd.Timestamp(trade_window_start)) if trade_window_start is not None else None
 
         started_at = utc_now().isoformat()
         normalized = _normalize_data(data)
@@ -132,63 +158,102 @@ class BacktestEngine:
         # one bar short of the end for new entries, and hard-closes any open
         # trade at the last bar's close as end-of-data.
         total_bars = len(normalized)
-        for index in range(total_bars):
-            bar = normalized.iloc[index]
-            bar_time = _ensure_utc(bar["timestamp"])
-            window = normalized.iloc[: index + 1]
+        intraday = run_config.bars_per_year > DAILY_BARS_PER_YEAR
+        session_ends = last_bar_of_session(normalized["timestamp"]) if intraday and run_config.flatten_at_session_end else []
+        session_atr = (
+            session_atr_by_bar(normalized) if intraday and run_config.min_stop_session_atr_multiple > 0 else []
+        )
+        with precomputed_indicators(normalized):
+            for index in range(total_bars):
+                bar = normalized.iloc[index]
+                bar_time = _ensure_utc(bar["timestamp"])
+                if window_start is not None and bar_time < window_start:
+                    # Warm-up context only: visible to the strategy through
+                    # ``window`` on later bars, never evaluated itself.
+                    continue
+                window = normalized.iloc[: index + 1]
 
-            # Generate the signal from data available THROUGH this bar's close.
-            signal = strategy.generate_signal(window, symbol)
+                # Generate the signal from data available THROUGH this bar's close.
+                signal = strategy.generate_signal(window, symbol)
 
-            # --- Exit handling for a currently open trade. -------------------
-            if open_trade is not None:
-                exit_action = _evaluate_exit(
-                    open_trade=open_trade,
-                    bar=bar,
-                    signal=signal,
-                    bar_index=index,
-                    total_bars=total_bars,
-                    next_bar=_maybe_next_bar(normalized, index),
-                    cost_model=run_config.cost_model,
-                    allow_extended_hours=run_config.allow_extended_hours,
-                    bars_per_year=run_config.bars_per_year,
-                )
-                if exit_action is not None:
+                # --- Exit handling for a currently open trade. -------------------
+                if open_trade is not None:
+                    exit_action = _evaluate_exit(
+                        open_trade=open_trade,
+                        bar=bar,
+                        signal=signal,
+                        bar_index=index,
+                        total_bars=total_bars,
+                        next_bar=_maybe_next_bar(normalized, index),
+                        cost_model=run_config.cost_model,
+                        allow_extended_hours=run_config.allow_extended_hours,
+                        bars_per_year=run_config.bars_per_year,
+                    )
+                    if exit_action is not None:
+                        realized, cost_event, trade_record, warning = _close_trade(
+                            open_trade=open_trade,
+                            exit_price=exit_action.fill_price,
+                            exit_time=exit_action.fill_time,
+                            exit_timestamp_raw=exit_action.fill_timestamp_raw,
+                            exit_reason=exit_action.reason,
+                            cost_model=run_config.cost_model,
+                        )
+                        # ``realized`` is the net proceeds of the *position*; the
+                        # uninvested balance was already netted out at entry. Adding
+                        # (not assigning) keeps that balance — assigning silently
+                        # discarded it on every partial-size trade.
+                        cash += realized
+                        trades.append(trade_record)
+                        cost_events.append(cost_event)
+                        if warning:
+                            warnings.append(warning)
+                        open_trade = None
+
+                at_session_end = bool(session_ends) and session_ends[index]
+                if open_trade is not None and at_session_end:
+                    exit_price = run_config.cost_model.exit_fill_price(float(bar["close"]), side=open_trade.side, extended_hours=False)
                     realized, cost_event, trade_record, warning = _close_trade(
                         open_trade=open_trade,
-                        exit_price=exit_action.fill_price,
-                        exit_time=exit_action.fill_time,
-                        exit_timestamp_raw=exit_action.fill_timestamp_raw,
-                        exit_reason=exit_action.reason,
+                        exit_price=exit_price,
+                        exit_time=bar_time,
+                        exit_timestamp_raw=bar["timestamp"],
+                        exit_reason="session_close",
                         cost_model=run_config.cost_model,
                     )
-                    cash = realized
+                    cash += realized
                     trades.append(trade_record)
                     cost_events.append(cost_event)
                     if warning:
                         warnings.append(warning)
                     open_trade = None
 
-            # --- Entry handling using next-bar open. -------------------------
-            if open_trade is None and signal is not None and getattr(signal.action, "value", None) == "buy":
-                next_bar = _maybe_next_bar(normalized, index)
-                if next_bar is None:
-                    # Cannot fill without a following bar; drop the signal.
-                    continue
-                entry_attempt = _attempt_entry(
-                    signal=signal,
-                    next_bar=next_bar,
-                    cash=cash,
-                    config=run_config,
-                    fill_bar_index=index + 1,
-                )
-                if entry_attempt is None:
-                    continue
-                open_trade = entry_attempt.open_trade
-                cash = entry_attempt.cash_after_entry
+                # --- Entry handling using next-bar open. -------------------------
+                if (
+                    open_trade is None
+                    and not at_session_end
+                    and signal is not None
+                    and getattr(signal.action, "value", None) == "buy"
+                ):
+                    next_bar = _maybe_next_bar(normalized, index)
+                    if next_bar is None:
+                        # Cannot fill without a following bar; drop the signal.
+                        continue
+                    atr = session_atr[index] if session_atr else None
+                    entry_attempt = _attempt_entry(
+                        signal=signal,
+                        next_bar=next_bar,
+                        cash=cash,
+                        config=run_config,
+                        fill_bar_index=index + 1,
+                        min_stop_distance=(atr * run_config.min_stop_session_atr_multiple) if atr else 0.0,
+                    )
+                    if entry_attempt is None:
+                        continue
+                    open_trade = entry_attempt.open_trade
+                    cash = entry_attempt.cash_after_entry
 
-            equity = _mark_to_market(cash=cash, open_trade=open_trade, bar=bar)
-            equity_curve.append(equity)
+                equity = _mark_to_market(cash=cash, open_trade=open_trade, bar=bar)
+                equity_curve.append(equity)
 
         # Any trade still open at the end of data force-closes at the final close.
         if open_trade is not None and not normalized.empty:
@@ -199,7 +264,7 @@ class BacktestEngine:
                 side=open_trade.side,
                 extended_hours=False,
             )
-            cash, cost_event, trade_record, warning = _close_trade(
+            realized, cost_event, trade_record, warning = _close_trade(
                 open_trade=open_trade,
                 exit_price=exit_price,
                 exit_time=final_time,
@@ -207,6 +272,7 @@ class BacktestEngine:
                 exit_reason="end_of_data",
                 cost_model=run_config.cost_model,
             )
+            cash += realized
             trades.append(trade_record)
             cost_events.append(cost_event)
             if warning:
@@ -396,6 +462,7 @@ def _attempt_entry(
     cash: float,
     config: EngineConfig,
     fill_bar_index: int = -1,
+    min_stop_distance: float = 0.0,
 ) -> _EntryAttempt | None:
     if not valid_trade_plan(
         action=getattr(signal, "action", None),
@@ -414,8 +481,18 @@ def _attempt_entry(
     raw_price = next_open
     fill_price = config.cost_model.entry_fill_price(raw_price, side="buy", extended_hours=extended)
 
+    stop = _coerce_float(getattr(signal, "stop_loss", None))
+    target = _coerce_float(getattr(signal, "take_profit", None))
+    if min_stop_distance > 0 and stop is not None:
+        stop, target = floored_stop_and_target(
+            fill_price=fill_price,
+            signal_price=float(getattr(signal, "price", fill_price) or fill_price),
+            stop=stop,
+            target=target,
+            min_distance=min_stop_distance,
+        )
     quantity = _size_position(
-        signal=signal,
+        stop=stop,
         fill_price=fill_price,
         cash=cash,
         config=config,
@@ -436,8 +513,8 @@ def _attempt_entry(
         entry_price=fill_price,
         quantity=quantity,
         side="buy",
-        stop_loss=_coerce_float(getattr(signal, "stop_loss", None)),
-        take_profit=_coerce_float(getattr(signal, "take_profit", None)),
+        stop_loss=stop,
+        take_profit=target,
         entry_notional=notional,
         entry_spread_usd=max(entry_spread, 0.0),
         entry_bar_index=fill_bar_index,
@@ -466,12 +543,11 @@ def _max_hold_bars(signal: Any) -> int | None:
 
 def _size_position(
     *,
-    signal: Any,
+    stop: float | None,
     fill_price: float,
     cash: float,
     config: EngineConfig,
 ) -> float:
-    stop = _coerce_float(getattr(signal, "stop_loss", None))
     if config.risk_per_trade_pct is None or stop is None or stop <= 0:
         if fill_price <= 0:
             return 0.0

@@ -185,13 +185,16 @@ def aggregate_out_of_sample(
     out-of-sample duration (``fold_count * test_days``).
     """
 
-    from app.backtesting.metrics import compute_max_drawdown, summarize_trades
+    from app.backtesting.metrics import compute_expectancy, compute_max_drawdown, summarize_trades
 
     merged_trades: list[dict] = []
     for fold in per_fold_trades:
         merged_trades.extend(fold)
     fold_count = len(per_fold_metrics)
     combined_metrics = summarize_trades(merged_trades)
+    # summarize_trades has no expectancy; carry it on the aggregate so the
+    # live-vs-backtest decay baseline reads the real OOS result, not fold rows.
+    combined_metrics.update(compute_expectancy(merged_trades))
     combined_metrics["fold_count"] = fold_count
 
     fold_returns = [float(item.get("total_return_pct", 0.0) or 0.0) / 100.0 for item in per_fold_metrics]

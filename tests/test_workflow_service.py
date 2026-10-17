@@ -8,6 +8,7 @@ import pandas as pd
 
 from app.live_signal_schema import LiveSignalSnapshot, MarketQuote, SignalState
 from app.models.screener import ScreenerRunResponse
+from app.workflow.crypto_scan import crypto_scan_due, crypto_scan_symbols, run_crypto_scan
 from app.workflow.operations import auto_propose_candidates
 from app.workflow.service import SignalWorkflowService
 from tests.conftest import make_settings
@@ -511,6 +512,63 @@ def test_maintenance_runs_rl_policy_training_and_proposal_when_enabled(tmp_path)
     assert "rl_policy_proposal_queued" in result.detail
 
 
+def test_crypto_scan_bucket_is_24_7_and_scans_only_crypto(tmp_path) -> None:
+    screener = FakeMarketScreener([])
+    workflow = SignalWorkflowService(
+        settings=make_settings(
+            tmp_path,
+            screener_scheduler_enabled=True,
+            crypto_trading_enabled=True,
+            crypto_symbols=["BTC/USD", "ETH/USD"],
+            crypto_scan_interval_minutes=10,
+            ledger_enabled=False,
+            ledger_cycle_enabled=False,
+        ),
+        market_screener=screener,
+        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="BTC/USD", last_execution=50000.0)),
+        notifier=FakeNotifier(),
+        tracked_signals=FakeTrackedSignals(),
+        alert_history=FakeAlertHistory(),
+        runtime_state=FakeState(),
+        run_logs=FakeLogs(),
+    )
+
+    # Enabled and due out of the box, and never gated on a market day/hour
+    # (the method must not consult is_market_day at all).
+    assert workflow._bucket_enabled("crypto_rotation") is True
+    assert crypto_scan_due(workflow) is True
+    assert crypto_scan_symbols(workflow) == ["BTC/USD", "ETH/USD"]
+
+    run_crypto_scan(workflow, notify=False)
+
+    # The crypto bucket scans crypto only -- never equities.
+    assert screener.calls, "crypto scan should have invoked the screener"
+    scanned = screener.calls[-1]
+    assert set(scanned.get("symbols") or []) == {"BTC/USD", "ETH/USD"}
+
+
+def test_crypto_scan_bucket_disabled_when_crypto_off(tmp_path) -> None:
+    workflow = SignalWorkflowService(
+        settings=make_settings(
+            tmp_path,
+            screener_scheduler_enabled=True,
+            crypto_trading_enabled=False,
+            crypto_symbols=["BTC/USD"],
+            ledger_enabled=False,
+            ledger_cycle_enabled=False,
+        ),
+        market_screener=FakeMarketScreener([]),
+        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="BTC/USD", last_execution=50000.0)),
+        notifier=FakeNotifier(),
+        tracked_signals=FakeTrackedSignals(),
+        alert_history=FakeAlertHistory(),
+        runtime_state=FakeState(),
+        run_logs=FakeLogs(),
+    )
+    assert workflow._bucket_enabled("crypto_rotation") is False
+    assert workflow._bucket_due("crypto_rotation") is False
+
+
 def test_scheduled_tasks_skip_scans_when_automation_paused(tmp_path) -> None:
     screener = FakeMarketScreener([])
     logs = FakeLogs()
@@ -540,28 +598,141 @@ def test_scheduled_tasks_skip_scans_when_automation_paused(tmp_path) -> None:
     assert next(item for item in paused if item.name == "intraday_rotation").last_status == "paused"
 
 
-def test_cadence_soft_budget_keeps_one_batch_inside_the_job_timeout(tmp_path) -> None:
-    # Invariant that prevents the observed workflow_cadence timeout: the last
-    # bucket may start just before the soft budget and run to its own batch
-    # deadline, and that must still finish before the per-job wall-clock cap.
-    workflow = SignalWorkflowService(
-        settings=make_settings(tmp_path),
-        market_screener=FakeMarketScreener([]),
+def _cadence_workflow(tmp_path, *, screener=None, state=None, logs=None, **overrides):
+    return SignalWorkflowService(
+        settings=make_settings(
+            tmp_path, screener_scheduler_enabled=True, ledger_enabled=False, ledger_cycle_enabled=False, **overrides
+        ),
+        market_screener=screener or FakeMarketScreener([]),
         market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="NVDA", last_execution=101.0)),
         notifier=FakeNotifier(),
         tracked_signals=FakeTrackedSignals(),
         alert_history=FakeAlertHistory(),
-        runtime_state=FakeState(),
-        run_logs=FakeLogs(),
+        runtime_state=state or FakeState(),
+        run_logs=logs or FakeLogs(),
     )
-    s = workflow.settings
-    soft = workflow._cadence_soft_budget_seconds()
-    batch_deadline = float(s.screener_batch_deadline_seconds)
-    job_timeout = float(s.scheduler_job_timeout_seconds)
-    assert soft + batch_deadline < job_timeout
-    # And the job cap must sit under the self-heal threshold so a bounded job
-    # never triggers a spurious restart.
-    assert job_timeout < float(s.scheduler_self_heal_stale_seconds)
+
+
+class DeadlineAwareScreener(FakeMarketScreener):
+    def scan_universe(self, *, cancel_event=None, **kwargs):  # the real screener's hook
+        return super().scan_universe(cancel_event=cancel_event, **kwargs)
+
+
+def test_cadence_budget_keeps_the_post_scan_reserve_inside_the_job_timeout(tmp_path, monkeypatch) -> None:
+    # 2026-10-09 review: 45 of 52 timeouts were buckets admitted under the old 110 s
+    # budget that could not finish by 240 s. The scan must stop with the measured
+    # post-scan work (<= 10 s overshoot + <= 41 s + ~5 s tail) still fitting.
+    from app.workflow import cadence_budget as cb
+
+    settings = make_settings(tmp_path, intraday_active_mover_shortlist_enabled=True)
+    budget = cb.CadenceBudget.for_tick(settings, 0.0)
+    job_timeout = float(settings.scheduler_job_timeout_seconds)
+    assert budget.scan_stop_at == job_timeout - cb.POST_SCAN_RESERVE_SECONDS
+    assert cb.POST_SCAN_RESERVE_SECONDS >= 10 + 41 + 5
+    assert job_timeout < float(settings.scheduler_self_heal_stale_seconds)
+    now = {"t": 0.0}
+    monkeypatch.setattr(cb.time, "monotonic", lambda: now["t"])
+    # Swing: 3 s guard + 10 s setup + 45 s useful scan before the stop at 180 s -> up to 122 s.
+    now["t"] = 122.0
+    assert budget.admits("swing_hourly", settings)
+    now["t"] = 122.1
+    assert not budget.admits("swing_hourly", settings)
+    # Intraday also pays the ~30 s active-mover refresh before its guard -> up to 87 s.
+    now["t"] = 87.0
+    assert budget.admits("intraday_rotation", settings)
+    now["t"] = 87.1
+    assert not budget.admits("intraday_rotation", settings)
+    # The backstop in run_scan_task (guard already paid) agrees: a swing admitted at
+    # 122 s still fits when it reaches run_scan_task ~3 s later.
+    now["t"] = 125.0
+    assert budget.scan_fits()
+    now["t"] = 125.1
+    assert not budget.scan_fits()
+
+
+def test_cadence_admits_by_bucket_cost_and_scan_stops_for_the_reserve(tmp_path, monkeypatch) -> None:
+    from app.models.workflow import WorkflowTaskResponse
+    from app.workflow import cadence_budget as cb
+
+    now = {"t": 1000.0}
+    monkeypatch.setattr(cb.time, "monotonic", lambda: now["t"])
+    logs = FakeLogs()
+    screener = DeadlineAwareScreener([])
+    workflow = _cadence_workflow(
+        tmp_path, screener=screener, logs=logs, intraday_active_mover_shortlist_enabled=True
+    )
+
+    def maintenance_then_100s(*, notify=True):
+        now["t"] += 100.0  # e.g. reconciliation + ledger cycle + open-signal check
+        return WorkflowTaskResponse(task="maintenance", status="ok", detail="")
+
+    monkeypatch.setattr(workflow, "run_maintenance", maintenance_then_100s)
+    monkeypatch.setattr(workflow, "_bucket_due", lambda name: name in {"maintenance", "intraday_rotation", "swing_hourly"})
+    workflow.run_scheduled_tasks()
+
+    # Intraday (needs ~90 s before a useful scan) is deferred; swing (~55 s) still runs.
+    deferred = [payload for event, payload in logs.items if event == "workflow_cadence_deferred"]
+    assert deferred and deferred[0]["deferred_buckets"] == ["intraday_rotation"]
+    assert len(screener.calls) == 1
+    stop = screener.calls[0]["cancel_event"]
+    assert stop.stop_at == 1000.0 + 240.0 - cb.POST_SCAN_RESERVE_SECONDS
+    assert not stop.is_set()
+    now["t"] = stop.stop_at
+    assert stop.is_set()  # the scan core stops here, leaving the post-scan reserve
+
+
+def test_scan_skipped_without_moving_cursors_when_the_tick_budget_is_spent(tmp_path, monkeypatch) -> None:
+    from app.workflow import cadence_budget as cb
+
+    now = {"t": 0.0}
+    monkeypatch.setattr(cb.time, "monotonic", lambda: now["t"])
+    state = FakeState()
+    screener = DeadlineAwareScreener([])
+    workflow = _cadence_workflow(tmp_path, screener=screener, state=state)
+    budget = cb.CadenceBudget.for_tick(workflow.settings, 0.0)
+    now["t"] = 150.0  # pre-work ran long: only 35 s left before the scan stop
+    before = dict(state.values)
+    with cb.tick_budget(budget):
+        result = workflow.run_swing_scan(notify=False)
+    assert result.status == "skipped"
+    assert screener.calls == []
+    assert state.get("workflow:last_swing_scan_at") is None  # still due next tick
+    changed = {k for k in state.values if state.values.get(k) != before.get(k)}
+    assert not any(k.startswith(("workflow:symbol_offset", "workflow:swing_focus", "workflow:spec_batch")) for k in changed)
+
+
+def test_manual_scan_gets_no_cadence_deadline(tmp_path) -> None:
+    screener = DeadlineAwareScreener([])
+    workflow = _cadence_workflow(tmp_path, screener=screener)
+    workflow.run_bucket("swing_hourly", notify=False)
+    assert screener.calls[0]["cancel_event"] is None
+
+
+def test_post_scan_work_is_never_cut(tmp_path, monkeypatch) -> None:
+    # The budget only stops the scan core: alerts, candidate tracking and auto-proposals
+    # (which can place paper and eToro LIVE entries) always run to completion.
+    import app.workflow.operations as operations
+    from app.workflow import cadence_budget as cb
+
+    now = {"t": 0.0}
+    monkeypatch.setattr(cb.time, "monotonic", lambda: now["t"])
+
+    class SlowScreener(DeadlineAwareScreener):
+        def scan_universe(self, *, cancel_event=None, **kwargs):
+            now["t"] = 500.0  # the scan ran past the stop and past the job cap
+            return super().scan_universe(cancel_event=cancel_event, **kwargs)
+
+    workflow = _cadence_workflow(tmp_path, screener=SlowScreener([]))
+    ran: list[str] = []
+    monkeypatch.setattr(workflow, "_send_scan_alerts", lambda **kw: ran.append("alerts") or 0)
+    monkeypatch.setattr(workflow, "_track_candidates", lambda *a, **kw: ran.append("track"))
+    monkeypatch.setattr(
+        operations, "auto_propose_candidates", lambda *a, **kw: ran.append("propose") or 0
+    )
+    with cb.tick_budget(cb.CadenceBudget.for_tick(workflow.settings, 0.0)):
+        result = workflow.run_swing_scan(notify=False)
+    assert result.status == "ok"
+    assert ran == ["alerts", "track", "propose"]
 
 
 def test_cadence_defers_buckets_once_soft_budget_is_reached(tmp_path, monkeypatch) -> None:
@@ -608,7 +779,7 @@ def test_cadence_defers_buckets_once_soft_budget_is_reached(tmp_path, monkeypatc
     assert summary["buckets_run"] == 2
     deferred_events = [payload for event, payload in logs.items if event == "workflow_cadence_deferred"]
     assert len(deferred_events) == 1
-    assert deferred_events[0]["deferred_buckets"] == ["intraday_rotation", "swing_hourly", "end_of_day_scan"]
+    assert deferred_events[0]["deferred_buckets"] == ["intraday_rotation", "swing_hourly", "end_of_day_scan", "crypto_rotation"]
 
 
 def test_cadence_runs_all_buckets_when_budget_disabled(tmp_path, monkeypatch) -> None:
@@ -966,3 +1137,54 @@ def test_open_signal_check_closes_target_hit(tmp_path) -> None:
     assert tracked.list(status="open") == []
     assert tracked.items[0].status == "target_hit"
     assert alerts.count() == 1
+
+
+def test_explicit_soft_budget_restores_the_old_rule_exactly(tmp_path, monkeypatch) -> None:
+    # Review 2026-10-10: the documented rollback (SCHEDULER_CADENCE_SOFT_BUDGET_SECONDS=110)
+    # must not keep the new backstop or the 180 s scan stop.
+    from app.models.workflow import WorkflowTaskResponse
+    from app.workflow import cadence_budget as cb
+
+    now = {"t": 0.0}
+    monkeypatch.setattr(cb.time, "monotonic", lambda: now["t"])
+    screener = DeadlineAwareScreener([])
+    workflow = _cadence_workflow(
+        tmp_path,
+        screener=screener,
+        scheduler_cadence_soft_budget_seconds=110.0,
+        intraday_active_mover_shortlist_enabled=True,
+    )
+
+    def maintenance(*, notify=True):
+        now["t"] += 100.0
+        return WorkflowTaskResponse(task="maintenance", status="ok", detail="")
+
+    def symbols_after_mover_refresh():
+        now["t"] += 30.0  # the active-mover refresh, before the guard
+        return ["NVDA"]
+
+    monkeypatch.setattr(workflow, "run_maintenance", maintenance)
+    monkeypatch.setattr(workflow, "_intraday_scan_symbols", symbols_after_mover_refresh)
+    monkeypatch.setattr(workflow, "_bucket_due", lambda name: name in {"maintenance", "intraday_rotation"})
+    workflow.run_scheduled_tasks()
+    assert len(screener.calls) == 1  # admitted at 100 s < 110 s and scanned at ~130 s
+    assert screener.calls[0]["cancel_event"] is None
+
+
+def test_budget_skip_puts_the_intraday_offset_back(tmp_path, monkeypatch) -> None:
+    from app.workflow import cadence_budget as cb
+
+    now = {"t": 0.0}
+    monkeypatch.setattr(cb.time, "monotonic", lambda: now["t"])
+    state = FakeState()
+    state.set("workflow:intraday_scan_offset", "5")
+    screener = DeadlineAwareScreener([])
+    workflow = _cadence_workflow(
+        tmp_path, screener=screener, state=state, intraday_active_mover_shortlist_enabled=False
+    )
+    budget = cb.CadenceBudget.for_tick(workflow.settings, 0.0)
+    now["t"] = 150.0  # too late for a useful scan
+    with cb.tick_budget(budget):
+        result = workflow.run_intraday_scan(notify=False)
+    assert result.status == "skipped" and screener.calls == []
+    assert state.get("workflow:intraday_scan_offset") == "5"  # this batch is retried next tick
