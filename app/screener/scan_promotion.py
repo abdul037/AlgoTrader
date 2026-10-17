@@ -203,6 +203,38 @@ def _regular_market_hours_open(settings: Any) -> bool:
     return now.weekday() < 5 and local_time(9, 30) <= now.time() < local_time(16, 0)
 
 
+def _weak_valid_count_rows(repository: Any) -> Any:
+    """``repository.list(limit=5000)`` without the payloads the daily count never reads.
+
+    Same window -- the newest 5,000 rows of any status, in the same order -- and
+    each row built by the repository's own converter, all before counting starts,
+    as ``list()`` does. Only ``payload_json`` is narrowed: it is sent for rows whose
+    status is ``'candidate'`` or holds a letter ``LOWER()`` changes (every status
+    whose ``.lower()`` can equal ``"candidate"``) and is NULL for the rest, which the
+    count skips before reading a payload. ``create()`` always stores ``json.dumps`` of
+    a dict, so a NULL payload cannot change whether a row loads either. Any other
+    repository (test fakes) keeps the plain ``list()`` call.
+    """
+    from app.storage.repositories import ScanDecisionRepository
+
+    if type(repository) is not ScanDecisionRepository:
+        return repository.list(limit=5000)
+    with repository.db.connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, scan_task, symbol, strategy_name, timeframe, status, final_score,
+                   alert_eligible, freshness, reason_codes_json, rejection_reasons_json, created_at,
+                   CASE WHEN status = 'candidate' OR status <> LOWER(status)
+                        THEN payload_json END AS payload_json
+            FROM scan_decisions
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (5000,),
+        ).fetchall()
+    return [repository._row_to_model(row) for row in rows]
+
+
 def _weak_valid_daily_count(service: Any) -> int:
     repository = getattr(service, "scan_decisions", None)
     if repository is None or not hasattr(repository, "list"):
@@ -210,7 +242,7 @@ def _weak_valid_daily_count(service: Any) -> int:
     today = utc_now().date()
     count = 0
     with suppress(Exception):
-        for row in repository.list(limit=5000):
+        for row in _weak_valid_count_rows(repository):
             if str(getattr(row, "status", "") or "").lower() != "candidate":
                 continue
             payload = dict(getattr(row, "payload", {}) or {})
