@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from datetime import timedelta
 from typing import Any
 
@@ -19,75 +22,58 @@ _COLUMNS = """
 _ROW_PLACEHOLDERS = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 # 80 rows x 12 columns = 960 bound parameters, inside every SQLite and Postgres limit.
 _FLUSH_CHUNK_ROWS = 80
+_MIN_SQLITE_VERSION = (3, 35, 0)  # INSERT ... RETURNING
 
 
 class ScanDecisionRepository:
     """Persist per-candidate scan decisions for review and anti-spam logic.
 
-    A scan writes one row per symbol/strategy/timeframe it evaluates. The
-    no_signal diagnostics (whose stored record no caller reads back) are queued
-    with ``create_deferred`` and written in one multi-row INSERT by ``flush``.
-    The queue is flushed before every read and every immediate insert, from any
-    thread, when a row for another symbol is queued, and at the end of each scan,
-    so every read through this repository sees exactly the rows (and ids) it saw
-    when each row was written on its own. Only a process that dies mid-symbol
-    loses that symbol's queued rows. ``RETURNING`` needs SQLite 3.35+.
+    A scan writes one row per symbol/strategy/timeframe it evaluates. Its no_signal
+    diagnostics (whose stored record no caller reads back) go through
+    ``create_deferred``: inside ``deferred_writes()``, which the screener opens around
+    each scan, they are queued and written by ``flush`` as one multi-row INSERT.
+
+    The queue belongs to the scan's thread and only that thread writes it: before
+    each of its own reads and immediate inserts, when it queues a row for another
+    symbol, after each symbol, and when the scan ends. So a failed write raises in
+    the scan that made the rows, as each one-row insert did, and every read in the
+    scan sees the rows (and ids) it saw before. A reader or scan in another thread
+    never writes, waits for, fails on or drops another scan's rows; it sees them
+    once that scan writes them, at most one symbol later. A failed write keeps the
+    rows queued, so the scan's next write retries them and raises again if it also
+    fails; the rows still queued when the scan's last write fails are dropped with
+    that error raised (a scan that had already failed keeps its own error). A crash
+    loses at most the symbol being scanned. Outside ``deferred_writes()``
+    ``create_deferred`` writes at once.
     """
 
     def __init__(self, db: Database):
+        if getattr(db, "is_sqlite", False) and sqlite3.sqlite_version_info < _MIN_SQLITE_VERSION:
+            raise RuntimeError(f"scan_decisions needs SQLite 3.35+ (INSERT ... RETURNING); found {sqlite3.sqlite_version}")
         self.db = db
-        self._pending: list[tuple[Any, ...]] = []
-        self._lock = threading.RLock()
+        self._thread = threading.local()  # .pending: this thread's scan queue (None outside a scan)
 
-    def create(self, **fields: Any) -> ScanDecisionRecord:
-        """Insert one decision and return the row as stored (``RETURNING *``, no re-read)."""
+    @contextmanager
+    def deferred_writes(self) -> Iterator[None]:
+        """Queue this thread's ``create_deferred`` rows for one scan and write them as it ends."""
 
-        params = self._row_params(**fields)
-        self.flush()
-        with self.db.connect() as connection:
-            row = connection.execute(
-                f"""
-                INSERT INTO scan_decisions ({_COLUMNS})
-                VALUES {_ROW_PLACEHOLDERS}
-                RETURNING *
-                """,
-                params,
-            ).fetchone()
-        return self._row_to_model(row)
+        outermost = self._pending() is None
+        if outermost:
+            self._thread.pending = []
+        try:
+            yield
+        except BaseException:
+            with suppress(Exception):  # never replace the scan's own error
+                self.flush()
+            raise
+        else:
+            self.flush()
+        finally:
+            if outermost:
+                self._thread.pending = None  # rows whose last write failed, which raised
 
-    def create_deferred(self, **fields: Any) -> None:
-        """Queue a decision for the next ``flush``; same fields and stored row as ``create``."""
-
-        params = self._row_params(**fields)
-        with self._lock:
-            if self._pending and self._pending[-1][1] != params[1]:
-                self.flush()  # the previous symbol is done: write its rows now
-            self._pending.append(params)
-
-    def flush(self) -> None:
-        """Write every queued decision, in queue order (so ids keep that order).
-
-        The lock is held for the write, so a concurrent reader waits for it. A failed
-        write drops the queued rows and raises, as a failed one-row insert did.
-        """
-
-        with self._lock:
-            pending, self._pending = self._pending, []
-            if not pending:
-                return
-            with self.db.connect() as connection:
-                for start in range(0, len(pending), _FLUSH_CHUNK_ROWS):
-                    chunk = pending[start : start + _FLUSH_CHUNK_ROWS]
-                    values = ", ".join([_ROW_PLACEHOLDERS] * len(chunk))
-                    # RETURNING id (which the Postgres wrapper would append anyway) is
-                    # read to the end: SQLite cannot commit a half-read RETURNING.
-                    connection.execute(
-                        f"INSERT INTO scan_decisions ({_COLUMNS}) VALUES {values} RETURNING id",
-                        tuple(value for row in chunk for value in row),
-                    ).fetchall()
-
-    @staticmethod
-    def _row_params(
+    def create(
+        self,
         *,
         scan_task: str,
         symbol: str,
@@ -100,24 +86,89 @@ class ScanDecisionRepository:
         reason_codes: list[str],
         rejection_reasons: list[str],
         payload: dict[str, Any] | None = None,
-    ) -> tuple[Any, ...]:
-        # Serialised now, at the call, so later changes to the caller's dicts never
-        # reach a queued row.
-        created_at = utc_now().isoformat()
-        return (
-            scan_task,
-            symbol.upper(),
-            strategy_name,
-            timeframe,
-            status,
-            final_score,
-            1 if alert_eligible else 0,
-            freshness,
-            json.dumps(reason_codes),
-            json.dumps(rejection_reasons),
-            json.dumps(payload or {}),
-            created_at,
+    ) -> ScanDecisionRecord:
+        """Insert one decision and return the row as stored (``RETURNING *``, no re-read)."""
+
+        params = _row_params(
+            scan_task=scan_task, symbol=symbol, strategy_name=strategy_name, timeframe=timeframe,
+            status=status, final_score=final_score, alert_eligible=alert_eligible, freshness=freshness,
+            reason_codes=reason_codes, rejection_reasons=rejection_reasons, payload=payload,
         )
+        self.flush()
+        return self._insert(params)
+
+    def create_deferred(
+        self,
+        *,
+        scan_task: str,
+        symbol: str,
+        strategy_name: str,
+        timeframe: str,
+        status: str,
+        final_score: float | None,
+        alert_eligible: bool,
+        freshness: str | None,
+        reason_codes: list[str],
+        rejection_reasons: list[str],
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        """Queue a decision for this thread's scan; same fields and stored row as ``create``."""
+
+        params = _row_params(
+            scan_task=scan_task, symbol=symbol, strategy_name=strategy_name, timeframe=timeframe,
+            status=status, final_score=final_score, alert_eligible=alert_eligible, freshness=freshness,
+            reason_codes=reason_codes, rejection_reasons=rejection_reasons, payload=payload,
+        )
+        pending = self._pending()
+        if pending is None:  # not inside a scan: write it now
+            self._insert(params)
+            return
+        if pending and pending[-1][1] != params[1]:
+            self.flush()  # the previous symbol is done: write its rows now
+        pending.append(params)
+
+    def flush(self) -> None:
+        """Write this thread's queued decisions, in queue order (so ids keep that order).
+
+        One transaction: if it fails the rows stay queued and the error is raised here,
+        in the scan that queued them. Once committed, each stored row is parsed into a
+        ScanDecisionRecord, as the old per-row re-read did, so a value the record
+        rejects still raises in the scan with the row stored.
+        """
+
+        pending = self._pending()
+        if not pending:
+            return
+        stored: list[Any] = []
+        with self.db.connect() as connection:
+            for start in range(0, len(pending), _FLUSH_CHUNK_ROWS):
+                chunk = pending[start : start + _FLUSH_CHUNK_ROWS]
+                values = ", ".join([_ROW_PLACEHOLDERS] * len(chunk))
+                # Read to the end: SQLite cannot commit a half-read RETURNING.
+                stored.extend(
+                    connection.execute(
+                        f"INSERT INTO scan_decisions ({_COLUMNS}) VALUES {values} RETURNING *",
+                        tuple(value for row in chunk for value in row),
+                    ).fetchall()
+                )
+        pending.clear()
+        for row in stored:
+            self._row_to_model(row)
+
+    def _pending(self) -> list[tuple[Any, ...]] | None:
+        return getattr(self._thread, "pending", None)
+
+    def _insert(self, params: tuple[Any, ...]) -> ScanDecisionRecord:
+        with self.db.connect() as connection:
+            row = connection.execute(
+                f"""
+                INSERT INTO scan_decisions ({_COLUMNS})
+                VALUES {_ROW_PLACEHOLDERS}
+                RETURNING *
+                """,
+                params,
+            ).fetchone()
+        return self._row_to_model(row)
 
     def list(
         self,
@@ -202,3 +253,36 @@ class ScanDecisionRepository:
             payload=json.loads(row["payload_json"] or "{}"),
             created_at=row["created_at"],
         )
+
+
+def _row_params(
+    *,
+    scan_task: str,
+    symbol: str,
+    strategy_name: str,
+    timeframe: str,
+    status: str,
+    final_score: float | None,
+    alert_eligible: bool,
+    freshness: str | None,
+    reason_codes: list[str],
+    rejection_reasons: list[str],
+    payload: dict[str, Any] | None,
+) -> tuple[Any, ...]:
+    # Serialised now, at the call, so later changes to the caller's dicts never reach
+    # a queued row (and an unserialisable payload raises before anything is written).
+    created_at = utc_now().isoformat()
+    return (
+        scan_task,
+        symbol.upper(),
+        strategy_name,
+        timeframe,
+        status,
+        final_score,
+        1 if alert_eligible else 0,
+        freshness,
+        json.dumps(reason_codes),
+        json.dumps(rejection_reasons),
+        json.dumps(payload or {}),
+        created_at,
+    )

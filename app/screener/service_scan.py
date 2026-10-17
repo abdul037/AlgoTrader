@@ -95,6 +95,7 @@ def scan_universe(
     )
 
     for symbol in universe:
+        service._flush_scan_decisions()  # the previous symbol's queued no_signal rows
         if deadline_seconds > 0 and (time.monotonic() - started_at) >= deadline_seconds:
             errors.append("scan_deadline_exceeded")
             break

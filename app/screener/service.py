@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from contextlib import suppress
+from contextlib import AbstractContextManager, nullcontext, suppress
 from typing import Any
 
 from app.backtesting.batch import BatchBacktestService
@@ -138,8 +138,10 @@ class MarketScreenerService:
         strategy_spec_keys: list[str] | None = None,
         cancel_event: Any | None = None,
     ) -> ScreenerRunResponse:
-        try:
-            response = scan_universe(
+        # The scan's no_signal decisions are queued for this scan's thread and written
+        # once per symbol and as the scan ends (raising in the scan if that fails).
+        with self._deferred_scan_decisions():
+            return scan_universe(
                 self,
                 symbols=symbols,
                 timeframes=timeframes,
@@ -151,14 +153,10 @@ class MarketScreenerService:
                 strategy_spec_keys=strategy_spec_keys,
                 cancel_event=cancel_event,
             )
-        except BaseException:
-            # The scan queues its no_signal decisions (one write per symbol); write
-            # what is still queued without masking the scan's own error.
-            with suppress(Exception):
-                self._flush_scan_decisions()
-            raise
-        self._flush_scan_decisions()
-        return response
+
+    def _deferred_scan_decisions(self) -> AbstractContextManager[Any]:
+        deferred_writes = getattr(self.scan_decisions, "deferred_writes", None)
+        return nullcontext() if deferred_writes is None else deferred_writes()
 
     def _flush_scan_decisions(self) -> None:
         flush = getattr(self.scan_decisions, "flush", None)
