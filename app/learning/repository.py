@@ -362,8 +362,13 @@ class LearningRepository:
         three times per decision, from a table with 0 rows); a cached "none" expires the same way.
 
         Every model write through this repository drops the cache at once. A write by another
-        process (a separate learning worker or cron) shows within 60 s, so callers that decide
-        a model write or report the champion pass ``force_refresh``."""
+        process shows within 60 s: the learning worker or cron services in the runbook, the
+        Telegram polling process (it scans while the API process takes promote and rollback
+        calls), or SQL by hand. Only safe_adjust outside gating mode uses the cache, so in that
+        window only scores that gate nothing name the old champion: the signal's meta_model note
+        and the decision snapshot's model_version_id and model_adjustment (the shadow-session
+        count reads that id). Callers that gate, write a model or a drift row, or report the
+        champion pass ``force_refresh``."""
 
         cached = None if force_refresh else self._champion_cache
         now = time.monotonic()

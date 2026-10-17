@@ -20,6 +20,7 @@ from app.learning.artifacts import LocalArtifactStore
 from app.learning.modeling import LearningModelService
 from app.learning.repository import LearningRepository
 from app.learning.service import LearningService
+from app.live_signal_schema import LiveSignalSnapshot, SignalState
 from app.models.learning import (
     DecisionSnapshot,
     MetaModelEvaluation,
@@ -121,6 +122,59 @@ def _model(rng: random.Random, step: int, **overrides) -> MetaModelVersion:
 def _features(rng: random.Random) -> dict[str, float]:
     names = _FEATURES if rng.random() < 0.75 else rng.sample(_FEATURES, k=rng.randint(0, 5))
     return {name: round(rng.uniform(0, 100), 2) for name in names}
+
+
+def _services(tmp_path, repository, events: list) -> tuple[LearningModelService, LearningService]:
+    logs = SimpleNamespace(log=lambda event, payload: events.append((event, payload)))
+    models = _BoosterService(
+        settings=repository.db.settings,
+        repository=repository,
+        artifact_store=LocalArtifactStore(str(tmp_path / "artifacts")),
+        run_logs=logs,
+        institutional_service=SimpleNamespace(readiness=lambda: {"ready": True}),
+    )
+    learning = LearningService(
+        settings=repository.db.settings,
+        repository=repository,
+        executions=None,
+        proposals=None,
+        market_data=None,
+        model_service=models,
+        critic=None,
+        run_logs=logs,
+    )
+    return models, learning
+
+
+def _scan_record(rng: random.Random, step: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=f"scan_{step}",
+        payload={"measurements": _features(rng), "metadata": {"score": 70.0}},
+        alert_eligible=rng.random() < 0.7,
+        final_score=round(rng.uniform(40, 95), 2),
+        symbol=rng.choice(("NVDA", "AMD", "MU")),
+        strategy_name="swing",
+        timeframe="1d",
+        status=rng.choice(("candidate", "alerted", "watchlist", "rejected")),
+        scan_task="scan",
+        reason_codes=[],
+        rejection_reasons=[],
+        created_at=f"2026-10-17T15:00:{step:02d}+00:00",
+    )
+
+
+def _snapshot(rng: random.Random) -> LiveSignalSnapshot:
+    eligible = rng.random() < 0.7
+    return LiveSignalSnapshot(
+        symbol=rng.choice(("NVDA", "AMD", "MU")),
+        strategy_name="swing",
+        state=SignalState.BUY,
+        score=round(rng.uniform(40, 95), 2),
+        tradable=eligible,
+        execution_ready=eligible,
+        indicators={"rsi": round(rng.uniform(20, 80), 2), "atr_pct": round(rng.uniform(1, 6), 2)},
+        metadata={"alert_eligible": eligible},
+    )
 
 
 def _champion_reads(repository: LearningRepository, monkeypatch) -> list[str]:
@@ -267,6 +321,235 @@ def test_a_write_whose_commit_reply_is_lost_still_drops_the_cache(tmp_path, monk
     assert _oracle(repository) is None
 
 
+def test_a_read_that_straddles_the_commit_is_not_kept(tmp_path, monkeypatch) -> None:
+    # A scan thread samples the generation and SELECTs while the scheduler's UPDATE is not yet
+    # committed, and stores only after the write's finally has run: its old row must not stay.
+    repository = _repository(tmp_path)
+    repository.record_model(
+        _model(random.Random(8), 1, status="challenger", deployment_mode="shadow")
+    )
+    real_connect, real_one = repository.db.connect, repository._one
+    selected, written, seen, armed = threading.Event(), threading.Event(), [], [True]
+    reader = threading.Thread(target=lambda: seen.append(repository.champion()))
+
+    def held_one(query, params, factory):
+        row = real_one(query, params, factory)  # the pre-commit row
+        if threading.current_thread() is reader:
+            selected.set()
+            written.wait(10)  # the cache store comes after the writer's finally
+        return row
+
+    @contextmanager
+    def read_before_commit():
+        with real_connect() as connection:
+            yield connection
+            if armed and threading.current_thread() is not reader:  # UPDATE run, not committed
+                armed.clear()
+                reader.start()
+                assert selected.wait(10)
+
+    monkeypatch.setattr(repository, "_one", held_one)
+    monkeypatch.setattr(repository.db, "connect", read_before_commit)
+    repository.update_model_status("metamodel_1", status="champion", deployment_mode="paper")
+    written.set()
+    reader.join(10)
+    assert seen == [None]  # the stale read is used once...
+    assert repository.champion().id == "metamodel_1" == _oracle(repository).id  # ...not kept
+
+
+def test_a_write_cannot_land_between_the_generation_check_and_the_store(tmp_path) -> None:
+    # The reader pauses inside its generation comparison while the scheduler writes. Under the
+    # lock the write's finally waits for the store and then drops it; without it, it is kept.
+    repository = _repository(tmp_path)
+    repository.record_model(
+        _model(random.Random(9), 1, status="challenger", deployment_mode="shadow")
+    )
+    checking, written, seen = threading.Event(), threading.Event(), []
+    reader = threading.Thread(target=lambda: seen.append(repository.champion()))
+
+    class PausingGeneration(int):  # the generation the reader samples before its SELECT
+        __hash__ = int.__hash__
+
+        def __eq__(self, other):
+            if threading.current_thread() is reader and not checking.is_set():
+                checking.set()
+                written.wait(1.0)  # the writer cannot finish while the lock is held
+            return int(self) == int(other)
+
+    repository._champion_generation = PausingGeneration(repository._champion_generation)
+    reader.start()
+    assert checking.wait(10)
+    repository.update_model_status("metamodel_1", status="champion", deployment_mode="paper")
+    written.set()
+    reader.join(10)
+    assert seen == [None]
+    assert repository.champion().id == "metamodel_1" == _oracle(repository).id
+
+
+def test_another_process_write_shows_60_s_after_the_read_that_cached(tmp_path, monkeypatch) -> None:
+    # Cache hits must not renew the stamp, and the stamp is on the monotonic clock.
+    repository = _repository(tmp_path)
+    other = LearningRepository(Database(repository.db.settings))
+    now = [0.0]
+    monkeypatch.setattr("app.learning.repository.time", SimpleNamespace(monotonic=lambda: now[0]))
+    seen = {}
+    for second in range(0, 80, 10):  # the scan reads all session long
+        now[0] = float(second)
+        seen[second] = getattr(repository.champion(), "id", None)
+        if second == 0:
+            other.record_model(
+                _model(random.Random(10), 1, status="champion", deployment_mode="paper")
+            )
+    assert seen == {
+        **dict.fromkeys(range(0, 60, 10)),  # the documented window
+        60: "metamodel_1",
+        70: "metamodel_1",
+    }
+
+
+@pytest.mark.parametrize(
+    ("mode", "reads"),
+    (("shadow", 11), ("advisory", 11), ("gating", 30)),  # 30 = 3 per symbol, as before
+)
+def test_the_scan_reads_the_champion_once_per_decision_outside_gating(
+    tmp_path, monkeypatch, mode, reads
+) -> None:
+    repository = _repository(tmp_path, model_deployment_mode=mode, learning_max_drift_score=1.0)
+    _models, learning = _services(tmp_path, repository, [])
+    rng = random.Random(11)
+    repository.record_model(
+        _model(rng, 1, status="champion", deployment_mode="paper", feature_names=["score"])
+    )
+    selects = _champion_reads(repository, monkeypatch)
+    for step in range(10):
+        learning.apply_to_snapshot(_snapshot(rng))
+        learning.capture_scan_decision(_scan_record(rng, step))
+    assert len(selects) == reads  # the drift check reads fresh, safe_adjust from the cache
+
+
+def _swap(other: LearningRepository, current: str | None, target: str | None) -> None:
+    if current and current != target:
+        other.update_model_status(current, status="retired", deployment_mode="retired")
+    if target and target != current:
+        other.update_model_status(target, status="champion", deployment_mode="paper")
+
+
+def _rival_gating(tmp_path, cls, mode: str) -> list[dict]:
+    """The scan has the champion cached while a worker keeps swapping it (A, B or none)."""
+
+    repository = _repository(
+        tmp_path,
+        cls,
+        model_deployment_mode=mode,
+        learning_max_drift_score=1.0,
+        learning_min_probability_to_keep=0.6,
+    )
+    other = LearningRepository(Database(repository.db.settings))
+    _models, learning = _services(tmp_path, repository, [])
+    rng = random.Random(12)
+    for step, names in ((1, ["score", "rsi"]), (2, ["score", "atr_pct"])):
+        repository.record_model(
+            _model(rng, step, status="challenger", deployment_mode="shadow", feature_names=names)
+        )
+    snapshots, current = [], None
+    for target in ("metamodel_1", "metamodel_2", None, "metamodel_1", None, "metamodel_2"):
+        learning.apply_to_snapshot(_snapshot(rng))  # the scan caches the current champion
+        _swap(other, current, target)
+        current = target
+        snapshots += [learning.apply_to_snapshot(_snapshot(rng)).model_dump() for _ in range(6)]
+    return snapshots
+
+
+def _trading_fields(snapshot: dict) -> dict:
+    return {
+        **snapshot,
+        "metadata": {k: v for k, v in snapshot["metadata"].items() if k != "meta_model"},
+    }
+
+
+@pytest.mark.parametrize("mode", ("shadow", "advisory", "gating"))
+def test_a_champion_another_process_changed_never_reaches_gating(tmp_path, mode) -> None:
+    new = _rival_gating(tmp_path / "new", LearningRepository, mode)
+    old = _rival_gating(tmp_path / "old", _UncachedRepository, mode)
+    if mode == "gating":  # gating reads fresh: score, tradable, blockers and metadata all match
+        assert new == old
+        assert any(snapshot["tradable"] for snapshot in new)
+        assert any("meta_model_rejected" in snapshot["reject_reasons"] for snapshot in new)
+    else:  # outside gating the champion never changes the snapshot; only its meta_model note
+        assert [_trading_fields(s) for s in new] == [_trading_fields(s) for s in old]
+
+
+_DRIFT_CHAMPIONS = ("metamodel_1", "metamodel_2", None)  # A scores (score, rsi), B (atr_pct)
+_DRIFT_FEATURES = (("atr_pct",), ("score", "rsi"), ("score", "rsi", "atr_pct"), ())
+
+
+def _rival_drift(db: Database, tmp_path, cls, before, after, features) -> dict:
+    """The scan has champion `before` cached; a worker makes `after` the champion; then the
+    scan's drift check runs, and after it the worker's safety rollback."""
+
+    with db.connect() as connection:
+        for table in _TABLES:
+            connection.execute(f"DELETE FROM {table}")
+    repository, other, events = cls(db), LearningRepository(db), []
+    scan, _learning = _services(tmp_path, repository, events)
+    worker, _learning = _services(tmp_path, other, events)
+    rng = random.Random(13)
+    safe = {"expectancy": 1.0, "profit_factor": 2.0}
+    for step, names in ((1, ["score", "rsi"]), (2, ["atr_pct"])):
+        live = f"metamodel_{step}" == before
+        repository.record_model(
+            _model(
+                rng,
+                step,
+                status="champion" if live else "challenger",
+                deployment_mode="paper" if live else "shadow",
+                feature_names=names,
+                metrics=safe,
+            )
+        )
+    assert getattr(repository.champion(), "id", None) == before  # the scan's read
+    _swap(other, before, after)
+    drift = scan.record_drift(dict.fromkeys(features, 1.0))
+    rollback = worker.rollback_if_unsafe()
+    with db.connect() as connection:
+        promotions = connection.execute(
+            "SELECT model_version_id, target_mode, approved, signed_by, blockers_json"
+            " FROM learning_model_promotions ORDER BY rowid"
+        ).fetchall()
+        drifts = connection.execute(
+            "SELECT model_version_id, drift_score, excessive FROM learning_drift_snapshots"
+        ).fetchall()
+    return {
+        "drift": (drift.model_version_id, drift.drift_score, drift.excessive),
+        "rollback": None if rollback is None else (rollback.model_version_id, rollback.blockers),
+        "models": {m.id: (m.status, m.deployment_mode) for m in repository.list_models()},
+        "events": [(event, p["model_version_id"], p["blockers"]) for event, p in events],
+        "promotions": [tuple(row) for row in promotions],
+        "drifts": [tuple(row) for row in drifts],
+    }
+
+
+def test_the_drift_check_reads_the_champion_another_process_just_changed(tmp_path) -> None:
+    # Its row and the automatic rollback it can make outlast any cache window: from a stale
+    # champion it would roll back a retired model, and its excessive row the healthy new one.
+    dbs = {
+        cls: _repository(tmp_path / cls.__name__, cls, learning_max_drift_score=0.5).db
+        for cls in (LearningRepository, _UncachedRepository)
+    }
+    seen: Counter[str] = Counter()
+    for before, after, features in itertools.product(
+        _DRIFT_CHAMPIONS, _DRIFT_CHAMPIONS, _DRIFT_FEATURES
+    ):
+        new, old = (
+            _rival_drift(dbs[cls], tmp_path, cls, before, after, features)
+            for cls in (LearningRepository, _UncachedRepository)
+        )
+        assert new == old, (before, after, features)
+        seen["excessive" if new["drift"][2] else "within_limit"] += 1
+        seen["rolled_back"] += bool(new["events"])
+    assert min(seen.values()) > 0, seen
+
+
 def test_concurrent_readers_never_hide_a_write_that_returned(tmp_path) -> None:
     repository = _repository(tmp_path)
     rng = random.Random(7)
@@ -313,31 +596,14 @@ def _flows(tmp_path, cls, seed: int, monkeypatch) -> dict:
     repository = _repository(
         tmp_path,
         cls,
-        model_deployment_mode="gating",
+        model_deployment_mode=("gating", "shadow")[seed % 2],  # fresh reads, cached reads
         learning_max_drift_score=rng.choice((0.4, 0.6, 0.8)),
         learning_min_probability_to_keep=0.6,
         learning_auto_promote_paper_enabled=rng.random() < 0.5,
         learning_live_promotion_enabled=True,
     )
     events: list[tuple[str, dict]] = []
-    logs = SimpleNamespace(log=lambda event, payload: events.append((event, payload)))
-    models = _BoosterService(
-        settings=repository.db.settings,
-        repository=repository,
-        artifact_store=LocalArtifactStore(str(tmp_path / "artifacts")),
-        run_logs=logs,
-        institutional_service=SimpleNamespace(readiness=lambda: {"ready": True}),
-    )
-    learning = LearningService(
-        settings=repository.db.settings,
-        repository=repository,
-        executions=None,
-        proposals=None,
-        market_data=None,
-        model_service=models,
-        critic=None,
-        run_logs=logs,
-    )
+    models, learning = _services(tmp_path, repository, events)
     known: list[str] = []
     transcript: list[tuple] = []
     for step in range(50):
@@ -377,21 +643,7 @@ def _flows(tmp_path, cls, seed: int, monkeypatch) -> dict:
             elif action == "drift":
                 result = _dump(models.record_drift(_features(rng)))
             elif action == "capture":  # the scan path: safe_adjust, the decision row, record_drift
-                record = SimpleNamespace(
-                    id=f"scan_{step}",
-                    payload={"measurements": _features(rng), "metadata": {"score": 70.0}},
-                    alert_eligible=rng.random() < 0.7,
-                    final_score=round(rng.uniform(40, 95), 2),
-                    symbol=rng.choice(("NVDA", "AMD", "MU")),
-                    strategy_name="swing",
-                    timeframe="1d",
-                    status=rng.choice(("candidate", "alerted", "watchlist", "rejected")),
-                    scan_task="scan",
-                    reason_codes=[],
-                    rejection_reasons=[],
-                    created_at=f"2026-10-17T15:00:{step:02d}+00:00",
-                )
-                result = _dump(learning.capture_scan_decision(record))
+                result = _dump(learning.capture_scan_decision(_scan_record(rng, step)))
             elif action == "status":
                 result = repository.status_counts()
             else:
