@@ -109,3 +109,10 @@ def test_snapshot_shows_whether_the_shadow_premarket_scan_is_on(tmp_path) -> Non
     assert effective_execution_policy(make_settings(tmp_path))["premarket_deep_scan_enabled"] is False
     on = make_settings(tmp_path, premarket_deep_scan_enabled=True)
     assert effective_execution_policy(on)["premarket_deep_scan_enabled"] is True
+
+
+def test_snapshot_shows_whether_short_setups_are_recorded_in_shadow(tmp_path) -> None:
+    # Shorts step 2: default on (never traded); logged so the switch is checkable at boot.
+    assert effective_execution_policy(make_settings(tmp_path))["premarket_short_shadow_enabled"] is True
+    off = make_settings(tmp_path, premarket_short_shadow_enabled=False)
+    assert effective_execution_policy(off)["premarket_short_shadow_enabled"] is False

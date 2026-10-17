@@ -118,9 +118,11 @@ def run_premarket_deep_scan(
         return _response("skipped", f"Pre-market watchlist for {session_date} already done.")
     if watchlist and not _resumable(watchlist):
         watchlist = {}  # edited or an older shape: start over instead of failing every tick
-    for optional in ("notes", "failed_symbols", "short_signals"):
+    for optional in ("notes", "failed_symbols"):
         if watchlist:
             watchlist.setdefault(optional, [])
+    if watchlist:
+        _short_fields(watchlist)
     if now_ny >= cutoff and not watchlist:
         # e.g. the bot was down at 08:30: record the missed day, never run into the session
         missed = _new_watchlist(session_date, [], [])
@@ -423,7 +425,18 @@ def _record_short(watchlist: dict[str, Any], args: tuple) -> None:
         if item is not None:
             watchlist.setdefault("short_signals", []).append(item)
     except Exception:  # noqa: BLE001 - a short (shadow only) never stops the long scan
-        watchlist["short_errors"] = int(watchlist.get("short_errors") or 0) + 1
+        _short_fields(watchlist)
+        watchlist["short_errors"] += 1
+
+
+def _short_fields(watchlist: dict[str, Any]) -> None:
+    """``short_signals`` a list and ``short_errors`` a count, whatever a stored list held (code
+    before shorts stored neither; an edited list may hold anything). Never raises."""
+
+    if not isinstance(watchlist.get("short_signals"), list):
+        watchlist["short_signals"] = []
+    count = watchlist.get("short_errors")
+    watchlist["short_errors"] = count if type(count) is int and count >= 0 else 0
 
 
 def _item(signal, symbol, spec, spec_key, last, relative_volume, bucket, context) -> dict | None:
@@ -507,9 +520,11 @@ def _short_item(
         or metadata.get("signal_classification") == "supervised_weak_valid"
         or bool(metadata.get("weak_signal_kind"))
     )
-    verdicts = context["short_verdicts"]()
-    # compute_verdicts' key for the '<name>:short' rows; else a payload keyed like the long one
-    verdict = verdicts.get(f"{spec.name}:short:1d") or verdicts.get(spec_key) or {}
+    # compute_verdicts' key for the '<name>:short' rows, the only shape read: '<name>:1d' is the
+    # live gate's key, so a short verdict under it would be one written to unlock longs.
+    verdict = context["short_verdicts"]().get(f"{spec.name}:short:1d")
+    if not isinstance(verdict, dict):
+        verdict = {}  # figures only: the short is listed without them
     return {
         "symbol": symbol,
         "strategy": str(spec.name),
@@ -648,7 +663,8 @@ def _finalize(watchlist: dict[str, Any], settings: Any, *, complete: bool) -> No
     max_items = max(int(getattr(settings, "premarket_deep_scan_max_items", 25) or 25), 1)
     watchlist["items"] = [s for s in signals if s.get("tradeable")][:max_items]
     watchlist["shadow_items"] = [s for s in signals if not s.get("tradeable")][:25]
-    shorts = list(watchlist.get("short_signals") or [])  # a list stored by older code has none
+    _short_fields(watchlist)  # e.g. _ahead_of handed over a list stored by older code
+    shorts = list(watchlist["short_signals"])
     with suppress(Exception):  # an odd short item never blocks finishing the long list
         shorts.sort(key=_short_rank_key)
     watchlist["short_signals"] = shorts

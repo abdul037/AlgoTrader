@@ -235,12 +235,15 @@ def test_only_a_bracketed_entry_short_sell_is_a_short_setup() -> None:
     assert _one(weak)["kind"] == "weak" and _one(weak)["tradeable"] is False
 
 
-def test_short_figures_come_from_the_short_verdicts_in_either_key_shape() -> None:
+def test_short_figures_come_only_from_the_native_short_verdict_key() -> None:
     native = {"mean_reversion:short:1d": {"oos_expectancy_r": 0.12, "oos_trades": 80}}
+    # '<name>:1d' is the live gate's key shape: a short verdict is never read under it.
     renamed = {"mean_reversion:1d": {"oos_expectancy_r": 0.07, "holdout_trades": 11}}
     assert _one(_short_signal(100.0), native)["oos_expectancy_r"] == 0.12
-    assert _one(_short_signal(100.0), renamed)["holdout_trades"] == 11
-    assert _one(_short_signal(100.0), {**renamed, **native})["oos_trades"] == 80  # native wins
+    assert _one(_short_signal(100.0), {**renamed, **native})["holdout_trades"] is None
+    for odd in (renamed, {"mean_reversion:short:1d": "n/a"}, {"mean_reversion:short:1d": None}):
+        item = _one(_short_signal(100.0), odd)  # still listed, without figures
+        assert item is not None and item["oos_expectancy_r"] is item["oos_trades"] is None
 
 
 class _CountingState(scan_tests.FakeState):
@@ -286,6 +289,62 @@ def test_the_short_switch_stops_recording_and_leaves_the_long_scan(tmp_path, mon
     service = _scan(tmp_path, monkeypatch, short_verdicts=True, **off)
     assert _shorts(service) == []
     assert _digest(_long_scan_view(service)) == GOLDEN_DEEP_SCAN
+
+
+def test_shorts_never_reach_the_telegram_note(tmp_path, monkeypatch) -> None:
+    loud = {"premarket_deep_scan_notify": True}
+    on = _scan(tmp_path / "on", monkeypatch, short_verdicts=True, **loud)
+    off = _scan(
+        tmp_path / "off",
+        monkeypatch,
+        short_verdicts=True,
+        premarket_short_shadow_enabled=False,
+        **loud,
+    )
+    assert _shorts(on) and _shorts(off) == []
+    assert on.notifier.messages == off.notifier.messages  # the same note, shorts or not
+    [text] = on.notifier.messages
+    lines = text.splitlines()
+    assert lines[0].startswith("SHADOW pre-market setups") and len(lines) > 1  # not vacuous
+    assert "short" not in text.lower()
+    for item in _shorts(on):  # a stubbed spec on an even symbol has no long setup to name
+        assert f"- {item['symbol']} {item['strategy']} " not in text
+
+
+def test_odd_short_fields_in_a_stored_list_never_stop_the_long_scan(tmp_path, monkeypatch) -> None:
+    def resumed(path, **odd):
+        service = scan_tests._service(
+            path, monkeypatch, market_universe_symbols=FEW, allowed_instruments=FEW
+        )
+        _with_shorts(service)
+        scan_tests._run(service, stop=scan_tests._StopAfter(3))
+        key = deep.WATCHLIST_KEY.format(date="2026-10-12")
+        partial = json.loads(service.runtime_state.get(key))
+        partial.update(odd)  # hand-edited, or stored by something else
+        service.runtime_state.set(key, json.dumps(partial))
+        scan_tests._run(service)
+        return service
+
+    clean = resumed(tmp_path / "clean")
+    odd = resumed(tmp_path / "odd", short_signals=7, short_errors="x")
+    done = scan_tests._watchlist(odd)
+    assert done["status"] == "complete" and done["short_errors"] == 0
+    assert {i["symbol"] for i in done["short_signals"]} == {"S04"}  # scanned after the resume
+    assert _long_scan_view(odd) == _long_scan_view(clean)
+    payload = odd.run_logs.items[-1][1]
+    assert (payload["short_signals"], payload["short_errors"]) == (len(done["short_signals"]), 0)
+    swapped_in = {"signals": [], "failed_symbols": [], "short_signals": 5, "short_errors": -1}
+    deep._finalize(swapped_in, odd.settings, complete=True)  # e.g. handed over by _ahead_of
+    assert (swapped_in["short_signals"], swapped_in["short_errors"]) == ([], 0)
+    assert swapped_in["status"] == "complete"
+
+    def boom(*args):
+        raise RuntimeError("short boom")
+
+    monkeypatch.setattr(deep, "_short_item", boom)
+    edited = {"short_signals": 7, "short_errors": "x"}
+    deep._record_short(edited, ())  # never raises, whatever the list held
+    assert edited == {"short_signals": [], "short_errors": 1}
 
 
 def test_a_list_stored_without_short_fields_resumes_and_finishes(tmp_path, monkeypatch) -> None:
@@ -355,12 +414,41 @@ def test_short_verdicts_never_reach_the_long_evidence(tmp_path, monkeypatch) -> 
     assert blocked == "strategy_lacks_oos_evidence"
 
 
-def test_the_short_verdict_key_is_the_research_key() -> None:
+def test_the_short_verdict_key_is_the_research_key(monkeypatch) -> None:
     from app.performance import strategy_evidence
 
-    # Once the short research (step 1) defines the key, both must name the same one.
-    assert getattr(strategy_evidence, "SHORT_VERDICTS_KEY", SHORT_KEY) == deep.SHORT_VERDICTS_KEY
     assert deep.SHORT_VERDICTS_KEY == SHORT_KEY != strategy_evidence.VERDICTS_KEY
+    # Step 1 (shorts research) names this key strategy_evidence.SHORT_VERDICTS_KEY. A short key
+    # constant there under any name must be this one, and so must the key its writer sets.
+    named = {
+        name: value
+        for name, value in vars(strategy_evidence).items()
+        if name.endswith("_KEY") and isinstance(value, str) and "short" in f"{name}{value}".lower()
+    }
+    assert set(named.values()) <= {deep.SHORT_VERDICTS_KEY}, named
+    writer = getattr(strategy_evidence, "refresh_short_verdicts", None)
+    if writer is not None:  # step 1 is in: what it writes is what the deep scan reads
+        monkeypatch.setattr(strategy_evidence, "compute_verdicts", lambda *args, **kwargs: {})
+        state = scan_tests.FakeState()
+        writer(None, SimpleNamespace(), state)
+        assert list(state.values) == [deep.SHORT_VERDICTS_KEY]
+
+
+def test_the_live_gate_functions_never_name_shorts() -> None:
+    import inspect
+
+    from app.performance import strategy_evidence as evidence
+
+    # strategy_evidence.py may host the short research key (step 1); the functions the live
+    # gate runs must still never mention shorts at all.
+    for func in (
+        evidence.evidence_blocker,
+        evidence.compute_verdicts,
+        evidence.refresh_verdicts,
+        evidence._edge_r,
+        evidence._stale,
+    ):
+        assert "short" not in inspect.getsource(func).lower(), func.__name__
 
 
 def test_nothing_on_the_trading_path_reads_short_shadow_data() -> None:
@@ -636,6 +724,99 @@ def test_the_short_ledger_bounds_its_fetches_by_its_own_budget(tmp_path, monkeyp
     assert sorted(c[0] for c in service.market_data.calls) == ["S00", "S01", "S02"]
 
 
+def _timed_fetches(monkeypatch, seconds: float):
+    """Every fetch takes ``seconds`` on a fake clock; a shorter timeout fires, as it would."""
+
+    import app.screener.scan_support as support
+
+    clock = {"t": 0.0}
+    timeouts: list[float] = []
+
+    def timed(label, timeout, func, *args, **kwargs):
+        timeouts.append(timeout)
+        clock["t"] += min(timeout, seconds)
+        if timeout < seconds:
+            raise support.ScanTimeoutError(f"{label}_timeout_after_{timeout:g}s")
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(support, "_bounded_call", timed)
+    return clock, timeouts
+
+
+def test_a_fetch_the_budget_cut_short_is_tried_again_the_same_day(tmp_path, monkeypatch) -> None:
+    service = _ledger_service(tmp_path, monkeypatch, now=FRIDAY_1700_NY)
+    clock, timeouts = _timed_fetches(monkeypatch, 8.0)
+    first = shadow.refresh_short_shadow_ledger(service, clock=lambda: clock["t"])
+    assert timeouts == [20.0, 12.0, 4.0]  # S02 had 4 s left of the 20 s: cut short
+    assert (first["scored_symbols"], first["failed_symbols"]) == (2, [])  # not a failure
+    assert not first["done_for_today"]
+    second = shadow.refresh_short_shadow_ledger(service, clock=lambda: clock["t"])
+    assert timeouts[3:] == [20.0] and second["scored_symbols"] == 1 and second["done_for_today"]
+    entries = json.loads(service.runtime_state.get(shadow.SHORT_LEDGER_KEY))["entries"]
+    assert entries["2026-10-12|S02|trend_following:1d|short"]["status"] == "open"  # scored today
+
+
+def test_a_fetch_that_always_times_out_still_ends_the_day(tmp_path, monkeypatch) -> None:
+    service = _ledger_service(tmp_path, monkeypatch, now=FRIDAY_1700_NY)
+    clock, timeouts = _timed_fetches(monkeypatch, 60.0)  # the feed never answers
+
+    def ticking():  # the reads before the first fetch take time too
+        clock["t"] += 0.5
+        return clock["t"]
+
+    runs = [shadow.refresh_short_shadow_ledger(service, clock=ticking) for _ in range(3)]
+    assert timeouts == [19.5] * 3  # each run's first fetch had all the run could give it
+    assert [run["failed_symbols"] for run in runs] == [["S00"], ["S01"], ["S02"]]
+    assert [run["done_for_today"] for run in runs] == [False, False, True]
+    assert shadow.refresh_short_shadow_ledger(service, clock=ticking) is None
+
+
+@pytest.mark.parametrize("broken", ["no_timestamp_column", "a_none_close"])
+def test_one_symbols_malformed_bars_never_stop_the_short_ledger(
+    tmp_path, monkeypatch, broken
+) -> None:
+    service = _ledger_service(tmp_path, monkeypatch, now=FRIDAY_1700_NY)
+    frames = service.market_data.frames
+    bad = frames["S00"].copy()  # S00 sorts first: every later run would hit it first
+    if broken == "no_timestamp_column":
+        bad = bad.drop(columns=["timestamp"])
+    else:
+        bad["close"] = bad["close"].astype(object)
+        bad.loc[2, "close"] = None
+    frames["S00"] = bad
+    summary = shadow.refresh_short_shadow_ledger(service)
+    assert summary["failed_symbols"] == ["S00"] and summary["scored_symbols"] == 2
+    assert summary["done_for_today"]  # S00 is tried again tomorrow
+    state = json.loads(service.runtime_state.get(shadow.SHORT_STATE_KEY))
+    assert state["tried_symbols"] == ["S00", "S01", "S02"]
+    entries = json.loads(service.runtime_state.get(shadow.SHORT_LEDGER_KEY))["entries"]
+    assert entries["2026-10-12|S00|trend_following:1d|short"]["status"] == "pending"
+    assert entries["2026-10-13|S01|trend_following:1d|short"]["status"] == "closed"
+    assert entries["2026-10-12|S02|trend_following:1d|short"]["status"] == "open"
+
+
+def test_a_rate_limit_cooldown_never_burns_the_short_list(tmp_path, monkeypatch) -> None:
+    from app.broker.etoro_rate_limit import EToroRateLimitError
+
+    service = _ledger_service(tmp_path, monkeypatch, now=FRIDAY_1700_NY)
+    market = service.market_data
+    real, cooldown = market.get_history, {"on": True}
+
+    def get_history(symbol, **kwargs):
+        if cooldown["on"]:
+            raise EToroRateLimitError("eToro API temporarily rate-limited")
+        return real(symbol, **kwargs)
+
+    market.get_history = get_history
+    paused = shadow.refresh_short_shadow_ledger(service)
+    assert (paused["scored_symbols"], paused["failed_symbols"]) == (0, [])
+    assert not paused["done_for_today"]
+    assert json.loads(service.runtime_state.get(shadow.SHORT_STATE_KEY))["tried_symbols"] == []
+    cooldown["on"] = False  # the next run, 30 minutes on
+    after = shadow.refresh_short_shadow_ledger(service)
+    assert after["scored_symbols"] == 3 and after["done_for_today"]
+
+
 def test_a_failing_short_symbol_never_holds_up_either_ledger(tmp_path, monkeypatch) -> None:
     service = _ledger_service(tmp_path, monkeypatch)
     assert shadow.refresh_shadow_ledger(service)["done_for_today"]  # the long ledger, 10:00
@@ -709,6 +890,40 @@ def test_the_report_keeps_the_long_figures_and_adds_the_shorts_apart(tmp_path, m
     assert trend["stop_target"]["win_rate"] == 0.0 and trend["backtest_expected_r"] == 0.2
     assert short["cohorts"]["tradeable"]["taken"] == 0 and short["rules"].startswith("short")
     assert all(row.get("side") == "short" for row in short["recent"])
+
+
+@pytest.mark.parametrize(
+    "ledger",
+    [
+        {"entries": {"x": {"status": "closed", "stop_target": {"status": "closed"}}}},  # no r
+        {"entries": ["not", "a", "dict"]},
+    ],
+)
+def test_a_bad_short_ledger_never_takes_the_long_report_down(tmp_path, monkeypatch, ledger) -> None:
+    service = _ledger_service(tmp_path, monkeypatch)
+    shadow.refresh_shadow_ledger(service)
+    service.runtime_state.set(shadow.SHORT_LEDGER_KEY, json.dumps(ledger))
+    report = shadow.shadow_ledger_report(service.runtime_state)
+    assert _digest({k: v for k, v in report.items() if k != "short"}) == GOLDEN_REPORT
+    assert report["short"]["error"] == "short_ledger_unreadable"
+
+
+def test_a_gap_through_the_bracket_at_the_entry_open_is_scored_as_the_engine_does() -> None:
+    # Like the long ledger and the backtest engine, the entry has no gap check: such an entry
+    # is scored as is (a near-zero risk gives an extreme R) and shows in the report's mean_r.
+    today = datetime(2026, 10, 14).date()
+    above = _short()  # stop 105: the next open is just over it
+    shadow.score_entry(
+        above, ledger_tests._bars(SIGNAL, ("2026-10-12", 105.0525, 106, 104, 105)), today
+    )
+    fill, leg = _bid(105.0525), above["stop_target"]
+    assert (leg["reason"], leg["exit_price"]) == ("stop", round(_ask(105.0525), 4))
+    assert leg["r"] == round((fill - _ask(105.0525)) / abs(fill - 105), 3) < -100
+    below = _short()  # target 90: the next open is under it
+    shadow.score_entry(below, ledger_tests._bars(SIGNAL, ("2026-10-12", 89, 91, 88, 90)), today)
+    fill, leg = _bid(89), below["stop_target"]
+    assert (leg["reason"], leg["exit_price"]) == ("target", round(_ask(90), 4))
+    assert leg["r"] == round((fill - _ask(90)) / (105 - fill), 3) < 0  # a losing "target"
 
 
 def test_scorecard_endpoint_carries_the_short_ledger(tmp_path) -> None:

@@ -134,8 +134,13 @@ def refresh_short_shadow_ledger(
     """Once a day, OFF-HOURS: add the finished watchlists' short setups, re-score open shorts.
 
     None when nothing was due; every check before the first database call. A symbol whose
-    bars cannot be had is tried again the next day (each run re-scores from all the bars)."""
+    bars cannot be had, or that fails to score, is tried again the next day (each run
+    re-scores from all the bars); it never stops the others. A fetch the budget cut short, or
+    an eToro rate-limit cooldown, is no answer: the run stops there and the next run (30 min
+    later) tries that symbol again with the full fetch timeout."""
 
+    from app.broker.etoro_rate_limit import EToroRateLimitError
+    from app.screener.scan_support import ScanTimeoutError
     from app.workflow.premarket_deep_scan import _zone
 
     settings = service.settings
@@ -160,6 +165,7 @@ def refresh_short_shadow_ledger(
     tried = set(state.get("tried_symbols") or []) if state.get("tried_day") == str(today) else set()
     symbols = sorted({e["symbol"] for e in entries.values() if e.get("status") not in _FINAL})
     limit = float(getattr(settings, "screener_market_data_timeout_seconds", 20.0) or 0.0)
+    full = min(limit, budget_seconds) if limit > 0 else budget_seconds  # a fetch's own timeout
     scored, failed = 0, []
     for symbol in symbols:
         if symbol in tried:
@@ -167,20 +173,27 @@ def refresh_short_shadow_ledger(
         remaining = deadline - clock()
         if remaining < 1.0:
             break  # the rest on the next run
-        tried.add(symbol)
-        bars = _bars(service, symbol, today, timeout=min(limit, remaining) if limit else remaining)
-        own = sorted(
-            (e for e in entries.values() if e["symbol"] == symbol),
-            key=lambda e: (e["spec_key"], e["signal_bar"], e["signal_date"]),
-        )
+        timeout = min(full, remaining)
         try:
+            bars = _rows(_completed_frame(service, symbol, today, timeout))
             if bars is None:
                 failed.append(symbol)
-                continue
-            _score_symbol(own, bars, today)
-            scored += 1
-        except Exception:  # noqa: BLE001 - one symbol never stops the others
+            else:
+                own = sorted(
+                    (e for e in entries.values() if e["symbol"] == symbol),
+                    key=lambda e: (e["spec_key"], e["signal_bar"], e["signal_date"]),
+                )
+                _score_symbol(own, bars, today)
+                scored += 1
+        except EToroRateLimitError:
+            break  # a cooldown fails every fetch at once: never burn the list (as the deep scan)
+        except ScanTimeoutError:
+            if timeout < full and (scored or failed):  # the run's first fetch had all it could
+                break  # cut short by the budget, which is no answer: the next run, in full
             failed.append(symbol)
+        except Exception:  # noqa: BLE001 - its bars or its scoring: never stops the others
+            failed.append(symbol)
+        tried.add(symbol)
     cutoff = (today - timedelta(days=KEEP_DAYS)).isoformat()
     for key in [k for k, e in entries.items() if str(e.get("signal_date")) < cutoff]:
         entries.pop(key)
@@ -231,8 +244,11 @@ def shadow_ledger_report(runtime_state: Any, *, recent: int = 40) -> dict[str, A
 
     entries = list((_load(runtime_state, LEDGER_KEY).get("entries") or {}).values())
     report = _side_report(entries, recent, LONG_RULES)
-    shorts = list((_load(runtime_state, SHORT_LEDGER_KEY).get("entries") or {}).values())
-    report["short"] = _side_report(shorts, recent, SHORT_RULES)
+    try:
+        shorts = list((_load(runtime_state, SHORT_LEDGER_KEY).get("entries") or {}).values())
+        report["short"] = _side_report(shorts, recent, SHORT_RULES)
+    except Exception:  # noqa: BLE001 - a bad short ledger never takes the long figures down
+        report["short"] = {"error": "short_ledger_unreadable", "rules": SHORT_RULES}
     return report
 
 
@@ -444,20 +460,33 @@ def _short_entry(item: dict[str, Any], signal_date: str) -> dict[str, Any] | Non
     }
 
 
-def _bars(
-    service: Any, symbol: str, today: date, timeout: float | None = None
-) -> list[tuple] | None:
+def _bars(service: Any, symbol: str, today: date) -> list[tuple] | None:
     """(session date, open, high, low, close) of completed daily bars, oldest first."""
+
+    try:
+        frame = _completed_frame(service, symbol, today)
+    except Exception:  # noqa: BLE001 - no data this run: scored on the next one
+        return None
+    return _rows(frame)
+
+
+def _completed_frame(service: Any, symbol: str, today: date, timeout: float | None = None) -> Any:
+    """The deep scan's request for ``symbol``'s completed daily bars; errors are raised.
+
+    ``timeout`` None is the market-data timeout (the long ledger); the short ledger passes
+    what is left of its own budget."""
 
     from datetime import datetime
 
     from app.workflow.premarket_deep_scan import _fetch_completed, _zone
 
     now_ny = datetime.combine(today, datetime.min.time(), tzinfo=_zone(service.settings))
-    try:
-        frame = _fetch_completed(service, symbol, now_ny, False, timeout)
-    except Exception:  # noqa: BLE001 - no data this run: scored on the next one
-        return None
+    return _fetch_completed(service, symbol, now_ny, False, timeout)
+
+
+def _rows(frame: Any) -> list[tuple] | None:
+    """A completed-bars frame as (session date, open, high, low, close) rows, oldest first."""
+
     if frame is None or len(frame) == 0:
         return None
     import pandas as pd

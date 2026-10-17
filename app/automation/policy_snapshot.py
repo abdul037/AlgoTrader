@@ -95,6 +95,9 @@ def effective_execution_policy(settings: Any) -> dict[str, Any]:
         # Shadow pre-market deep scan (2026-10-10): on = the 08:30 bucket runs it instead of
         # the old rotating scan. It never trades; logged so the switch is checkable at boot.
         "premarket_deep_scan_enabled": bool(_get("premarket_deep_scan_enabled", False)),
+        # Shorts step 2 (2026-10-17): with the deep scan on, short setups are listed and followed
+        # off-hours in shadow. Default on and never traded; logged so it is checkable at boot.
+        "premarket_short_shadow_enabled": bool(_get("premarket_short_shadow_enabled", True)),
         # A boolean only — never the account number itself.
         "alpaca_expected_account_configured": bool(
             str(_get("alpaca_expected_account_number", "") or "").strip()
