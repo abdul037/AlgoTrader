@@ -15,6 +15,8 @@ that still want an in-sample pass can set ``walk_forward=False``.
 
 from __future__ import annotations
 
+import contextlib
+import threading
 import time
 from dataclasses import replace
 from math import isfinite
@@ -72,6 +74,9 @@ class BatchBacktestService:
         self.market_data = market_data_engine
         self.backtests = backtest_repository
         self.logs = run_log_repository
+        # Per thread: API routes call run() too, and only the scheduled job's own pass
+        # (same thread) may bound the short-research budget that follows it.
+        self._pass_started = threading.local()
 
     def run(
         self,
@@ -103,6 +108,7 @@ class BatchBacktestService:
         tripwires: list[str] = []
         run_count = 0
         started_at = time.monotonic()
+        self._pass_started.value = started_at
         symbols_covered = 0
         truncated = False
         # Resume inside the first symbol: one symbol's intraday sweep (strategies x
@@ -246,6 +252,25 @@ class BatchBacktestService:
         )
         return summary
 
+    def run_short_research(self, runtime_state: Any) -> dict[str, Any] | None:
+        """Research only: one bounded short walk-forward pass (app/backtesting/short_research.py).
+
+        The scheduled backtest job calls this after its long pass and cursor save, on the
+        same thread, so the budget counts from that pass's start. Never raises: short
+        research must never fail, delay or replace the long evidence job.
+        """
+
+        started = getattr(self._pass_started, "value", None)
+        self._pass_started.value = None
+        try:
+            from app.backtesting.short_research import run_short_pass
+
+            return run_short_pass(self, runtime_state, pass_started=started)
+        except Exception as exc:  # noqa: BLE001 - research never breaks the long job
+            with contextlib.suppress(Exception):
+                self.logs.log("backtest_short_research_failed", {"error": f"{type(exc).__name__}: {exc}"[:300]})
+            return None
+
     def _run_strategy(
         self,
         *,
@@ -257,8 +282,14 @@ class BatchBacktestService:
         provider: str | None,
         walk_forward: bool,
         persist: bool = True,
+        oos_suffix: str = ":walk_forward_oos",
+        row_name: str | None = None,
     ) -> dict[str, Any]:
-        """Run a single strategy either in-sample or via walk-forward folds."""
+        """Run a single strategy either in-sample or via walk-forward folds.
+
+        ``oos_suffix`` / ``row_name`` relabel the persisted OOS row; only short research
+        sets them, so its rows never match a long evidence lookup.
+        """
 
         file_path = f"{provider or self.settings.primary_market_data_provider}:{timeframe}:{symbol}"
 
@@ -334,8 +365,8 @@ class BatchBacktestService:
             self.backtests.create(
                 backtest_id=generate_id("bt"),
                 symbol=symbol.upper(),
-                strategy_name=strategy.name,
-                file_path=f"{file_path}:walk_forward_oos",
+                strategy_name=row_name or strategy.name,
+                file_path=f"{file_path}{oos_suffix}",
                 started_at=completed_at,
                 completed_at=completed_at,
                 metrics=metrics,
@@ -343,7 +374,7 @@ class BatchBacktestService:
             )
         return {
             "symbol": symbol.upper(),
-            "strategy_name": strategy.name,
+            "strategy_name": row_name or strategy.name,
             "timeframe": timeframe,
             "provider": provider or self.settings.primary_market_data_provider,
             "out_of_sample": True,

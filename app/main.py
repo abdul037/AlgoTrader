@@ -648,6 +648,7 @@ def create_app(
                     next_cursor = (cursor + advance) % universe_size
                     runtime_state_repository.set(cursor_key, str(next_cursor))
                     runtime_state_repository.set(unit_key, str(resume))
+                app.state.batch_backtest_service.run_short_research(runtime_state_repository)
 
             jobs.append(
                 ScheduledJob(

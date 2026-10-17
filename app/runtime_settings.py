@@ -218,6 +218,12 @@ class AppSettings(BaseSettings):
     # stops cleanly at this budget and a persisted cursor rotates the start
     # offset, so successive runs sweep the universe. Keep it under the hard cap.
     backtest_scheduler_deadline_seconds: float = 180.0
+    # Short research (operator 2026-10-17, step 1 -- research only, never trades): after the
+    # long pass, the same job backtests the daily short setups in what is left of its hard
+    # cap (at most this many seconds), outside weekday 08:00-16:30 New York. Rows and verdicts
+    # are invisible to the long evidence gate; see app/backtesting/short_research.py.
+    backtest_short_research_enabled: bool = True
+    backtest_short_research_deadline_seconds: float = 45.0
     workflow_scan_default_universe_limit: int = 10
     schedule_timezone: str = "America/New_York"
     premarket_scan_enabled: bool = True

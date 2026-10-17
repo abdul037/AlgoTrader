@@ -49,8 +49,14 @@ def _timeframe(file_path: str) -> str:
     return parts[1].lower() if len(parts) >= 3 else ""
 
 
-def compute_verdicts(db: Any, settings: Any, *, now: Any = None) -> dict[str, dict[str, Any]]:
-    """Pooled OOS evidence per ``"<strategy>:<timeframe>"``."""
+def compute_verdicts(
+    db: Any, settings: Any, *, now: Any = None, pattern: str = "%:walk_forward_oos"
+) -> dict[str, dict[str, Any]]:
+    """Pooled OOS evidence per ``"<strategy>:<timeframe>"``.
+
+    ``pattern`` is a bound LIKE parameter (never inlined: under Postgres a literal ``:name``
+    in the SQL would parse as a bind). The default matches only the long rows.
+    """
 
     lookback = int(getattr(settings, "strategy_evidence_lookback_days", 7) or 7)
     min_trades = int(getattr(settings, "strategy_evidence_min_trades", 40) or 40)
@@ -58,7 +64,7 @@ def compute_verdicts(db: Any, settings: Any, *, now: Any = None) -> dict[str, di
     min_r = float(getattr(settings, "strategy_evidence_min_expectancy_r", 0.0) or 0.0)
     cutoff = ((now or utc_now()) - timedelta(days=lookback)).isoformat()
     with db.connect() as connection:
-        rows = connection.execute(_LATEST_OOS_SQL, ("%:walk_forward_oos", cutoff)).fetchall()
+        rows = connection.execute(_LATEST_OOS_SQL, (pattern, cutoff)).fetchall()
 
     pooled: dict[str, dict[str, float]] = {}
     for row in rows:
@@ -124,6 +130,23 @@ def refresh_verdicts(
                 "enforced": bool(getattr(settings, "require_strategy_oos_evidence", False)),
             },
         )
+    return verdicts
+
+
+# Short research (app/backtesting/short_research.py): rows are named "<strategy>:short" and
+# end ":walk_forward_oos_short", so the long pattern never matches them. Their verdicts keep
+# the native "<strategy>:short:<tf>" keys under their own key. Research only: evidence_blocker,
+# VERDICTS_KEY and the trading path never read it; only the live-scorecard report does.
+SHORT_OOS_PATTERN = "%:walk_forward_oos_short"
+SHORT_VERDICTS_KEY = "strategy_evidence:short_verdicts"
+
+
+def refresh_short_verdicts(db: Any, settings: Any, runtime_state: Any) -> dict[str, dict[str, Any]]:
+    """Pool the short rows with the long rules (same thresholds, same R) for reporting only."""
+
+    verdicts = compute_verdicts(db, settings, pattern=SHORT_OOS_PATTERN)
+    payload = {"computed_at": utc_now().isoformat(), "research_only": True, "verdicts": verdicts}
+    runtime_state.set(SHORT_VERDICTS_KEY, json.dumps(payload))
     return verdicts
 
 

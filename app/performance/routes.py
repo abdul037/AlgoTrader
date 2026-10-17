@@ -81,10 +81,16 @@ def live_scorecard(request: Request):
                 continue
             if fill > 0:
                 fills[str(row["proposal_id"])] = fill
+    from app.performance.strategy_evidence import SHORT_VERDICTS_KEY
     from app.workflow.shadow_ledger import shadow_ledger_report
 
     report = scorecard_report(state, fills)
     report["shadow_ledger"] = shadow_ledger_report(state)  # watchlist setups on later bars
+    try:  # short-setup backtests: research only, nothing on the trading path reads them
+        short_evidence = json.loads(state.get(SHORT_VERDICTS_KEY) or "{}")
+    except (TypeError, ValueError):
+        short_evidence = {}
+    report["short_evidence"] = short_evidence if isinstance(short_evidence, dict) else {}
     return report
 
 

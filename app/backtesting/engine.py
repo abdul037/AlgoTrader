@@ -17,6 +17,9 @@ Design rules (enforced by tests):
    reports can be reproduced.
 5. **Bar-frequency aware.** Annualization uses ``bars_per_year`` instead of a
    hardcoded 252. The caller must supply the correct value.
+6. **One side per run.** A run opens longs from BUYs or -- research only, with
+   ``short_entries`` -- shorts from bracketed ``entry_short`` SELLs; the opposite
+   signal closes. A long run is byte-identical to the pre-short engine.
 
 If any of these invariants are relaxed, the brief's live-readiness contract is
 broken. Do not work around them silently.
@@ -87,6 +90,9 @@ class EngineConfig:
     min_stop_session_atr_multiple: float = 0.0
     """Intraday only: widen a stop to at least this many prior-session ATRs below
     the fill (target widened to keep the signal's R:R). 0 = off."""
+    short_entries: bool = False
+    """Research only: open bracketed ``entry_short`` SELLs (filled at the bid) instead of
+    BUYs. Never set on the live evidence path; see app/backtesting/short_research.py."""
 
 
 class BacktestResult(BaseModel):
@@ -232,7 +238,7 @@ class BacktestEngine:
                     open_trade is None
                     and not at_session_end
                     and signal is not None
-                    and getattr(signal.action, "value", None) == "buy"
+                    and _opens_position(signal, short=run_config.short_entries)
                 ):
                     next_bar = _maybe_next_bar(normalized, index)
                     if next_bar is None:
@@ -356,6 +362,24 @@ def _override_cash(config: EngineConfig, initial_cash: float) -> EngineConfig:
         bars_per_year=config.bars_per_year,
         cost_model=config.cost_model,
         allow_extended_hours=config.allow_extended_hours,
+        short_entries=config.short_entries,
+    )
+
+
+def _opens_position(signal: Any, *, short: bool) -> bool:
+    """A BUY opens a long. A short run opens only on a bracketed ``entry_short`` SELL:
+    watches (``entry_short_watch``), bare exit SELLs and unbracketed SELLs never open one."""
+
+    action = getattr(signal.action, "value", None)
+    if not short:
+        return action == "buy"
+    metadata = getattr(signal, "metadata", None)
+    role = metadata.get("signal_role") if isinstance(metadata, dict) else None
+    return (
+        action == "sell"
+        and role == "entry_short"
+        and getattr(signal, "stop_loss", None) is not None
+        and getattr(signal, "take_profit", None) is not None
     )
 
 
@@ -440,10 +464,11 @@ def _evaluate_exit(
             fill = cost_model.exit_fill_price(raw_fill, side="sell", extended_hours=extended)
             return _ExitAction(fill, bar_time, bar["timestamp"], "take_profit")
 
-    # Strategy-driven exit: fills on the NEXT bar's open, not this close.
+    # Strategy-driven exit: fills on the NEXT bar's open, not this close. The opposite
+    # action closes: a SELL closes a long, a BUY closes a short.
     if (
         signal is not None
-        and getattr(signal.action, "value", None) == "sell"
+        and getattr(signal.action, "value", None) == ("buy" if open_trade.side == "sell" else "sell")
         and next_bar is not None
     ):
         ref_price = float(next_bar["open"])
@@ -479,11 +504,12 @@ def _attempt_entry(
     if extended and not config.allow_extended_hours:
         return None
     raw_price = next_open
-    fill_price = config.cost_model.entry_fill_price(raw_price, side="buy", extended_hours=extended)
+    side = "sell" if config.short_entries else "buy"  # a short sells at the bid
+    fill_price = config.cost_model.entry_fill_price(raw_price, side=side, extended_hours=extended)
 
     stop = _coerce_float(getattr(signal, "stop_loss", None))
     target = _coerce_float(getattr(signal, "take_profit", None))
-    if min_stop_distance > 0 and stop is not None:
+    if min_stop_distance > 0 and stop is not None and side == "buy":  # the floor is long-only
         stop, target = floored_stop_and_target(
             fill_price=fill_price,
             signal_price=float(getattr(signal, "price", fill_price) or fill_price),
@@ -512,11 +538,12 @@ def _attempt_entry(
         entry_timestamp_raw=next_bar["timestamp"],
         entry_price=fill_price,
         quantity=quantity,
-        side="buy",
+        side=side,
         stop_loss=stop,
         take_profit=target,
         entry_notional=notional,
-        entry_spread_usd=max(entry_spread, 0.0),
+        # A short fills below the reference price, so its spread cost is the negative gap.
+        entry_spread_usd=max(entry_spread, 0.0) if side == "buy" else abs(entry_spread),
         entry_bar_index=fill_bar_index,
         max_hold_bars=_max_hold_bars(signal),
     )
@@ -573,23 +600,27 @@ def _close_trade(
     exit_reason: str,
     cost_model: CostModel,
 ) -> tuple[float, dict[str, float], dict[str, Any], str | None]:
-    proceeds = open_trade.quantity * exit_price
-    exit_spread_usd = abs(proceeds - open_trade.quantity * _unadjusted_exit_price(exit_price, open_trade, cost_model))
-    financing_usd = cost_model.holding_cost_usd(
+    short = open_trade.side == "sell"
+    exit_notional = open_trade.quantity * exit_price
+    exit_spread_usd = abs(exit_notional - open_trade.quantity * _unadjusted_exit_price(exit_price, open_trade, cost_model))
+    holding_cost = cost_model.short_holding_cost_usd if short else cost_model.holding_cost_usd
+    financing_usd = holding_cost(
         notional_usd=open_trade.entry_notional,
         entry_time=open_trade.entry_time,
         exit_time=exit_time,
     )
     fx_usd = cost_model.fx_round_trip_cost_usd(notional_usd=open_trade.entry_notional)
     # Commission is charged on both legs; slippage drags both notionals; US equity
-    # regulatory fees apply to the sell leg only (the exit of a long).
+    # regulatory fees apply to the sell leg only (the exit of a long, the entry of a short).
     commission_usd = 2.0 * cost_model.commission_usd(quantity=open_trade.quantity)
     slippage_usd = cost_model.slippage_usd(
         notional_usd=open_trade.entry_notional
-    ) + cost_model.slippage_usd(notional_usd=proceeds)
+    ) + cost_model.slippage_usd(notional_usd=exit_notional)
     regulatory_usd = cost_model.regulatory_sell_fee_usd(
-        notional_usd=proceeds, quantity=open_trade.quantity
+        notional_usd=open_trade.entry_notional if short else exit_notional, quantity=open_trade.quantity
     )
+    # A short's collateral (its entry notional) comes back plus (entry - exit) per share.
+    proceeds = 2.0 * open_trade.entry_notional - exit_notional if short else exit_notional
     realized = proceeds - financing_usd - fx_usd - commission_usd - slippage_usd - regulatory_usd
     invested = open_trade.entry_notional
     pnl_usd = realized - invested
@@ -616,6 +647,8 @@ def _close_trade(
         "slippage_usd": round(slippage_usd, 6),
         "regulatory_usd": round(regulatory_usd, 6),
     }
+    if short:  # long trade dicts keep their exact keys
+        trade_record["side"] = "short"
     cost_event = {
         "spread_usd": open_trade.entry_spread_usd + exit_spread_usd,
         "financing_usd": financing_usd,
@@ -644,6 +677,9 @@ def _mark_to_market(
 ) -> float:
     if open_trade is None:
         return cash
+    if open_trade.side == "sell":  # the collateral back plus the short's open gain
+        close = float(bar["close"])
+        return cash + open_trade.entry_notional + open_trade.quantity * (open_trade.entry_price - close)
     return cash + open_trade.quantity * float(bar["close"])
 
 

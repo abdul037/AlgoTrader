@@ -19,7 +19,7 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Iterable
 
 import pandas as pd
@@ -91,6 +91,11 @@ class CostModel:
     where participation == order_notional / average_daily_dollar_volume. Zero disables
     ADV-based impact (callers that have no ADV rely on ``slippage_bps`` instead)."""
 
+    short_borrow_fee_daily_pct: float = 0.0
+    """Stock-borrow fee on a short's entry notional per calendar day held, on top of the
+    overnight fee. 0 for eToro CFDs, whose overnight fee already prices a short CFD. Read only
+    by :meth:`short_holding_cost_usd` (short research); no long path reads it."""
+
     @classmethod
     def alpaca_equities(cls) -> "CostModel":
         """Realistic cost defaults for US equities executed via Alpaca paper/live.
@@ -104,6 +109,8 @@ class CostModel:
           slippage: a conservative 1 bps/leg of non-spread execution drag
           impact: square-root model, coef 0.1 (trading 100% of ADV ~= 10% impact)
           min position: Alpaca supports fractional shares from $1; floor at $1
+          short borrow: 0.30%/year, an easy-to-borrow general-collateral assumption
+            (hard-to-borrow names cost far more), accrued per calendar day on /360
         """
 
         return cls(
@@ -121,6 +128,7 @@ class CostModel:
             finra_taf_per_share=0.000166,
             finra_taf_max_usd=8.30,
             impact_coefficient=0.1,
+            short_borrow_fee_daily_pct=0.30 / 100.0 / 360.0,
         )
 
     def half_spread_fraction(self, *, extended_hours: bool = False) -> float:
@@ -204,6 +212,27 @@ class CostModel:
         effective_days = holding_days + weekend_crossings * (self.weekend_multiplier - 1.0)
         return notional_usd * self.overnight_fee_daily_pct * effective_days
 
+    def short_holding_cost_usd(
+        self,
+        *,
+        notional_usd: float,
+        entry_time: datetime,
+        exit_time: datetime,
+    ) -> float:
+        """Financing for a short: the overnight fee (side-agnostic) plus stock borrow.
+
+        Borrow accrues per calendar day held (UTC dates), weekend days included, with no
+        Friday multiplier: a lender charges for the days themselves.
+        """
+
+        overnight = self.holding_cost_usd(
+            notional_usd=notional_usd, entry_time=entry_time, exit_time=exit_time
+        )
+        if notional_usd <= 0 or self.short_borrow_fee_daily_pct <= 0 or exit_time <= entry_time:
+            return overnight
+        days = (exit_time.astimezone(UTC).date() - entry_time.astimezone(UTC).date()).days
+        return overnight + notional_usd * self.short_borrow_fee_daily_pct * max(days, 0)
+
     def fx_round_trip_cost_usd(self, *, notional_usd: float) -> float:
         """Dollar FX spread cost for a round-trip in a non-base-currency instrument."""
 
@@ -256,7 +285,8 @@ class CostModel:
         """SEC Section 31 + FINRA TAF fees, charged on the sell leg only.
 
         US equity regulatory fees apply to sales, not purchases. For a long
-        round-trip that is the exit; callers must invoke this only on the sell.
+        round-trip that is the exit, for a short the entry; callers must invoke
+        this only on the sell.
         """
 
         if notional_usd <= 0:

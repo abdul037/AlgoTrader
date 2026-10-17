@@ -75,6 +75,8 @@ def make_settings(tmp_path: Path, **overrides) -> AppSettings:
         "screener_min_accuracy_score": 0.52,
         "screener_min_confirmation_score": 0.45,
         "screener_max_false_positive_risk": 0.68,
+        # Wall-clock dependent (quiet hours); its own tests enable it and inject the clocks.
+        "backtest_short_research_enabled": False,
     }
     defaults.update(overrides)
     return AppSettings(**defaults)
