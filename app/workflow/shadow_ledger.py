@@ -19,6 +19,15 @@ sell signals, financing and max-hold metadata are not replayed. R = (exit - entr
 It reads the watchlists and daily bars (the deep scan's request, so usually the cache) and
 writes only ``premarket:shadow_ledger`` (+ its small state key) and one run log. It never
 creates proposals or orders and never touches the eToro mirror.
+
+Shorts (operator 2026-10-17, step 2): the watchlists' ``short_signals`` are followed in their
+own ledger, ``premarket:shadow_ledger:short`` (+ its own state key), by
+``refresh_short_shadow_ledger``. It never shares a run, a key or a budget with the long ledger
+above: it runs off-hours only (never on weekdays 08:00-16:30 New York time, never while crypto
+trades around the clock) on a small budget that bounds its fetches too. The engine's short
+rules: entry at the next open's bid; the stop is above (stop first; a gap fills at the worse
+of the stop and the open), the target below; the cover pays the ask; R = (entry - exit) /
+|entry - stop|. Nothing ever trades a short.
 """
 
 from __future__ import annotations
@@ -39,6 +48,19 @@ FIRST_LOOKBACK_DAYS = 10  # watchlists read on the very first run
 RUN_SECONDS = 60.0  # per maintenance run; symbols not reached are scored on the next one
 RUN_AFTER = (9, 35)  # New York time: after the deep scan's latest cutoff (09:30)
 _FINAL = ("closed", "skipped_open", "no_risk")
+SHORT_LEDGER_KEY = "premarket:shadow_ledger:short"
+SHORT_STATE_KEY = "premarket:shadow_ledger:short:state"
+SHORT_RUN_SECONDS = 20.0  # per off-hours run, its fetches included
+SHORT_QUIET = ((8, 0), (16, 30))  # New York, Mon-Fri: from before the pre-market scan to the close
+LONG_RULES = (
+    "next-open entry; stop first, gap-through; target at target; spread both ways; "
+    "stop_target = no time exit, time_14d = fold-length exit"
+)
+SHORT_RULES = (
+    "short, never traded: next-open entry at the bid; stop above, first, gap-through at the "
+    "open; target below, at target; cover at the ask; R = (entry - exit) / risk; "
+    "stop_target = no time exit, time_14d = fold-length exit"
+)
 
 
 def refresh_shadow_ledger(service: Any, *, budget_seconds: float = RUN_SECONDS) -> dict | None:
@@ -106,10 +128,115 @@ def refresh_shadow_ledger(service: Any, *, budget_seconds: float = RUN_SECONDS) 
     return summary
 
 
+def refresh_short_shadow_ledger(
+    service: Any, *, budget_seconds: float = SHORT_RUN_SECONDS, clock: Any = time.monotonic
+) -> dict | None:
+    """Once a day, OFF-HOURS: add the finished watchlists' short setups, re-score open shorts.
+
+    None when nothing was due; every check before the first database call. A symbol whose
+    bars cannot be had is tried again the next day (each run re-scores from all the bars)."""
+
+    from app.workflow.premarket_deep_scan import _zone
+
+    settings = service.settings
+    if not (
+        bool(getattr(settings, "premarket_deep_scan_enabled", False))
+        and bool(getattr(settings, "premarket_short_shadow_enabled", True))
+    ):
+        return None
+    if bool(getattr(settings, "crypto_trading_enabled", False)):
+        return None  # crypto trades around the clock: no tick is off-hours then
+    now = utc_now()
+    if _short_quiet(now, settings):
+        return None
+    deadline = clock() + budget_seconds
+    today = now.astimezone(_zone(settings)).date()
+    state = _load(service.runtime_state, SHORT_STATE_KEY)
+    if state.get("done_on") == today.isoformat():
+        return None
+    ledger = _load(service.runtime_state, SHORT_LEDGER_KEY)
+    entries: dict[str, dict[str, Any]] = ledger.setdefault("entries", {})
+    added = _ingest(service.runtime_state, entries, state, today, short=True)
+    tried = set(state.get("tried_symbols") or []) if state.get("tried_day") == str(today) else set()
+    symbols = sorted({e["symbol"] for e in entries.values() if e.get("status") not in _FINAL})
+    limit = float(getattr(settings, "screener_market_data_timeout_seconds", 20.0) or 0.0)
+    scored, failed = 0, []
+    for symbol in symbols:
+        if symbol in tried:
+            continue
+        remaining = deadline - clock()
+        if remaining < 1.0:
+            break  # the rest on the next run
+        tried.add(symbol)
+        bars = _bars(service, symbol, today, timeout=min(limit, remaining) if limit else remaining)
+        own = sorted(
+            (e for e in entries.values() if e["symbol"] == symbol),
+            key=lambda e: (e["spec_key"], e["signal_bar"], e["signal_date"]),
+        )
+        try:
+            if bars is None:
+                failed.append(symbol)
+                continue
+            _score_symbol(own, bars, today)
+            scored += 1
+        except Exception:  # noqa: BLE001 - one symbol never stops the others
+            failed.append(symbol)
+    cutoff = (today - timedelta(days=KEEP_DAYS)).isoformat()
+    for key in [k for k, e in entries.items() if str(e.get("signal_date")) < cutoff]:
+        entries.pop(key)
+    ledger["updated_at"] = utc_now().isoformat()
+    _save(service.runtime_state, SHORT_LEDGER_KEY, ledger)
+    state.update(tried_day=str(today), tried_symbols=sorted(tried))
+    if tried >= set(symbols):
+        state["done_on"] = str(today)
+    _save(service.runtime_state, SHORT_STATE_KEY, state)
+    summary = {
+        "added": added,
+        "scored_symbols": scored,
+        "failed_symbols": failed,
+        "entries": len(entries),
+        "open": sum(1 for e in entries.values() if e.get("status") == "open"),
+        "done_for_today": state.get("done_on") == str(today),
+        "side": "short",
+        "shadow_only": True,
+    }
+    service.run_logs.log("premarket_short_shadow_ledger_updated", summary)
+    return summary
+
+
+def _short_quiet(now: Any, settings: Any) -> bool:
+    """Weekdays 08:00 (or the pre-market scan, if earlier) to 16:30, both in New York time
+    (fixed: the US session) and in ``schedule_timezone`` (where the session buckets run)."""
+
+    from zoneinfo import ZoneInfo
+
+    from app.workflow.premarket_deep_scan import _zone
+
+    start, end = SHORT_QUIET
+    try:
+        scan = tuple(int(p) for p in str(settings.premarket_scan_time_local).split(":")[:2])
+    except (AttributeError, TypeError, ValueError):
+        scan = start
+    for zone in (ZoneInfo("America/New_York"), _zone(settings)):
+        local = now.astimezone(zone)
+        if local.weekday() < 5 and min(start, scan) <= (local.hour, local.minute) < end:
+            return True
+    return False
+
+
 def shadow_ledger_report(runtime_state: Any, *, recent: int = 40) -> dict[str, Any]:
-    """Shadow R per strategy and cohort next to the backtest's expectation."""
+    """Shadow R per strategy and cohort next to the backtest's expectation.
+
+    The top level is the long ledger; ``short`` is the short ledger's, apart."""
 
     entries = list((_load(runtime_state, LEDGER_KEY).get("entries") or {}).values())
+    report = _side_report(entries, recent, LONG_RULES)
+    shorts = list((_load(runtime_state, SHORT_LEDGER_KEY).get("entries") or {}).values())
+    report["short"] = _side_report(shorts, recent, SHORT_RULES)
+    return report
+
+
+def _side_report(entries: list[dict[str, Any]], recent: int, rules: str) -> dict[str, Any]:
     taken = [e for e in entries if e.get("status") in {"open", "closed"}]
     groups: dict[str, list[dict[str, Any]]] = {}
     for entry in taken:
@@ -130,25 +257,28 @@ def shadow_ledger_report(runtime_state: Any, *, recent: int = 40) -> dict[str, A
         "strategies": {name: _summary(rows) for name, rows in sorted(groups.items())},
         "cohorts": {name: _summary(rows) for name, rows in cohorts.items()},
         "recent": newest[-recent:],
-        "rules": "next-open entry; stop first, gap-through; target at target; spread both ways; "
-        "stop_target = no time exit, time_14d = fold-length exit",
+        "rules": rules,
     }
 
 
 def score_entry(
     entry: dict[str, Any], bars: list[tuple[str, float, float, float, float]], today: date
 ) -> None:
-    """Score one entry on (session date, open, high, low, close) bars, oldest first."""
+    """Score one entry on (session date, open, high, low, close) bars, oldest first.
+
+    A short (``side`` "short") mirrors it: the bid in, the stop above, the target below,
+    the ask out, R = (entry - exit) / risk."""
 
     from app.backtesting.cost_model import CostModel
 
     cost = CostModel()
+    side = "sell" if entry.get("side") == "short" else "buy"
     after = [i for i, bar in enumerate(bars) if bar[0] > entry["signal_bar"]]
     if not after:
         entry["status"] = "pending"  # the next session has not completed yet
         return
     first = after[0]
-    fill = cost.entry_fill_price(bars[first][1], side="buy", extended_hours=False)
+    fill = cost.entry_fill_price(bars[first][1], side=side, extended_hours=False)
     stop, target = float(entry["stop"]), float(entry["target"])
     risk = abs(fill - stop)
     if not risk > 0:
@@ -159,14 +289,14 @@ def score_entry(
     entry.update(entry_date=bars[first][0], entry_price=round(fill, 4))
 
     def leg(index: int, raw: float, reason: str) -> dict[str, Any]:
-        price = cost.exit_fill_price(raw, side="buy", extended_hours=False)
+        price = cost.exit_fill_price(raw, side=side, extended_hours=False)
         held = index - first + 1
         return {
             "status": "closed",
             "reason": reason,
             "exit_date": bars[index][0],
             "exit_price": round(price, 4),
-            "r": round((price - fill) / risk, 3),
+            "r": round(((fill - price) if side == "sell" else (price - fill)) / risk, 3),
             "bars": held,
         }
 
@@ -176,7 +306,12 @@ def score_entry(
         day, bar_open, high, low, _close = bars[index]
         if timed is None and day >= horizon:  # the fold ended before this session
             timed = leg(index - 1, bars[index - 1][4], "time_exit")
-        if low <= stop:
+        if side == "sell":  # a short: the stop is above, the target below
+            if high >= stop:
+                hit = leg(index, max(stop, bar_open), "stop")
+            elif low <= target:
+                hit = leg(index, target, "target")
+        elif low <= stop:
             hit = leg(index, min(stop, bar_open), "stop")
         elif high >= target:
             hit = leg(index, target, "target")
@@ -215,7 +350,16 @@ def _score_symbol(entries: list[dict[str, Any]], bars: list[tuple], today: date)
             busy_until[spec] = None
 
 
-def _ingest(runtime_state: Any, entries: dict[str, Any], state: dict[str, Any], today: date) -> int:
+def _ingest(
+    runtime_state: Any,
+    entries: dict[str, Any],
+    state: dict[str, Any],
+    today: date,
+    *,
+    short: bool = False,
+) -> int:
+    """Add the finished watchlists' setups: ``signals``, or ``short_signals`` for the shorts."""
+
     from app.workflow.premarket_deep_scan import FINAL_STATUSES, load_watchlist
 
     last = state.get("ingested_through")
@@ -230,8 +374,9 @@ def _ingest(runtime_state: Any, entries: dict[str, Any], state: dict[str, Any], 
         final = watchlist.get("status") in FINAL_STATUSES
         if day == today and not final:
             break  # today's scan may still finish: look again next run
-        for item in (watchlist.get("signals") or []) if final else []:
-            entry = _entry(item, day.isoformat())
+        items = watchlist.get("short_signals" if short else "signals") or []
+        for item in items if final else []:
+            entry = (_short_entry if short else _entry)(item, day.isoformat())
             if entry is not None and entry["key"] not in entries:
                 entries[entry.pop("key")] = entry
                 added += 1
@@ -268,7 +413,40 @@ def _entry(item: dict[str, Any], signal_date: str) -> dict[str, Any] | None:
     }
 
 
-def _bars(service: Any, symbol: str, today: date) -> list[tuple] | None:
+def _short_entry(item: dict[str, Any], signal_date: str) -> dict[str, Any] | None:
+    """A ``short_signals`` setup: 0 < target < entry < stop, never tradeable."""
+
+    try:
+        stop, target, price = (float(item[k]) for k in ("stop", "target", "entry"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(math.isfinite(v) for v in (stop, target, price)) or not 0 < target < price < stop:
+        return None
+    signal_bar = str(item.get("signal_bar_ts") or "")[:10]
+    symbol, spec_key = str(item.get("symbol") or "").upper(), str(item.get("spec_key") or "")
+    if item.get("side") != "short" or len(signal_bar) != 10 or not symbol or not spec_key:
+        return None
+    expected = item.get("oos_expectancy_r")  # the short research verdict, if any
+    return {
+        "key": f"{signal_date}|{symbol}|{spec_key}|short",
+        "signal_date": signal_date,
+        "signal_bar": signal_bar,
+        "symbol": symbol,
+        "spec_key": spec_key,
+        "side": "short",
+        "kind": item.get("kind"),
+        "tradeable": False,
+        "expected_r": float(expected) if _finite(expected) else None,
+        "signal_price": price,
+        "stop": stop,
+        "target": target,
+        "status": "pending",
+    }
+
+
+def _bars(
+    service: Any, symbol: str, today: date, timeout: float | None = None
+) -> list[tuple] | None:
     """(session date, open, high, low, close) of completed daily bars, oldest first."""
 
     from datetime import datetime
@@ -277,7 +455,7 @@ def _bars(service: Any, symbol: str, today: date) -> list[tuple] | None:
 
     now_ny = datetime.combine(today, datetime.min.time(), tzinfo=_zone(service.settings))
     try:
-        frame = _fetch_completed(service, symbol, now_ny, False)
+        frame = _fetch_completed(service, symbol, now_ny, False, timeout)
     except Exception:  # noqa: BLE001 - no data this run: scored on the next one
         return None
     if frame is None or len(frame) == 0:

@@ -235,6 +235,9 @@ class AppSettings(BaseSettings):
     premarket_deep_scan_cutoff_local: str = "09:20"
     premarket_deep_scan_max_items: int = 25
     premarket_deep_scan_notify: bool = False
+    # Shorts step 2 (operator 2026-10-17): the deep scan also lists bracketed short setups and an
+    # off-hours shadow ledger follows them. Never traded; off stops both, the long scan unchanged.
+    premarket_short_shadow_enabled: bool = True
     premarket_scan_time_local: str = "08:30"
     market_open_scan_enabled: bool = True
     market_open_scan_time_local: str = "09:35"

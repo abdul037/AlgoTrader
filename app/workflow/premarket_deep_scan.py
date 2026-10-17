@@ -24,6 +24,12 @@ feed outage pauses it and the next tick retries: an eToro rate-limit cooldown, o
 a row with no data while a symbol known to have data has none either (dead tickers next to
 each other are gaps, not an outage). At the cutoff (09:20 ET by default, never later than
 the 09:30 open) it finishes with what it has.
+
+Shorts (operator 2026-10-17, step 2 -- SHADOW ONLY): a bracketed ``entry_short`` SELL is listed
+in ``short_signals`` with ``tradeable`` False, never in ``signals``, the ranked items, the
+coverage record or the notification; nothing anywhere trades a short. Its backtest figures come
+from the short research verdicts (a reporting-only key the live evidence gate never reads).
+A short that fails to record counts in ``short_errors`` and never stops the long scan.
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ from __future__ import annotations
 import json
 import math
 import time
+from contextlib import suppress
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -47,6 +54,9 @@ TASK = "premarket_scan"
 FINAL_STATUSES = frozenset(
     {"complete", "complete_with_gaps", "incomplete_at_cutoff", "missed_cutoff"}
 )
+# The short research verdicts (backtests of short setups, reporting only): figures for the
+# short items, never for the live gate. The key may not exist yet; the figures are then None.
+SHORT_VERDICTS_KEY = "strategy_evidence:short_verdicts"
 DEFAULT_CUTOFF = (9, 20)
 LATEST_CUTOFF = (9, 30)  # the session opens: a shadow scan never runs into it
 OUTAGE_STREAK = 3  # symbols in a row with no usable data: a feed outage, not bad symbols
@@ -108,7 +118,7 @@ def run_premarket_deep_scan(
         return _response("skipped", f"Pre-market watchlist for {session_date} already done.")
     if watchlist and not _resumable(watchlist):
         watchlist = {}  # edited or an older shape: start over instead of failing every tick
-    for optional in ("notes", "failed_symbols"):
+    for optional in ("notes", "failed_symbols", "short_signals"):
         if watchlist:
             watchlist.setdefault(optional, [])
     if now_ny >= cutoff and not watchlist:
@@ -201,6 +211,8 @@ def run_premarket_deep_scan(
             "paused_reason": watchlist.get("paused_reason"),
             "notes": list(watchlist.get("notes") or [])[:10],
             "top": top,
+            "short_signals": len(watchlist.get("short_signals") or []),
+            "short_errors": int(watchlist.get("short_errors") or 0),
             "shadow_only": True,
         },
     )
@@ -255,6 +267,8 @@ def _new_watchlist(session_date: str, symbols: list[str], spec_keys: list[str]) 
         "errors": [],
         "notes": [],
         "failed_symbols": [],
+        "short_signals": [],  # never traded: kept apart from signals and the items
+        "short_errors": 0,
     }
 
 
@@ -318,10 +332,15 @@ def _rewind(watchlist: dict[str, Any], count: int, *, pause: bool = True) -> Non
         watchlist["paused_reason"] = "market_data_unavailable"
 
 
-def _fetch_completed(service: Any, symbol: str, now_ny: datetime, force_refresh: bool) -> Any:
+def _fetch_completed(
+    service: Any, symbol: str, now_ny: datetime, force_refresh: bool, timeout: float | None = None
+) -> Any:
     from app.screener.scan_support import _bounded_call
 
-    timeout = float(getattr(service.settings, "screener_market_data_timeout_seconds", 20.0) or 0.0)
+    if timeout is None:  # the short ledger passes what is left of its own budget
+        timeout = float(
+            getattr(service.settings, "screener_market_data_timeout_seconds", 20.0) or 0.0
+        )
     history = _bounded_call(
         f"{symbol}_1d_history",
         timeout,
@@ -373,6 +392,7 @@ def _scan_symbol(service, watchlist, symbol, specs_by_key, context, now_ny, forc
         round(last_volume / prior_volume, 3) if prior_volume and last_volume is not None else None
     )
     bucket = correlation_bucket_for_symbol(symbol)
+    shorts = bool(getattr(service.settings, "premarket_short_shadow_enabled", True))
     with precomputed_indicators(history):
         for spec_key in list(watchlist.get("specs") or []):
             spec = specs_by_key.get(spec_key)
@@ -387,7 +407,23 @@ def _scan_symbol(service, watchlist, symbol, specs_by_key, context, now_ny, forc
             item = _item(signal, symbol, spec, spec_key, last, relative_volume, bucket, context)
             if item is not None:
                 watchlist["signals"].append(item)
+            elif shorts:
+                short = (signal, symbol, spec, spec_key, last, relative_volume, bucket, context)
+                _record_short(watchlist, short)
     return "ok"
+
+
+def _record_short(watchlist: dict[str, Any], args: tuple) -> None:
+    """Add a short setup to ``short_signals``; a failure is counted, never raised.
+
+    It never appends to ``errors`` (``_rewind`` relies on that) or ``failed_symbols``."""
+
+    try:
+        item = _short_item(*args)
+        if item is not None:
+            watchlist.setdefault("short_signals", []).append(item)
+    except Exception:  # noqa: BLE001 - a short (shadow only) never stops the long scan
+        watchlist["short_errors"] = int(watchlist.get("short_errors") or 0) + 1
 
 
 def _item(signal, symbol, spec, spec_key, last, relative_volume, bucket, context) -> dict | None:
@@ -448,6 +484,65 @@ def _item(signal, symbol, spec, spec_key, last, relative_volume, bucket, context
             and not pending
         ),
     }
+
+
+def _short_item(
+    signal, symbol, spec, spec_key, last, relative_volume, bucket, context
+) -> dict | None:
+    """A bracketed short setup (0 < target < entry < stop): listed, NEVER tradeable.
+
+    Only a SELL with ``signal_role`` "entry_short" is a short; other SELLs are exits or
+    ``entry_short_watch`` hints, which have no stop and target."""
+
+    if signal is None or str(getattr(signal.action, "value", signal.action)).lower() != "sell":
+        return None
+    metadata = dict(signal.metadata or {})
+    if metadata.get("signal_role") != "entry_short":
+        return None
+    price, stop, target = (_finite(v) for v in (signal.price, signal.stop_loss, signal.take_profit))
+    if price is None or stop is None or target is None or not (0 < target < price < stop):
+        return None
+    weak = (
+        metadata.get("source") == "supervised_weak_valid"
+        or metadata.get("signal_classification") == "supervised_weak_valid"
+        or bool(metadata.get("weak_signal_kind"))
+    )
+    verdicts = context["short_verdicts"]()
+    # compute_verdicts' key for the '<name>:short' rows; else a payload keyed like the long one
+    verdict = verdicts.get(f"{spec.name}:short:1d") or verdicts.get(spec_key) or {}
+    return {
+        "symbol": symbol,
+        "strategy": str(spec.name),
+        "spec_key": spec_key,
+        "side": "short",
+        "kind": "weak" if weak else "strict",
+        "signal_bar_ts": str(last["timestamp"]),
+        "close": _finite(last["close"], 4),
+        "entry": round(price, 4),
+        "stop": round(stop, 4),
+        "target": round(target, 4),
+        "rr": round((price - target) / (stop - price), 3),
+        "stop_pct": round((stop - price) / price * 100.0, 3),
+        "relative_volume": relative_volume,
+        "oos_expectancy_r": _finite(verdict.get("oos_expectancy_r")),
+        "oos_trades": verdict.get("oos_trades"),
+        "holdout_trades": verdict.get("holdout_trades"),
+        "correlation_bucket": bucket,
+        "tradeable": False,  # shorts are never traded (operator 2026-10-17: shadow only)
+        "shadow_only": True,
+    }
+
+
+def _short_rank_key(item: dict[str, Any]) -> tuple[Any, ...]:
+    """Short research expectancy first (no verdict ranks last), then R:R, then name."""
+
+    expectancy = item.get("oos_expectancy_r")
+    return (
+        -float(expectancy) if expectancy is not None else 9.0,
+        -float(item.get("rr") or 0.0),
+        str(item.get("symbol")),
+        str(item.get("spec_key")),
+    )
 
 
 def _prefetch(service: Any) -> dict[str, Any]:
@@ -514,6 +609,18 @@ def _prefetch(service: Any) -> dict[str, Any]:
         etoro_open = []
     blocked = {str(s).upper() for s in getattr(settings, "blocked_instruments", []) or []}
     allowed = {str(s).upper() for s in getattr(settings, "allowed_instruments", []) or []} - blocked
+    short_cache: dict[str, dict[str, Any]] = {}
+
+    def short_verdicts() -> dict[str, Any]:  # read once, at the first short setup (if any)
+        if "verdicts" not in short_cache:
+            try:
+                parsed = json.loads(service.runtime_state.get(SHORT_VERDICTS_KEY) or "{}")
+                verdicts = parsed.get("verdicts") if isinstance(parsed, dict) else None
+            except Exception:  # noqa: BLE001 - figures only: the shorts are listed without them
+                verdicts = None
+            short_cache["verdicts"] = verdicts if isinstance(verdicts, dict) else {}
+        return short_cache["verdicts"]
+
     return {
         "allowed": allowed,  # the instrument resolver refuses anything else
         "blacklisted": blacklisted,
@@ -525,6 +632,7 @@ def _prefetch(service: Any) -> dict[str, Any]:
         "pending": pending,
         "etoro_open": set(etoro_open),
         "etoro_bucket_full": lambda symbol: bucket_blockers(symbol, etoro_open),
+        "short_verdicts": short_verdicts,  # the short items' figures only, never the gate's
     }
 
 
@@ -540,6 +648,10 @@ def _finalize(watchlist: dict[str, Any], settings: Any, *, complete: bool) -> No
     max_items = max(int(getattr(settings, "premarket_deep_scan_max_items", 25) or 25), 1)
     watchlist["items"] = [s for s in signals if s.get("tradeable")][:max_items]
     watchlist["shadow_items"] = [s for s in signals if not s.get("tradeable")][:25]
+    shorts = list(watchlist.get("short_signals") or [])  # a list stored by older code has none
+    with suppress(Exception):  # an odd short item never blocks finishing the long list
+        shorts.sort(key=_short_rank_key)
+    watchlist["short_signals"] = shorts
     gaps = bool(watchlist.get("failed_symbols"))  # symbols with no usable data
     watchlist["status"] = (
         ("complete_with_gaps" if gaps else "complete") if complete else "incomplete_at_cutoff"

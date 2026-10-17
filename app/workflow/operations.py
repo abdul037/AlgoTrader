@@ -791,7 +791,7 @@ def refresh_phase_gates(service: Any, completed: list[str], errors: list[str]) -
     from app.broker.etoro_live_test_order import run_from_maintenance
     from app.performance.go_live_readiness import refresh_readiness
     from app.performance.strategy_evidence import refresh_verdicts
-    from app.workflow.shadow_ledger import refresh_shadow_ledger
+    from app.workflow.shadow_ledger import refresh_shadow_ledger, refresh_short_shadow_ledger
 
     run_from_maintenance(service, completed)  # every tick: one-off eToro live test order, if requested
     if not service._is_due("phase_gates:last_run_at", 30):
@@ -806,6 +806,7 @@ def refresh_phase_gates(service: Any, completed: list[str], errors: list[str]) -
         ("go_live_readiness_refresh", lambda: bool(refresh_readiness(service.run_logs.db, *args))),
         ("etoro_live_reconcile", lambda: mirror is not None and mirror.reconcile() is not None),
         ("premarket_shadow_ledger", lambda: refresh_shadow_ledger(service) is not None),
+        ("premarket_short_shadow_ledger", lambda: refresh_short_shadow_ledger(service) is not None),
     ):
         try:
             if step():
