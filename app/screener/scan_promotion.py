@@ -213,12 +213,14 @@ def _weak_valid_count_rows(repository: Any) -> Any:
     whose ``.lower()`` can equal ``"candidate"``) and is NULL for the rest, which the
     count skips before reading a payload. ``create()`` always stores ``json.dumps`` of
     a dict, so a NULL payload cannot change whether a row loads either. Any other
-    repository (test fakes) keeps the plain ``list()`` call.
+    repository (test fakes) keeps the plain ``list()`` call. Like ``list()``, it first
+    writes this thread's queued scan rows (``flush``), so the window holds them too.
     """
     from app.storage.repositories import ScanDecisionRepository
 
     if type(repository) is not ScanDecisionRepository:
         return repository.list(limit=5000)
+    repository.flush()
     with repository.db.connect() as connection:
         rows = connection.execute(
             """

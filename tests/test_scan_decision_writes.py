@@ -32,7 +32,8 @@ from sqlalchemy import create_engine, text
 import app.utils.time as time_utils
 from app.live_signal_schema import MarketQuote
 from app.models.screener import ScanDecisionRecord, ScreenerRunResponse
-from app.screener.scan_promotion import _weak_valid_daily_count
+from app.screener import scan_promotion
+from app.screener.scan_promotion import _weak_valid_count_rows, _weak_valid_daily_count
 from app.screener.service import MarketScreenerService
 from app.storage import scan_decisions as scan_decisions_module
 from app.storage.db import Database, _postgres_engine_kwargs, _SqlAlchemyConnection
@@ -799,6 +800,26 @@ def _recording_reads(repository: ScanDecisionRepository, reads: list[Any]) -> No
         setattr(repository, name, wrapper)
 
 
+def _recording_count_reads(monkeypatch: pytest.MonkeyPatch, reads: list[Any]) -> None:
+    """Record the weak-valid daily count's read (P5) as what the count can use.
+
+    On the real repository P5 reads the newest 5,000 rows past list(), without the
+    payloads of the rows the count skips; the oracle class still calls list(limit=5000).
+    Both runs record one entry: every row's fields, its payload only where the count may
+    read it (a status that lowers to "candidate"), so window, ids and order still compare.
+    """
+
+    def wrapper(repository: Any) -> Any:
+        mark = len(reads)
+        rows = _weak_valid_count_rows(repository)
+        del reads[mark:]  # the oracle's list(limit=5000) inside it is this same read
+        usable = [r.model_dump(exclude=None if r.status.lower() == "candidate" else {"payload"}) for r in rows]
+        reads.append(("weak_valid_count_rows", "", [_canonical(item) for item in usable]))
+        return rows
+
+    monkeypatch.setattr(scan_promotion, "_weak_valid_count_rows", wrapper)
+
+
 def _scan_service(
     tmp_path, repository: ScanDecisionRepository, learning: _RecordingLearning, **settings: Any
 ) -> MarketScreenerService:
@@ -863,6 +884,7 @@ def test_whole_scans_write_and_read_exactly_as_before(tmp_path, monkeypatch, pat
         log = _StatementLog(db)
         reads: list[Any] = []
         _recording_reads(repository, reads)
+        _recording_count_reads(monkeypatch, reads)
         learning = _RecordingLearning()
         # Market data is fetched in the scan's own thread (no timeout worker), so a
         # read made as each fetch starts is a read in the middle of the scan.
@@ -909,6 +931,7 @@ def test_whole_scans_write_and_read_exactly_as_before(tmp_path, monkeypatch, pat
     statuses = {row["'status'"][1] for row in new["table"]}
     assert {"'no_signal'", "'candidate'"} <= statuses  # the scenario hits both kinds of write
     assert any(name == "get_latest" for name, _, _ in new["reads"])
+    assert [name for name, _, _ in new["reads"]].count("weak_valid_count_rows") == 3  # one per scan
     assert len(new["table"]) > 100
     starts = [committed for _, _, committed, _ in new["fetches"] if committed is not None]
     assert len(starts) == 6 and starts[0] == 0 and all(starts[1:])  # 3 scans x 2 symbols

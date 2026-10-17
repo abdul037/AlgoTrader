@@ -228,6 +228,40 @@ def test_count_keeps_the_newest_5000_row_window(tmp_path, freeze) -> None:
     assert narrowed == reference
 
 
+def test_count_inside_a_scan_writes_its_queued_rows_first_like_list(tmp_path, freeze, monkeypatch) -> None:
+    # P5 (this read) meets P6 (a scan's no_signal rows queued in its thread): list()
+    # writes the thread's queue before it reads, so the narrowed read must too, or a
+    # queued row is missing from the newest-5,000 window and an older promotion slides
+    # back in. The queue is empty when scan_universe counts today; a scan nested in
+    # another scan's deferred_writes() inherits that scan's queue.
+    from app.storage import scan_decisions as scan_decisions_module
+
+    freeze(NOW)
+    monkeypatch.setattr(scan_decisions_module, "utc_now", lambda: NOW)  # the queued row's created_at
+    repository = _repository(tmp_path)
+    oldest = _row(created_at="2026-10-17T08:00:00.000001+00:00", payload=_weak())
+    newest = [_row(created_at=f"2026-10-17T12:00:0{index}.000001+00:00", payload=_weak()) for index in range(2)]
+    _insert(repository, [oldest, *_filler(4997), *newest])  # exactly 5,000 rows
+    service = SimpleNamespace(scan_decisions=repository)
+    queued = {
+        "scan_task": "intraday_scan", "strategy_name": "vwap_reclaim", "timeframe": "5m",
+        "status": "no_signal", "final_score": None, "alert_eligible": False, "freshness": "fresh",
+        "reason_codes": ["no_signal"], "rejection_reasons": [], "payload": {},
+    }
+
+    with repository.deferred_writes():
+        repository.create_deferred(symbol="NVDA", **queued)
+        narrowed = _weak_valid_daily_count(service)  # first: list() would write the queue
+        reference = _reference_weak_valid_daily_count(service)
+        repository.create_deferred(symbol="AMD", **queued)
+        slim_ids = [row.id for row in _weak_valid_count_rows(repository)]
+        full_ids = [row.id for row in repository.list(limit=5000)]
+
+    assert reference == 2  # the queued row pushes the oldest promotion out of the window
+    assert narrowed == reference
+    assert slim_ids == full_ids and len(slim_ids) == 5000
+
+
 @pytest.mark.parametrize(
     "unreadable",
     [
