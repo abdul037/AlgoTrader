@@ -59,8 +59,12 @@ without explicit operator sign-off recorded here.
   failure keeps the estimate. 10 of 10 targeted mutations caught; full suite 988 passed.
 - **20:34 UTC pushed `b201325`; deploy SUCCESS 20:38.** The first tick (20:39) re-booked all
   three closes from eToro's history: MSFT 544.60 target +1.32 R +$36.29; COST 972.09 **target**
-  (was "other") +1.24 R +$25.90; AMD 541.52 stop -1.00 R -$155.51. eToro fees: $0.00 on the 1x
-  stock copies, $2.13 on the 2x AMD CFD (overnight) -- answers the open fee question below.
+  (was "other") +1.24 R +$25.90; AMD 541.52 stop -1.00 R -$155.51 (history `fees` 2.13 = the 2x
+  CFD's overnight charges). The history shows `fees` 0.0 on the 1x stocks, but the AlgoBot balance
+  (cash + invested at cost, every reconcile since 10-04) drops $1.00 at each stock buy and sell
+  (none on SPY, an ETF; $1.49 on the AMD CFD open; ~1% each way on the ETH test). Reconciled
+  exactly: $10,000 -> $9,829.59 = AMD -160.39, ETH -62.21, MSFT +34.29, COST +23.90, entry fees
+  of the 7 open positions -6.00 (all-in, 10-17 02:49 UTC).
 - **Phase 2: shadow forward ledger** (`app/workflow/shadow_ledger.py`): once a day after 09:35 ET
   every signal of each finished deep-scan watchlist is followed on later completed daily bars
   with the engine's fill rules (next-open entry; stop first, gap-through at the open; target at
@@ -1049,8 +1053,9 @@ Convened locally over the 31 unreviewed commits (`0a12efe..2575a1b`) plus the we
 
 - Evidence bar level: paper keeps `STRATEGY_EVIDENCE_MIN_EXPECTANCY_R` at 0; the eToro copy
   needs +0.03 R in code since 2026-10-16 (operator decision).
-- ~~Stock copy fees~~: answered 10-16 from eToro's trade history: $0.00 on 1x stock copies
-  (MSFT, COST); $2.13 overnight on the 2x AMD CFD.
+- Stock copy fees: AlgoBot pays $1 per stock trade each way (0.1% of a $1,000 position). If the
+  operator's $500 copy pays the same flat $1 on its ~$50 copied positions, that is ~2% each way:
+  operator to check one closed copied trade (e.g. COST 10-14) in the eToro app.
 - Branch `claude/repo-audit-962zde` is ~95 commits ahead of `main` and conflicts with
   it (main last updated by #31); needs a PR + conflict merge when the operator wants
   main current. Railway deploys from the branch, so production is unaffected.
