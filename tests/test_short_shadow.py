@@ -175,6 +175,64 @@ def test_golden_inputs_carry_short_setups(tmp_path, monkeypatch) -> None:
     assert [i["symbol"] for i in raw["short_signals"]] == ["S00", "S02"]
 
 
+def _recorded_fetches(monkeypatch) -> list[tuple[str, float]]:
+    """(label, timeout) of every bounded fetch. Each call goes straight to the stub feed, with
+    no worker thread: the stubs answer at once, and only the timeout handed over is checked."""
+
+    import app.screener.scan_support as support
+
+    seen: list[tuple[str, float]] = []
+
+    def recording(label, timeout_seconds, func, *args, **kwargs):
+        seen.append((label, timeout_seconds))
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(support, "_bounded_call", recording)
+    return seen
+
+
+def test_long_fetches_keep_the_market_data_timeout(tmp_path, monkeypatch) -> None:
+    # Step 2 threads an optional timeout through the long fetch helpers for the short ledger.
+    # The long deep scan (its scan and its outage probe) and the long ledger must still wait
+    # screener_market_data_timeout_seconds. 7.0 is not the 20.0 default, so a hard-coded
+    # timeout fails here as well.
+    from tests.conftest import make_settings
+
+    limit = 7.0
+    seen = _recorded_fetches(monkeypatch)
+    golden = _scan(
+        tmp_path / "a", monkeypatch, short_verdicts=True, screener_market_data_timeout_seconds=limit
+    )
+    calls = golden.market_data.calls
+    assert calls and [label for label, _ in seen] == [f"{s}_1d_history" for s in calls]
+    assert {timeout for _, timeout in seen} == {limit}
+
+    seen.clear()  # dead tickers side by side: the scan probes a known-good symbol, twice
+    probed = scan_tests._service(
+        tmp_path / "b",
+        monkeypatch,
+        market=scan_tests._MarketData(fail={"S03", "S04", "S05"}),
+        screener_market_data_timeout_seconds=limit,
+    )
+    _with_shorts(probed)
+    scan_tests._run(probed)
+    calls = probed.market_data.calls
+    assert calls.count("S02") == 3  # scanned, then probed before and after the retry
+    assert [label for label, _ in seen] == [f"{s}_1d_history" for s in calls]
+    assert {timeout for _, timeout in seen} == {limit}
+
+    seen.clear()
+    ledger = _ledger_service(tmp_path / "c", monkeypatch)  # the golden inputs, in session
+    ledger.settings = make_settings(
+        tmp_path / "c", premarket_deep_scan_enabled=True, screener_market_data_timeout_seconds=limit
+    )
+    assert shadow.refresh_shadow_ledger(ledger)["done_for_today"]
+    assert shadow.refresh_short_shadow_ledger(ledger) is None  # in session: no short fetch
+    fetched = [f"{call[0]}_1d_history" for call in ledger.market_data.calls]
+    assert fetched == ["S00_1d_history", "S01_1d_history"]
+    assert seen == [(label, limit) for label in fetched]
+
+
 # --------------------------------------------------------------------------- #
 # Deep scan: short setups are listed apart and never tradeable
 # --------------------------------------------------------------------------- #
