@@ -633,9 +633,7 @@ def create_app(
                     timeframes=list(app_settings.backtest_scheduler_timeframes) or ["1d"],
                     limit=limit,
                     walk_forward=True,
-                    deadline_seconds=max(
-                        float(app_settings.backtest_scheduler_deadline_seconds), 1.0
-                    ),
+                    deadline_seconds=max(float(app_settings.backtest_scheduler_deadline_seconds), 1.0),
                     start_offset=cursor,
                     start_unit=unit,
                 )

@@ -693,9 +693,14 @@ def _compile_metrics(
 ) -> dict[str, float]:
     total_return_pct = ((ending_cash - initial_cash) / initial_cash) * 100 if initial_cash else 0.0
     periods = max(len(equity_curve), 1)
-    annualized_return_pct = (
-        ((ending_cash / initial_cash) ** (bars_per_year / periods) - 1) * 100 if initial_cash > 0 else 0.0
-    )
+    if initial_cash <= 0:
+        annualized_return_pct = 0.0
+    elif ending_cash <= 0:
+        # Wiped out: a short gapped through its stop (an unlevered long cannot end below
+        # zero). A negative base to a fractional power is complex and used to drop the run.
+        annualized_return_pct = -100.0
+    else:
+        annualized_return_pct = ((ending_cash / initial_cash) ** (bars_per_year / periods) - 1) * 100
     metrics: dict[str, float] = {
         "total_return_pct": total_return_pct,
         "annualized_return_pct": annualized_return_pct,

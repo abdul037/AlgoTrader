@@ -17,10 +17,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 from app.backtesting import short_research
 from app.backtesting.batch import BatchBacktestService
+from app.backtesting.intraday_plan import splitter_for
 from app.backtesting.short_research import (
     CURSOR_KEY,
     MARGIN_SECONDS,
@@ -30,6 +32,7 @@ from app.backtesting.short_research import (
     run_short_pass,
     short_budget_seconds,
 )
+from app.models.signal import Signal, SignalAction
 from app.performance import strategy_evidence
 from app.performance.strategy_evidence import (
     SHORT_OOS_PATTERN,
@@ -230,6 +233,77 @@ def test_the_live_scorecard_reports_short_evidence(tmp_path) -> None:
     assert client.get("/performance/live-scorecard").json()["short_evidence"] == {}
 
 
+class _OneShort:
+    """One bracketed entry_short (stop 0.8% above, target 10% below) on one bar's close."""
+
+    name = "one_short"
+
+    def __init__(self, at):
+        self.at = at
+
+    def generate_signal(self, data, symbol):
+        last = data.iloc[-1]
+        if pd.Timestamp(last["timestamp"]) != self.at:
+            return None
+        price = float(last["close"])
+        return Signal(
+            symbol=symbol, strategy_name=self.name, action=SignalAction.SELL, rationale="squeeze",
+            price=price, stop_loss=price * 1.008, take_profit=price * 0.9, metadata={"signal_role": "entry_short"},
+        )
+
+
+class _Squeeze:
+    """500 flat daily bars; inside one fold's test window, two bars after a short's signal,
+    the open gaps up 2.6x straight through its stop: the short loses more than the account."""
+
+    def __init__(self, settings):
+        stamps = pd.bdate_range("2024-01-02", periods=500, tz="UTC") + pd.Timedelta(hours=4)
+        frame = pd.DataFrame({"timestamp": stamps, "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0,
+                              "volume": 5_000_000.0})
+        windows = list(splitter_for("1d", settings).split(frame))
+        window = windows[len(windows) // 2]
+        in_test = frame.index[(frame["timestamp"] >= window.test_start) & (frame["timestamp"] <= window.test_end)]
+        gap = int(in_test[4])
+        frame.loc[gap:, ["open", "high", "low", "close"]] *= 2.6
+        self.frame, self.signal_at = frame, frame["timestamp"].iloc[gap - 2]
+
+    def get_history(self, symbol, *, timeframe, bars=None, provider=None, force_refresh=False):
+        return self.frame.copy()
+
+
+def test_a_short_that_loses_more_than_the_account_still_reaches_the_short_evidence(tmp_path, monkeypatch) -> None:
+    """The worst shorts used to vanish: the wiped-out run raised (a complex annualized return),
+    the pass logged it as a unit error and wrote no row, so the verdicts pooled only survivors."""
+
+    settings, db = _db(tmp_path, market_universe_symbols=["SQZ"])
+    repo, state, logs = BacktestRepository(db), RuntimeStateRepository(db), RunLogRepository(db)
+    bars = _Squeeze(settings)
+    service = BatchBacktestService(settings=settings, market_data_engine=bars, backtest_repository=repo,
+                                   run_log_repository=logs)
+    monkeypatch.setattr(short_research, "get_strategy", lambda name, **kwargs: _OneShort(bars.signal_at))
+    monkeypatch.setattr("app.broker.etoro_rate_limit.etoro_cooldown_remaining", lambda _settings: 0.0)
+
+    out = run_short_pass(service, state, pass_started=time.monotonic(), wall=lambda: SATURDAY_10_ET)
+
+    assert (out["rows"], out["errors"], out["first_error"], out["verdicts"]) == (6, 0, "", "refreshed")
+    with db.connect() as connection:
+        rows = connection.execute("SELECT metrics_json, trades_json FROM backtests").fetchall()
+    assert len(rows) == 6
+    for row in rows:
+        (trade,) = json.loads(row["trades_json"])
+        metrics = json.loads(row["metrics_json"])
+        json.dumps(metrics, allow_nan=False)  # finite: the row is valid Postgres JSONB too
+        assert trade["reason"] == "stop_loss" and trade["side"] == "short"
+        assert trade["pnl_usd"] < -1.5 * trade["notional_usd"]  # the whole 2.6x gap, uncapped
+        assert metrics["expectancy_usd"] == pytest.approx(trade["pnl_usd"])
+        assert metrics["total_return_pct"] < -100.0 and metrics["annualized_return_pct"] == -100.0
+    verdicts = json.loads(state.get(SHORT_VERDICTS_KEY))["verdicts"]
+    assert set(verdicts) == {f"{name}:short:1d" for name in SHORT_STRATEGIES}
+    for verdict in verdicts.values():  # counted, and it sinks the expectancy
+        assert verdict["oos_trades"] == 1 and verdict["oos_expectancy_usd"] < -15_000 and not verdict["passed"]
+    assert compute_verdicts(db, settings) == {}  # still nothing for the long gate
+
+
 # --------------------------------------------------------------------------- static guards
 
 
@@ -273,6 +347,31 @@ def test_the_trading_path_never_mentions_short_research() -> None:
                "walk_forward_oos_short", "short_entries=")
     hits = [f"{file}: {n}" for file, text in _sources(trading) for n in needles if n in text]
     assert hits == []
+
+
+def test_only_the_research_path_names_any_short_research_artefact() -> None:
+    """All of app/, not a list of directories: a new reader of the short rows, the short engine
+    or its cost legs anywhere (notifications, dashboard, workflow, main) must be added here on
+    purpose. main.py may hold only the one call after the long pass."""
+
+    needles = ("short_research", "SHORT_OOS", "SHORT_NAME_SUFFIX", "walk_forward_oos_short", "short_entries=",
+               ".short_entries", "refresh_short_verdicts", "pattern=SHORT", "short_holding_cost", "short_borrow_fee")
+    allowed = {
+        "app/backtesting/short_research.py",  # the pass
+        "app/backtesting/batch.py",  # run_short_research, its one entry point
+        "app/backtesting/engine.py",  # EngineConfig.short_entries
+        "app/backtesting/cost_model.py",  # the short-only cost legs
+        "app/performance/strategy_evidence.py",  # the short verdicts
+        "app/runtime_settings.py",  # its two settings
+    }
+    hits = {}
+    for file, text in _sources([APP]):
+        lines = [line.strip() for line in text.splitlines() if any(n in line for n in needles)]
+        if lines:
+            hits[file.relative_to(APP.parent).as_posix()] = lines
+    main = hits.pop("app/main.py", None)
+    assert main == ["app.state.batch_backtest_service.run_short_research(runtime_state_repository)"]
+    assert set(hits) <= allowed, sorted(set(hits) - allowed)
 
 
 def test_short_strategies_are_exactly_the_daily_bracketed_entry_short_emitters() -> None:

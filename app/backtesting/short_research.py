@@ -28,6 +28,14 @@ reserve is left. Its own cursor rotates (symbol x strategy) units across passes.
 
 Measured at bc82efd: one 500-bar walk-forward is ~1.3 s CPU per strategy (~8 s for the six)
 plus ~0.6 s per row insert: 0-1 symbol per pass after a ~185-215 s long pass, ~3 at most.
+While the long pass has universe left it ends at 180 s or later, which leaves at most ~22 s;
+the 45 s cap binds only after a short long pass. The ``backtest_short_research_run`` logs
+(``units``, ``rows``, ``symbols``, ``stop``, ``cursor``) show the coverage actually reached.
+
+Cost to the other jobs: the scheduler runs a tick's due jobs one after another, so on an
+off-hours tick the next jobs (``workflow_cadence``, ``paper_position_refresh``, ...) can
+start up to the short budget plus ``POST_RESERVE_SECONDS`` later than without this pass. The
+job's worst case is unchanged: a long pass alone already reaches 185-215 s of the 240 s cap.
 """
 
 from __future__ import annotations

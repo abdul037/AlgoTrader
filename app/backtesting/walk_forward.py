@@ -200,7 +200,10 @@ def aggregate_out_of_sample(
     fold_returns = [float(item.get("total_return_pct", 0.0) or 0.0) / 100.0 for item in per_fold_metrics]
     equity_curve = [1.0]
     for fold_return in fold_returns:
-        equity_curve.append(equity_curve[-1] * (1.0 + fold_return))
+        # A wiped-out run stays wiped out: a short fold can lose more than 100% (an unlevered
+        # long cannot), and compounding a negative balance flips the sign of later folds.
+        last = equity_curve[-1]
+        equity_curve.append(last * (1.0 + fold_return) if last > 0.0 else last)
     compounded = equity_curve[-1]
 
     combined_metrics["total_return_pct"] = round((compounded - 1.0) * 100.0, 4)

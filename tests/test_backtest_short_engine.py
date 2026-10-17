@@ -8,6 +8,7 @@ on its ENTRY. Long runs are covered byte-for-byte by tests/test_backtest_long_pa
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 import pandas as pd
@@ -110,6 +111,19 @@ def test_the_target_fills_at_the_target() -> None:
     assert trade["pnl_usd"] == pytest.approx(200.0)  # 20 shares x $10, +2 R
 
 
+def test_a_fill_already_below_the_target_books_the_target_like_the_long_rule() -> None:
+    """Pinned, not endorsed: the long rule mirrored (``min(target, high)`` for a long). When the
+    entry open has already gapped past the target, the target "fills" on the fill bar at a
+    price worse than the entry, so the evidence errs pessimistic. Changing it changes longs."""
+
+    bars = [FLAT, FLAT, (85.0, 86.0, 84.0, 85.0), FLAT]
+    (trade,) = _run(bars, {1: _short()}).trades
+
+    assert (trade["reason"], trade["entry_price"]) == ("take_profit", pytest.approx(85.0))
+    assert trade["exit_price"] == pytest.approx(90.0)  # max(target 90, low 84), not the 85 open
+    assert trade["pnl_usd"] == pytest.approx(-trade["quantity"] * 5.0)
+
+
 def test_the_stop_wins_when_one_bar_touches_both() -> None:
     bars = [FLAT, FLAT, FLAT, (100.0, 106.0, 89.0, 95.0), FLAT]
     (trade,) = _run(bars, {1: _short()}).trades
@@ -122,15 +136,26 @@ def test_pnl_is_quantity_times_entry_minus_exit_minus_every_cost() -> None:
     cost = CostModel(
         spread_bps=10.0, overnight_fee_daily_pct=0.00015, commission_per_share=0.01,
         slippage_bps=2.0, sec_fee_per_dollar=0.0000278, finra_taf_per_share=0.000166,
-        finra_taf_max_usd=8.30, short_borrow_fee_daily_pct=0.0001,
+        finra_taf_max_usd=8.30, short_borrow_fee_daily_pct=0.0001, fx_spread_bps=4.0,
     )
     bars = [FLAT, FLAT, FLAT, (99.0, 99.5, 96.0, 97.0), (96.0, 96.5, 94.0, 95.0)]
     (trade,) = _run(bars, {1: _short(stop=104.0, target=80.0), 3: _signal(SignalAction.BUY)}, cost_model=cost).trades
 
     qty, entry, exit_ = trade["quantity"], trade["entry_price"], trade["exit_price"]
-    costs = (
-        trade["financing_usd"] + trade["commission_usd"] + trade["slippage_usd"] + trade["regulatory_usd"]
-    )
+    half = cost.half_spread_fraction()
+    # Each leg from first principles, not read back from the record: the short sells the
+    # 100.0 open at the bid and covers at the 96.0 open at the ask.
+    assert (entry, exit_) == (pytest.approx(100.0 * (1 - half)), pytest.approx(96.0 * (1 + half)))
+    assert trade["notional_usd"] == pytest.approx(qty * entry)
+    assert trade["spread_usd"] == pytest.approx(qty * (100.0 - entry) + qty * (exit_ - 96.0), abs=1e-6)
+    assert trade["commission_usd"] == pytest.approx(2 * qty * 0.01, abs=1e-6)
+    assert trade["slippage_usd"] == pytest.approx(2e-4 * (qty * entry + qty * exit_), abs=1e-6)
+    assert trade["fx_usd"] == pytest.approx(4e-4 * qty * entry, abs=1e-6)
+    assert trade["regulatory_usd"] == pytest.approx(0.0000278 * qty * entry + 0.000166 * qty, abs=1e-6)
+    held = 2  # Wednesday to Friday; the 21:00 UTC Friday stamp is past one Friday close (x3)
+    overnight, borrow = qty * entry * 0.00015 * (held + 1 * (3.0 - 1.0)), qty * entry * 0.0001 * held
+    assert trade["financing_usd"] == pytest.approx(overnight + borrow, abs=1e-6)
+    costs = sum(trade[leg] for leg in ("financing_usd", "fx_usd", "commission_usd", "slippage_usd", "regulatory_usd"))
     assert trade["reason"] == "strategy_exit"
     assert exit_ < entry and trade["pnl_usd"] > 0  # the price fell: a short wins
     assert trade["pnl_usd"] == pytest.approx(qty * (entry - exit_) - costs, abs=1e-5)
@@ -251,3 +276,38 @@ def test_ending_equity_books_the_short_gain() -> None:
     result = _run(bars, {1: _short()})
     assert result.ending_cash == pytest.approx(10_200.0)
     assert result.metrics["total_return_pct"] == pytest.approx(2.0)
+
+
+def test_a_short_that_loses_more_than_the_account_is_recorded_in_full() -> None:
+    """A tripled open gaps through a 1.5% stop: the loss is the whole gap, not capped, and the
+    run still returns finite metrics (it used to raise: a negative balance to a fractional
+    power is complex), so the worst shorts reach the evidence instead of vanishing."""
+
+    # 8 equity points (the refused entry's bar records none): 252 / 8 is fractional, so the old
+    # formula went complex. With 7, 252 / 7 = 36 and a negative base happens to stay real.
+    bars = [FLAT, FLAT, FLAT, (300.0, 310.0, 290.0, 300.0), FLAT, FLAT, FLAT, FLAT, FLAT]
+    result = _run(bars, {1: _short(stop=101.5, target=95.0), 4: _short(price=300.0, stop=310.0, target=280.0)})
+
+    (trade,) = result.trades  # a wiped-out account opens nothing more
+    quantity = 100.0 / 1.5  # $100 risk / $1.50 stop distance
+    assert (trade["reason"], trade["exit_price"]) == ("stop_loss", pytest.approx(300.0))
+    assert trade["quantity"] == pytest.approx(quantity)
+    assert trade["pnl_usd"] == pytest.approx(-quantity * 200.0)  # -$13,333: -133 R
+    assert result.ending_cash == pytest.approx(10_000.0 - quantity * 200.0) and result.ending_cash < 0
+    assert result.metrics["total_return_pct"] == pytest.approx(-(quantity * 200.0) / 100.0)
+    assert result.metrics["annualized_return_pct"] == -100.0
+    assert result.metrics["max_drawdown_pct"] > 100.0
+    json.dumps(result.metrics, allow_nan=False)  # finite throughout: Postgres JSONB rejects NaN
+
+
+def test_a_wiped_out_walk_forward_stays_wiped_out() -> None:
+    """Folds compound; a negative balance must not, or two wipe-outs multiply into a gain."""
+
+    from app.backtesting.walk_forward import aggregate_out_of_sample
+
+    folds = [{"total_return_pct": r} for r in (5.0, -160.0, -160.0, 10.0)]
+    metrics = aggregate_out_of_sample([[] for _ in folds], folds, test_days=14)["metrics"]
+
+    assert metrics["total_return_pct"] == pytest.approx((1.05 * (1 - 1.6) - 1) * 100)  # -163%
+    assert metrics["max_drawdown_pct"] == pytest.approx(160.0)  # from the 1.05 peak
+    assert metrics["annualized_return_pct"] == -100.0
