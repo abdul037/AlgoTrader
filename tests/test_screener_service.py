@@ -113,6 +113,8 @@ class FakeScanDecisionRepository:
         self.items.append(record)
         return record
 
+    create_deferred = create
+
     def list(self, *, limit: int = 100, status: str | None = None, scan_task: str | None = None, symbol: str | None = None):
         items = list(reversed(self.items))
         if status is not None:

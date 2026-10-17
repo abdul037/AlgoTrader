@@ -321,7 +321,7 @@ def scan_universe(
                                 )
                                 continue
                         if service.scan_decisions is not None:
-                            service.scan_decisions.create(
+                            service.scan_decisions.create_deferred(
                                 scan_task=scan_task,
                                 symbol=symbol,
                                 strategy_name=spec.name,
@@ -341,7 +341,7 @@ def scan_universe(
                     else:
                         service._increment_rejection(rejection_summary, "no_strategy_signal")
                         if service.scan_decisions is not None:
-                            service.scan_decisions.create(
+                            service.scan_decisions.create_deferred(
                                 scan_task=scan_task,
                                 symbol=symbol,
                                 strategy_name=spec.name,

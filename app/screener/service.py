@@ -138,18 +138,32 @@ class MarketScreenerService:
         strategy_spec_keys: list[str] | None = None,
         cancel_event: Any | None = None,
     ) -> ScreenerRunResponse:
-        return scan_universe(
-            self,
-            symbols=symbols,
-            timeframes=timeframes,
-            limit=limit,
-            validated_only=validated_only,
-            notify=notify,
-            force_refresh=force_refresh,
-            scan_task=scan_task,
-            strategy_spec_keys=strategy_spec_keys,
-            cancel_event=cancel_event,
-        )
+        try:
+            response = scan_universe(
+                self,
+                symbols=symbols,
+                timeframes=timeframes,
+                limit=limit,
+                validated_only=validated_only,
+                notify=notify,
+                force_refresh=force_refresh,
+                scan_task=scan_task,
+                strategy_spec_keys=strategy_spec_keys,
+                cancel_event=cancel_event,
+            )
+        except BaseException:
+            # The scan queues its no_signal decisions (one write per symbol); write
+            # what is still queued without masking the scan's own error.
+            with suppress(Exception):
+                self._flush_scan_decisions()
+            raise
+        self._flush_scan_decisions()
+        return response
+
+    def _flush_scan_decisions(self) -> None:
+        flush = getattr(self.scan_decisions, "flush", None)
+        if flush is not None:
+            flush()
 
     def analyze_symbol(
         self,
