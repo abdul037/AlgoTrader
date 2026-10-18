@@ -15,6 +15,25 @@ risked $14): each copy is also cut so a stop-out costs at most
 ``HARD_MAX_RISK_PCT_OF_EQUITY`` of equity, a stop more than ``HARD_MAX_STOP_DISTANCE_PCT``
 below the entry is not copied, and the strategy needs a pooled OOS expectancy of at least
 ``MIRROR_MIN_EXPECTANCY_R`` (paper keeps its own "> 0" bar, so it keeps collecting evidence).
+Operator 2026-10-18 (post-mortem: AMD/META/MSFT/SPY were all weak, failed their own backtest
+check, the planner said wait/watchlist/no_trade, the evidence flickered, AMD was +23% in 20
+days the day after a record), four more rules for the live copy only -- paper trades, sizes
+and gates exactly as before so evidence keeps coming in:
+
+1. the planner's ``trade_plan.timing_label`` is a buy-now label
+   (``MIRROR_BUY_NOW_TIMING_LABELS``: only "immediate");
+2. the signal's own per-signal backtest check passed (``backtest_validated`` is True);
+3. the strategy+timeframe has passed its pooled evidence check at every refresh for at least
+   ``MIRROR_MIN_EVIDENCE_STREAK_HOURS`` without a break (``passing_since`` in the verdicts
+   cache; a refresh older than ``EVIDENCE_STREAK_MAX_GAP_HOURS`` reads as unknown);
+4. the move was not chased: at most ``HARD_MAX_RETURN_20D_PCT`` % rise over the 20 sessions to
+   the signal bar, RSI(14) below ``HARD_MAX_RSI_14``, and no 252-session closing high on the
+   signal bar or the bar before it (``metadata["entry_extension"]``, computed by the scan on
+   daily bars: ``app/screener/extension.py``; an intraday signal has none, so it is not copied).
+
+Each rule fails CLOSED: a missing or unreadable input refuses the copy with its own reason
+(``COPY_RULE_REASONS``). None of them is a room reason, so ``room_verdict`` returns None for
+such an order and paper's own room checks decide it (``etoro_live_room``).
 
 Real money. The mirror only acts when ALL of these hold:
 
@@ -26,6 +45,8 @@ Real money. The mirror only acts when ALL of these hold:
   target, from a strategy that passes the Phase 2 evidence gate by at least
   ``MIRROR_MIN_EXPECTANCY_R``, with its stop at most ``HARD_MAX_STOP_DISTANCE_PCT``
   below the entry;
+* the four 2026-10-18 rules above hold (planner, per-signal backtest, evidence streak,
+  no chase);
 * the mirror is not halted.
 
 Hard caps are code constants, not settings: at most
@@ -67,6 +88,30 @@ HARD_DAILY_LOSS_STOP_PCT = 5.0
 HARD_MAX_RISK_PCT_OF_EQUITY = 0.5
 HARD_MAX_STOP_DISTANCE_PCT = 8.0
 MIRROR_MIN_EXPECTANCY_R = 0.03
+# Operator 2026-10-18 (post-mortem of the AMD/META/MSFT/SPY losers): four more copy rules.
+# (1) The trade planner's only buy-now label (app/intelligence/trade_plan.py); "conditional"
+# waits for a trigger, "watchlist", "no_trade" and "data_quality_insufficient" do not buy.
+MIRROR_BUY_NOW_TIMING_LABELS = frozenset({"immediate"})
+# (3) The pooled evidence must have passed every refresh for this long without a break.
+MIRROR_MIN_EVIDENCE_STREAK_HOURS = 24.0
+# (4) Don't chase: a rise above this over the 20 sessions to the signal bar, an RSI(14) at or
+# above this, or a 252-session closing high on the signal bar or the bar before it.
+HARD_MAX_RETURN_20D_PCT = 15.0
+HARD_MAX_RSI_14 = 68.0
+COPY_RULE_REASONS = frozenset(  # none is a room reason: paper keeps its own room checks
+    {
+        "etoro_live_planner_unknown",
+        "etoro_live_planner_not_buy_now",
+        "etoro_live_backtest_check_unknown",
+        "etoro_live_backtest_check_failed",
+        "etoro_live_evidence_streak_unknown",
+        "etoro_live_evidence_streak_too_short",
+        "etoro_live_extension_unknown",
+        "etoro_live_extended_20d_rise",
+        "etoro_live_extended_rsi",
+        "etoro_live_extended_new_high",
+    }
+)
 LEVERAGE_TEST_AFTER_1X_TRADES = 2
 # Operator 2026-10-06 "try the 2x leverage": eToro's Amount is margin, so the 2x test sends
 # half the usual amount -- same $ exposure as a 1x trade ($500 x 2 = $1,000 notional).
@@ -128,6 +173,68 @@ def client_problem(client: Any | None) -> str | None:
     return None
 
 
+def planner_blocker(metadata: dict[str, Any]) -> str | None:
+    """Rule 1: copy only what the trade planner says to buy now."""
+
+    plan = metadata.get("trade_plan")
+    label = plan.get("timing_label") if isinstance(plan, dict) else None
+    if not isinstance(label, str) or not label.strip():
+        return "etoro_live_planner_unknown"
+    if label.strip().lower() not in MIRROR_BUY_NOW_TIMING_LABELS:
+        return "etoro_live_planner_not_buy_now"
+    return None
+
+
+def backtest_check_blocker(metadata: dict[str, Any]) -> str | None:
+    """Rule 2: copy only a signal whose own (per-signal) backtest check passed."""
+
+    validated = metadata.get("backtest_validated")
+    if validated is True:
+        return None
+    if validated is False:
+        return "etoro_live_backtest_check_failed"
+    return "etoro_live_backtest_check_unknown"  # missing, or not a plain True/False
+
+
+def evidence_streak_blocker(hours: float | None) -> str | None:
+    """Rule 3: the pooled evidence passed for MIRROR_MIN_EVIDENCE_STREAK_HOURS unbroken."""
+
+    if hours is None or not math.isfinite(hours):
+        return "etoro_live_evidence_streak_unknown"
+    return (
+        "etoro_live_evidence_streak_too_short" if hours < MIRROR_MIN_EVIDENCE_STREAK_HOURS else None
+    )
+
+
+def extension_blockers(extension: Any, timeframe: Any) -> list[str]:
+    """Rule 4: no copy of a move that has already run (inputs: app/screener/extension.py)."""
+
+    if (
+        not isinstance(extension, dict)
+        or str(timeframe or "").lower() != "1d"
+        or extension.get("timeframe") != "1d"
+    ):
+        return ["etoro_live_extension_unknown"]
+    rise, rsi = _number(extension.get("return_20d_pct")), _number(extension.get("rsi_14"))
+    new_high = extension.get("new_high_252_recent")
+    reasons = []
+    if rise is None or rsi is None or not isinstance(new_high, bool):
+        reasons.append("etoro_live_extension_unknown")
+    if rise is not None and rise > HARD_MAX_RETURN_20D_PCT:
+        reasons.append("etoro_live_extended_20d_rise")
+    if rsi is not None and rsi >= HARD_MAX_RSI_14:
+        reasons.append("etoro_live_extended_rsi")
+    if new_high is True:
+        reasons.append("etoro_live_extended_new_high")
+    return reasons
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(float(value)) else None
+
+
 def stop_distance_pct(entry: Any, stop: Any) -> float | None:
     """How far a long's stop sits below its entry, in % of the entry (None: not a valid stop)."""
 
@@ -175,7 +282,13 @@ class EtoroLiveMirrorService:
     # -- gates -----------------------------------------------------------------
     def blockers(self, proposal: Any, primary_broker: str) -> list[str]:
         from app.automation.service import LIVE_OPERATOR_ACKNOWLEDGEMENT
-        from app.performance.strategy_evidence import EDGE_BELOW_BAR, evidence_blocker
+        from app.performance.strategy_evidence import (
+            EDGE_BELOW_BAR,
+            VERDICTS_KEY,
+            evidence_blocker,
+            passing_hours,
+        )
+        from app.screener.extension import EXTENSION_FIELD
 
         settings = self.settings
         if not bool(getattr(settings, "etoro_live_mirror_enabled", False)):
@@ -229,16 +342,29 @@ class EtoroLiveMirrorService:
         strict = _StrictEvidence(settings)
         if not timeframe:
             reasons.append("mirror_timeframe_unknown")
-        elif evidence := evidence_blocker(
-            strict,
-            self.state,
-            strategy=str(order.strategy_name or ""),
-            timeframe=str(timeframe),
-            min_expectancy_r=MIRROR_MIN_EXPECTANCY_R,
-        ):
-            reasons.append(
-                evidence if evidence == EDGE_BELOW_BAR else "strategy_lacks_oos_evidence"
+        else:
+            cached = self.state.get(VERDICTS_KEY)  # one read: the gate and the streak agree
+            if evidence := evidence_blocker(
+                strict,
+                _OneKey(VERDICTS_KEY, cached),
+                strategy=str(order.strategy_name or ""),
+                timeframe=str(timeframe),
+                min_expectancy_r=MIRROR_MIN_EXPECTANCY_R,
+            ):
+                reasons.append(
+                    evidence if evidence == EDGE_BELOW_BAR else "strategy_lacks_oos_evidence"
+                )
+            hours = passing_hours(
+                cached, strategy=str(order.strategy_name or ""), timeframe=str(timeframe)
             )
+            if streak := evidence_streak_blocker(hours):
+                reasons.append(streak)
+        # Rules 1, 2 and 4 read the scan's metadata (the order's own wins over the signal's).
+        copy_inputs = {**metadata, **(getattr(order, "metadata", None) or {})}
+        for blocker in (planner_blocker(copy_inputs), backtest_check_blocker(copy_inputs)):
+            if blocker:
+                reasons.append(blocker)
+        reasons.extend(extension_blockers(copy_inputs.get(EXTENSION_FIELD), timeframe))
         state = self._state()
         if state["trades_today"] >= HARD_MAX_TRADES_PER_DAY:
             reasons.append("etoro_live_daily_trade_cap")
@@ -499,3 +625,13 @@ class _StrictEvidence:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._settings, name)
+
+
+class _OneKey:
+    """A read-only runtime_state holding one value already read (no second database read)."""
+
+    def __init__(self, key: str, value: Any) -> None:
+        self._key, self._value = key, value
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._value if key == self._key else default

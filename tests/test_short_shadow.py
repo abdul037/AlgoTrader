@@ -26,8 +26,12 @@ SHORT_KEY = "strategy_evidence:short_verdicts"  # the short research verdicts (s
 SHORT_SPECS = ("momentum_breakout", "mean_reversion")  # stubbed to emit shorts below
 
 # sha256 of the long watchlist, coverage record and completed run log; and of the long ledger,
-# its state, run logs and fetches; both at bc82efd.
-GOLDEN_DEEP_SCAN = "4a5bfca0d670c02b35f352a07eaa19fb9d327a197670039dbc012091330b6299"
+# its state, run logs and fetches; both at bc82efd. The deep-scan digest moved on 2026-10-18 only
+# because each item gained the eToro copy-rule hint fields (COPY_HINT_FIELDS); with those removed
+# and the two new hint checks neutral it is still the bc82efd digest (test below).
+GOLDEN_DEEP_SCAN = "10bc066c2cc7db978e6068c559e743cf59ccd75979ffc87c9c73b67e25c32f45"
+GOLDEN_DEEP_SCAN_BC82EFD = "4a5bfca0d670c02b35f352a07eaa19fb9d327a197670039dbc012091330b6299"
+COPY_HINT_FIELDS = ("return_20d_pct", "rsi_14", "new_high_252_recent", "evidence_passing_hours")
 GOLDEN_LEDGER = "7ae57206a5aebc98367dfddee84d3f6d96e2e02c7bd190d27dcc272f9e36d893"
 GOLDEN_REPORT = "f0907d76c01480637e5a5c3251ab818e1f3ac1dcb8aac399165feabf153bac87"
 
@@ -117,6 +121,22 @@ def test_long_watchlist_is_unchanged_by_short_setups_and_short_verdicts(
     assert view[0]["signals"] and view[0]["items"], "the long list is not empty: not vacuous"
     assert _long_scan_view(with_verdicts) == view
     assert _digest(view) == GOLDEN_DEEP_SCAN
+
+
+def test_the_copy_rule_hint_is_the_only_change_since_bc82efd(tmp_path, monkeypatch) -> None:
+    """2026-10-18: the four eToro copy rules add hint fields to each deep-scan item and two
+    checks to ``etoro_copy_rules_ok``; everything else (signals, tradeable, ranking, coverage,
+    run log) is byte-identical to bc82efd."""
+
+    import app.broker.etoro_live_mirror as live
+
+    monkeypatch.setattr(live, "extension_blockers", lambda extension, timeframe: [])
+    monkeypatch.setattr(live, "evidence_streak_blocker", lambda hours: None)
+    view = _long_scan_view(_scan(tmp_path, monkeypatch, short_verdicts=True))
+    for item in [*view[0]["signals"], *view[0]["items"], *view[0]["shadow_items"]]:
+        for field in COPY_HINT_FIELDS:
+            item.pop(field)
+    assert _digest(view) == GOLDEN_DEEP_SCAN_BC82EFD
 
 
 def _ledger_service(tmp_path, monkeypatch, *, now=ledger_tests.FRIDAY_1000_NY):

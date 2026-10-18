@@ -148,6 +148,7 @@ def test_mirror_entry_records_its_strategy_stop(tmp_path) -> None:
     from app.models.signal import Signal, SignalAction
     from app.models.trade import TradeOrder
     from app.performance.strategy_evidence import VERDICTS_KEY
+    from tests.test_etoro_live_mirror import COPYABLE_METADATA, verdicts_cache
 
     client = _Client()
     client._instrument_cache_by_symbol = {"AAPL": {"instrument_id": 1001}}
@@ -156,7 +157,7 @@ def test_mirror_entry_records_its_strategy_stop(tmp_path) -> None:
     )
     state = _State()
     passing = {"momentum_breakout:1d": {"passed": True, "oos_expectancy_r": 0.05}}
-    state.set(VERDICTS_KEY, json.dumps({"verdicts": passing}))
+    state.set(VERDICTS_KEY, verdicts_cache(passing))
     state.set("etoro_live:state", json.dumps({"last_equity": 10_000.0}))
     mirror, _ = _mirror(tmp_path, client, state=state)
     mirror.settings = mirror.settings.model_copy(update={"allowed_instruments": ["AAPL"]})
@@ -169,6 +170,7 @@ def test_mirror_entry_records_its_strategy_stop(tmp_path) -> None:
         take_profit=110.0,
         strategy_name="momentum_breakout",
         side="buy",
+        metadata=dict(COPYABLE_METADATA),
     )
     signal = Signal(
         symbol="AAPL",

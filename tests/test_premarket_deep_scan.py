@@ -169,7 +169,16 @@ def _specs(settings):
     return list(strategy_specs_for(settings, timeframe="1d", regime=None))
 
 
-def _service(tmp_path, monkeypatch, *, now=MONDAY_0835_NY, verdicts=None, market=None, **overrides):
+def _service(
+    tmp_path,
+    monkeypatch,
+    *,
+    now=MONDAY_0835_NY,
+    verdicts=None,
+    market=None,
+    passing_hours=48.0,
+    **overrides,
+):
     import app.performance.strategy_evidence as evidence
 
     monkeypatch.setattr(deep, "utc_now", lambda: now)
@@ -184,12 +193,15 @@ def _service(tmp_path, monkeypatch, *, now=MONDAY_0835_NY, verdicts=None, market
     state = FakeState()
     computed_at = (now if verdicts != "stale" else datetime(2026, 10, 1, tzinfo=UTC)).isoformat()
     passing = {"trend_following:1d": {"passed": True, "oos_expectancy_r": 0.046, "oos_trades": 300}}
+    verdicts = passing if verdicts in (None, "stale") else verdicts
+    since = (now - timedelta(hours=passing_hours)).isoformat()  # the live copy's 24 h streak
     state.set(
         VERDICTS_KEY,
         json.dumps(
             {
                 "computed_at": computed_at,
-                "verdicts": passing if verdicts in (None, "stale") else verdicts,
+                "verdicts": verdicts,
+                "passing_since": {k: since for k, v in verdicts.items() if v.get("passed")},
             }
         ),
     )
@@ -558,35 +570,91 @@ def test_etoro_room_hints(tmp_path, monkeypatch) -> None:
     assert trend["GOOGL"]["tradeable"]  # a hint: paper may still trade it, eToro will not copy
 
 
+CALM = {"timeframe": "1d", "return_20d_pct": 4.0, "rsi_14": 55.0, "new_high_252_recent": False}
+
+
+def _hint_run(tmp_path, monkeypatch, *, edge=0.046, passing_hours=48.0, extension=CALM):
+    """trend_following buys every symbol (S01 with a 10% stop, the rest 5%); every symbol's
+    extension inputs are ``extension`` (None: computed from the bars)."""
+
+    verdicts = {"trend_following:1d": {"passed": True, "oos_expectancy_r": edge}}
+    service = _service(tmp_path, monkeypatch, verdicts=verdicts, passing_hours=passing_hours)
+    real_build = service.market_screener._build_strategy
+
+    def stop_for(symbol):
+        return 9.0 if symbol == "S01" else 9.5  # S01: 10% below the entry, others 5%
+
+    fixed = SimpleNamespace(
+        generate_signal=lambda frame, symbol: SimpleNamespace(
+            action="buy", price=10.0, stop_loss=stop_for(symbol), take_profit=12.0, metadata={}
+        )
+    )
+    monkeypatch.setattr(
+        service.market_screener,
+        "_build_strategy",
+        lambda spec, real=real_build, fixed=fixed: (
+            fixed if spec.name == "trend_following" else real(spec)
+        ),
+    )
+    if extension is not None:
+        import app.screener.extension as ext
+
+        monkeypatch.setattr(ext, "entry_extension", lambda history, timeframe: dict(extension))
+    _run(service)
+    return _trend(_watchlist(service)), _watchlist(service)
+
+
 def test_items_carry_the_etoro_copy_rules_as_a_hint(tmp_path, monkeypatch) -> None:
     # 2026-10-16: the live copy needs a stop <= 8% below the entry and a +0.03 R backtest
     # edge. Paper may still trade the rest, so ``tradeable`` is unchanged.
     for edge, rules_ok in ((0.046, {"S00": True, "S01": False}), (0.02, {})):
-        verdicts = {"trend_following:1d": {"passed": True, "oos_expectancy_r": edge}}
-        service = _service(tmp_path, monkeypatch, verdicts=verdicts)
-        real_build = service.market_screener._build_strategy
-
-        def stop_for(symbol):
-            return 9.0 if symbol == "S01" else 9.5  # S01: 10% below the entry, others 5%
-
-        fixed = SimpleNamespace(
-            generate_signal=lambda frame, symbol: SimpleNamespace(
-                action="buy", price=10.0, stop_loss=stop_for(symbol), take_profit=12.0, metadata={}
-            )
-        )
-        monkeypatch.setattr(
-            service.market_screener,
-            "_build_strategy",
-            lambda spec, real=real_build, fixed=fixed: (
-                fixed if spec.name == "trend_following" else real(spec)
-            ),
-        )
-        _run(service)
-        trend = _trend(_watchlist(service))
+        trend, _ = _hint_run(tmp_path / str(edge), monkeypatch, edge=edge)
         assert (trend["S00"]["stop_pct"], trend["S01"]["stop_pct"]) == (5.0, 10.0)
         for symbol in ("S00", "S01"):
             assert trend[symbol]["tradeable"] and trend[symbol]["evidence_passing"], edge
             assert trend[symbol]["etoro_copy_rules_ok"] is rules_ok.get(symbol, False), (edge, symbol)
+
+
+def test_the_hint_reflects_the_streak_and_no_chase_rules(tmp_path, monkeypatch) -> None:
+    # 2026-10-18: evidence passing >= 24 h unbroken and no chased move; ``tradeable``, the
+    # ranking and the paper evidence flag stay exactly as they were.
+    base, base_list = _hint_run(tmp_path / "base", monkeypatch)
+    assert base["S00"]["etoro_copy_rules_ok"] is True
+    assert base["S00"]["evidence_passing_hours"] == 48.0
+    assert (base["S00"]["return_20d_pct"], base["S00"]["rsi_14"]) == (4.0, 55.0)
+    assert base["S00"]["new_high_252_recent"] is False
+    cases = {
+        "streak_23_5h": dict(passing_hours=23.5),
+        "rise_15_1": dict(extension={**CALM, "return_20d_pct": 15.1}),
+        "rsi_68": dict(extension={**CALM, "rsi_14": 68.0}),
+        "new_high": dict(extension={**CALM, "new_high_252_recent": True}),
+        "unknown": dict(extension={**CALM, "rsi_14": None}),
+        "intraday": dict(extension={**CALM, "timeframe": "15m"}),
+    }
+    for name, kwargs in cases.items():
+        trend, watchlist = _hint_run(tmp_path / name, monkeypatch, **kwargs)
+        assert trend["S00"]["etoro_copy_rules_ok"] is False, name
+        assert trend["S00"]["tradeable"] and trend["S00"]["evidence_passing"], name
+        assert [i["symbol"] for i in watchlist["items"]] == [
+            i["symbol"] for i in base_list["items"]
+        ], name
+    trend, _ = _hint_run(tmp_path / "edge", monkeypatch, extension={**CALM, "return_20d_pct": 15.0})
+    assert trend["S00"]["etoro_copy_rules_ok"] is True  # "above 15%" blocks, 15.0 does not
+    trend, _ = _hint_run(tmp_path / "rsi", monkeypatch, extension={**CALM, "rsi_14": 67.99})
+    assert trend["S00"]["etoro_copy_rules_ok"] is True
+
+
+def test_items_carry_the_extension_of_their_completed_bars(tmp_path, monkeypatch) -> None:
+    from app.screener.extension import entry_extension
+
+    trend, _ = _hint_run(tmp_path, monkeypatch, extension=None)
+    now_ny = MONDAY_0835_NY.astimezone(NY)
+    for symbol in ("S00", "S05"):
+        bars = deep.completed_daily_bars(_MarketData().get_history(symbol), now_ny)
+        expected = entry_extension(bars, timeframe="1d")
+        assert expected["rsi_14"] is not None and expected["new_high_252_recent"] is not None
+        for field in ("return_20d_pct", "rsi_14", "new_high_252_recent"):
+            assert trend[symbol][field] == expected[field], (symbol, field)
 
 
 def test_the_saved_watchlist_is_strict_json(tmp_path, monkeypatch) -> None:

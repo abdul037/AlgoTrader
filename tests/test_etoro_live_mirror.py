@@ -6,7 +6,9 @@ here: a fake client records what would have been sent.
 
 from __future__ import annotations
 
+import copy
 import json
+from datetime import timedelta
 from types import SimpleNamespace
 
 from app.automation.service import LIVE_OPERATOR_ACKNOWLEDGEMENT
@@ -22,6 +24,7 @@ from app.broker.etoro_live_mirror import (
 from app.models.signal import Signal, SignalAction
 from app.models.trade import TradeOrder
 from app.performance.strategy_evidence import VERDICTS_KEY
+from app.utils.time import utc_now
 from tests.conftest import make_settings
 
 
@@ -79,11 +82,42 @@ def _settings(tmp_path, **overrides):
     return make_settings(tmp_path, **values)
 
 
+def verdicts_cache(verdicts, *, passing_hours=48.0, age_minutes=10.0):
+    """A fresh verdicts cache whose passing keys have passed ``passing_hours`` unbroken
+    (the live copy's 24 h streak rule, operator 2026-10-18)."""
+
+    now = utc_now()
+    since = (now - timedelta(hours=passing_hours)).isoformat()
+    return json.dumps(
+        {
+            "computed_at": (now - timedelta(minutes=age_minutes)).isoformat(),
+            "verdicts": verdicts,
+            "passing_since": {key: since for key, v in verdicts.items() if v.get("passed")},
+        }
+    )
+
+
+# What a scan candidate's order metadata carries when every 2026-10-18 copy rule holds: the
+# planner says buy now, the per-signal backtest passed, and the move was not chased.
+COPYABLE_METADATA = {
+    "trade_plan": {"verdict": "actionable", "timing_label": "immediate"},
+    "backtest_validated": True,
+    "entry_extension": {
+        "timeframe": "1d",
+        "return_20d_pct": 6.0,
+        "rsi_14": 58.0,
+        "new_high_252_signal_bar": False,
+        "new_high_252_prior_bar": False,
+        "new_high_252_recent": False,
+    },
+}
+
+
 def _state(passing=("momentum_breakout:1d",), equity=10_000.0):
     state = _State()
     # +0.05 R: above the live copy's +0.03 R bar (operator 2026-10-16).
     verdict = {"passed": True, "oos_expectancy_r": 0.05}
-    state.set(VERDICTS_KEY, json.dumps({"verdicts": {key: verdict for key in passing}}))
+    state.set(VERDICTS_KEY, verdicts_cache({key: verdict for key in passing}))
     if equity is not None:
         state.set(STATE_KEY, json.dumps({"last_equity": equity}))
     return state
@@ -97,6 +131,7 @@ def _proposal(
     stop=95.0,
     target=110.0,
     price=100.0,
+    metadata=None,
 ):
     order = TradeOrder(
         symbol=symbol,
@@ -107,6 +142,7 @@ def _proposal(
         take_profit=target,
         strategy_name=strategy,
         side=side,
+        metadata=copy.deepcopy(COPYABLE_METADATA if metadata is None else metadata),
     )
     signal = Signal(
         symbol=symbol,
@@ -324,7 +360,7 @@ def test_copy_needs_a_backtest_edge_of_at_least_0_03_r(tmp_path) -> None:
     for edge, copied in cases:
         state = _state()
         verdicts = {"momentum_breakout:1d": {"passed": True, **edge}}
-        state.set(VERDICTS_KEY, json.dumps({"verdicts": verdicts}))
+        state.set(VERDICTS_KEY, verdicts_cache(verdicts))
         client = _Client()
         service, logs = _mirror(tmp_path, client=client, state=state)
         assert bool(_run(service)) is copied, edge

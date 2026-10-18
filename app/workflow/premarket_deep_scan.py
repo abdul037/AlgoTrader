@@ -19,6 +19,12 @@ scans use for repeat suppression and the weak-valid daily cap, and auto-proposal
 none of these from 09-25 to 10-09. ``tradeable`` is a pre-filter, not a promise: at the open
 the live screener's scores, eToro's room and every risk gate still decide.
 
+``etoro_copy_rules_ok`` is a hint for the live eToro copy (never part of ``tradeable`` or the
+ranking): the copy's rules whose inputs exist here -- edge >= +0.03 R, stop <= 8%, evidence
+passing >= 24 h unbroken (``evidence_passing_hours``) and no chased move on the completed bars
+(``return_20d_pct``, ``rsi_14``, ``new_high_252_recent``). The planner and per-signal backtest
+rules are only known when the live scan builds the signal.
+
 It is resumable: a scan stopped by its deadline saves a cursor and the bucket stays due. A
 feed outage pauses it and the next tick retries: an eToro rate-limit cooldown, or symbols in
 a row with no data while a symbol known to have data has none either (dead tickers next to
@@ -372,6 +378,7 @@ def _scan_symbol(service, watchlist, symbol, specs_by_key, context, now_ny, forc
     from app.broker.etoro_rate_limit import EToroRateLimitError
     from app.indicators import precomputed_indicators
     from app.risk.sectors import correlation_bucket_for_symbol
+    from app.screener.extension import entry_extension
 
     screener = service.market_screener
     try:
@@ -398,6 +405,7 @@ def _scan_symbol(service, watchlist, symbol, specs_by_key, context, now_ny, forc
         round(last_volume / prior_volume, 3) if prior_volume and last_volume is not None else None
     )
     bucket = correlation_bucket_for_symbol(symbol)
+    extension = entry_extension(history, timeframe="1d")  # the eToro copy's "don't chase" inputs
     shorts = bool(getattr(service.settings, "premarket_short_shadow_enabled", True))
     with precomputed_indicators(history):
         for spec_key in list(watchlist.get("specs") or []):
@@ -410,7 +418,9 @@ def _scan_symbol(service, watchlist, symbol, specs_by_key, context, now_ny, forc
             except Exception as exc:  # noqa: BLE001 - one strategy never stops the scan
                 watchlist["errors"].append(f"{symbol} {spec_key}: {exc}"[:200])
                 continue
-            item = _item(signal, symbol, spec, spec_key, last, relative_volume, bucket, context)
+            item = _item(
+                signal, symbol, spec, spec_key, last, relative_volume, bucket, context, extension
+            )
             if item is not None:
                 watchlist["signals"].append(item)
             elif shorts:
@@ -443,7 +453,11 @@ def _short_fields(watchlist: dict[str, Any]) -> None:
     watchlist["short_errors"] = count if type(count) is int and count >= 0 else 0
 
 
-def _item(signal, symbol, spec, spec_key, last, relative_volume, bucket, context) -> dict | None:
+def _item(
+    signal, symbol, spec, spec_key, last, relative_volume, bucket, context, extension=None
+) -> dict | None:
+    from app.broker.etoro_live_mirror import evidence_streak_blocker, extension_blockers
+
     if signal is None or str(getattr(signal.action, "value", signal.action)).lower() != "buy":
         return None
     price, stop, target = (_finite(v) for v in (signal.price, signal.stop_loss, signal.take_profit))
@@ -462,6 +476,8 @@ def _item(signal, symbol, spec, spec_key, last, relative_volume, bucket, context
     pending = symbol in context["pending"]
     allowed = symbol in context["allowed"]
     blacklisted = symbol in context["blacklisted"]
+    extension = extension if isinstance(extension, dict) else {}
+    streak_hours = context["streak_hours"](str(spec.name)) if "streak_hours" in context else None
     item = {
         "symbol": symbol,
         "strategy": str(spec.name),
@@ -485,9 +501,18 @@ def _item(signal, symbol, spec, spec_key, last, relative_volume, bucket, context
         "pending_proposal": pending,
         "etoro_symbol_open": symbol in context["etoro_open"],
         "etoro_bucket_full": bool(context["etoro_bucket_full"](symbol)),
-        # The live copy's own per-trade rules (2026-10-16): edge >= +0.03 R and stop <= 8%.
+        "return_20d_pct": extension.get("return_20d_pct"),
+        "rsi_14": extension.get("rsi_14"),
+        "new_high_252_recent": extension.get("new_high_252_recent"),
+        "evidence_passing_hours": None if streak_hours is None else round(streak_hours, 2),
+        # The live copy's own per-trade rules whose inputs exist here: edge >= +0.03 R and
+        # stop <= 8% (2026-10-16), evidence passing >= 24 h unbroken and no chase (2026-10-18).
+        # The planner and per-signal backtest rules are decided by the live scan at the open.
         "etoro_copy_rules_ok": bool(
-            context["copy_edge_ok"](str(spec.name)) and stop_pct <= context["max_stop_pct"]
+            context["copy_edge_ok"](str(spec.name))
+            and stop_pct <= context["max_stop_pct"]
+            and evidence_streak_blocker(streak_hours) is None
+            and not extension_blockers(extension, "1d")
         ),
         "allowed": allowed,
         "blacklisted": blacklisted,
@@ -580,14 +605,22 @@ def _prefetch(service: Any) -> dict[str, Any]:
     )
     from app.broker.etoro_live_room import bucket_blockers, effective_open_symbols
     from app.models.approval import ApprovalStatus
-    from app.performance.strategy_evidence import VERDICTS_KEY, evidence_blocker
+    from app.performance.strategy_evidence import VERDICTS_KEY, evidence_blocker, passing_hours
     from app.workflow.event_risk import watchlist_hint
 
     raw_verdicts = service.runtime_state.get(VERDICTS_KEY)
     try:
-        verdicts = (json.loads(raw_verdicts or "{}").get("verdicts")) or {}
+        parsed = json.loads(raw_verdicts or "{}")
+        verdicts = (parsed.get("verdicts")) or {}
     except (TypeError, ValueError, AttributeError):
-        verdicts = {}
+        parsed, verdicts = None, {}
+    streaks: dict[str, float | None] = {}
+
+    def streak_hours(strategy: str) -> float | None:  # the live copy's 24 h unbroken-pass rule
+        if strategy not in streaks:
+            streaks[strategy] = passing_hours(parsed, strategy=strategy, timeframe="1d")
+        return streaks[strategy]
+
     one_key = _OneKey(VERDICTS_KEY, raw_verdicts)
     settings = service.settings
     strict = _StrictEvidence(settings)  # the eToro mirror's rule: evidence is always required
@@ -652,6 +685,7 @@ def _prefetch(service: Any) -> dict[str, Any]:
         "verdicts": verdicts,
         "evidence_ok": evidence_ok,
         "copy_edge_ok": copy_edge_ok,
+        "streak_hours": streak_hours,
         "max_stop_pct": HARD_MAX_STOP_DISTANCE_PCT,
         "held_paper": held,
         "pending": pending,

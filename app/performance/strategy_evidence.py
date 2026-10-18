@@ -16,13 +16,22 @@ proposal gate reads them cheaply. With ``require_strategy_oos_evidence`` on,
 failing strategies stop creating proposals; their candidates are still scanned,
 alerted and tracked to target/stop as shadow signals, so a strategy can earn its
 way back in.
+
+Pass streaks (operator 2026-10-18, for the eToro live copy only): the cached payload also
+holds ``passing_since`` -- for every key that passes, when its current unbroken run of
+passing refreshes began. A refresh where the key fails (or is missing) ends the run; a gap
+of more than ``EVIDENCE_STREAK_MAX_GAP_HOURS`` since the previous refresh (no one checked in
+between) restarts every run. The previous payload lives in ``runtime_state`` (the database),
+so a deploy or restart keeps the runs. The verdicts, their fields and the paper gate
+(``evidence_blocker``) are unchanged; only ``passing_hours`` (the live copy, the deep-scan
+hint) reads the streaks.
 """
 
 from __future__ import annotations
 
 import json
 import math
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from app.utils.time import utc_now
@@ -118,8 +127,20 @@ def refresh_verdicts(
     db: Any, settings: Any, runtime_state: Any, run_logs: Any | None = None
 ) -> dict[str, dict[str, Any]]:
     verdicts = compute_verdicts(db, settings)
+    now = utc_now()
+    try:  # the previous refresh carries the streaks over; unreadable means they restart
+        previous = json.loads(runtime_state.get(VERDICTS_KEY) or "{}")
+    except Exception:  # noqa: BLE001 - never fail the refresh the paper gate depends on
+        previous = {}
     runtime_state.set(
-        VERDICTS_KEY, json.dumps({"computed_at": utc_now().isoformat(), "verdicts": verdicts})
+        VERDICTS_KEY,
+        json.dumps(
+            {
+                "computed_at": now.isoformat(),
+                "verdicts": verdicts,
+                PASSING_SINCE_FIELD: _passing_since(previous, verdicts, now),
+            }
+        ),
     )
     if run_logs is not None:
         run_logs.log(
@@ -131,6 +152,83 @@ def refresh_verdicts(
             },
         )
     return verdicts
+
+
+PASSING_SINCE_FIELD = "passing_since"
+# Refreshes run every 30 min; with no refresh for longer than this nobody can vouch for the
+# time in between, so every streak restarts (and the live copy reads the history as stale).
+EVIDENCE_STREAK_MAX_GAP_HOURS = 2.0
+_CLOCK_SKEW = timedelta(minutes=5)  # a payload stamped slightly "ahead" is still continuous
+
+
+def _passing_since(previous: Any, verdicts: dict[str, Any], now: datetime) -> dict[str, str]:
+    """When each passing key's unbroken run began, carried over from ``previous``."""
+
+    previous = previous if isinstance(previous, dict) else {}
+    since_map = previous.get(PASSING_SINCE_FIELD)
+    prior_verdicts = previous.get("verdicts")
+    last = _parse_time(previous.get("computed_at"))
+    continuous = (
+        isinstance(since_map, dict)
+        and isinstance(prior_verdicts, dict)
+        and last is not None
+        and -_CLOCK_SKEW <= now - last <= timedelta(hours=EVIDENCE_STREAK_MAX_GAP_HOURS)
+    )
+    streaks: dict[str, str] = {}
+    for key, verdict in verdicts.items():
+        if not verdict.get("passed"):
+            continue  # a failed refresh ends the run
+        start = None
+        prior = prior_verdicts.get(key) if continuous else None
+        if isinstance(prior, dict) and prior.get("passed"):
+            start = _parse_time(since_map.get(key))
+        streaks[key] = start.isoformat() if start is not None and start <= now else now.isoformat()
+    return streaks
+
+
+def passing_hours(
+    cached: Any, *, strategy: str, timeframe: str | None, now: datetime | None = None
+) -> float | None:
+    """Hours ``<strategy>:<timeframe>`` has passed every refresh without a break.
+
+    ``cached`` is the ``VERDICTS_KEY`` value (JSON text or the parsed dict). 0.0 when the key
+    does not pass now; None when the history cannot vouch for it: no payload, one written
+    before streaks existed, a refresh older than ``EVIDENCE_STREAK_MAX_GAP_HOURS``, or a
+    passing key without a readable start.
+    """
+
+    try:
+        payload = cached if isinstance(cached, dict) else json.loads(cached or "{}")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    now = now or utc_now()
+    computed = _parse_time(payload.get("computed_at"))
+    since_map = payload.get(PASSING_SINCE_FIELD)
+    verdicts = payload.get("verdicts")
+    if computed is None or not isinstance(since_map, dict) or not isinstance(verdicts, dict):
+        return None
+    if not -_CLOCK_SKEW <= now - computed <= timedelta(hours=EVIDENCE_STREAK_MAX_GAP_HOURS):
+        return None
+    key = f"{strategy}:{str(timeframe or '').lower()}"
+    verdict = verdicts.get(key)
+    if not isinstance(verdict, dict) or not verdict.get("passed"):
+        return 0.0
+    since = _parse_time(since_map.get(key))
+    if since is None or since > computed + _CLOCK_SKEW:
+        return None
+    return max((now - since).total_seconds() / 3600.0, 0.0)
+
+
+def _parse_time(value: Any) -> datetime | None:
+    """An aware ISO timestamp, else None (a naive one cannot be compared with UTC now)."""
+
+    try:
+        parsed = datetime.fromisoformat(str(value)) if value else None
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed is not None and parsed.tzinfo is not None else None
 
 
 # Short research (app/backtesting/short_research.py): rows are named "<strategy>:short" and

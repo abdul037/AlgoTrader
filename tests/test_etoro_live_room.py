@@ -18,7 +18,7 @@ from app.broker.etoro_live_room import (
 )
 from app.broker.etoro_live_scorecard import SCORECARD_KEY
 from app.risk.guardrails import RiskContext, RiskManager
-from tests.test_etoro_live_mirror import _mirror, _proposal, _run, _state
+from tests.test_etoro_live_mirror import COPYABLE_METADATA, _mirror, _proposal, _run, _state
 
 TECH = ["AAPL", "MSFT", "NVDA", "META", "GOOGL", "AMD"]
 ALLOWED = [*TECH, "TSLA", "JPM", "XOM", "SPY"]
@@ -202,7 +202,7 @@ def test_app_wiring_uses_etoro_room_at_proposal_time(tmp_path, monkeypatch) -> N
         stop_loss=95.0,
         take_profit=110.0,
         strategy_name="momentum_breakout",
-        metadata={"timeframe": "1d"},
+        metadata={"timeframe": "1d", **COPYABLE_METADATA},
     )
     assert proposals.create_proposal(request).order.symbol == "AAPL"
     created = proposals.logs.list_by_event("proposal_created", limit=1)
