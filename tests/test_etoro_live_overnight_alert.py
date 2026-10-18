@@ -1,0 +1,775 @@
+"""Overnight adverse-move alert for eToro LIVE positions (operator 2026-10-18): outside US
+regular hours, Telegram the operator when a live position gaps down, nears its stop, or a
+tracked signal on the symbol hits its own stop. Alert only: nothing is closed or blocked.
+
+All fakes: clock (``now=``), rates (runtime_state marks), daily bars, tracked signals,
+notifier, dedupe state and the eToro client. No network.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+
+import pandas as pd
+import pytest
+
+from app.automation.service import LIVE_OPERATOR_ACKNOWLEDGEMENT
+from app.broker import etoro_live_overnight_alert as overnight
+from app.broker import etoro_rate_limit
+from app.broker.etoro_live_backup_stop import MARKS_KEY
+from app.broker.etoro_live_guard import attach_live_guard, run_live_checks
+from app.broker.etoro_live_mirror import STATE_KEY, EtoroLiveMirrorService
+from app.broker.etoro_live_overnight_alert import (
+    ALERT_STATE_KEY,
+    MAX_QUOTE_READS_PER_DAY,
+    MAX_SEND_ATTEMPTS,
+    OvernightAdverseMoveAlert,
+    in_alert_window,
+    last_session_date,
+    reference_from_bars,
+    stop_hit_reader,
+)
+from app.broker.etoro_live_room import ROOM_REASONS, room_verdict
+from app.broker.etoro_live_scorecard import SCORECARD_KEY
+from app.broker.etoro_live_test_order import TEST_STATE_KEY
+from app.models.trade import TradeOrder
+from app.performance.strategy_evidence import VERDICTS_KEY
+from app.storage.db import Database
+from app.storage.repositories import TrackedSignalRepository
+from app.storage.tracked_signal_stops import recent_stop_hits
+from tests.conftest import make_settings
+from tests.test_workflow_service import _snapshot
+
+# Thu 15 Oct 2026, 12:11 UTC = 08:11 New York (pre-market) = 16:11 Dubai.
+AMD_NOW = datetime.fromisoformat("2026-10-15T12:11:00+00:00")
+AMD_ID = 1832
+
+
+@pytest.fixture(autouse=True)
+def _isolated_rate_limiter(monkeypatch):
+    monkeypatch.setattr(etoro_rate_limit, "_state", {})
+
+
+class _State(dict):
+    def __init__(self, *args, fail_get=(), fail_set=()):
+        super().__init__(*args)
+        self.gets: list[str] = []
+        self.fail_get, self.fail_set = set(fail_get), set(fail_set)
+
+    def get(self, key, default=None):
+        self.gets.append(key)
+        if key in self.fail_get:
+            raise RuntimeError("database unavailable")
+        return super().get(key, default)
+
+    def set(self, key, value):
+        if key in self.fail_set:
+            raise RuntimeError("database unavailable")
+        self[key] = value
+
+
+class _Logs:
+    def __init__(self):
+        self.events = []
+
+    def log(self, event, payload):
+        self.events.append((event, payload))
+
+    def named(self, event):
+        return [p for e, p in self.events if e == event]
+
+
+class _Notifier:
+    def __init__(self, ok=True, enabled=True, raises=False):
+        self.sent: list[str] = []
+        self.ok, self.enabled, self.raises = ok, enabled, raises
+
+    def send_text(self, text):
+        self.sent.append(text)
+        if self.raises:
+            raise RuntimeError("telegram down")
+        return self.ok
+
+
+class _Client:
+    """eToro live client fake: only the rates read is allowed."""
+
+    def __init__(self, quotes=None, fail=False):
+        self.settings = SimpleNamespace(
+            broker_simulation_enabled=False, etoro_api_key="overnight-alert-test-key"
+        )
+        self.quotes = {AMD_ID: (547.49, 595.77)} if quotes is None else quotes
+        self.fail = fail
+        self.requests = []
+
+    def _request(self, method, path, *, params=None, json_body=None):
+        self.requests.append((method, path, dict(params or {})))
+        assert method == "GET" and path == "/market-data/instruments/rates"
+        if self.fail:
+            raise RuntimeError("Broker request failed with status 500")
+        ids = [int(i) for i in params["instrumentIds"].split(",")]
+        return {
+            "rates": [
+                {"instrumentID": i, "bid": self.quotes[i][0], "ask": self.quotes[i][1]}
+                for i in ids
+                if i in self.quotes
+            ]
+        }
+
+    def fetch_raw_portfolio(self):
+        raise AssertionError("the alert never reads the portfolio")
+
+    def close_position_by_id(self, position_id, instrument_id):
+        raise AssertionError("the alert never closes anything")
+
+    def open_market_order_by_amount(self, order, *, client_order_id=None):
+        raise AssertionError("the alert never opens anything")
+
+
+class _Bars:
+    def __init__(self, frame=None, fail=False):
+        self.frame = frame if frame is not None else _frame()
+        self.fail = fail
+        self.calls = []
+
+    def __call__(self, symbol, *, timeframe, start, end):
+        self.calls.append((symbol, timeframe, start, end))
+        if self.fail:
+            raise RuntimeError("alpaca data unavailable")
+        return self.frame
+
+
+class _Signals:
+    """``stop_hits`` reader fake: returns its rows unfiltered (the alert re-filters)."""
+
+    def __init__(self, records=None, fail=False):
+        self.records = [_signal()] if records is None else records
+        self.fail = fail
+        self.calls = []
+
+    def __call__(self, symbols, since_iso):
+        self.calls.append((list(symbols), since_iso))
+        if self.fail:
+            raise RuntimeError("database unavailable")
+        return self.records
+
+
+def _frame(last_close=570.82, atr=23.4, last_day="2026-10-14", days=20, partial=None):
+    """Weekday daily bars at 04:00 UTC (Alpaca style), constant close, true range = ``atr``."""
+
+    stamps = pd.bdate_range(end=last_day, periods=days, tz="UTC") + pd.Timedelta(hours=4)
+    rows = [
+        {
+            "timestamp": ts,
+            "open": last_close,
+            "high": last_close + atr / 2,
+            "low": last_close - atr / 2,
+            "close": last_close,
+            "volume": 1_000,
+        }
+        for ts in stamps
+    ]
+    if partial is not None:  # today's unfinished pre-market bar
+        rows.append({**rows[-1], "timestamp": stamps[-1] + pd.Timedelta(days=1), "close": partial})
+    return pd.DataFrame(rows)
+
+
+def _signal(symbol="AMD", closed_at="2026-10-15T12:10:05+00:00", role="entry_long", stop=556.10):
+    """A ``recent_stop_hits`` row."""
+
+    return {
+        "symbol": symbol,
+        "strategy_name": "momentum_breakout",
+        "timeframe": "1d",
+        "closed_at": closed_at,
+        "stop_loss": stop,
+        "last_price": 551.34,
+        "signal_role": role,
+        "current_bid": 547.49,
+        "current_ask": 595.77,
+    }
+
+
+def _card(symbol="AMD", open_rate=642.0, stop=541.53, broker_stop=541.53, instrument_id=AMD_ID):
+    return {
+        "symbol": symbol,
+        "status": "open",
+        "open_rate": open_rate,
+        "signal_price": 643.18,
+        "stop_loss": stop,
+        "broker_stop": broker_stop,
+        "instrument_id": instrument_id,
+    }
+
+
+def _state(cards=None, marks=None, **kwargs):
+    state = _State(**kwargs)
+    cards = {"et1": _card()} if cards is None else cards
+    marks = {"AMD": {"rate": 551.34, "at": "2026-10-15T12:10:30+00:00"}} if marks is None else marks
+    dict.__setitem__(state, SCORECARD_KEY, json.dumps(cards))
+    dict.__setitem__(state, MARKS_KEY, json.dumps(marks))
+    return state
+
+
+def _mark(state, now, symbol="AMD", rate=551.34):
+    """The backup stop's fresh eToro rate for this tick."""
+
+    state[MARKS_KEY] = json.dumps({symbol: {"rate": rate, "at": now.isoformat()}})
+
+
+def _alert(
+    tmp_path, *, state=None, notifier=None, client=None, bars=None, signals=None, **settings
+):
+    values = dict(
+        etoro_live_mirror_enabled=True, etoro_live_acknowledgement=LIVE_OPERATOR_ACKNOWLEDGEMENT
+    )
+    values.update(settings)
+    logs = _Logs()
+    mirror = EtoroLiveMirrorService(
+        settings=make_settings(tmp_path, **values),
+        client=client if client is not None else _Client(),
+        runtime_state=state if state is not None else _state(),
+        run_logs=logs,
+        notifier=notifier if notifier is not None else _Notifier(),
+    )
+    alert = OvernightAdverseMoveAlert(
+        mirror=mirror,
+        bars=bars if bars is not None else _Bars(),
+        stop_hits=signals if signals is not None else _Signals(),
+    )
+    return alert, mirror, logs
+
+
+def _errors(logs):
+    return [p["step"] for p in logs.named("etoro_live_overnight_alert_error")]
+
+
+# -- the AMD case -------------------------------------------------------------------------
+def test_amd_replay_alerts_once_with_all_three_reasons(tmp_path) -> None:
+    alert, mirror, logs = _alert(tmp_path)
+    assert alert.run(now=AMD_NOW) == 1
+    [text] = mirror.notifier.sent
+    assert text.splitlines()[0] == "eToro LIVE overnight alert: AMD (pre-market)"
+    assert "- down 3.4% from the last close 570.82 (2026-10-14)" in text
+    assert "- 0.42 average daily moves above the stop (ATR 23.40)" in text
+    assert "- tracked signal momentum_breakout 1d hit its own stop 556.10 at 12:10 UTC" in text
+    assert "bid 547.49 / ask 595.77, spread 8.4% THIN QUOTE" in text
+    assert "Now 551.34 (eToro rate), last close 570.82 (-3.41%)" in text
+    assert "Entry 642.00 (-14.12% vs entry) | stop 541.53 (+1.81% vs stop)" in text
+    assert "12:11 UTC / 16:11 Dubai, Thu 15 Oct" in text
+    assert "Alert only: nothing was closed or changed" in text
+    saved = json.loads(mirror.state[ALERT_STATE_KEY])
+    assert saved["ny_date"] == "2026-10-15"
+    assert set(saved["sent"]["AMD"]) == {"gap_down", "near_stop", "signal_stop"}
+    [sent] = logs.named("etoro_live_overnight_alert_sent")
+    assert sent["kinds"] == ["gap_down", "near_stop", "signal_stop"]
+    assert sent["bid"] == 547.49 and sent["ask"] == 595.77 and sent["signal_stops"] == 1
+    assert mirror.client.requests == [
+        ("GET", "/market-data/instruments/rates", {"instrumentIds": str(AMD_ID)})
+    ]
+    assert _errors(logs) == []
+
+
+def test_at_most_one_alert_per_symbol_per_kind_per_new_york_day(tmp_path) -> None:
+    state = _state()
+    alert, mirror, _ = _alert(tmp_path, state=state)
+    assert alert.run(now=AMD_NOW) == 1
+    state.gets.clear()
+    assert alert.run(now=AMD_NOW + timedelta(minutes=1)) == 0
+    assert ALERT_STATE_KEY not in state.gets  # the in-process memo answers, no extra read
+    # A restart (new instance) reads the stored dedupe instead.
+    again, _, _ = _alert(tmp_path, state=state, notifier=mirror.notifier, client=mirror.client)
+    assert again.run(now=AMD_NOW + timedelta(minutes=2)) == 0
+    assert len(mirror.notifier.sent) == 1 and len(mirror.client.requests) == 1
+    # Next New York date: the 15 Oct bar is now complete (close 551.00), so no gap; the
+    # signal stop was before the 15 Oct 16:00 close; only the near-stop alert is new.
+    bars = _Bars(_frame(partial=551.0))
+    nxt, _, _ = _alert(tmp_path, state=state, notifier=mirror.notifier, bars=bars)
+    next_day = datetime.fromisoformat("2026-10-16T12:00:00+00:00")
+    _mark(state, next_day)
+    assert nxt.run(now=next_day) == 1
+    text = mirror.notifier.sent[-1]
+    assert "average daily moves above the stop" in text
+    assert "from the last close" not in text.split("\n")[1] and "tracked signal" not in text
+    assert set(json.loads(state[ALERT_STATE_KEY])["sent"]["AMD"]) == {"near_stop"}
+
+
+# -- when it runs ---------------------------------------------------------------------------
+def test_regular_hours_read_nothing_and_send_nothing(tmp_path) -> None:
+    state = _state()
+    alert, mirror, _ = _alert(tmp_path, state=state)
+    for when in (
+        "2026-10-15T13:30:00+00:00",
+        "2026-10-15T16:00:00+00:00",
+        "2026-10-15T19:59:00+00:00",
+    ):
+        assert alert.run(now=datetime.fromisoformat(when)) == 0
+    assert state.gets == [] and mirror.notifier.sent == []
+
+
+def test_alert_window_edges() -> None:
+    def at(text):
+        return datetime.fromisoformat(text)
+
+    assert in_alert_window(at("2026-10-15T13:29:00+00:00"), crypto=False)  # 09:29 NY
+    assert not in_alert_window(at("2026-10-15T13:30:00+00:00"), crypto=False)  # open
+    assert not in_alert_window(at("2026-10-15T19:59:00+00:00"), crypto=False)
+    assert in_alert_window(at("2026-10-15T20:00:00+00:00"), crypto=False)  # 16:00 close
+    assert not in_alert_window(at("2026-10-17T15:00:00+00:00"), crypto=False)  # Saturday
+    assert in_alert_window(at("2026-10-17T15:00:00+00:00"), crypto=True)
+    assert not in_alert_window(at("2026-10-15T15:00:00+00:00"), crypto=True)  # weekday hours
+    assert last_session_date(at("2026-10-15T12:00:00+00:00")).isoformat() == "2026-10-14"
+    assert last_session_date(at("2026-10-15T20:00:00+00:00")).isoformat() == "2026-10-15"
+    assert last_session_date(at("2026-10-19T12:00:00+00:00")).isoformat() == "2026-10-16"  # Mon
+
+
+def test_weekend_skips_stocks_but_checks_the_crypto_test(tmp_path) -> None:
+    saturday = datetime.fromisoformat("2026-10-17T10:00:00+00:00")
+    state = _state(marks={"AMD": {"rate": 500.0, "at": saturday.isoformat()}})
+    alert, mirror, _ = _alert(tmp_path, state=state, signals=_Signals([]))
+    assert alert.run(now=saturday) == 0
+    assert MARKS_KEY not in state.gets  # no stock is in the window: marks are not read
+    state[TEST_STATE_KEY] = json.dumps(
+        {
+            "status": "open",
+            "symbol": "ETH",
+            "position_id": 9,
+            "instrument_id": 100001,
+            "open_rate": 2_698.16,
+            "stop_loss": 2_581.80,
+            "last_rate": 2_590.0,
+            "last_rate_at": saturday.isoformat(),
+        }
+    )
+    eth_bars = _Bars(_frame(last_close=2_700.0, atr=60.0, last_day="2026-10-16"))
+    alert, mirror, _ = _alert(tmp_path, state=state, bars=eth_bars, signals=_Signals([]))
+    assert alert.run(now=saturday) == 1
+    assert eth_bars.calls[0][0] == "ETH/USD"
+    [text] = mirror.notifier.sent
+    assert text.startswith("eToro LIVE overnight alert: ETH (weekend)")
+    assert "- down 4.1% from the last close 2,700.00" in text and "AMD" not in text
+
+
+def test_crypto_on_a_weekday_follows_us_hours(tmp_path) -> None:
+    now = datetime.fromisoformat("2026-10-15T15:00:00+00:00")  # 11:00 NY
+    state = _state(cards={})
+    state[TEST_STATE_KEY] = json.dumps(
+        {
+            "status": "open",
+            "symbol": "ETH",
+            "position_id": 9,
+            "open_rate": 2_698.16,
+            "stop_loss": 2_581.80,
+            "last_rate": 2_590.0,
+            "last_rate_at": now.isoformat(),
+        }
+    )
+    alert, mirror, _ = _alert(tmp_path, state=state)
+    assert alert.run(now=now) == 0 and mirror.notifier.sent == []
+
+
+def test_crypto_test_order_not_yet_filled_is_not_alerted(tmp_path) -> None:
+    saturday = datetime.fromisoformat("2026-10-17T10:00:00+00:00")
+    state = _state(cards={})
+    test_order = {
+        "status": "open",
+        "symbol": "ETH",
+        "position_id": None,  # order sent, no position seen yet
+        "open_rate": 2_698.16,
+        "stop_loss": 2_581.80,
+        "last_rate": 2_590.0,
+        "last_rate_at": saturday.isoformat(),
+    }
+    state[TEST_STATE_KEY] = json.dumps(test_order)
+    eth_bars = _Bars(_frame(last_close=2_700.0, atr=60.0, last_day="2026-10-16"))
+    alert, mirror, _ = _alert(tmp_path, state=state, bars=eth_bars, signals=_Signals([]))
+    assert alert.run(now=saturday) == 0 and mirror.notifier.sent == []
+    state[TEST_STATE_KEY] = json.dumps({**test_order, "position_id": 9})
+    assert alert.run(now=saturday) == 1
+
+
+# -- thresholds ------------------------------------------------------------------------------
+@pytest.mark.parametrize(("drop_pct", "fires"), [(2.9, False), (3.1, True)])
+def test_gap_down_threshold(tmp_path, drop_pct, fires) -> None:
+    rate = round(570.82 * (1 - drop_pct / 100), 4)
+    state = _state(
+        cards={"et1": _card(stop=400.0, broker_stop=400.0)},
+        marks={"AMD": {"rate": rate, "at": AMD_NOW.isoformat()}},
+    )
+    alert, mirror, _ = _alert(tmp_path, state=state, signals=_Signals([]))
+    assert alert.run(now=AMD_NOW) == int(fires)
+    assert any("from the last close" in t for t in mirror.notifier.sent) is fires
+
+
+@pytest.mark.parametrize(("atrs_above", "fires"), [(1.05, False), (0.95, True), (-0.1, True)])
+def test_near_stop_threshold(tmp_path, atrs_above, fires) -> None:
+    rate = 570.82  # flat vs the close: only the stop distance matters
+    stop = round(rate - atrs_above * 23.4, 4)
+    state = _state(
+        cards={"et1": _card(stop=stop, broker_stop=stop)},
+        marks={"AMD": {"rate": rate, "at": AMD_NOW.isoformat()}},
+    )
+    alert, mirror, _ = _alert(tmp_path, state=state, signals=_Signals([]))
+    assert alert.run(now=AMD_NOW) == int(fires)
+    if atrs_above < 0:
+        assert "at or below the stop" in mirror.notifier.sent[0]
+
+
+def test_reference_uses_completed_sessions_only() -> None:
+    frame = _frame(last_close=100.0, atr=2.0, last_day="2026-10-14", partial=90.0)
+    pre_market = reference_from_bars(frame, crypto=False, now=AMD_NOW)
+    assert pre_market["prev_close"] == 100.0 and pre_market["bar_date"] == "2026-10-14"
+    assert pre_market["atr"] == pytest.approx(2.0)
+    after_close = datetime.fromisoformat("2026-10-15T20:05:00+00:00")
+    assert reference_from_bars(frame, crypto=False, now=after_close)["prev_close"] == 90.0
+    # Crypto: only bars that started at least a day ago are complete.
+    crypto_frame = _frame(last_close=50.0, atr=1.0, last_day="2026-10-15")
+    assert reference_from_bars(crypto_frame, crypto=True, now=AMD_NOW)["bar_date"] == "2026-10-14"
+    assert reference_from_bars(_frame(days=5), crypto=False, now=AMD_NOW)["atr"] is None
+    assert reference_from_bars(pd.DataFrame(), crypto=False, now=AMD_NOW) is None
+
+
+# -- missing inputs and failures ---------------------------------------------------------------
+def test_stale_rate_skips_price_reasons_but_signal_stop_still_alerts(tmp_path) -> None:
+    old = (AMD_NOW - timedelta(minutes=6)).isoformat()
+    state = _state(marks={"AMD": {"rate": 551.34, "at": old}})
+    alert, mirror, logs = _alert(tmp_path, state=state)
+    assert alert.run(now=AMD_NOW) == 1
+    [text] = mirror.notifier.sent
+    assert "tracked signal" in text and "from the last close" not in text
+    assert "Now n/a (no fresh eToro rate)" in text and "average daily moves" not in text
+    assert _errors(logs) == ["rate_unavailable:AMD"]
+    assert alert.bars.calls == []  # no rate: no bar read either
+
+
+def test_bar_failure_is_logged_once_and_retried_after_the_backoff(tmp_path) -> None:
+    bars = _Bars(fail=True)
+    state = _state()
+    alert, mirror, logs = _alert(tmp_path, bars=bars, state=state)
+    assert alert.run(now=AMD_NOW) == 1  # the tracked-signal reason still goes out
+    assert "tracked signal" in mirror.notifier.sent[0]
+    assert "from the last close" not in mirror.notifier.sent[0]
+    later = AMD_NOW + timedelta(minutes=5)
+    _mark(state, later)
+    assert alert.run(now=later) == 0
+    assert len(bars.calls) == 1
+    bars.fail = False
+    later = AMD_NOW + timedelta(minutes=16)
+    _mark(state, later)
+    assert alert.run(now=later) == 1  # retried: now the price reasons
+    assert "from the last close" in mirror.notifier.sent[-1]
+    assert len(bars.calls) == 2
+    assert _errors(logs) == ["bars:AMD"]
+
+
+def test_bar_reads_are_bounded_per_tick_and_cached(tmp_path) -> None:
+    symbols = ["AMD", "MSFT", "SPY", "COST", "XOM"]
+    cards = {f"et{i}": _card(symbol=s, instrument_id=None) for i, s in enumerate(symbols)}
+    marks = {s: {"rate": 900.0, "at": AMD_NOW.isoformat()} for s in symbols}
+    bars = _Bars()
+    alert, _, _ = _alert(tmp_path, state=_state(cards=cards, marks=marks), bars=bars)
+    alert.run(now=AMD_NOW)
+    assert len(bars.calls) == overnight.MAX_BAR_READS_PER_TICK
+    alert.run(now=AMD_NOW + timedelta(minutes=1))
+    assert len(bars.calls) == len(symbols)
+    alert.run(now=AMD_NOW + timedelta(minutes=2))
+    assert len(bars.calls) == len(symbols)  # one read per symbol per session
+
+
+def test_send_failures_are_retried_at_most_three_times(tmp_path) -> None:
+    notifier = _Notifier(ok=False)
+    state = _state()
+    alert, _, logs = _alert(tmp_path, state=state, notifier=notifier)
+    for minute in range(6):
+        assert alert.run(now=AMD_NOW + timedelta(minutes=minute)) == 0
+    assert len(notifier.sent) == MAX_SEND_ATTEMPTS
+    assert len(logs.named("etoro_live_overnight_alert_send_failed")) == MAX_SEND_ATTEMPTS
+    saved = json.loads(state[ALERT_STATE_KEY])
+    assert saved["sent"] == {} and saved["failed"]["AMD:gap_down"] == MAX_SEND_ATTEMPTS
+
+
+def test_a_raising_notifier_is_swallowed_and_logged_once_a_day(tmp_path) -> None:
+    state = _state()
+    alert, _, logs = _alert(tmp_path, state=state, notifier=_Notifier(raises=True))
+    for minute in range(MAX_SEND_ATTEMPTS):
+        later = AMD_NOW + timedelta(minutes=minute)
+        _mark(state, later)
+        assert alert.run(now=later) == 0
+    assert _errors(logs) == ["send:AMD"]  # one run-log row per step per day, not per tick
+
+
+def test_state_write_failure_does_not_cause_a_resend(tmp_path) -> None:
+    state = _state(fail_set={ALERT_STATE_KEY})
+    alert, mirror, logs = _alert(tmp_path, state=state)
+    assert alert.run(now=AMD_NOW) == 1
+    assert alert.run(now=AMD_NOW + timedelta(minutes=1)) == 0
+    assert len(mirror.notifier.sent) == 1 and "state_write" in _errors(logs)
+
+
+def test_unreadable_dedupe_state_skips_the_tick(tmp_path) -> None:
+    state = _state(fail_get={ALERT_STATE_KEY})
+    alert, mirror, logs = _alert(tmp_path, state=state)
+    assert alert.run(now=AMD_NOW) == 0
+    assert mirror.notifier.sent == [] and _errors(logs) == ["run"]
+
+
+def test_off_switch_disabled_telegram_or_no_client_read_nothing(tmp_path) -> None:
+    for kwargs in (
+        {"etoro_live_overnight_alert_enabled": False},
+        {"notifier": _Notifier(enabled=False)},
+    ):
+        state = _state()
+        alert, mirror, _ = _alert(tmp_path, state=state, **kwargs)
+        assert alert.run(now=AMD_NOW) == 0
+        assert state.gets == [] and mirror.notifier.sent == []
+    state = _state()
+    alert, mirror, _ = _alert(tmp_path, state=state)
+    mirror.client = None
+    assert alert.run(now=AMD_NOW) == 0 and state.gets == []
+    mirror.notifier = None
+    assert alert.run(now=AMD_NOW) == 0
+
+
+def test_setting_defaults_on(tmp_path) -> None:
+    assert make_settings(tmp_path).etoro_live_overnight_alert_enabled is True
+
+
+# -- the bid/ask read ---------------------------------------------------------------------------
+def test_cooldown_skips_the_bid_ask_read(tmp_path) -> None:
+    client = _Client()
+    etoro_rate_limit.mark_etoro_rate_limited(client.settings, status_code=429, body="")
+    alert, mirror, logs = _alert(tmp_path, client=client)
+    assert alert.run(now=AMD_NOW) == 1
+    assert client.requests == [] and "bid/ask n/a" in mirror.notifier.sent[0]
+    assert "quotes_cooldown" in _errors(logs)
+
+
+def test_bid_ask_read_failure_still_alerts(tmp_path) -> None:
+    alert, mirror, logs = _alert(tmp_path, client=_Client(fail=True))
+    assert alert.run(now=AMD_NOW) == 1
+    assert "bid/ask n/a" in mirror.notifier.sent[0] and "quotes" in _errors(logs)
+
+
+def test_bid_ask_reads_are_capped_per_day(tmp_path) -> None:
+    client = _Client()
+    alert, mirror, _ = _alert(tmp_path, client=client)
+    for minute in range(MAX_QUOTE_READS_PER_DAY + 3):
+        alert._quotes([{"instrument_id": AMD_ID}], AMD_NOW + timedelta(minutes=minute), "d")
+    assert len(client.requests) == MAX_QUOTE_READS_PER_DAY
+
+
+def test_normal_spread_is_not_flagged_and_etoro_stop_shown_when_different(tmp_path) -> None:
+    state = _state(cards={"et1": _card(broker_stop=513.6)})
+    alert, mirror, _ = _alert(tmp_path, state=state, client=_Client({AMD_ID: (551.0, 551.6)}))
+    assert alert.run(now=AMD_NOW) == 1
+    text = mirror.notifier.sent[0]
+    assert "spread 0.1%" in text and "THIN" not in text
+    assert "eToro's own stop 513.60" in text
+
+
+# -- tracked signals ----------------------------------------------------------------------------
+def test_tracked_signals_are_read_at_most_every_five_minutes(tmp_path) -> None:
+    signals = _Signals([])
+    alert, _, _ = _alert(tmp_path, signals=signals)
+    for minute in (0, 1, 4):
+        alert.run(now=AMD_NOW + timedelta(minutes=minute))
+    # Only the live symbols, only since midnight New York (04:00 UTC), which is after the
+    # 14 Oct 16:00 close.
+    assert signals.calls == [(["AMD"], "2026-10-15T04:00:00+00:00")]
+    alert.run(now=AMD_NOW + timedelta(minutes=5))
+    assert len(signals.calls) == 2
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        _signal(role="entry_short"),  # a short's stop is above: not adverse for the long
+        _signal(symbol="NVDA"),
+        _signal(closed_at="2026-10-14T19:59:00+00:00"),  # before the 14 Oct 16:00 close
+        _signal(closed_at="2026-10-15T03:59:00+00:00"),  # 14 Oct 23:59 NY: yesterday's alert day
+    ],
+)
+def test_signal_stop_needs_a_long_signal_on_the_symbol_since_the_close(tmp_path, record) -> None:
+    state = _state(cards={"et1": _card(stop=400.0, broker_stop=400.0)}, marks={})
+    alert, mirror, _ = _alert(tmp_path, state=state, signals=_Signals([record]))
+    assert alert.run(now=AMD_NOW) == 0 and mirror.notifier.sent == []
+
+
+def test_tracked_signal_read_failure_is_logged_and_price_reasons_still_work(tmp_path) -> None:
+    alert, mirror, logs = _alert(tmp_path, signals=_Signals(fail=True))
+    assert alert.run(now=AMD_NOW) == 1
+    assert "tracked signal" not in mirror.notifier.sent[0]
+    assert "from the last close" in mirror.notifier.sent[0]
+    assert _errors(logs) == ["tracked_signals"]
+
+
+# -- no trading change ----------------------------------------------------------------------------
+def _proposal():
+    order = TradeOrder(
+        symbol="MSFT",
+        amount_usd=12_500,
+        leverage=1,
+        proposed_price=100.0,
+        stop_loss=95.0,
+        take_profit=110.0,
+        strategy_name="momentum_breakout",
+        side="buy",
+        metadata={"timeframe": "1d"},
+    )
+    return SimpleNamespace(id="prop_MSFT", order=order, signal=None)
+
+
+def test_alert_changes_no_trading_state_and_no_copy_decision(tmp_path) -> None:
+    state = _state()
+    verdict = {"passed": True, "oos_expectancy_r": 0.05}
+    state[VERDICTS_KEY] = json.dumps({"verdicts": {"momentum_breakout:1d": verdict}})
+    state[STATE_KEY] = json.dumps({"last_equity": 10_000.0, "last_cash": 9_000.0})
+    alert, mirror, _ = _alert(tmp_path, state=state)
+    before_blockers = mirror.blockers(_proposal(), "alpaca")
+    before_room = room_verdict(mirror, _proposal().order)
+    before = dict(state)
+    assert alert.run(now=AMD_NOW) == 1  # the fake client raises on any order/close/portfolio
+    changed = {k for k in set(before) | set(state) if before.get(k) != state.get(k)}
+    assert changed == {ALERT_STATE_KEY}
+    assert mirror.blockers(_proposal(), "alpaca") == before_blockers
+    assert room_verdict(mirror, _proposal().order) == before_room
+    assert not ROOM_REASONS & set(before_blockers)
+
+
+# -- guard wiring ---------------------------------------------------------------------------------
+def test_attach_wires_the_alert_and_the_guard_runs_it(tmp_path) -> None:
+    alert, mirror, logs = _alert(tmp_path, state=_state(cards={}))
+    bars, repo = _Bars(), TrackedSignalRepository(_db(tmp_path))
+    coordinator = SimpleNamespace(etoro_live_mirror=mirror)
+    attach_live_guard(
+        coordinator,
+        settings=SimpleNamespace(etoro_live_guard_interval_seconds=60),
+        bars=bars,
+        tracked_signals=repo,
+    )
+    wired = mirror.overnight_alert
+    assert isinstance(wired, OvernightAdverseMoveAlert)
+    assert wired.bars is bars and wired.mirror is mirror
+    assert wired.stop_hits(["AMD"], "2026-10-14T20:00:00+00:00") == []  # reads the repo's db
+    attach_live_guard(coordinator, settings=SimpleNamespace(), bars=None)
+    assert mirror.overnight_alert.stop_hits is None and mirror.overnight_alert.bars is None
+    mirror.overnight_alert = SimpleNamespace(run=lambda: 1)
+    assert "etoro_live_overnight_alert" in run_live_checks(mirror, None)
+    mirror.overnight_alert = SimpleNamespace(run=lambda: 0)
+    assert "etoro_live_overnight_alert" not in run_live_checks(mirror, None)
+
+
+def test_a_broken_alert_never_stops_the_other_guard_steps(tmp_path, monkeypatch) -> None:
+    from app.broker import etoro_live_guard
+
+    _, mirror, logs = _alert(tmp_path, state=_state(cards={}))
+    reports = []
+    monkeypatch.setattr(
+        etoro_live_guard, "maybe_send_daily_report", lambda m: reports.append(m) or False
+    )
+
+    def boom():
+        raise RuntimeError("alert bug")
+
+    mirror.overnight_alert = SimpleNamespace(run=boom)
+    run_live_checks(mirror, None)
+    assert reports == [mirror]
+    assert [p["step"] for p in logs.named("etoro_live_guard_error")] == [
+        "etoro_live_overnight_alert"
+    ]
+    # The real alert swallows its own failures: a broken scorecard read is logged, not raised.
+    alert, _, logs = _alert(tmp_path, state=_state(fail_get={SCORECARD_KEY}))
+    assert alert.run(now=AMD_NOW) == 0 and _errors(logs) == ["run"]
+
+
+# -- the tracked-signal store (real SQLite) --------------------------------------------------------
+def _db(tmp_path):
+    db = Database(make_settings(tmp_path))
+    db.initialize()
+    return db
+
+
+def _stored_signal(repo, *, symbol, strategy, status, closed_at, role="entry_long"):
+    snapshot = _snapshot().model_copy(
+        update={
+            "symbol": symbol,
+            "strategy_name": strategy,
+            "signal_role": role,
+            "stop_loss": 556.1,
+            "current_bid": 547.49,
+            "current_ask": 595.77,
+        }
+    )
+    record = repo.upsert_open(snapshot, origin="swing_scan")
+    if status != "open":
+        repo.close(record.id, status=status, last_price=551.34, snapshot=snapshot)
+        with repo.db.connect() as connection:
+            connection.execute(
+                "UPDATE tracked_signals SET closed_at = ? WHERE id = ?", (closed_at, record.id)
+            )
+    return record
+
+
+def test_recent_stop_hits_reads_only_stop_hits_on_the_symbols_since_the_close(tmp_path) -> None:
+    repo = TrackedSignalRepository(_db(tmp_path))
+    since = "2026-10-14T20:00:00+00:00"
+    hit = "2026-10-15T12:10:05.123456+00:00"
+    _stored_signal(repo, symbol="AMD", strategy="a", status="stop_hit", closed_at=hit)
+    _stored_signal(repo, symbol="AMD", strategy="b", status="target_hit", closed_at=hit)
+    _stored_signal(
+        repo, symbol="AMD", strategy="c", status="stop_hit", closed_at="2026-10-14T19:00:00+00:00"
+    )
+    _stored_signal(repo, symbol="NVDA", strategy="d", status="stop_hit", closed_at=hit)
+    _stored_signal(repo, symbol="AMD", strategy="e", status="open", closed_at=None)
+    later = "2026-10-15T12:20:00+00:00"
+    _stored_signal(
+        repo, symbol="AMD", strategy="f", status="stop_hit", closed_at=later, role="entry_short"
+    )
+    rows = recent_stop_hits(repo.db, symbols=["amd"], since_iso=since)
+    assert [r["strategy_name"] for r in rows] == ["f", "a"]  # newest first
+    assert rows[1]["signal_role"] == "entry_long" and rows[0]["signal_role"] == "entry_short"
+    assert rows[1]["current_bid"] == 547.49 and rows[1]["current_ask"] == 595.77
+    assert rows[1]["stop_loss"] == 556.1 and rows[1]["closed_at"] == hit
+    assert len(recent_stop_hits(repo.db, symbols=["AMD"], since_iso=since, limit=1)) == 1
+    assert recent_stop_hits(repo.db, symbols=[], since_iso=since) == []
+
+
+def test_amd_replay_through_the_real_tracked_signal_store(tmp_path) -> None:
+    repo = TrackedSignalRepository(_db(tmp_path))
+    for strategy in ("momentum_breakout", "inside_bar", "rsi_reversal"):
+        _stored_signal(
+            repo,
+            symbol="AMD",
+            strategy=strategy,
+            status="stop_hit",
+            closed_at="2026-10-15T12:10:05+00:00",
+        )
+    alert, mirror, logs = _alert(tmp_path)
+    alert.stop_hits = stop_hit_reader(repo)
+    assert alert.run(now=AMD_NOW) == 1
+    text = mirror.notifier.sent[0]
+    assert text.count("tracked signal") == 3 and "hit its own stop 556.10 at 12:10 UTC" in text
+    assert logs.named("etoro_live_overnight_alert_sent")[0]["signal_stops"] == 3
+
+
+def test_signal_window_starts_at_the_close_or_midnight_new_york() -> None:
+    from app.broker.etoro_live_overnight_alert import signal_window_start
+
+    def start(text):
+        return signal_window_start(datetime.fromisoformat(text)).astimezone(UTC).isoformat()
+
+    assert start("2026-10-14T21:00:00+00:00") == "2026-10-14T20:00:00+00:00"  # evening: close
+    assert start("2026-10-15T12:11:00+00:00") == "2026-10-15T04:00:00+00:00"  # next morning
+    assert start("2026-10-17T15:00:00+00:00") == "2026-10-17T04:00:00+00:00"  # Saturday
+
+
+def test_an_evening_signal_stop_is_not_resent_after_midnight_new_york(tmp_path) -> None:
+    evening = datetime.fromisoformat("2026-10-14T23:00:00+00:00")  # 19:00 NY
+    state = _state(cards={"et1": _card(stop=400.0, broker_stop=400.0)}, marks={})
+    signals = _Signals([_signal(closed_at="2026-10-14T22:30:00+00:00")])
+    alert, mirror, _ = _alert(tmp_path, state=state, signals=signals)
+    assert alert.run(now=evening) == 1 and "tracked signal" in mirror.notifier.sent[0]
+    after_midnight = datetime.fromisoformat("2026-10-15T04:10:00+00:00")  # 00:10 NY
+    assert alert.run(now=after_midnight) == 0 and len(mirror.notifier.sent) == 1

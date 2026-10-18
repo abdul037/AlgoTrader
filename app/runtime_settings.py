@@ -606,6 +606,9 @@ class AppSettings(BaseSettings):
     # Hard-capped at 10% / $1,000 in code, and cut so a stop-out costs <= 0.5% of equity.
     etoro_live_trade_pct_of_equity: float = 10.0
     etoro_live_guard_interval_seconds: int = 60  # backup stop / test watch cadence (min 10)
+    # Overnight adverse-move Telegram alert for live eToro positions (operator 2026-10-18;
+    # app/broker/etoro_live_overnight_alert.py). Alert only: no trading change.
+    etoro_live_overnight_alert_enabled: bool = True
     # Option 3 (operator 2026-10-06): while the mirror would copy an order, eToro's own room
     # (6 positions, 3 per group, free cash) replaces paper's gross/sector/correlated limits.
     etoro_live_room_authority_enabled: bool = True

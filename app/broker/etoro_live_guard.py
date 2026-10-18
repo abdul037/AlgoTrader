@@ -9,7 +9,9 @@ independent of the scheduler. With nothing open it makes no eToro call.
 
 It writes a heartbeat; if that goes stale (thread dead or stuck), the maintenance
 hook runs the same checks as a fallback. Every live-eToro state change shares the
-mirror's lock, so the guard, entries and reconcile never interleave.
+mirror's lock, so the guard, entries and reconcile never interleave. Outside US regular
+hours it also runs the overnight adverse-move alert (``etoro_live_overnight_alert``:
+Telegram only, it changes no position or state the trading paths read).
 """
 
 from __future__ import annotations
@@ -94,8 +96,9 @@ class EtoroLiveGuard:
 
 
 def run_live_checks(mirror: Any, tester: Any | None) -> list[str]:
-    """The test-order watch, the backup stops, the paper-exit copy and the live scorecard,
-    each isolated so one failing can't skip the others. Shared by the guard thread and the maintenance fallback."""
+    """The test-order watch, the backup stops, the paper-exit copy, the live scorecard, the
+    overnight adverse-move alert and the daily report, each isolated so one failing can't skip
+    the others. Shared by the guard thread and the maintenance fallback."""
 
     done: list[str] = []
     closes: list[dict] = []
@@ -109,6 +112,7 @@ def run_live_checks(mirror: Any, tester: Any | None) -> list[str]:
         ("etoro_live_backup_stop", backup_stops),
         ("etoro_live_exit_copy", lambda: bool(copy_paper_exits(mirror, _symbols(closes)))),
         ("etoro_live_scorecard", lambda: update_scorecard(mirror, closes) > 0),
+        ("etoro_live_overnight_alert", lambda: _overnight_alerts(mirror) > 0),
         ("etoro_live_daily_report", lambda: maybe_send_daily_report(mirror)),
     ):
         try:
@@ -125,12 +129,26 @@ def _symbols(closes: list[dict]) -> set[str]:
     return {str(c.get("symbol") or "").upper() for c in closes}
 
 
+def _overnight_alerts(mirror: Any) -> int:
+    """Alerts sent by the overnight adverse-move check (alert only; wired by attach)."""
+
+    alert = getattr(mirror, "overnight_alert", None)
+    return int(alert.run() or 0) if alert is not None else 0
+
+
 def attach_live_guard(
-    coordinator: Any, *, settings: Any, bars: Any | None, paper: Any | None = None
+    coordinator: Any,
+    *,
+    settings: Any,
+    bars: Any | None,
+    paper: Any | None = None,
+    tracked_signals: Any | None = None,
 ) -> None:
     """Wire the test order and the guard onto the execution coordinator (started at boot).
-    ``paper`` is the Alpaca client whose positions the exit copy follows."""
+    ``paper`` is the Alpaca client whose positions the exit copy follows; ``bars`` (daily bars)
+    and ``tracked_signals`` feed the overnight adverse-move alert."""
 
+    from app.broker.etoro_live_overnight_alert import OvernightAdverseMoveAlert, stop_hit_reader
     from app.broker.etoro_live_test_order import EtoroLiveTestOrder
 
     mirror = coordinator.etoro_live_mirror
@@ -139,6 +157,9 @@ def attach_live_guard(
         proposals.etoro_live_mirror = mirror  # option 3: eToro room at proposal time too
     if paper is not None and hasattr(paper, "get_portfolio"):
         mirror.paper_reader = paper_reader(paper)
+    mirror.overnight_alert = OvernightAdverseMoveAlert(
+        mirror=mirror, bars=bars, stop_hits=stop_hit_reader(tracked_signals)
+    )
     coordinator.etoro_live_test_order = EtoroLiveTestOrder(mirror=mirror, bars=bars)
     coordinator.etoro_live_guard = EtoroLiveGuard(
         mirror=mirror,

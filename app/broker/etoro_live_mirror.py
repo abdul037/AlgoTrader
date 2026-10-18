@@ -61,6 +61,15 @@ reset state cannot re-arm it). Any eToro error halts the mirror -- it never touc
 Alpaca paper bot or its circuit breaker -- until the operator clears
 ``etoro_live:halted``. The global ``ENABLE_REAL_TRADING`` stays false: the
 mirror's own client gets a private settings copy with real mode enabled.
+
+Overnight adverse-move alert (operator 2026-10-18, after AMD gapped to its stop before the
+15 Oct open; alert only, no trading change): ``etoro_live_overnight_alert.py``, run by the
+guard every minute, Telegrams the operator when, outside 09:30-16:00 New York on weekdays
+(and all weekend for crypto), a live position's fresh eToro rate is ``ALERT_DROP_PCT`` (3%)
+or more below the previous close, or within ``ALERT_STOP_ATR_MULT`` (1) ATR of its stop, or a
+tracked signal on the same symbol hits its own stop. Code constants; at most one alert per
+symbol per kind per New York date; it never blocks, sizes or closes a copy and adds no
+refusal reason here. Setting ``etoro_live_overnight_alert_enabled`` (default on).
 """
 
 from __future__ import annotations
