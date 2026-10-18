@@ -12,6 +12,50 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-10-17 (Sat) → 10-18 (Sun) — Phase 2 scan-speed wins, shorts research and shadow
+
+- **Operator approved shorts steps 1-2 (10-17 ~03:45 UTC):** backtest short setups and record
+  them in shadow, research only. Steps 3-4 (paper shorts, eToro short CFDs) not approved;
+  `short_trading_enabled` stays false and the eToro mirror stays long-only.
+- **Shipped as `bc82efd..8cf49c3` (12 commits)**, built in isolated worktrees: per item an
+  implementation, 3 adversarial reviewers, a fix round (re-reviewed until no blocker/major),
+  then one integration and a final 3-lens review of the combined chain plus an adjudicator.
+  - **P5:** the weak-valid daily count reads the same newest-5,000 window without the payloads it
+    never uses (identical count; the same 0-on-unreadable-row behaviour).
+  - **P2/P6:** scan decisions are written without the follow-up SELECT, and a scan's no_signal
+    rows are queued in that scan's thread and written once per symbol and at the end (a failed
+    write raises in the scan as before and keeps the rows for the retry); new module
+    `app/storage/scan_decisions.py`, `repositories.py` 2871 -> 2739 lines (budget lowered).
+    About 1.4x more strategy checks per deadline-bound scan on production-like wiring.
+  - **P3:** the learning champion is cached for 60 s on the scan path; the drift check (which can
+    trigger an automatic rollback) and gating mode always read fresh.
+  - **Shorts step 1:** the engine backtests `entry_short` signals behind a flag that is off for
+    every long run (long results checked identical against the pre-change code in the same test
+    run); short costs (sale fee on the entry, eToro overnight fee, borrow); a short that loses
+    more than the account is booked, not dropped. Off-hours only (outside weekday 08:00-16:30
+    New York), after the long backtest pass in what is left of its job cap (<= 45 s; about 1-3
+    symbols per pass, passes about every 30 min), rows `<name>:short` with file_path
+    `...:walk_forward_oos_short` -- invisible to the live evidence gate (pattern `%:walk_forward_oos`,
+    tested). Separate verdicts in `strategy_evidence:short_verdicts`; shown as `short_evidence` in
+    `GET /performance/live-scorecard`. Setting `backtest_short_research_enabled` (default on).
+  - **Shorts step 2:** the deep scan lists bracketed short setups in its own `short_signals` list
+    (never tradeable; not in items, shadow items, coverage or Telegram) and an off-hours shadow
+    ledger scores them with mirrored fill rules (stop worse-of above, target below). Setting
+    `premarket_short_shadow_enabled` (default on; logged in the boot snapshot).
+  - **Not shipped:** P8 benchmark-bar memo (reviewers showed the 09:35 market-open scan would reuse
+    stale sector bars on the path that feeds paper and eToro); P5(a) and P4 (both would change
+    stored run_logs rows).
+- **Verification:** full suite 1189 passed, 4 skipped (Postgres-only; run against a local
+  PostgreSQL 16 by the fixer and the final reviewer); architecture fitness 3/3. Final review: the
+  one blocker raised (faster scans shrink the time span of the weak-valid cap's 5,000-row window)
+  was ruled not real for this chain -- the window is unchanged from `bc82efd` and production-like
+  scans write ~1.4x, not 3.4x, the rows; no session approaches 5,000 rows.
+- **Known minors / follow-ups:** count weak-valid promotions by date instead of the 5,000-row
+  window (fixes the old leak; a tightening, so operator OK); a lost COMMIT reply can store one
+  symbol's no_signal diagnostic rows twice; a redeploy mid-symbol loses that symbol's queued
+  no_signal rows; a failed end-of-scan diagnostic write still fails the scan (as a mid-scan
+  write did before); short research coverage is thin per pass; CI runtime +61%.
+
 ## 2026-10-12 (Mon) → 10-16 (Fri) — trade review, AMD stop-out, eToro copy safeguards
 
 - **Evidence thinned and flickered (from `strategy_evidence_refreshed` logs):** 6-8 daily
