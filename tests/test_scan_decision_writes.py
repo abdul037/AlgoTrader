@@ -589,9 +589,10 @@ def test_a_failed_write_keeps_the_rows_for_the_scans_next_write(tmp_path, monkey
         for name in ("a", "b", "c"):
             repository.create_deferred(**_fields(strategy_name=name))
         with _broken_connections(repository.db, times=1):
-            # A reader in the scan that swallows every error (the weak-valid daily
-            # count) triggers the write, which fails: nothing raised, nothing written...
-            assert _weak_valid_daily_count(SimpleNamespace(scan_decisions=repository)) == 0
+            # A reader in the scan that never raises (the weak-valid daily count, which
+            # fails closed to the daily limit) triggers the write, which fails: nothing
+            # raised, nothing written...
+            assert _weak_valid_daily_count(SimpleNamespace(scan_decisions=repository)) == 4
         assert _raw_count(repository.db) == 0
     # ...but the rows stayed queued, and the scan's own next write stored them.
     assert _table(repository.db) == _table(legacy.db)
@@ -801,19 +802,19 @@ def _recording_reads(repository: ScanDecisionRepository, reads: list[Any]) -> No
 
 
 def _recording_count_reads(monkeypatch: pytest.MonkeyPatch, reads: list[Any]) -> None:
-    """Record the weak-valid daily count's read (P5) as what the count can use.
+    """Record the weak-valid daily count's read as what the count can use.
 
-    On the real repository P5 reads the newest 5,000 rows past list(), without the
-    payloads of the rows the count skips; the oracle class still calls list(limit=5000).
-    Both runs record one entry: every row's fields, its payload only where the count may
-    read it (a status that lowers to "candidate"), so window, ids and order still compare.
+    On the real repository the count reads today's candidate rows past list(); the
+    oracle class still calls list(limit=5000), which here holds every row. Both runs
+    record one entry: the rows whose status lowers to "candidate" and whose created_at
+    is today or later, with every field, so rows, ids and order still compare.
     """
 
-    def wrapper(repository: Any) -> Any:
+    def wrapper(repository: Any, today: Any) -> Any:
         mark = len(reads)
-        rows = _weak_valid_count_rows(repository)
+        rows = _weak_valid_count_rows(repository, today)
         del reads[mark:]  # the oracle's list(limit=5000) inside it is this same read
-        usable = [r.model_dump(exclude=None if r.status.lower() == "candidate" else {"payload"}) for r in rows]
+        usable = [r for r in rows if r.status.lower() == "candidate" and r.created_at >= today.isoformat()]
         reads.append(("weak_valid_count_rows", "", [_canonical(item) for item in usable]))
         return rows
 
@@ -931,7 +932,8 @@ def test_whole_scans_write_and_read_exactly_as_before(tmp_path, monkeypatch, pat
     statuses = {row["'status'"][1] for row in new["table"]}
     assert {"'no_signal'", "'candidate'"} <= statuses  # the scenario hits both kinds of write
     assert any(name == "get_latest" for name, _, _ in new["reads"])
-    assert [name for name, _, _ in new["reads"]].count("weak_valid_count_rows") == 3  # one per scan
+    count_reads = [rows for name, _, rows in new["reads"] if name == "weak_valid_count_rows"]
+    assert len(count_reads) == 3 and count_reads[-1]  # one per scan; later scans see earlier candidates
     assert len(new["table"]) > 100
     starts = [committed for _, _, committed, _ in new["fetches"] if committed is not None]
     assert len(starts) == 6 and starts[0] == 0 and all(starts[1:])  # 3 scans x 2 symbols
@@ -942,3 +944,56 @@ def test_whole_scans_write_and_read_exactly_as_before(tmp_path, monkeypatch, pat
     assert new["rows_per_insert"] > 5
     assert new["inserts"] * 3 < legacy["inserts"]
     assert new["statements"] * 3 < legacy["statements"]
+
+
+# --------------------------------------------------------------------------- #
+# The weak-valid daily count reads today's candidate rows, on every path
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("path", PATHS)
+def test_weak_valid_count_reads_todays_candidate_rows_on_every_path(tmp_path, monkeypatch, path) -> None:
+    # Postgres compares the TEXT created_at under the database's collation, SQLite
+    # bytewise: on both, every timestamp form the count accepts as today must sort at
+    # or after the bare date, and every earlier day before it.
+    now = datetime(2026, 10, 17, 14, 30, tzinfo=UTC)
+    monkeypatch.setattr(scan_promotion, "utc_now", lambda: now)
+    db = _database(tmp_path, path)
+    repository = ScanDecisionRepository(db)
+    counted = {
+        "2026-10-17T13:00:00.000001+00:00": True,
+        "2026-10-17T13:00:01Z": True,
+        "2026-10-17T00:00:00+00:00": True,
+        "2026-10-17T00:00:00": True,
+        "2026-10-17 13:00:28+00:00": True,
+        "2026-10-17T01:00:00+02:00": True,
+        "2026-10-17T00:00:00-05:00": True,
+        "2026-10-16T23:59:59.999999+00:00": False,
+        "2026-10-16T23:00:00-05:00": False,
+        "2026-10-18T00:00:01+00:00": False,  # a later date: read, then left out by the date check
+    }
+    promoted = json.dumps(
+        {"metadata": {"source": "supervised_weak_valid", "supervised_weak_valid_promoted_to_candidate": True}}
+    )
+    rows = [(status, created_at) for created_at in counted for status in ("candidate", "rejected", "no_signal")]
+    rows += [("CANDIDATE", "2026-10-17T13:00:02+00:00"), ("watchlist", "2026-10-17T13:00:03+00:00")]
+    with db.connect() as connection:
+        for status, created_at in rows:
+            connection.execute(
+                "INSERT INTO scan_decisions (scan_task, symbol, strategy_name, timeframe, status, final_score,"
+                " alert_eligible, freshness, reason_codes_json, rejection_reasons_json, payload_json, created_at)"
+                " VALUES ('intraday_scan', 'MSFT', 'vwap_reclaim', '5m', ?, 55.0, 1, 'fresh', '[]', '[]', ?, ?)",
+                (status, promoted, created_at),
+            )
+
+    read = sorted(_weak_valid_count_rows(repository, now.date()), key=lambda row: row.id)
+
+    expected = sorted(
+        (
+            row
+            for row in repository.list(limit=1000)
+            if row.status.lower() == "candidate" and row.created_at[:10] >= "2026-10-17"
+        ),
+        key=lambda row: row.id,
+    )
+    assert len(read) == 9  # 7 of today, 1 of tomorrow, the "CANDIDATE" row
+    assert [row.model_dump() for row in read] == [row.model_dump() for row in expected]
+    assert _weak_valid_daily_count(SimpleNamespace(scan_decisions=repository)) == sum(counted.values()) + 1

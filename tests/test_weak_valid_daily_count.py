@@ -1,16 +1,23 @@
-"""Parity of the narrowed weak-valid daily count with the original full ``list()`` read.
+"""The supervised weak-valid daily cap counts today's promotions by date.
 
-``_reference_weak_valid_daily_count`` is a verbatim copy of ``_weak_valid_daily_count``
-as it was before the read stopped shipping payloads it never uses. Every test runs
-both on the same data and requires the same count (and, end to end, the same logs
-and scan decisions), including the edge cases of the original: the 5,000-row window,
-case-insensitive status/source, ``Z`` and offset timestamps, an unreadable row
-voiding the whole read, and an error part-way through stopping the count there.
+``_weak_valid_daily_count`` reads every scan decision of today (UTC date) whose
+status is ``candidate`` -- no longer the newest 5,000 rows of any status -- and
+checks each row exactly as before. ``_reference_weak_valid_daily_count`` is a
+verbatim copy of the count it replaced. While the newest 5,000 rows still hold all
+of today's rows the two must agree, row for row and end to end (logs, decision and
+rows written), including the original's edge cases: case-insensitive status/source,
+``Z``, offset, naive and space-separated timestamps. Once more than 5,000 later rows
+push today's promotions out of that window only the new count still sees them, so
+the cap holds. A read that fails, or one of today's candidate rows that cannot be
+loaded or checked, counts as the daily limit (fail closed) and is logged, where the
+original returned 0 or a partial count.
 """
 
 from __future__ import annotations
 
 import json
+import logging
+import sqlite3
 import sys
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
@@ -40,6 +47,8 @@ from tests.test_screener_service import (
 )
 
 NOW = datetime(2026, 10, 17, 14, 30, tzinfo=UTC)
+FAILED = "paper_supervised_weak_valid_daily_count_failed"
+CHANGED_BY_THE_CAP = {"daily_count", "promotion_blockers", "promoted_to_candidate"}
 
 
 def _reference_weak_valid_daily_count(service: Any) -> int:
@@ -145,8 +154,36 @@ def _filler(count: int, *, hour: int = 9) -> list[tuple]:
     ]
 
 
+def _promotions(count: int, *, hour: int = 8) -> list[tuple]:
+    return [
+        _row(created_at=f"2026-10-17T{hour:02d}:0{index}:00.000001+00:00", payload=_weak())
+        for index in range(count)
+    ]
+
+
+def _busy_day() -> list[tuple]:
+    """4 promotions early in the day, then 5,220 later rows: 5,200 of other statuses
+    and 20 candidates that are not promotions (read, never counted)."""
+
+    near_misses = [
+        _row(created_at=f"2026-10-17T11:00:{index:02d}.000001+00:00", payload=_weak(source="paper_near_miss"))
+        for index in range(20)
+    ]
+    return [*_promotions(4), *_filler(5200, hour=10), *near_misses]
+
+
 def _both(service: Any) -> tuple[int, int]:
     return _reference_weak_valid_daily_count(service), _weak_valid_daily_count(service)
+
+
+def _todays_candidates(repository: ScanDecisionRepository, today: Any) -> list[Any]:
+    """What the new read must return, taken from list(): today's (or later) candidate rows."""
+
+    return [
+        row
+        for row in repository.list(limit=100_000)
+        if row.status.lower() == "candidate" and row.created_at >= today.isoformat()
+    ]
 
 
 def _varied_rows() -> list[tuple]:
@@ -155,6 +192,8 @@ def _varied_rows() -> list[tuple]:
         _row(created_at=f"{d}T13:00:00.000001+00:00", payload=_weak()),  # counts
         _row(created_at=f"{d}T13:00:01Z", payload=_weak()),  # "Z" suffix, counts
         _row(created_at=f"{d}T00:00:00+00:00", payload=_weak()),  # midnight, no fraction, counts
+        _row(created_at=f"{d}T00:00:00", payload=_weak()),  # naive midnight, counts
+        _row(created_at=f"{d} 13:00:28+00:00", payload=_weak()),  # space separator, counts
         _row(created_at=f"{prev}T23:59:59.999999+00:00", payload=_weak()),  # yesterday
         _row(created_at=f"{d}T01:00:00+02:00", payload=_weak()),  # written date today (UTC: yesterday), counts
         _row(created_at=f"{prev}T23:00:00-05:00", payload=_weak()),  # written date yesterday (UTC: today)
@@ -204,44 +243,113 @@ def test_count_matches_reference_on_varied_rows(tmp_path, freeze, instant) -> No
     _insert(repository, _varied_rows())
     service = SimpleNamespace(scan_decisions=repository)
 
-    reference, narrowed = _both(service)
+    reference, by_date = _both(service)
 
-    assert narrowed == reference
-    if instant.date() == NOW.date():
-        assert reference == 10  # the rows marked "counts" above
+    assert by_date == reference
+    assert reference == {NOW.date(): 12, NOW.date() - timedelta(days=1): 2, NOW.date() + timedelta(days=1): 1}[
+        instant.date()
+    ]
 
 
-def test_count_keeps_the_newest_5000_row_window(tmp_path, freeze) -> None:
-    # Today's promotions older than the newest 5,000 rows were never counted by the
-    # original read; the narrowed read must not start counting them.
+def test_todays_promotions_still_count_after_more_than_5000_later_rows(tmp_path, freeze) -> None:
+    # The leak the newest-5,000-row window had: 4 promotions early in the day, then a
+    # busy session writes more than 5,000 rows -- the old count no longer saw any of
+    # them, so a fifth promotion went through. Today's later candidate rows that are
+    # not promotions are read but never counted.
     freeze(NOW)
     repository = _repository(tmp_path)
-    outside = [_row(created_at=f"2026-10-17T08:00:0{index}.000001+00:00", payload=_weak()) for index in range(2)]
-    edge = [_row(created_at="2026-10-17T08:30:00.000001+00:00", payload=_weak())]
-    newest = [_row(created_at=f"2026-10-17T12:00:0{index}.000001+00:00", payload=_weak()) for index in range(2)]
-    _insert(repository, outside + edge + _filler(4997) + newest)
+    _insert(repository, _busy_day())
     service = SimpleNamespace(scan_decisions=repository)
 
-    reference, narrowed = _both(service)
+    reference, by_date = _both(service)
 
-    assert reference == 3  # edge + newest; the two older rows sit outside the window
-    assert narrowed == reference
+    assert reference == 0  # all four sit below the newest 5,000 rows
+    assert by_date == 4
+    assert len(_weak_valid_count_rows(repository, NOW.date())) == 24
+
+
+def test_read_is_todays_candidate_rows_of_list(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    _insert(repository, [*_varied_rows(), *_filler(40, hour=8), *_promotions(3, hour=7)])
+    today = NOW.date()
+
+    rows = _weak_valid_count_rows(repository, today)
+
+    expected = _todays_candidates(repository, today)
+    assert [row.model_dump() for row in rows] == [row.model_dump() for row in expected]
+    assert {row.created_at[:10] for row in rows} == {"2026-10-17", "2026-10-18"}
+    assert {row.status for row in rows} == {"candidate", "Candidate", "CANDIDATE"}
+    assert len(rows) == 28 and len(repository.list(limit=100_000)) == 78  # filler, yesterday, other statuses stay out
+
+
+def test_rows_the_count_does_not_read_can_no_longer_void_it(tmp_path, freeze) -> None:
+    # The original loaded the newest 5,000 rows of every status, so one row there the
+    # repository could not load returned 0. The count now loads only today's
+    # candidate rows: a broken row of another status, or of an earlier day, is never read.
+    freeze(NOW)
+    repository = _repository(tmp_path)
+    unread = [
+        _row("rejected", created_at="2026-10-17T10:00:00.000001+00:00", reason_codes_json="[1]"),
+        _row("no_signal", created_at="2026-10-17T10:00:01.000001+00:00", final_score="not-a-number"),
+        _row(created_at="2026-10-16T23:59:59.999999+00:00", payload_json="{not json"),
+    ]
+    _insert(repository, [*unread, *_promotions(3, hour=11)])
+    service = SimpleNamespace(scan_decisions=repository)
+
+    reference, by_date = _both(service)
+
+    assert reference == 0
+    assert by_date == 3
+
+
+@pytest.mark.parametrize(
+    "unreadable",
+    [
+        _row(created_at="2026-10-17T10:00:00.000001+00:00", reason_codes_json="[1]", payload=_weak()),
+        _row(created_at="2026-10-17T10:00:00.000001+00:00", final_score="not-a-number", payload=_weak()),
+        _row(created_at="2026-10-17T10:00:00.000001+00:00", payload_json="{not json"),
+        _row(created_at="2026-10-17T11:00:00+00:00 not-a-time", payload=_weak()),
+        _row(created_at="2026-10-17T11:00:00.000001+00:00", payload={"metadata": "oops"}),
+    ],
+    ids=[
+        "non_string_reason_code",
+        "non_numeric_score",
+        "broken_payload",
+        "unparseable_created_at",
+        "non_mapping_metadata",
+    ],
+)
+def test_a_candidate_row_of_today_that_cannot_be_checked_fails_closed(tmp_path, freeze, caplog, unreadable) -> None:
+    # The original returned 0 (a row list() cannot load) or the count of the rows
+    # newer than the one that raised. Either let promotions past the cap; the count
+    # now reads as the daily limit and says why.
+    freeze(NOW)
+    repository = _repository(tmp_path)
+    _insert(repository, [*_promotions(1, hour=9), unreadable, *_promotions(2, hour=12)])
+    logs = FakeRunLogRepository()
+    service = SimpleNamespace(scan_decisions=repository, logs=logs)
+
+    with caplog.at_level(logging.WARNING, logger=scan_promotion.__name__):
+        reference, by_date = _both(service)
+
+    assert reference in (0, 2)
+    assert by_date == 4  # the default daily limit
+    assert [event for event, _ in logs.items] == [FAILED]
+    assert logs.items[0][1]["daily_count"] == 4 and logs.items[0][1]["error"]
+    assert "counted as the limit" in caplog.text
 
 
 def test_count_inside_a_scan_writes_its_queued_rows_first_like_list(tmp_path, freeze, monkeypatch) -> None:
-    # P5 (this read) meets P6 (a scan's no_signal rows queued in its thread): list()
-    # writes the thread's queue before it reads, so the narrowed read must too, or a
-    # queued row is missing from the newest-5,000 window and an older promotion slides
-    # back in. The queue is empty when scan_universe counts today; a scan nested in
-    # another scan's deferred_writes() inherits that scan's queue.
+    # A scan's no_signal rows are queued in its thread and only that thread writes
+    # them: before each of its reads, as list() does. The count's read is one of those
+    # reads, so it writes the queue first (the rows are never candidates, so they
+    # cannot change the count).
     from app.storage import scan_decisions as scan_decisions_module
 
     freeze(NOW)
     monkeypatch.setattr(scan_decisions_module, "utc_now", lambda: NOW)  # the queued row's created_at
     repository = _repository(tmp_path)
-    oldest = _row(created_at="2026-10-17T08:00:00.000001+00:00", payload=_weak())
-    newest = [_row(created_at=f"2026-10-17T12:00:0{index}.000001+00:00", payload=_weak()) for index in range(2)]
-    _insert(repository, [oldest, *_filler(4997), *newest])  # exactly 5,000 rows
+    _insert(repository, _promotions(2))
     service = SimpleNamespace(scan_decisions=repository)
     queued = {
         "scan_task": "intraday_scan", "strategy_name": "vwap_reclaim", "timeframe": "5m",
@@ -249,103 +357,25 @@ def test_count_inside_a_scan_writes_its_queued_rows_first_like_list(tmp_path, fr
         "reason_codes": ["no_signal"], "rejection_reasons": [], "payload": {},
     }
 
+    def stored_symbols() -> list[str]:
+        connection = sqlite3.connect(repository.db.path)  # past the repository: no flush
+        try:
+            return [row[0] for row in connection.execute("SELECT symbol FROM scan_decisions ORDER BY id")]
+        finally:
+            connection.close()
+
     with repository.deferred_writes():
         repository.create_deferred(symbol="NVDA", **queued)
-        narrowed = _weak_valid_daily_count(service)  # first: list() would write the queue
-        reference = _reference_weak_valid_daily_count(service)
-        repository.create_deferred(symbol="AMD", **queued)
-        slim_ids = [row.id for row in _weak_valid_count_rows(repository)]
-        full_ids = [row.id for row in repository.list(limit=5000)]
-
-    assert reference == 2  # the queued row pushes the oldest promotion out of the window
-    assert narrowed == reference
-    assert slim_ids == full_ids and len(slim_ids) == 5000
+        assert "NVDA" not in stored_symbols()
+        assert _weak_valid_daily_count(service) == 2
+        assert stored_symbols()[-1] == "NVDA"
+        assert repository._pending() == []
 
 
-@pytest.mark.parametrize(
-    "unreadable",
-    [
-        _row("rejected", created_at="2026-10-17T10:00:00.000001+00:00", reason_codes_json="[1]"),
-        _row("no_signal", created_at="2026-10-17T10:00:00.000001+00:00", final_score="not-a-number"),
-        _row(created_at="2026-10-17T10:00:00.000001+00:00", payload_json="{not json"),
-    ],
-    ids=["non_string_reason_code", "non_numeric_score", "candidate_with_broken_payload"],
-)
-def test_unreadable_row_in_window_voids_the_count_like_list(tmp_path, freeze, unreadable) -> None:
-    # list() builds every row before the count starts, so one row the repository
-    # cannot load made the original return 0 -- even with newer promotions present.
-    freeze(NOW)
-    repository = _repository(tmp_path)
-    newer = [_row(created_at=f"2026-10-17T11:00:0{index}.000001+00:00", payload=_weak()) for index in range(2)]
-    _insert(repository, [unreadable, *newer])
-    service = SimpleNamespace(scan_decisions=repository)
-
-    reference, narrowed = _both(service)
-
-    assert reference == 0
-    assert narrowed == reference
-
-
-def test_unreadable_row_outside_the_window_is_ignored_like_list(tmp_path, freeze) -> None:
-    freeze(NOW)
-    repository = _repository(tmp_path)
-    unreadable = _row("rejected", created_at="2026-10-17T07:00:00.000001+00:00", reason_codes_json="[1]")
-    newest = [_row(created_at=f"2026-10-17T12:00:0{index}.000001+00:00", payload=_weak()) for index in range(3)]
-    _insert(repository, [unreadable, *_filler(4997), *newest])
-    service = SimpleNamespace(scan_decisions=repository)
-
-    reference, narrowed = _both(service)
-
-    assert reference == 3
-    assert narrowed == reference
-
-
-@pytest.mark.parametrize(
-    "breaking",
-    [
-        _row(created_at="2026-10-17T11:00:00+00:00 not-a-time", payload=_weak()),
-        _row(created_at="2026-10-17T11:00:00.000001+00:00", payload={"metadata": "oops"}),
-    ],
-    ids=["unparseable_created_at", "non_mapping_metadata"],
-)
-def test_error_part_way_stops_the_count_at_the_same_row(tmp_path, freeze, breaking) -> None:
-    # The original walks rows newest first inside one suppress(): an error on a row
-    # keeps what was counted before it. Same rows in the same order => same count.
-    freeze(NOW)
-    repository = _repository(tmp_path)
-    older = [_row(created_at=f"2026-10-17T10:00:0{index}.000001+00:00", payload=_weak()) for index in range(3)]
-    newer = [_row(created_at=f"2026-10-17T12:00:0{index}.000001+00:00", payload=_weak()) for index in range(2)]
-    _insert(repository, [*older, breaking, *newer])
-    service = SimpleNamespace(scan_decisions=repository)
-
-    reference, narrowed = _both(service)
-
-    assert reference == 2  # only the rows newer than the breaking one
-    assert narrowed == reference
-
-
-def test_narrowed_read_is_list_without_unusable_payloads(tmp_path) -> None:
-    repository = _repository(tmp_path)
-    _insert(repository, [*_varied_rows(), *_filler(40, hour=8)])
-
-    full = repository.list(limit=5000)
-    narrowed = _weak_valid_count_rows(repository)
-
-    assert [row.id for row in narrowed] == [row.id for row in full]
-    dropped_payload_bytes = 0
-    for slim, row in zip(narrowed, full, strict=True):
-        assert slim.model_dump(exclude={"payload"}) == row.model_dump(exclude={"payload"})
-        if row.status.lower() == "candidate":
-            assert slim.payload == row.payload  # every row the count can use keeps its payload
-        elif row.status.isascii() and row.status == row.status.lower():
-            assert slim.payload == {}  # e.g. "rejected", "no_signal": left in the database
-            dropped_payload_bytes += len(json.dumps(row.payload))
-    assert dropped_payload_bytes > 0
-
-
-def test_narrowed_read_through_the_sqlalchemy_connection_wrapper(tmp_path, freeze) -> None:
+def test_read_through_the_sqlalchemy_connection_wrapper(tmp_path, freeze) -> None:
     # Production (Postgres) runs the same SQL through Database's SQLAlchemy wrapper:
-    # '?' rebinding, mapping rows and the payload_json alias must behave the same.
+    # '?' rebinding and mapping rows must behave the same (the real Postgres run is
+    # in tests/test_scan_decision_writes.py).
     freeze(NOW)
     repository = _repository(tmp_path)
     _insert(repository, [*_varied_rows(), *_filler(40, hour=8)])
@@ -353,16 +383,13 @@ def test_narrowed_read_through_the_sqlalchemy_connection_wrapper(tmp_path, freez
     repository.db._engine = create_engine(f"sqlite:///{repository.db.path}")
     service = SimpleNamespace(scan_decisions=repository)
 
-    reference, narrowed = _both(service)
+    reference, by_date = _both(service)
 
-    assert reference == 10
-    assert narrowed == reference
-    full = repository.list(limit=5000)
-    slim = _weak_valid_count_rows(repository)
-    assert [row.id for row in slim] == [row.id for row in full]
-    assert [row.payload for row in slim if row.status.lower() == "candidate"] == [
-        row.payload for row in full if row.status.lower() == "candidate"
-    ]
+    assert reference == 12
+    assert by_date == reference
+    rows = _weak_valid_count_rows(repository, NOW.date())
+    expected = _todays_candidates(repository, NOW.date())
+    assert [row.model_dump() for row in rows] == [row.model_dump() for row in expected]
 
 
 def test_other_repositories_keep_the_plain_list_call(freeze) -> None:
@@ -386,14 +413,14 @@ def test_other_repositories_keep_the_plain_list_call(freeze) -> None:
         SimpleNamespace(status=None, payload=None, created_at=None),
         SimpleNamespace(payload=_weak()),
     ]
-    reference_repo, narrowed_repo = ListOnly(rows), ListOnly(rows)
+    reference_repo, by_date_repo = ListOnly(rows), ListOnly(rows)
 
     reference = _reference_weak_valid_daily_count(SimpleNamespace(scan_decisions=reference_repo))
-    narrowed = _weak_valid_daily_count(SimpleNamespace(scan_decisions=narrowed_repo))
+    by_date = _weak_valid_daily_count(SimpleNamespace(scan_decisions=by_date_repo))
 
     assert reference == 3
-    assert narrowed == reference
-    assert narrowed_repo.calls == reference_repo.calls == [{"limit": 5000}]
+    assert by_date == reference
+    assert by_date_repo.calls == reference_repo.calls == [{"limit": 5000}]
 
     class Streaming:
         def list(self, **_kwargs: Any):
@@ -401,15 +428,16 @@ def test_other_repositories_keep_the_plain_list_call(freeze) -> None:
             yield SimpleNamespace(status="candidate", payload=_weak(), created_at=None)
             raise RuntimeError("connection dropped")
 
-    assert _both(SimpleNamespace(scan_decisions=Streaming())) == (2, 2)
+    assert _both(SimpleNamespace(scan_decisions=Streaming())) == (2, 4)  # fails closed, not 2
 
     mocked = MagicMock(spec=ScanDecisionRepository)
     mocked.list.return_value = rows
     assert _both(SimpleNamespace(scan_decisions=mocked)) == (3, 3)
 
 
-def test_missing_or_failing_repository_counts_zero(tmp_path, freeze, monkeypatch) -> None:
+def test_a_failed_read_counts_as_the_daily_limit(tmp_path, freeze, monkeypatch) -> None:
     freeze(NOW)
+    # No repository: nothing is stored, nothing to count (unchanged).
     assert _both(SimpleNamespace()) == (0, 0)
     assert _both(SimpleNamespace(scan_decisions=None)) == (0, 0)
     assert _both(SimpleNamespace(scan_decisions=SimpleNamespace(db=object()))) == (0, 0)
@@ -421,7 +449,20 @@ def test_missing_or_failing_repository_counts_zero(tmp_path, freeze, monkeypatch
         raise RuntimeError("database unavailable")
 
     monkeypatch.setattr(repository.db, "connect", broken_connect)
-    assert _both(SimpleNamespace(scan_decisions=repository)) == (0, 0)
+    logs = FakeRunLogRepository()
+    assert _both(SimpleNamespace(scan_decisions=repository, logs=logs)) == (0, 4)
+    assert logs.items == [(FAILED, {"error": "RuntimeError: database unavailable", "daily_count": 4})]
+
+    # The configured limit, and never 0 even when the limit is 0 or unset.
+    for configured, expected in ((6, 6), (1, 1), (0, 1), (None, 1)):
+        settings = SimpleNamespace(paper_supervised_weak_valid_max_proposals_per_day=configured)
+        assert _weak_valid_daily_count(SimpleNamespace(scan_decisions=repository, settings=settings)) == expected
+
+    class BrokenLogs:
+        def log(self, *_args: Any) -> None:
+            raise RuntimeError("run_logs unavailable too")
+
+    assert _weak_valid_daily_count(SimpleNamespace(scan_decisions=repository, logs=BrokenLogs())) == 4
 
 
 def _weak_valid_scan_service(path, repository: ScanDecisionRepository, monkeypatch) -> MarketScreenerService:
@@ -524,8 +565,7 @@ def _scan_outcome(path, prior_rows: list[tuple], monkeypatch, *, counter: Any) -
             (row.payload.get("metadata") or {}).get("source"),
             (row.payload.get("metadata") or {}).get("supervised_weak_valid_promoted_to_candidate"),
         )
-        for row in repository.list(limit=5000)
-        if row.symbol == "NVDA"
+        for row in repository.list(limit=100_000, symbol="NVDA")
     ]
     return {
         "attempts": [
@@ -533,15 +573,25 @@ def _scan_outcome(path, prior_rows: list[tuple], monkeypatch, *, counter: Any) -
         ],
         "candidates": [(item.symbol, item.metadata.get("source")) for item in response.candidates],
         "written": written,
+        "failures": [payload for event, payload in service.logs.items if event == FAILED],
+        "events": [event for event, _ in service.logs.items if event != FAILED],
     }
+
+
+def _limited(outcome: dict[str, Any]) -> bool:
+    return "supervised_weak_valid_daily_limit_reached" in outcome["attempts"][0]["promotion_blockers"]
+
+
+def _promoted(outcome: dict[str, Any]) -> bool:
+    return any(source == "supervised_weak_valid" for _symbol, source in outcome["candidates"])
 
 
 @pytest.mark.parametrize("promoted_today", [0, 2, 4])
 def test_scan_logs_the_same_daily_count_and_decision(tmp_path, freeze, monkeypatch, promoted_today) -> None:
     # End to end: the same prior rows, one scan counted by the original function and
-    # one by the narrowed read. Logs (daily_count, blockers), the promotion decision
-    # and the rows written must match -- including when today's promotions reach the
-    # default daily limit of 4.
+    # one by date. Logs (daily_count, blockers), the promotion decision and the rows
+    # written must match -- including when today's promotions reach the default daily
+    # limit of 4.
     freeze(NOW)
     prior = [
         *(
@@ -554,11 +604,56 @@ def test_scan_logs_the_same_daily_count_and_decision(tmp_path, freeze, monkeypat
     ]
 
     reference = _scan_outcome(tmp_path / "reference", prior, monkeypatch, counter=_reference_weak_valid_daily_count)
-    narrowed = _scan_outcome(tmp_path / "narrowed", prior, monkeypatch, counter=_weak_valid_daily_count)
+    by_date = _scan_outcome(tmp_path / "by_date", prior, monkeypatch, counter=_weak_valid_daily_count)
 
-    assert narrowed == reference
+    assert by_date == reference
     assert reference["attempts"] and all(item["daily_count"] == promoted_today for item in reference["attempts"])
-    limited = "supervised_weak_valid_daily_limit_reached" in reference["attempts"][0]["promotion_blockers"]
-    assert limited is (promoted_today >= 4)
-    promoted = any(source == "supervised_weak_valid" for _symbol, source in reference["candidates"])
-    assert promoted is (promoted_today < 4)
+    assert _limited(reference) is (promoted_today >= 4)
+    assert _promoted(reference) is (promoted_today < 4)
+    assert reference["failures"] == []
+
+
+def test_scan_after_more_than_5000_later_rows_still_stops_at_the_daily_limit(tmp_path, freeze, monkeypatch) -> None:
+    # The cap holds on a busy day: 4 promotions, then 5,220 later rows. The scan
+    # decides and logs exactly as on a quiet day with the same 4 promotions; the
+    # original count saw 0 and promoted a fifth. Between the two counts only the
+    # cap's own fields of the attempt log differ.
+    freeze(NOW)
+    busy = _busy_day()
+
+    by_date = _scan_outcome(tmp_path / "busy", busy, monkeypatch, counter=_weak_valid_daily_count)
+    quiet = _scan_outcome(tmp_path / "quiet", _promotions(4), monkeypatch, counter=_weak_valid_daily_count)
+    reference = _scan_outcome(tmp_path / "reference", busy, monkeypatch, counter=_reference_weak_valid_daily_count)
+
+    assert by_date == quiet
+    assert by_date["attempts"] and all(item["daily_count"] == 4 for item in by_date["attempts"])
+    assert _limited(by_date) and not _promoted(by_date)
+    assert by_date["failures"] == []
+    assert reference["attempts"][0]["daily_count"] == 0 and _promoted(reference)  # the old leak
+    first, old_first = by_date["attempts"][0], reference["attempts"][0]
+    assert {key: value for key, value in first.items() if key not in CHANGED_BY_THE_CAP} == {
+        key: value for key, value in old_first.items() if key not in CHANGED_BY_THE_CAP
+    }
+    assert set(first["promotion_blockers"]) - set(old_first["promotion_blockers"]) == {
+        "supervised_weak_valid_daily_limit_reached"
+    }
+
+
+def test_scan_with_an_unreadable_count_blocks_like_a_reached_limit(tmp_path, freeze, monkeypatch) -> None:
+    # One of today's candidate rows cannot be loaded: the original counted 0 and
+    # promoted; the scan now decides and logs exactly as with 4 promotions counted,
+    # plus one failure event.
+    freeze(NOW)
+    broken = [_row(created_at="2026-10-17T09:00:00.000001+00:00", payload_json="{not json")]
+
+    failed = _scan_outcome(tmp_path / "failed", broken, monkeypatch, counter=_weak_valid_daily_count)
+    limited = _scan_outcome(tmp_path / "limited", _promotions(4), monkeypatch, counter=_weak_valid_daily_count)
+    reference = _scan_outcome(tmp_path / "reference", broken, monkeypatch, counter=_reference_weak_valid_daily_count)
+
+    assert {key: value for key, value in failed.items() if key != "failures"} == {
+        key: value for key, value in limited.items() if key != "failures"
+    }
+    assert _limited(failed) and not _promoted(failed)
+    assert [item["daily_count"] for item in failed["failures"]] == [4]
+    assert failed["failures"][0]["error"].startswith("JSONDecodeError")
+    assert reference["attempts"][0]["daily_count"] == 0 and _promoted(reference)
