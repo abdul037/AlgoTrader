@@ -91,6 +91,18 @@ def live_scorecard(request: Request):
     except (TypeError, ValueError):
         short_evidence = {}
     report["short_evidence"] = short_evidence if isinstance(short_evidence, dict) else {}
+    try:  # earnings shadow check: flagged vs unflagged setups and live trades (nothing blocked)
+        from app.storage.repositories import RunLogRepository
+        from app.utils.time import utc_now
+        from app.workflow.event_risk import EVENT, event_risk_report
+
+        since = (utc_now() - timedelta(days=120)).isoformat()
+        logs = RunLogRepository(db).list_by_event(EVENT, limit=500, since_iso=since)
+        report["event_risk_shadow"] = event_risk_report(
+            state, trades=report.get("trades"), proposal_logs=logs
+        )
+    except Exception:  # noqa: BLE001 - a shadow section never takes the scorecard down
+        report["event_risk_shadow"] = {"error": "event_risk_report_failed", "shadow_only": True}
     return report
 
 

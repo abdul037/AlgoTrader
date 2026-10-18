@@ -791,9 +791,11 @@ def refresh_phase_gates(service: Any, completed: list[str], errors: list[str]) -
     from app.broker.etoro_live_test_order import run_from_maintenance
     from app.performance.go_live_readiness import refresh_readiness
     from app.performance.strategy_evidence import refresh_verdicts
+    from app.workflow.earnings_calendar import refresh_earnings_cache, warm_memory
     from app.workflow.shadow_ledger import refresh_shadow_ledger, refresh_short_shadow_ledger
 
     run_from_maintenance(service, completed)  # every tick: one-off eToro live test order, if requested
+    warm_memory(service)  # event-risk shadow: earnings cache into memory once after a restart
     if not service._is_due("phase_gates:last_run_at", 30):
         return
     service.runtime_state.set("phase_gates:last_run_at", utc_now().isoformat())
@@ -807,6 +809,7 @@ def refresh_phase_gates(service: Any, completed: list[str], errors: list[str]) -
         ("etoro_live_reconcile", lambda: mirror is not None and mirror.reconcile() is not None),
         ("premarket_shadow_ledger", lambda: refresh_shadow_ledger(service) is not None),
         ("premarket_short_shadow_ledger", lambda: refresh_short_shadow_ledger(service) is not None),
+        ("event_risk_earnings_refresh", lambda: refresh_earnings_cache(service) is not None),
     ):
         try:
             if step():
@@ -861,6 +864,7 @@ def auto_propose_candidates(service: Any, response: Any, *, origin: str, notify:
         for proposal in service.proposal_service.list_proposals(status=status)
     }
     created = 0
+    shadow_event_risk: list[tuple[Any, Any]] = []  # (proposal id, candidate): logged after the loop
     candidates = list(getattr(response, "candidates", []) or [])
     funnel: Counter[str] = Counter()
     funnel["entered"] = len(candidates)
@@ -928,6 +932,7 @@ def auto_propose_candidates(service: Any, response: Any, *, origin: str, notify:
             continue
         existing_symbols.add(symbol)
         created += 1
+        shadow_event_risk.append((proposal.id, candidate))
         funnel["proposals_created"] += 1
         service.run_logs.log(
             "auto_proposal_created",
@@ -960,4 +965,8 @@ def auto_propose_candidates(service: Any, response: Any, *, origin: str, notify:
             "auto_propose_funnel",
             {"origin": origin, "created": created, **dict(funnel)},
         )
+    if shadow_event_risk:  # shadow only, after every approval and order; never raises
+        from app.workflow.event_risk import log_proposal_event_risk
+
+        log_proposal_event_risk(service, shadow_event_risk)
     return created

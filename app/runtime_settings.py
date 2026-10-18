@@ -238,6 +238,10 @@ class AppSettings(BaseSettings):
     # Shorts step 2 (operator 2026-10-17): the deep scan also lists bracketed short setups and an
     # off-hours shadow ledger follows them. Never traded; off stops both, the long scan unchanged.
     premarket_short_shadow_enabled: bool = True
+    # Event-risk (earnings) check, SHADOW ONLY (operator 2026-10-18): off-hours yfinance earnings
+    # dates; logs which entries an earnings rule would have blocked, never blocks anything. Off
+    # stops the refresh, the watchlist hints and the proposal logs (app/workflow/event_risk.py).
+    event_risk_shadow_enabled: bool = True
     premarket_scan_time_local: str = "08:30"
     market_open_scan_enabled: bool = True
     market_open_scan_time_local: str = "09:35"

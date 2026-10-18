@@ -18,7 +18,8 @@ sell signals, financing and max-hold metadata are not replayed. R = (exit - entr
 
 It reads the watchlists and daily bars (the deep scan's request, so usually the cache) and
 writes only ``premarket:shadow_ledger`` (+ its small state key) and one run log. It never
-creates proposals or orders and never touches the eToro mirror.
+creates proposals or orders and never touches the eToro mirror. A setup's ``event_risk`` hint
+(the earnings shadow check) is kept on its entry for ``event_risk.event_risk_report``.
 
 Shorts (operator 2026-10-17, step 2): the watchlists' ``short_signals`` are followed in their
 own ledger, ``premarket:shadow_ledger:short`` (+ its own state key), by
@@ -412,7 +413,7 @@ def _entry(item: dict[str, Any], signal_date: str) -> dict[str, Any] | None:
     symbol, spec_key = str(item.get("symbol") or "").upper(), str(item.get("spec_key") or "")
     if len(signal_bar) != 10 or not symbol or not spec_key:
         return None
-    return {
+    entry = {
         "key": f"{signal_date}|{symbol}|{spec_key}",
         "signal_date": signal_date,
         "signal_bar": signal_bar,
@@ -427,6 +428,12 @@ def _entry(item: dict[str, Any], signal_date: str) -> dict[str, Any] | None:
         "target": target,
         "status": "pending",
     }
+    risk = item.get("event_risk")  # the deep scan's earnings shadow hint, when it recorded one
+    if isinstance(risk, dict):
+        entry["event_risk"] = {
+            k: risk.get(k) for k in ("would_block", "earnings_date", "reason", "window_end")
+        }
+    return entry
 
 
 def _short_entry(item: dict[str, Any], signal_date: str) -> dict[str, Any] | None:

@@ -77,6 +77,9 @@ def make_settings(tmp_path: Path, **overrides) -> AppSettings:
         "screener_max_false_positive_risk": 0.68,
         # Wall-clock dependent (quiet hours); its own tests enable it and inject the clocks.
         "backtest_short_research_enabled": False,
+        # Wall-clock dependent (off-hours earnings refresh, Yahoo by default) and it adds run
+        # logs to the proposal path; its own tests enable it with a fake provider and clocks.
+        "event_risk_shadow_enabled": False,
     }
     defaults.update(overrides)
     return AppSettings(**defaults)

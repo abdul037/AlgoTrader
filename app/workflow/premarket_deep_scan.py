@@ -30,6 +30,10 @@ in ``short_signals`` with ``tradeable`` False, never in ``signals``, the ranked 
 coverage record or the notification; nothing anywhere trades a short. Its backtest figures come
 from the short research verdicts (a reporting-only key the live evidence gate never reads).
 A short that fails to record counts in ``short_errors`` and never stops the long scan.
+
+Event risk (operator 2026-10-18 -- SHADOW ONLY): with ``event_risk_shadow_enabled`` and an
+earnings cache, each long item carries an ``event_risk`` hint (``app/workflow/event_risk.py``):
+whether an earnings rule would block it. Never in the ranking, ``tradeable`` or the note.
 """
 
 from __future__ import annotations
@@ -458,7 +462,7 @@ def _item(signal, symbol, spec, spec_key, last, relative_volume, bucket, context
     pending = symbol in context["pending"]
     allowed = symbol in context["allowed"]
     blacklisted = symbol in context["blacklisted"]
-    return {
+    item = {
         "symbol": symbol,
         "strategy": str(spec.name),
         "spec_key": spec_key,
@@ -497,6 +501,11 @@ def _item(signal, symbol, spec, spec_key, last, relative_volume, bucket, context
             and not pending
         ),
     }
+    hint = context.get("event_risk")  # earnings shadow check: a hint, never ranked or gated
+    flag = hint(symbol, item["signal_bar_ts"]) if hint is not None else None
+    if flag is not None:
+        item["event_risk"] = flag
+    return item
 
 
 def _short_item(
@@ -572,6 +581,7 @@ def _prefetch(service: Any) -> dict[str, Any]:
     from app.broker.etoro_live_room import bucket_blockers, effective_open_symbols
     from app.models.approval import ApprovalStatus
     from app.performance.strategy_evidence import VERDICTS_KEY, evidence_blocker
+    from app.workflow.event_risk import watchlist_hint
 
     raw_verdicts = service.runtime_state.get(VERDICTS_KEY)
     try:
@@ -648,6 +658,7 @@ def _prefetch(service: Any) -> dict[str, Any]:
         "etoro_open": set(etoro_open),
         "etoro_bucket_full": lambda symbol: bucket_blockers(symbol, etoro_open),
         "short_verdicts": short_verdicts,  # the short items' figures only, never the gate's
+        "event_risk": watchlist_hint(service),  # shadow only: long items' earnings hint, or None
     }
 
 
