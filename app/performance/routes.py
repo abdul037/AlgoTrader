@@ -86,6 +86,10 @@ def live_scorecard(request: Request):
 
     report = scorecard_report(state, fills)
     report["shadow_ledger"] = shadow_ledger_report(state)  # watchlist setups on later bars
+    from app.workflow.open_shadow import open_shadow_report  # Phase 3 shadow vs the live entries
+
+    settings = request.app.state.settings
+    report["open_shadow"] = open_shadow_report(state, db, cards, settings=settings)
     try:  # short-setup backtests: research only, nothing on the trading path reads them
         short_evidence = json.loads(state.get(SHORT_VERDICTS_KEY) or "{}")
     except (TypeError, ValueError):

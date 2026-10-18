@@ -242,6 +242,10 @@ class AppSettings(BaseSettings):
     # dates; logs which entries an earnings rule would have blocked, never blocks anything. Off
     # stops the refresh, the watchlist hints and the proposal logs (app/workflow/event_risk.py).
     event_risk_shadow_enabled: bool = True
+    # Phase 3 (operator 2026-10-18), SHADOW ONLY: after the live market-open scan, re-check the
+    # watchlist's top setups on completed bars and at a fresh quote, rank them best-first and log
+    # what entering them at the open would have done. Never trades; off stops it, nothing else.
+    premarket_open_shadow_enabled: bool = True
     premarket_scan_time_local: str = "08:30"
     market_open_scan_enabled: bool = True
     market_open_scan_time_local: str = "09:35"

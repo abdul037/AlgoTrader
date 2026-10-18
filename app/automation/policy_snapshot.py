@@ -101,6 +101,9 @@ def effective_execution_policy(settings: Any) -> dict[str, Any]:
         # Event-risk (earnings) check (2026-10-18): default on, shadow only (it logs which entries
         # an earnings rule would block and never blocks); logged so the switch is checkable at boot.
         "event_risk_shadow_enabled": bool(_get("event_risk_shadow_enabled", True)),
+        # Phase 3 (2026-10-18): with the deep scan on, best-first entries at the open are logged in
+        # shadow. Default on and never traded; logged so it is checkable at boot.
+        "premarket_open_shadow_enabled": bool(_get("premarket_open_shadow_enabled", True)),
         # A boolean only — never the account number itself.
         "alpaca_expected_account_configured": bool(
             str(_get("alpaca_expected_account_number", "") or "").strip()

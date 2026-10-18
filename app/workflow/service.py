@@ -20,6 +20,7 @@ from app.workflow.cadence_budget import (
     tick_budget,
 )
 from app.workflow.crypto_scan import crypto_bucket_enabled, crypto_scan_due, run_crypto_scan
+from app.workflow.open_shadow import run_open_shadow
 from app.workflow.operations import (
     candidate_with_ledger_outcome,
     check_open_signals_impl,
@@ -147,6 +148,7 @@ class SignalWorkflowService:
                 summary["buckets_run"] += 1
         if deferred and budget is not None:
             self.run_logs.log("workflow_cadence_deferred", {"deferred_buckets": deferred, **budget.describe()})
+        run_open_shadow(self, started_at=started_at, deferred=deferred)  # Phase 3 shadow: last; never raises
         return summary
 
     def run_premarket_scan(self, *, notify: bool = True, force_refresh: bool = False) -> WorkflowTaskResponse:
