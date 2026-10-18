@@ -610,9 +610,14 @@ def _close_trade(
         exit_time=exit_time,
     )
     fx_usd = cost_model.fx_round_trip_cost_usd(notional_usd=open_trade.entry_notional)
-    # Commission is charged on both legs; slippage drags both notionals; US equity
-    # regulatory fees apply to the sell leg only (the exit of a long, the entry of a short).
-    commission_usd = 2.0 * cost_model.commission_usd(quantity=open_trade.quantity)
+    # Commission is charged on both legs (per share, plus any flat or percentage fee a leg:
+    # eToro's own trade fees); slippage drags both notionals; US equity regulatory fees
+    # apply to the sell leg only (the exit of a long, the entry of a short).
+    commission_usd = (
+        2.0 * cost_model.commission_usd(quantity=open_trade.quantity)
+        + cost_model.leg_fee_usd(notional_usd=open_trade.entry_notional)
+        + cost_model.leg_fee_usd(notional_usd=exit_notional)
+    )
     slippage_usd = cost_model.slippage_usd(
         notional_usd=open_trade.entry_notional
     ) + cost_model.slippage_usd(notional_usd=exit_notional)

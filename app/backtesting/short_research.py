@@ -47,6 +47,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.backtesting.cost_model import CostModel, with_etoro_trade_fees
 from app.backtesting.engine import BacktestEngine, EngineConfig
 from app.backtesting.intraday_plan import history_bars_for
 from app.backtesting.metrics import bars_per_year_for, leakage_tripwire_triggered
@@ -142,11 +143,13 @@ def run_short_pass(
         cursor = 0
     bars = history_bars_for("1d", settings)  # outside the per-symbol try: a bug here must surface
     # Repo-less, like the folds and holdout: only _run_strategy's relabelled row persists.
+    # The universe is stocks only, so every unit pays eToro's stock fee, as the long rows do.
     engine = BacktestEngine(
         config=EngineConfig(
             initial_cash=10_000.0,
             risk_per_trade_pct=float(getattr(settings, "max_risk_per_trade_pct", 1.0)),
             bars_per_year=bars_per_year_for("1d"),
+            cost_model=with_etoro_trade_fees(CostModel(), crypto=False),
             short_entries=True,
         )
     )

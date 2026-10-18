@@ -12,6 +12,11 @@ under their own ``app.backtesting`` names for that run only. What
 order counts), minus the row id and the wall-clock stamps, every run log and the summary
 ``run`` returns must match exactly.
 
+Today's batch adds eToro's own trade fees (``with_etoro_trade_fees``: $1 a leg on a US stock),
+which bc82efd never charged, so the parity run sets them to 0. A third run with the real fees
+must differ from it by the fee alone: $1 off each leg's P&L, and the slightly smaller sizes
+that the cash those fees took buys for a fold's later trades (sizing is 1% of current cash).
+
 Both runs share this machine's numpy build, its CPU dispatch and this process's hash seed,
 so an exact comparison holds on any CPU. (A golden digest of float reprs did not: numpy's
 AVX-512 and AVX2 ``exp`` differ in the last bit, which moves the seeded frames.)
@@ -192,8 +197,10 @@ def _record(case, summary, rows, events) -> list[tuple[str, str]]:
     return out
 
 
-def _sweep(modules, tmp_dir) -> tuple[list[tuple[str, str]], Counter]:
-    """Every case through ``modules['batch'].BatchBacktestService.run`` (the long path)."""
+def _sweep(modules, tmp_dir, persisted: list | None = None) -> tuple[list[tuple[str, str]], Counter]:
+    """Every case through ``modules['batch'].BatchBacktestService.run`` (the long path).
+
+    ``persisted`` collects each case's raw rows as ``(case, row)``."""
 
     batch, engine = modules["batch"], modules["engine"]
     record: list[tuple[str, str]] = []
@@ -221,6 +228,8 @@ def _sweep(modules, tmp_dir) -> tuple[list[tuple[str, str]], Counter]:
                     symbols=[SYMBOL], timeframes=[timeframe], strategy_names=requested, walk_forward=walk_forward
                 )
             record += _record(case, summary, rows.rows, logs.events)
+            if persisted is not None:
+                persisted += [(case, row) for row in rows.rows]
             for row in rows.rows:
                 for trade in row["trades"]:
                     coverage[f"reason:{trade['reason']}"] += 1
@@ -262,7 +271,14 @@ def bc82efd_backtesting(report: dict):
 @pytest.fixture(scope="module")
 def computed(tmp_path_factory):
     tmp_dir = tmp_path_factory.mktemp("parity")
-    current, coverage = _sweep(CURRENT, tmp_dir)  # first: every lazy import binds to today's code
+    # First (every lazy import binds to today's code), with eToro's fees at 0 like bc82efd.
+    fee_free_rows: list = []
+    with _patched(cost_module, "ETORO_STOCK_FEE_USD_PER_LEG", 0.0), _patched(
+        cost_module, "ETORO_CRYPTO_FEE_PER_LEG", 0.0
+    ):
+        current, coverage = _sweep(CURRENT, tmp_dir, fee_free_rows)
+    fee_rows: list = []
+    with_fees, _ = _sweep(CURRENT, tmp_dir, fee_rows)  # today's real default
     report: dict = {}
     with bc82efd_backtesting(report) as reference:
         legacy, legacy_coverage = _sweep(reference, tmp_dir)
@@ -278,7 +294,8 @@ def computed(tmp_path_factory):
     restored = all(sys.modules[f"app.backtesting.{stem}"] is module for stem, module in CURRENT.items())
     return {
         "current": current, "legacy": legacy, "coverage": coverage, "legacy_coverage": legacy_coverage,
-        "wiring": wiring, "restored": restored, **report,
+        "wiring": wiring, "restored": restored, "with_fees": with_fees, "fee_free_rows": fee_free_rows,
+        "fee_rows": fee_rows, **report,
     }
 
 
@@ -332,3 +349,67 @@ def test_parity_cases_are_not_vacuous(computed) -> None:
     for leg in COST_LEGS:
         assert coverage[f"daily11_wf_costs:{leg}"] >= 10, leg  # every leg, on real trades
     assert coverage["floor_widened"] > 0  # the stop_floor variant really widened long stops
+
+
+# Trade fields that scale with the position size; every other field must match exactly.
+SIZED = ("quantity", "notional_usd", "spread_usd", "financing_usd", "fx_usd", "slippage_usd", "regulatory_usd")
+
+
+def test_etoro_fees_are_the_only_difference_from_the_fee_free_run(computed) -> None:
+    """$1 comes off each leg's P&L and nothing else moves but the size later trades get: risk
+    is 1% of current cash, so a fold's first trade is sized exactly as without the fee and a
+    later one by the cash the earlier fees took (the ratio of the two quantities)."""
+
+    fee = cost_module.ETORO_STOCK_FEE_USD_PER_LEG
+    assert fee == 1.0  # the default the evidence runs use
+    current, with_fees = computed["current"], computed["with_fees"]
+    assert [label for label, _ in with_fees] == [label for label, _ in current]  # same rows, logs, summary
+    run_logs = [(label, text) for label, text in current if label.endswith("log batch_backtest_run")]
+    assert run_logs and run_logs == [(label, text) for label, text in with_fees if label.endswith("log batch_backtest_run")]
+
+    fee_free, fee_rows = computed["fee_free_rows"], computed["fee_rows"]
+    same_size = smaller = 0
+    for (case, row), (_, base) in zip(fee_rows, fee_free, strict=True):
+        assert (row["strategy_name"], row["file_path"]) == (base["strategy_name"], base["file_path"])
+        assert row["metrics"]["number_of_trades"] == base["metrics"]["number_of_trades"] == len(row["trades"])
+        assert row["metrics"].get("holdout_trades") == base["metrics"].get("holdout_trades")
+        for trade, ref in zip(row["trades"], base["trades"], strict=True):
+            assert list(trade) == list(ref)  # no new key: the fee is part of commission_usd
+            scale = trade["quantity"] / ref["quantity"]
+            assert 0.99 < scale <= 1.0, (case, scale)
+            for key, value in trade.items():
+                if key in SIZED:
+                    assert value == pytest.approx(scale * ref[key], rel=1e-9, abs=2e-6), (case, key)
+                elif key == "commission_usd":
+                    assert value == pytest.approx(scale * ref[key] + 2 * fee, rel=1e-9, abs=2e-6), case
+                elif key == "pnl_usd":
+                    assert value == pytest.approx(scale * ref[key] - 2 * fee, rel=1e-9, abs=1e-8), case
+                elif key == "pnl_pct":
+                    assert value == pytest.approx(100 * trade["pnl_usd"] / trade["notional_usd"], rel=1e-9), case
+                else:
+                    assert value == ref[key], (case, key)
+            if scale == 1.0:
+                same_size += 1
+                assert trade["pnl_usd"] == pytest.approx(ref["pnl_usd"] - 2.0, abs=1e-8)
+                assert trade["commission_usd"] == pytest.approx(ref["commission_usd"] + 2.0, abs=1e-6)
+            else:
+                smaller += 1
+    assert same_size >= 100 and smaller >= 50, (same_size, smaller)  # both kinds really occur
+
+
+def test_etoro_fees_cost_the_evidence_about_two_hundredths_of_r(computed) -> None:
+    """The pooled OOS expectancy the evidence gate reads (1 R = the batch's $100 risk) drops by
+    the $2 round trip, give or take the later trades' slightly smaller sizes."""
+
+    from app.performance.strategy_evidence import BACKTEST_RISK_USD
+
+    def pooled(rows):
+        oos = [row for _, row in rows if row["file_path"].endswith(":walk_forward_oos")]
+        trades = sum(int(row["metrics"]["number_of_trades"]) for row in oos)
+        pnl = sum(float(row["metrics"]["expectancy_usd"]) * int(row["metrics"]["number_of_trades"]) for row in oos)
+        return trades, pnl / trades / BACKTEST_RISK_USD
+
+    trades, fee_free_r = pooled(computed["fee_free_rows"])
+    fee_trades, fee_r = pooled(computed["fee_rows"])
+    assert fee_trades == trades >= 150
+    assert -0.0205 < fee_r - fee_free_r < -0.0195, fee_r - fee_free_r

@@ -203,6 +203,11 @@ def test_a_real_pass_writes_only_relabelled_short_rows(real_pass) -> None:
     assert real_pass.bars.calls == [("AAA", "1d", 500, None, False)]
 
 
+def test_short_rows_pay_the_etoro_stock_fee_like_the_long_rows(real_pass) -> None:
+    trades = [trade for row in real_pass.new for trade in json.loads(row["trades_json"])]
+    assert trades and {trade["commission_usd"] for trade in trades} == {2.0}  # $1 on the sale, $1 on the cover
+
+
 def test_a_real_pass_leaves_every_long_reader_byte_identical(real_pass) -> None:
     assert real_pass.after == real_pass.before
 

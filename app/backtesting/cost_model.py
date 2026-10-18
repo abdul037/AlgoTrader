@@ -8,6 +8,9 @@ This module implements the eToro retail cost structure from ``CODEX_BRIEF.md``:
 * Weekend financing triple-charged on Friday close for Mon-held CFDs.
 * FX spread of 1-3 pips on majors.
 * Minimum position size of $50.
+* eToro's own trade fees, as this account's balance shows them: $1.00 on each real (1x)
+  US stock buy and sell, about 1% a side on crypto (:func:`with_etoro_trade_fees`; the
+  batch walk-forward runs behind the live evidence apply them).
 
 All costs are computed in basis points or percentage, then applied to the
 notional at fill/hold time. A cost model is cheap to instantiate and safe to
@@ -18,7 +21,7 @@ from __future__ import annotations
 
 import math
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Iterable
 
@@ -65,6 +68,13 @@ class CostModel:
 
     commission_min_usd: float = 0.0
     """Per-leg commission floor. A non-zero commission is raised to this minimum."""
+
+    commission_flat_usd_per_leg: float = 0.0
+    """Flat broker fee in dollars on each fill leg (the entry and the exit), on top of the
+    per-share commission. eToro: $1.00 per real US stock buy and sell."""
+
+    commission_pct_per_leg: float = 0.0
+    """Broker fee as a fraction of each fill leg's notional. eToro crypto: about 1% (0.01) a side."""
 
     slippage_bps: float = 0.0
     """Non-spread execution slippage in bps, applied as a drag to each fill leg.
@@ -250,6 +260,13 @@ class CostModel:
             return self.commission_min_usd
         return raw
 
+    def leg_fee_usd(self, *, notional_usd: float) -> float:
+        """Per-leg flat plus percentage-of-notional broker fee (eToro's own trade fees)."""
+
+        if notional_usd <= 0 or (self.commission_flat_usd_per_leg <= 0 and self.commission_pct_per_leg <= 0):
+            return 0.0
+        return self.commission_flat_usd_per_leg + abs(notional_usd) * self.commission_pct_per_leg
+
     def slippage_usd(self, *, notional_usd: float) -> float:
         """Per-leg non-spread execution slippage in dollars."""
 
@@ -317,6 +334,29 @@ def _count_friday_closes_crossed(entry_utc: datetime, exit_utc: datetime) -> int
             count += 1
         day += timedelta(days=1)
     return count
+
+
+ETORO_STOCK_FEE_USD_PER_LEG = 1.0
+"""eToro's fee on each real (1x) US stock buy and sell: the account's balance drops $1.00 at
+every one, though eToro's trade history shows ``fees`` 0.0 for them (OPS_LOG 2026-10-16)."""
+
+ETORO_CRYPTO_FEE_PER_LEG = 0.01
+"""eToro's crypto fee, about 1% of the notional on each side (the 2026-10-04 ETH test)."""
+
+
+def with_etoro_trade_fees(model: CostModel, *, crypto: bool) -> CostModel:
+    """``model`` plus eToro's own trade fees, charged on the entry and the exit.
+
+    US equities (ETFs included -- the one ETF copied, SPY, showed no fee, so this errs
+    conservative) pay ``ETORO_STOCK_FEE_USD_PER_LEG`` a leg, crypto
+    ``ETORO_CRYPTO_FEE_PER_LEG`` of each leg's notional. Spread, financing and every other
+    leg of ``model`` are kept: the long overnight fee stays although a real 1x stock pays
+    none, so the evidence never gets looser than before.
+    """
+
+    if crypto:
+        return replace(model, commission_pct_per_leg=ETORO_CRYPTO_FEE_PER_LEG)
+    return replace(model, commission_flat_usd_per_leg=ETORO_STOCK_FEE_USD_PER_LEG)
 
 
 def zero_cost_model() -> CostModel:

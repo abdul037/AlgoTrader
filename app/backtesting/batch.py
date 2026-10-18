@@ -24,6 +24,7 @@ from typing import Any
 
 import pandas as pd
 
+from app.backtesting.cost_model import with_etoro_trade_fees
 from app.backtesting.engine import BacktestEngine, EngineConfig
 from app.backtesting.intraday_plan import (
     history_bars_for,
@@ -93,6 +94,8 @@ class BatchBacktestService:
         start_offset: int = 0,
         start_unit: int = 0,
     ) -> BatchBacktestSummary:
+        from app.broker.crypto import is_crypto_symbol
+
         universe = [symbol.upper() for symbol in (symbols or resolve_universe(self.settings, limit=limit))]
         # Rotate the start so successive scheduled runs sweep the whole universe
         # rather than always re-backtesting the same leading symbols. The runner
@@ -159,6 +162,12 @@ class BatchBacktestService:
                     min_stop_session_atr_multiple=float(
                         getattr(self.settings, "min_stop_session_atr_multiple", 0.0) or 0.0
                     ),
+                )
+                # eToro's own trade fees ($1 a side on a US stock, ~1% a side on crypto) on
+                # every row this runner writes, the evidence rows included.
+                engine_config = replace(
+                    engine_config,
+                    cost_model=with_etoro_trade_fees(engine_config.cost_model, crypto=is_crypto_symbol(symbol)),
                 )
                 engine = BacktestEngine(self.backtests, config=engine_config)
 
