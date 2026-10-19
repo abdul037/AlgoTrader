@@ -83,14 +83,14 @@ def _settings(tmp_path, **overrides):
 
 
 def verdicts_cache(verdicts, *, passing_hours=48.0, age_minutes=10.0):
-    """A fresh verdicts cache whose passing keys have passed ``passing_hours`` unbroken
-    (the live copy's 24 h streak rule, operator 2026-10-18)."""
+    """A verdicts cache refreshed ``age_minutes`` ago whose passing keys had, at that refresh,
+    passed ``passing_hours`` unbroken (the live copy's 24 h streak rule, operator 2026-10-18)."""
 
-    now = utc_now()
-    since = (now - timedelta(hours=passing_hours)).isoformat()
+    computed = utc_now() - timedelta(minutes=age_minutes)
+    since = (computed - timedelta(hours=passing_hours)).isoformat()
     return json.dumps(
         {
-            "computed_at": (now - timedelta(minutes=age_minutes)).isoformat(),
+            "computed_at": computed.isoformat(),
             "verdicts": verdicts,
             "passing_since": {key: since for key, v in verdicts.items() if v.get("passed")},
         }

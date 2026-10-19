@@ -25,7 +25,8 @@ and gates exactly as before so evidence keeps coming in:
 2. the signal's own per-signal backtest check passed (``backtest_validated`` is True);
 3. the strategy+timeframe has passed its pooled evidence check at every refresh for at least
    ``MIRROR_MIN_EVIDENCE_STREAK_HOURS`` without a break (``passing_since`` in the verdicts
-   cache; a refresh older than ``EVIDENCE_STREAK_MAX_GAP_HOURS`` reads as unknown);
+   cache), counted up to the last refresh -- the time since it is unchecked and does not
+   count; a refresh older than ``EVIDENCE_STREAK_MAX_GAP_HOURS`` reads as unknown;
 4. the move was not chased: at most ``HARD_MAX_RETURN_20D_PCT`` % rise over the 20 sessions to
    the signal bar, RSI(14) below ``HARD_MAX_RSI_14``, and no 252-session closing high on the
    signal bar or the bar before it (``metadata["entry_extension"]``, computed by the scan on
@@ -92,7 +93,8 @@ MIRROR_MIN_EXPECTANCY_R = 0.03
 # (1) The trade planner's only buy-now label (app/intelligence/trade_plan.py); "conditional"
 # waits for a trigger, "watchlist", "no_trade" and "data_quality_insufficient" do not buy.
 MIRROR_BUY_NOW_TIMING_LABELS = frozenset({"immediate"})
-# (3) The pooled evidence must have passed every refresh for this long without a break.
+# (3) The pooled evidence must have passed every refresh for this long without a break,
+# measured from the run's start to the last refresh (not to now).
 MIRROR_MIN_EVIDENCE_STREAK_HOURS = 24.0
 # (4) Don't chase: a rise above this over the 20 sessions to the signal bar, an RSI(14) at or
 # above this, or a 252-session closing high on the signal bar or the bar before it.

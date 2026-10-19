@@ -191,10 +191,12 @@ def passing_hours(
 ) -> float | None:
     """Hours ``<strategy>:<timeframe>`` has passed every refresh without a break.
 
-    ``cached`` is the ``VERDICTS_KEY`` value (JSON text or the parsed dict). 0.0 when the key
-    does not pass now; None when the history cannot vouch for it: no payload, one written
-    before streaks existed, a refresh older than ``EVIDENCE_STREAK_MAX_GAP_HOURS``, or a
-    passing key without a readable start.
+    The run ends at the last refresh (``computed_at``, never later than ``now``): nobody has
+    checked the evidence since, so that time is not counted. ``cached`` is the
+    ``VERDICTS_KEY`` value (JSON text or the parsed dict). 0.0 when the key does not pass
+    now; None when the history cannot vouch for it: no payload, one written before streaks
+    existed, a refresh older than ``EVIDENCE_STREAK_MAX_GAP_HOURS``, or a passing key without
+    a readable start.
     """
 
     try:
@@ -218,7 +220,9 @@ def passing_hours(
     since = _parse_time(since_map.get(key))
     if since is None or since > computed + _CLOCK_SKEW:
         return None
-    return max((now - since).total_seconds() / 3600.0, 0.0)
+    # Review of 1400c62: ending the run at ``now`` counted up to 2 h of unchecked time.
+    verified_until = min(now, computed)
+    return max((verified_until - since).total_seconds() / 3600.0, 0.0)
 
 
 def _parse_time(value: Any) -> datetime | None:

@@ -181,6 +181,29 @@ def test_copy_needs_an_unbroken_24h_pass(tmp_path, hours, age_minutes, reason) -
     assert _reasons(service, _proposal()) == ([reason] if reason else [])
 
 
+@pytest.mark.parametrize(
+    ("verified_hours", "reason"),
+    [
+        (22 + 5 / 60, "etoro_live_evidence_streak_too_short"),  # the review's probe: 24.05 h
+        (MIRROR_MIN_EVIDENCE_STREAK_HOURS - 0.01, "etoro_live_evidence_streak_too_short"),
+        (MIRROR_MIN_EVIDENCE_STREAK_HOURS + 0.01, None),
+    ],
+)
+def test_the_streak_ends_at_the_last_refresh(tmp_path, verified_hours, reason) -> None:
+    # Review of 1400c62: the streak ran to "now", so the time since the last refresh (up to
+    # EVIDENCE_STREAK_MAX_GAP_HOURS, exactly when refreshes are failing) counted as passing,
+    # and a copy went out after 22h05m of verified passes. Only refreshes that passed count.
+    client = _Client()
+    service, _ = _mirror(tmp_path, client=client)
+    service.state.set(
+        VERDICTS_KEY,
+        verdicts_cache(PASSING, passing_hours=verified_hours, age_minutes=118.0),
+    )
+    assert _reasons(service, _proposal()) == ([reason] if reason else [])
+    assert (_run(service, _proposal()) is not None) is (reason is None)
+    assert len(client.orders) == (0 if reason else 1)
+
+
 def test_a_missing_or_unreadable_history_blocks(tmp_path) -> None:
     service, _ = _mirror(tmp_path)
     for raw in (

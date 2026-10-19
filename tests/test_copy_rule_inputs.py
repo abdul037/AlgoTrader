@@ -206,6 +206,26 @@ def test_passing_hours_fails_closed_on_a_bad_history() -> None:
     assert passing_hours(good, strategy="other", timeframe="1d", now=now) == 0.0
 
 
+def test_passing_hours_counts_only_up_to_the_last_refresh() -> None:
+    # Review of 1400c62: nobody checked the evidence after the last refresh, so that time is
+    # not part of the run (it was, up to EVIDENCE_STREAK_MAX_GAP_HOURS of it).
+    now = utc_now()
+
+    def payload(computed_at, since):
+        return {
+            "computed_at": computed_at.isoformat(),
+            "verdicts": {"s:1d": {"passed": True}},
+            "passing_since": {"s:1d": since.isoformat()},
+        }
+
+    refreshed = now - timedelta(minutes=110)
+    late = payload(refreshed, refreshed - timedelta(hours=20))
+    assert passing_hours(late, strategy="s", timeframe="1d", now=now) == pytest.approx(20.0)
+    # A refresh stamped up to the clock skew "ahead" counts no further than now.
+    ahead = payload(now + timedelta(minutes=3), now - timedelta(hours=30))
+    assert passing_hours(ahead, strategy="s", timeframe="1d", now=now) == pytest.approx(30.0)
+
+
 # -- extension inputs ----------------------------------------------------------------------
 
 
