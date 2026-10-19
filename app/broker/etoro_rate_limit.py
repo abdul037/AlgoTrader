@@ -59,8 +59,13 @@ def etoro_cooldown_remaining(settings: Any) -> float:
         return max(0.0, _bucket(settings)["blocked_until"] - time.monotonic())
 
 
-def mark_etoro_rate_limited(settings: Any, *, status_code: int, body: str) -> bool:
-    """Open this account's local cooldown when eToro or Cloudflare rejects the request."""
+def mark_etoro_rate_limited(
+    settings: Any, *, status_code: int, body: str, mark: bool = True
+) -> bool:
+    """Open this account's local cooldown when eToro or Cloudflare rejects the request.
+
+    ``mark=False`` only reports the rate limit: a display-only read (the overnight alert's
+    bid/ask) must not open the cooldown that blinds the LIVE backup stop for 5 minutes."""
 
     normalized = body.lower()
     is_rate_limited = status_code == 429 or (
@@ -68,6 +73,8 @@ def mark_etoro_rate_limited(settings: Any, *, status_code: int, body: str) -> bo
     )
     if not is_rate_limited:
         return False
+    if not mark:
+        return True
 
     cooldown = max(
         30.0,

@@ -43,7 +43,10 @@ stop, and the time in UTC and Dubai.
   ``MAX_BAR_READS_PER_TICK`` reads a tick; a failed read is retried after
   ``BAR_RETRY_SECONDS``). The only extra eToro call is one ``/market-data/instruments/rates``
   read for the symbols about to be alerted: at most one a tick and ``MAX_QUOTE_READS_PER_DAY``
-  a day, never while the account's eToro rate-limit cooldown runs.
+  a day, never while the account's eToro rate-limit cooldown runs. A rate limit on that read
+  opens no cooldown (the backup stop shares the LIVE key) and ends the day's bid/ask reads.
+* It runs on its own thread, one run at a time (``etoro_live_guard._overnight_alerts``), so a
+  slow Telegram send, bid/ask read or Alpaca bar read never delays the next backup-stop pass.
 * A missing input skips that kind (no alert; logged once a day); every failure is logged
   and swallowed. Setting ``etoro_live_overnight_alert_enabled`` (default on); with Telegram
   off or no live client nothing runs and nothing is read.
@@ -178,6 +181,7 @@ class OvernightAdverseMoveAlert:
         self.bars = bars  # callable(symbol, *, timeframe, start, end) -> OHLC frame
         self.stop_hits = stop_hits  # callable(symbols, since_iso) -> tracked-signal stop hits
         self._lock = threading.Lock()
+        self.worker: threading.Thread | None = None  # the guard's thread running run()
         self._refs: dict[tuple[str, str], dict[str, Any]] = {}
         self._signals: list[dict[str, Any]] | None = None
         self._signals_read_at: datetime | None = None
@@ -422,9 +426,11 @@ class OvernightAdverseMoveAlert:
     def _quotes(
         self, positions: list[dict[str, Any]], now: datetime, day: str
     ) -> dict[str, dict[str, Any]]:
-        """eToro bid/ask for these instruments: one bounded read, never in a cooldown."""
+        """eToro bid/ask for these instruments: one bounded read, never in a cooldown. A rate
+        limit on it opens no cooldown (the LIVE backup stop shares the key) and ends the day's
+        bid/ask reads; the alerts still go out without bid/ask."""
 
-        from app.broker.etoro_rate_limit import etoro_cooldown_remaining
+        from app.broker.etoro_rate_limit import EToroRateLimitError, etoro_cooldown_remaining
 
         ids = sorted({str(int(p["instrument_id"])) for p in positions if p.get("instrument_id")})
         client = getattr(self.mirror, "client", None)
@@ -438,7 +444,10 @@ class OvernightAdverseMoveAlert:
                 return {}
             self._quote_reads = {day: self._quote_reads.get(day, 0) + 1}
             payload = client._request(
-                "GET", "/market-data/instruments/rates", params={"instrumentIds": ",".join(ids)}
+                "GET",
+                "/market-data/instruments/rates",
+                params={"instrumentIds": ",".join(ids)},
+                cooldown_on_rate_limit=False,
             )
             rows = (payload.get("rates") or []) if isinstance(payload, dict) else []
             return {
@@ -446,6 +455,10 @@ class OvernightAdverseMoveAlert:
                 for r in rows
                 if isinstance(r, dict) and r.get("instrumentID") is not None
             }
+        except EToroRateLimitError as exc:
+            self._quote_reads = {day: MAX_QUOTE_READS_PER_DAY}  # no more bid/ask reads today
+            self._note(now, "quotes_rate_limited", exc)
+            return {}
         except Exception as exc:  # noqa: BLE001 - the alert goes out without bid/ask
             self._note(now, "quotes", exc)
             return {}

@@ -9,18 +9,20 @@ notifier, dedupe state and the eToro client. No network.
 from __future__ import annotations
 
 import json
+import threading
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import httpx
 import pandas as pd
 import pytest
 
 from app.automation.service import LIVE_OPERATOR_ACKNOWLEDGEMENT
 from app.broker import etoro_live_overnight_alert as overnight
 from app.broker import etoro_rate_limit
-from app.broker.etoro_live_backup_stop import MARKS_KEY
-from app.broker.etoro_live_guard import attach_live_guard, run_live_checks
-from app.broker.etoro_live_mirror import STATE_KEY, EtoroLiveMirrorService
+from app.broker.etoro_live_backup_stop import MARKS_KEY, STOPS_KEY, check_backup_stops
+from app.broker.etoro_live_guard import EtoroLiveGuard, attach_live_guard, run_live_checks
+from app.broker.etoro_live_mirror import STATE_KEY, EtoroLiveMirrorService, build_live_client
 from app.broker.etoro_live_overnight_alert import (
     ALERT_STATE_KEY,
     MAX_QUOTE_READS_PER_DAY,
@@ -106,9 +108,10 @@ class _Client:
         self.fail = fail
         self.requests = []
 
-    def _request(self, method, path, *, params=None, json_body=None):
+    def _request(self, method, path, *, params=None, json_body=None, cooldown_on_rate_limit=True):
         self.requests.append((method, path, dict(params or {})))
         assert method == "GET" and path == "/market-data/instruments/rates"
+        assert cooldown_on_rate_limit is False  # a 429 here must not blind the backup stop
         if self.fail:
             raise RuntimeError("Broker request failed with status 500")
         ids = [int(i) for i in params["instrumentIds"].split(",")]
@@ -791,6 +794,67 @@ def test_cooldown_skips_the_bid_ask_read(tmp_path) -> None:
     assert "quotes_cooldown" in _errors(logs)
 
 
+def test_a_429_on_the_bid_ask_read_never_blinds_the_backup_stop(tmp_path, monkeypatch) -> None:
+    """A real live client over a mock transport (no network): eToro 429s the alert's rates
+    read. The LIVE key's cooldown must stay shut so the next backup stop still reads."""
+
+    paths = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path.endswith("/market-data/instruments/rates"):
+            return httpx.Response(429, text="Too Many Requests")
+        if request.url.path.endswith("/trading/info/portfolio"):
+            position = {"positionID": 7, "instrumentID": AMD_ID, "amount": 500.0}
+            return httpx.Response(
+                200, json={"clientPortfolio": {"credit": 500.0, "positions": [position]}}
+            )
+        if request.url.path.endswith("/market-data/search"):
+            return httpx.Response(
+                200, json={"items": [{"internalSymbolFull": "AMD", "currentRate": 551.34}]}
+            )
+        return httpx.Response(404, text="not mocked")
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda *a, **k: real_client(*a, transport=httpx.MockTransport(handler), **k),
+    )
+    client = build_live_client(
+        make_settings(
+            tmp_path,
+            etoro_live_api_key="live-api-key-fake",
+            etoro_live_user_key="live-user-key-fake",
+            etoro_request_min_interval_seconds=0.0,
+            etoro_base_url="https://etoro.mock.invalid",  # served by the mock transport only
+        )
+    )
+    state = _state()
+    stop = {
+        "stop": 541.53,
+        "instrument_id": AMD_ID,
+        "recorded_at": AMD_NOW.isoformat(),
+        "seen": True,
+    }
+    dict.__setitem__(state, STOPS_KEY, json.dumps({"AMD": stop}))
+    alert, mirror, logs = _alert(tmp_path, state=state, client=client)
+    assert alert.run(now=AMD_NOW) == 1
+    assert paths == ["/api/v1/market-data/instruments/rates"]
+    assert "bid/ask n/a" in mirror.notifier.sent[0] and "quotes_rate_limited" in _errors(logs)
+    assert etoro_rate_limit.etoro_cooldown_remaining(client.settings) == 0
+    paths.clear()
+    assert check_backup_stops(mirror) == []  # 551.34 is above the stop: nothing closes
+    assert paths == ["/api/v1/trading/info/portfolio", "/api/v1/market-data/search"]
+    paths.clear()  # no more bid/ask reads this Dubai day
+    later, day = AMD_NOW + timedelta(minutes=1), alert_day(AMD_NOW).isoformat()
+    assert alert._quotes([{"instrument_id": AMD_ID}], later, day) == {} and paths == []
+    # Every other caller keeps the cooldown on a 429.
+    with pytest.raises(etoro_rate_limit.EToroRateLimitError):
+        client._request("GET", "/market-data/instruments/rates", params={"instrumentIds": "1"})
+    assert etoro_rate_limit.etoro_cooldown_remaining(client.settings) > 250
+
+
 def test_bid_ask_read_failure_still_alerts(tmp_path) -> None:
     alert, mirror, logs = _alert(tmp_path, client=_Client(fail=True))
     assert alert.run(now=AMD_NOW) == 1
@@ -907,10 +971,44 @@ def test_attach_wires_the_alert_and_the_guard_runs_it(tmp_path) -> None:
     assert wired.stop_hits(["AMD"], "2026-10-14T20:00:00+00:00") == []  # reads the repo's db
     attach_live_guard(coordinator, settings=SimpleNamespace(), bars=None)
     assert mirror.overnight_alert.stop_hits is None and mirror.overnight_alert.bars is None
-    mirror.overnight_alert = SimpleNamespace(run=lambda: 1)
-    assert "etoro_live_overnight_alert" in run_live_checks(mirror, None)
-    mirror.overnight_alert = SimpleNamespace(run=lambda: 0)
+    runs = []
+    mirror.overnight_alert = SimpleNamespace(run=lambda: runs.append("run") or 1)
+    # Started on its own thread, not awaited: the guard step reports nothing itself.
     assert "etoro_live_overnight_alert" not in run_live_checks(mirror, None)
+    mirror.overnight_alert.worker.join(timeout=5)
+    assert runs == ["run"]
+
+
+def test_a_hung_telegram_send_never_delays_the_next_backup_stop(tmp_path, monkeypatch) -> None:
+    from app.broker import etoro_live_guard
+
+    monkeypatch.setattr(overnight, "utc_now", lambda: AMD_NOW)
+    monkeypatch.setattr(etoro_live_guard, "maybe_send_daily_report", lambda m: False)
+    monkeypatch.setattr(etoro_live_guard, "update_scorecard", lambda m, closes: 0)
+    passes = []
+    monkeypatch.setattr(etoro_live_guard, "check_backup_stops", lambda m: passes.append(m) or [])
+    in_send, release = threading.Event(), threading.Event()
+
+    class _HungNotifier(_Notifier):
+        def send_text(self, text):
+            in_send.set()
+            release.wait(timeout=5)  # Telegram hanging until curl's --max-time
+            return super().send_text(text)
+
+    alert, mirror, _ = _alert(tmp_path, notifier=_HungNotifier())
+    mirror.overnight_alert = alert
+    guard = EtoroLiveGuard(mirror=mirror, tester=None)
+    try:
+        guard.tick()
+        assert in_send.wait(timeout=5)  # the send is in flight on the alert's own thread
+        first = alert.worker
+        guard.tick()  # the next backup-stop pass runs at once; no second alert run starts
+        assert len(passes) == 2 and alert.worker is first and first.is_alive()
+        assert mirror.notifier.sent == []  # the send still has not finished
+    finally:
+        release.set()
+    first.join(timeout=5)
+    assert not first.is_alive() and len(mirror.notifier.sent) == 1
 
 
 def test_a_broken_alert_never_stops_the_other_guard_steps(tmp_path, monkeypatch) -> None:
@@ -922,10 +1020,12 @@ def test_a_broken_alert_never_stops_the_other_guard_steps(tmp_path, monkeypatch)
         etoro_live_guard, "maybe_send_daily_report", lambda m: reports.append(m) or False
     )
 
-    def boom():
-        raise RuntimeError("alert bug")
+    class _NoThread:
+        def __init__(self, **_):
+            raise RuntimeError("can't start new thread")
 
-    mirror.overnight_alert = SimpleNamespace(run=boom)
+    monkeypatch.setattr(etoro_live_guard, "Thread", _NoThread)
+    mirror.overnight_alert = SimpleNamespace(run=lambda: 1)
     run_live_checks(mirror, None)
     assert reports == [mirror]
     assert [p["step"] for p in logs.named("etoro_live_guard_error")] == [

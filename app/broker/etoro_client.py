@@ -326,6 +326,7 @@ class EToroClient(BrokerClient):
         *,
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
+        cooldown_on_rate_limit: bool = True,
     ) -> dict[str, Any]:
         url = self._build_url(path)
         try:
@@ -349,6 +350,7 @@ class EToroClient(BrokerClient):
                 self.settings,
                 status_code=exc.response.status_code,
                 body=raw_body,
+                mark=cooldown_on_rate_limit,
             ):
                 logger.warning("eToro broker request rate-limited: %s %s", exc, body)
                 raise EToroRateLimitError(f"eToro API rate-limited: {body}") from exc

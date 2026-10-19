@@ -10,8 +10,9 @@ independent of the scheduler. With nothing open it makes no eToro call.
 It writes a heartbeat; if that goes stale (thread dead or stuck), the maintenance
 hook runs the same checks as a fallback. Every live-eToro state change shares the
 mirror's lock, so the guard, entries and reconcile never interleave. Outside US regular
-hours it also runs the overnight adverse-move alert (``etoro_live_overnight_alert``:
-Telegram only, it changes no position or state the trading paths read).
+hours it also starts the overnight adverse-move alert (``etoro_live_overnight_alert``:
+Telegram only, it changes no position or state the trading paths read) on its own thread, so
+its slow calls never hold up the backup stops.
 """
 
 from __future__ import annotations
@@ -130,10 +131,20 @@ def _symbols(closes: list[dict]) -> set[str]:
 
 
 def _overnight_alerts(mirror: Any) -> int:
-    """Alerts sent by the overnight adverse-move check (alert only; wired by attach)."""
+    """Start the overnight adverse-move check (alert only; wired by attach) on its own thread,
+    at most one alive at a time, and return 0 (the alert logs its own sends). Its Telegram
+    sends (up to ~17 s each), bid/ask read (15 s) and Alpaca bar reads (no timeout) then never
+    delay the next backup-stop pass; run()'s lock keeps the maintenance fallback from
+    overlapping it."""
 
     alert = getattr(mirror, "overnight_alert", None)
-    return int(alert.run() or 0) if alert is not None else 0
+    if alert is None:
+        return 0
+    worker = getattr(alert, "worker", None)
+    if worker is None or not worker.is_alive():
+        alert.worker = Thread(target=alert.run, name="etoro-overnight-alert", daemon=True)
+        alert.worker.start()
+    return 0
 
 
 def attach_live_guard(
