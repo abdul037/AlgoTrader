@@ -112,6 +112,17 @@ def _digest(value) -> str:
     return hashlib.sha256(json.dumps(value).encode()).hexdigest()  # no sort_keys: order counts
 
 
+def _before_panel(value):
+    """``value`` without the per-setup ``market_regime`` tag (the market panel, 2026-10-18; its
+    own tests check it): everything else must still match the goldens byte for byte."""
+
+    if isinstance(value, dict):
+        return {k: _before_panel(v) for k, v in value.items() if k != "market_regime"}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_before_panel(v) for v in value)
+    return value
+
+
 def test_long_watchlist_is_unchanged_by_short_setups_and_short_verdicts(
     tmp_path, monkeypatch
 ) -> None:
@@ -182,10 +193,14 @@ def test_long_ledger_is_unchanged_by_short_setups_in_the_watchlists(tmp_path, mo
     assert shadow.refresh_shadow_ledger(service)["done_for_today"]
     view = _long_ledger_view(service)
     assert {call[0] for call in service.market_data.calls} == {"S00", "S01"}  # never S02
-    assert _digest(view) == GOLDEN_LEDGER
+    assert _digest(_before_panel(view)) == GOLDEN_LEDGER
+    tags = [e.get("market_regime") for e in view[0]["entries"].values()]
+    assert tags and all(tag == {"label": "no_panel"} for tag in tags)  # no panel in these days
     report = shadow.shadow_ledger_report(service.runtime_state)
     assert report["taken"] == 2
-    assert _digest({k: v for k, v in report.items() if k != "short"}) == GOLDEN_REPORT
+    assert _digest(_before_panel({k: v for k, v in report.items() if k != "short"})) == (
+        GOLDEN_REPORT
+    )
 
 
 def test_golden_inputs_carry_short_setups(tmp_path, monkeypatch) -> None:
@@ -960,7 +975,9 @@ def test_the_report_keeps_the_long_figures_and_adds_the_shorts_apart(tmp_path, m
     monkeypatch.setattr(shadow, "utc_now", lambda: FRIDAY_1700_NY)
     shadow.refresh_short_shadow_ledger(service)
     report = shadow.shadow_ledger_report(service.runtime_state)
-    assert _digest({k: v for k, v in report.items() if k != "short"}) == GOLDEN_REPORT
+    assert _digest(_before_panel({k: v for k, v in report.items() if k != "short"})) == (
+        GOLDEN_REPORT
+    )
     short = report["short"]
     assert (short["signals"], short["taken"], short["skipped_open"]) == (4, 3, 1)
     trend = short["strategies"]["trend_following:1d"]
@@ -982,7 +999,9 @@ def test_a_bad_short_ledger_never_takes_the_long_report_down(tmp_path, monkeypat
     shadow.refresh_shadow_ledger(service)
     service.runtime_state.set(shadow.SHORT_LEDGER_KEY, json.dumps(ledger))
     report = shadow.shadow_ledger_report(service.runtime_state)
-    assert _digest({k: v for k, v in report.items() if k != "short"}) == GOLDEN_REPORT
+    assert _digest(_before_panel({k: v for k, v in report.items() if k != "short"})) == (
+        GOLDEN_REPORT
+    )
     assert report["short"]["error"] == "short_ledger_unreadable"
 
 

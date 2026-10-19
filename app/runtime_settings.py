@@ -246,6 +246,10 @@ class AppSettings(BaseSettings):
     # watchlist's top setups on completed bars and at a fresh quote, rank them best-first and log
     # what entering them at the open would have done. Never trades; off stops it, nothing else.
     premarket_open_shadow_enabled: bool = True
+    # Market panel, SHADOW ONLY (operator 2026-10-18, post-mortem item 8): once today's deep scan
+    # is final, one yfinance daily history per panel symbol (Asia, NQ futures, 10y, oil, SMH vs
+    # XLP) and a logged-only regime label. Off stops it, nothing else (app/workflow/market_panel.py).
+    premarket_market_panel_enabled: bool = True
     premarket_scan_time_local: str = "08:30"
     market_open_scan_enabled: bool = True
     market_open_scan_time_local: str = "09:35"

@@ -19,7 +19,8 @@ sell signals, financing and max-hold metadata are not replayed. R = (exit - entr
 It reads the watchlists and daily bars (the deep scan's request, so usually the cache) and
 writes only ``premarket:shadow_ledger`` (+ its small state key) and one run log. It never
 creates proposals or orders and never touches the eToro mirror. A setup's ``event_risk`` hint
-(the earnings shadow check) is kept on its entry for ``event_risk.event_risk_report``.
+(the earnings shadow check) is kept on its entry for ``event_risk.event_risk_report``, and its
+morning's market-panel label (``market_regime``) for ``market_panel.market_panel_report``.
 
 Shorts (operator 2026-10-17, step 2): the watchlists' ``short_signals`` are followed in their
 own ledger, ``premarket:shadow_ledger:short`` (+ its own state key), by
@@ -375,9 +376,13 @@ def _ingest(
     *,
     short: bool = False,
 ) -> int:
-    """Add the finished watchlists' setups: ``signals``, or ``short_signals`` for the shorts."""
+    """Add the finished watchlists' setups: ``signals``, or ``short_signals`` for the shorts.
 
-    from app.workflow.premarket_deep_scan import FINAL_STATUSES, load_watchlist
+    Each keeps its morning's market-panel label (``market_regime``; ``no_panel`` without one),
+    read with the watchlist in one round trip. The panel stops at 09:30, before this runs."""
+
+    from app.workflow.market_panel import PANEL_KEY, get_many, regime_tag
+    from app.workflow.premarket_deep_scan import FINAL_STATUSES, WATCHLIST_KEY
 
     last = state.get("ingested_through")
     day = (
@@ -387,14 +392,18 @@ def _ingest(
     )
     added = 0
     while day <= today:
-        watchlist = load_watchlist(runtime_state, day.isoformat()) or {}
+        keys = [WATCHLIST_KEY.format(date=day.isoformat()), PANEL_KEY.format(date=day.isoformat())]
+        values = get_many(runtime_state, keys)
+        watchlist = _parsed(values.get(keys[0]))
         final = watchlist.get("status") in FINAL_STATUSES
         if day == today and not final:
             break  # today's scan may still finish: look again next run
         items = watchlist.get("short_signals" if short else "signals") or []
+        regime = regime_tag(values.get(keys[1])) if final and items else None
         for item in items if final else []:
             entry = (_short_entry if short else _entry)(item, day.isoformat())
             if entry is not None and entry["key"] not in entries:
+                entry["market_regime"] = dict(regime or {})  # logged only: never in the scoring
                 entries[entry.pop("key")] = entry
                 added += 1
         state["ingested_through"] = day.isoformat()
@@ -536,8 +545,12 @@ def _finite(value: Any) -> bool:
 
 
 def _load(runtime_state: Any, key: str) -> dict[str, Any]:
+    return _parsed(runtime_state.get(key))
+
+
+def _parsed(raw: Any) -> dict[str, Any]:
     try:
-        value = json.loads(runtime_state.get(key) or "{}")
+        value = json.loads(raw or "{}")
     except (TypeError, ValueError):
         return {}
     return value if isinstance(value, dict) else {}

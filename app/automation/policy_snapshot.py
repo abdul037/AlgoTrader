@@ -104,6 +104,9 @@ def effective_execution_policy(settings: Any) -> dict[str, Any]:
         # Phase 3 (2026-10-18): with the deep scan on, best-first entries at the open are logged in
         # shadow. Default on and never traded; logged so it is checkable at boot.
         "premarket_open_shadow_enabled": bool(_get("premarket_open_shadow_enabled", True)),
+        # Market panel (2026-10-18): with the deep scan on, the morning's market context and a
+        # regime label are recorded in shadow. Default on, used by nothing; checkable at boot.
+        "premarket_market_panel_enabled": bool(_get("premarket_market_panel_enabled", True)),
         # A boolean only — never the account number itself.
         "alpaca_expected_account_configured": bool(
             str(_get("alpaca_expected_account_number", "") or "").strip()

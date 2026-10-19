@@ -80,6 +80,9 @@ def make_settings(tmp_path: Path, **overrides) -> AppSettings:
         # Wall-clock dependent (off-hours earnings refresh, Yahoo by default) and it adds run
         # logs to the proposal path; its own tests enable it with a fake provider and clocks.
         "event_risk_shadow_enabled": False,
+        # Wall-clock dependent (the pre-market window) and Yahoo by default; its own tests
+        # enable it with a fake provider and clocks.
+        "premarket_market_panel_enabled": False,
     }
     defaults.update(overrides)
     return AppSettings(**defaults)

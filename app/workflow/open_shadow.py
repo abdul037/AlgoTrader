@@ -131,8 +131,13 @@ def run_open_shadow(
 ) -> dict[str, Any] | None:
     """One tick of the Phase 3 shadow, last in a cadence tick. None when nothing was done.
 
-    Never raises: a failure is logged once a day and the scheduler carries on."""
+    The pre-market market panel (``app/workflow/market_panel.py``) gets its turn first: its own
+    switch, budget and window (after the deep scan, before the open), so at most one of the two
+    works in a tick. Never raises: a failure is logged once a day and the scheduler carries on."""
 
+    from app.workflow.market_panel import run_market_panel
+
+    run_market_panel(service, started_at=started_at, deferred=deferred, clock=clock)  # no raise
     try:
         return _tick(service, started_at, list(deferred or []), clock)
     except Exception as exc:  # noqa: BLE001 - shadow only: never into the scheduler or a scan

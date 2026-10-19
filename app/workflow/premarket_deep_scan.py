@@ -40,6 +40,10 @@ A short that fails to record counts in ``short_errors`` and never stops the long
 Event risk (operator 2026-10-18 -- SHADOW ONLY): with ``event_risk_shadow_enabled`` and an
 earnings cache, each long item carries an ``event_risk`` hint (``app/workflow/event_risk.py``):
 whether an earnings rule would block it. Never in the ranking, ``tradeable`` or the note.
+
+Market panel (operator 2026-10-18 -- SHADOW ONLY): once this scan's list is final, its own step
+(``app/workflow/market_panel.py``, never in this scan's ticks) records the morning's market
+context and a logged-only regime label in ``premarket:market_panel:<NY date>``.
 """
 
 from __future__ import annotations

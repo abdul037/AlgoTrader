@@ -107,6 +107,12 @@ def live_scorecard(request: Request):
         )
     except Exception:  # noqa: BLE001 - a shadow section never takes the scorecard down
         report["event_risk_shadow"] = {"error": "event_risk_report_failed", "shadow_only": True}
+    try:  # the pre-market market panel: its readings and label (logged only, nothing uses it)
+        from app.workflow.market_panel import market_panel_report
+
+        report["market_panel"] = market_panel_report(state, settings=settings)
+    except Exception:  # noqa: BLE001 - a shadow section never takes the scorecard down
+        report["market_panel"] = {"error": "market_panel_report_failed", "shadow_only": True}
     return report
 
 
