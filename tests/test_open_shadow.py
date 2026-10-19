@@ -24,7 +24,7 @@ from app.broker.etoro_rate_limit import EToroRateLimitError
 from app.live_signal_schema import MarketQuote
 from app.performance.strategy_evidence import VERDICTS_KEY
 from tests.conftest import make_settings
-from tests.test_premarket_deep_scan import _Boom, _frame
+from tests.test_premarket_deep_scan import CALM, _Boom, _frame
 from tests.test_workflow_service import FakeLogs, FakeState
 
 DAY = "2026-10-12"  # a Monday: the completed bars end on Friday 10-09
@@ -36,6 +36,18 @@ VERDICTS = {
     "alpha:1d": {"passed": True, "oos_expectancy_r": 0.05, "oos_trades": 300},
     "beta:1d": {"passed": True, "oos_expectancy_r": 0.02, "oos_trades": 200},  # below +0.03 R
 }
+STREAK_SINCE = DEEP_AT - timedelta(hours=48)  # the eToro copy's 24 h unbroken evidence pass
+
+
+def _verdicts(verdicts=VERDICTS, *, since=STREAK_SINCE) -> str:
+    """The verdicts cache as the refresh writes it, with each passing key's streak start."""
+
+    passing = {k: since.isoformat() for k, v in verdicts.items() if v.get("passed")}
+    return json.dumps(
+        {"computed_at": DEEP_AT.isoformat(), "verdicts": verdicts, "passing_since": passing}
+    )
+
+
 SIGNALS = {  # (strategy, symbol): the daily signal on the completed bars
     ("alpha", "AAA"): {"price": 100.0, "stop": 95.0, "target": 112.0},
     ("alpha", "BBB"): {"price": 50.0, "stop": 48.0, "target": 55.0, "weak": True},
@@ -148,11 +160,23 @@ class _Env(SimpleNamespace):
 
 
 def _env(
-    tmp_path, monkeypatch, *, signals=None, symbols=SYMBOLS, etoro=None, deep_scan=True, **overrides
+    tmp_path,
+    monkeypatch,
+    *,
+    signals=None,
+    symbols=SYMBOLS,
+    etoro=None,
+    deep_scan=True,
+    extension=CALM,
+    **overrides,
 ):
+    import app.screener.extension as ext
+
     now = {"t": DEEP_AT}
     for module in (deep, shadow, evidence, mirror):
         monkeypatch.setattr(module, "utc_now", lambda: now["t"])
+    # The deep scan's no-chase inputs for every symbol (the eToro copy's rule 4).
+    monkeypatch.setattr(ext, "entry_extension", lambda history, timeframe: dict(extension))
     values = dict(
         premarket_deep_scan_enabled=True,
         broker_for_equities="alpaca",
@@ -173,7 +197,7 @@ def _env(
         strategies=["alpha", "beta", "gamma"],
     )
     state = FakeState()
-    state.set(VERDICTS_KEY, json.dumps({"computed_at": DEEP_AT.isoformat(), "verdicts": VERDICTS}))
+    state.set(VERDICTS_KEY, _verdicts())
     account = {"day": DAY, "last_equity": 10_000.0, "last_cash": 6_000.0, "open_symbols": []}
     state.set(
         mirror.STATE_KEY, json.dumps({**account, "day_start_equity": 10_000.0, **(etoro or {})})
@@ -460,6 +484,66 @@ def test_a_copy_below_etoros_minimum_is_paper_only(tmp_path, monkeypatch) -> Non
     rows = env.by_symbol()
     assert rows[("DDD", "alpha")]["etoro_copy_reasons"] == ["etoro_live_trade_below_minimum"]
     assert env.record()["etoro_slots"] == []
+
+
+@pytest.mark.parametrize(
+    ("extension", "since", "reason"),
+    [
+        (CALM, STREAK_SINCE + timedelta(hours=24.5), "etoro_live_evidence_streak_too_short"),
+        (CALM, None, "etoro_live_evidence_streak_unknown"),  # a cache written before streaks
+        ({**CALM, "return_20d_pct": 15.1}, STREAK_SINCE, "etoro_live_extended_20d_rise"),
+        ({**CALM, "rsi_14": 68.0}, STREAK_SINCE, "etoro_live_extended_rsi"),
+        ({**CALM, "new_high_252_recent": True}, STREAK_SINCE, "etoro_live_extended_new_high"),
+        ({**CALM, "rsi_14": None}, STREAK_SINCE, "etoro_live_extension_unknown"),
+    ],
+)
+def test_the_copy_rules_of_2026_10_18_with_inputs_at_the_open_are_checked(
+    tmp_path, monkeypatch, extension, since, reason
+) -> None:
+    # The evidence streak (decided now, as the mirror decides it) and no chasing (the deep
+    # scan's inputs on the signal's completed bars) refuse the copy as the live mirror would;
+    # the setups still enter paper-only. The planner and per-signal backtest rules need the live
+    # scan's build, so they are not checked here.
+    env = _env(tmp_path, monkeypatch, extension=extension)
+    if since is None:
+        cache = json.dumps({"computed_at": DEEP_AT.isoformat(), "verdicts": VERDICTS})
+    else:
+        cache = _verdicts(since=since)
+    env.service.runtime_state.set(VERDICTS_KEY, cache)
+    env.run()
+    record, rows = env.record(), env.by_symbol()
+    assert record["etoro_slots"] == [] and record["drift_gated"]["etoro_slots"] == []
+    assert sorted(record["paper_only"]) == ["AAA", "BBB", "CCC", "DDD"]  # paper unchanged
+    for key in (("AAA", "alpha"), ("BBB", "alpha"), ("DDD", "alpha")):
+        assert rows[key]["status"] == "entered" and rows[key]["gate_reasons"] == []
+        assert rows[key]["etoro_copy_reasons"] == [reason], key
+        assert rows[key]["etoro_copy_rules_ok"] is False
+    assert rows[("CCC", "beta")]["etoro_copy_reasons"] == ["strategy_edge_below_bar", reason]
+    if extension is not CALM:  # the same refusal as the deep scan's own hint on the item
+        items = deep.load_watchlist(env.service.runtime_state, DAY)["signals"]
+        assert not any(i["etoro_copy_rules_ok"] for i in items)
+
+
+def test_a_setup_the_new_copy_rules_refuse_is_picked_after_the_copyable_ones(
+    tmp_path, monkeypatch
+) -> None:
+    # Before the quote the top setups are picked eToro-copyable first: the two best R:R setups,
+    # chased, make way for copyable ones and are not checked at all.
+    symbols = [f"S{i:02d}" for i in range(14)]
+    signals = {
+        ("alpha", s): {"price": 100.0, "stop": 95.0, "target": 110.0 + i}
+        for i, s in enumerate(symbols)
+    }
+    env = _env(tmp_path, monkeypatch, signals=signals, symbols=symbols)
+    watchlist = deep.load_watchlist(env.service.runtime_state, DAY)
+    for item in watchlist["signals"]:
+        if item["symbol"] in {"S13", "S12"}:
+            item["rsi_14"] = 70.0
+    env.service.runtime_state.set(deep.WATCHLIST_KEY.format(date=DAY), json.dumps(watchlist))
+    env.run()
+    candidates = env.record()["candidates"]
+    assert [c["symbol"] for c in candidates] == symbols[::-1][2 : 2 + shadow.TOP_ITEMS]
+    assert all(c["copy_rule_reasons"] == [] for c in candidates)
 
 
 def test_an_unknown_equity_is_an_account_hint_not_a_copy_rule(tmp_path, monkeypatch) -> None:

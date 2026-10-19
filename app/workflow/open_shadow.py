@@ -21,9 +21,12 @@ have done:
    coordinator's check (quote vs proposed price), so it gates only the second ranking,
    ``drift_gated``, until the operator rules which reading applies. Then the eToro mirror's
    per-trade copy rules (+0.03 R edge, 8% stop cap, sizing so a stop-out costs
-   0.5% of equity, eToro's $10 minimum) and its room (symbol open, 9 positions, 4 per
-   correlation group, free cash) as hints from stored state only, leaving out the copies the
-   live bot opened that day (these entries would have taken their place).
+   0.5% of equity, eToro's $10 minimum; of the 2026-10-18 rules, the ones whose inputs exist
+   here, as in the deep scan's hint: evidence passing >= 24 h unbroken, decided now, and no
+   chased move on the signal's completed bars -- the planner and per-signal backtest rules
+   need the live scan's build and are not checked) and its room (symbol open, 9 positions, 4
+   per correlation group, free cash) as hints from stored state only, leaving out the copies
+   the live bot opened that day (these entries would have taken their place).
 3. The setups that pass are ranked eToro-copyable first, strict before weak among those, then
    the pooled OOS expectancy in R, then R:R at the quote. The first ``HARD_MAX_TRADES_PER_DAY``
    copyable ones with room take the eToro daily slots, the rest are paper-only, and another
@@ -67,6 +70,8 @@ SCHEMA_VERSION = 1
 MARKET_OPEN_KEY = "workflow:last_market_open_scan_at"  # set when the live scan completes
 TEST_ORDER_KEY = "etoro_live:test_order"
 TOP_ITEMS = 10  # setups re-checked at the open: each costs a history and a quote request
+# The deep scan's no-chase inputs on a watchlist item (the eToro copy's rule 4, 2026-10-18).
+_EXTENSION_FIELDS = ("return_20d_pct", "rsi_14", "new_high_252_recent")
 DEADLINE = (10, 30)  # New York: entries "at the open" end here; an open record is closed
 CLOSE_OUT_ENDS = (16, 0)  # a record still open at the deadline is closed until the bell
 RUN_SECONDS = 30.0  # per tick at most; the rest on the next tick
@@ -91,7 +96,8 @@ RULES = (
     "re-anchored to a fresh quote, the signal's stop and target kept; live gates at the quote "
     "(quote checks, spread, R:R); entry drift from the signal's price (the gap to the open) "
     "recorded and gating only drift_gated, the same ranking, until the operator rules; eToro "
-    "per-trade copy rules and room hints (stored state only); ranked eToro-copyable, strict "
+    "per-trade copy rules (not the planner or per-signal backtest rules: the live scan's) and "
+    "room hints (stored state only); ranked eToro-copyable, strict "
     "before weak (eToro), OOS expectancy R, R:R; 2 eToro slots, the rest paper-only"
 )
 
@@ -273,15 +279,19 @@ def _candidates(settings: Any, signals: list, values: dict[str, Any]) -> list[di
         HARD_MAX_STOP_DISTANCE_PCT,
         MIRROR_MIN_EXPECTANCY_R,
         _StrictEvidence,
+        evidence_streak_blocker,
+        extension_blockers,
         stop_distance_pct,
     )
-    from app.performance.strategy_evidence import VERDICTS_KEY, evidence_blocker
+    from app.performance.strategy_evidence import VERDICTS_KEY, evidence_blocker, passing_hours
     from app.workflow.premarket_deep_scan import _OneKey
 
     one_key = _OneKey(VERDICTS_KEY, values.get(VERDICTS_KEY))
-    verdicts = _json(values.get(VERDICTS_KEY)).get("verdicts")
+    cached = _json(values.get(VERDICTS_KEY))
+    verdicts = cached.get("verdicts")
     verdicts = verdicts if isinstance(verdicts, dict) else {}
     strict = _StrictEvidence(settings)  # the deep scan's rule: evidence is always required
+    now = utc_now()
     picked: list[dict[str, Any]] = []
     for item in signals:
         if not isinstance(item, dict) or not item.get("allowed") or item.get("blacklisted"):
@@ -301,6 +311,14 @@ def _candidates(settings: Any, signals: list, values: dict[str, Any]) -> list[di
             timeframe="1d",
             min_expectancy_r=MIRROR_MIN_EXPECTANCY_R,
         )
+        # The 2026-10-18 copy rules whose inputs exist here, read as the mirror reads them: the
+        # evidence streak now, and the deep scan's extension of the signal's completed bars
+        # (the re-check keeps only a signal on that same bar). Missing inputs refuse the copy.
+        streak = evidence_streak_blocker(
+            passing_hours(cached, strategy=strategy, timeframe="1d", now=now)
+        )
+        extension = {"timeframe": "1d", **{k: item.get(k) for k in _EXTENSION_FIELDS}}
+        rules = ([streak] if streak else []) + extension_blockers(extension, "1d")
         stop_pct = stop_distance_pct(entry, stop)
         verdict = verdicts.get(f"{strategy}:1d")
         picked.append(
@@ -313,8 +331,10 @@ def _candidates(settings: Any, signals: list, values: dict[str, Any]) -> list[di
                 "rr": _finite(item.get("rr")),
                 "oos_expectancy_r": _finite((verdict or {}).get("oos_expectancy_r")),
                 "copy_edge_reason": edge,
+                "copy_rule_reasons": rules,
                 # The copy rules on the signal's price: only to pick the top before the quote.
                 "copy_rules_at_signal": edge is None
+                and not rules
                 and stop_pct is not None
                 and stop_pct <= HARD_MAX_STOP_DISTANCE_PCT,
             }
@@ -490,6 +510,7 @@ def _check(service, record, candidate, specs, cache, now_ny, budget) -> dict[str
     # The eToro mirror's per-trade copy rules, at the price it would copy at.
     stop_pct = stop_distance_pct(price, stop)
     copy = [candidate["copy_edge_reason"]] if candidate.get("copy_edge_reason") else []
+    copy += list(candidate.get("copy_rule_reasons") or [])
     if stop_pct is None:
         copy.append("etoro_live_stop_distance_unknown")
     elif stop_pct > HARD_MAX_STOP_DISTANCE_PCT:
