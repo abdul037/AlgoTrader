@@ -11,10 +11,11 @@ filled at 13:27 UTC and nothing told the operator. The guard (``run_live_checks`
 * ``near_stop``: the rate is within ``ALERT_STOP_ATR_MULT`` average daily moves (ATR over
   ``ATR_PERIOD`` completed daily bars) of the strategy stop, or already below it;
 * ``signal_stop``: a tracked long signal on the same symbol closed ``stop_hit`` since the
-  last regular-session close and since midnight New York, so a hit is not re-sent when the
-  date changes (the ``tracked_signals`` table, read at most every
+  last regular-session close, newer than the newest hit already alerted for that symbol
+  (kept across days, so Friday evening's hit is not re-sent on Monday and a hit just before
+  a day boundary is not lost). Read from the ``tracked_signals`` table at most every
   ``SIGNAL_READ_SECONDS`` through ``app/storage/tracked_signal_stops.py``: only the stop hits
-  on the live symbols since that close, never the whole table).
+  on the live symbols since that close, never the whole table.
 
 "Outside regular hours" means weekdays outside 09:30-16:00 New York wall-clock time (zoneinfo,
 so it follows US daylight saving: regular hours are 13:30-20:00 UTC in summer time and
@@ -25,9 +26,16 @@ stop, and the time in UTC and Dubai.
 
 * Alert only: it never opens, closes, blocks or resizes anything and writes no mirror state
   (halt flag, room, copy rules, stops); paper is untouched.
-* At most one alert per symbol per kind per New York date, deduped in runtime_state under
-  ``ALERT_STATE_KEY`` plus an in-process memo, so a failed state write cannot cause a resend.
-  A failed send is retried on later ticks, at most ``MAX_SEND_ATTEMPTS`` per kind per day.
+* At most one alert per symbol per kind per day, where the day is the operator's Dubai date
+  (``alert_day``). A weekday off-hours window, 16:00 New York to the next 09:30, is
+  00:00-17:30 Dubai in New York summer time and 01:00-18:30 in winter time: one Dubai date,
+  so a gap or a near-stop that lasts past midnight New York is alerted once a night, not
+  twice. Over a weekend Friday evening (Saturday in Dubai) and Monday's pre-market (Monday in
+  Dubai) are a day each; crypto, checked all weekend, gets one per kind per Dubai date.
+  Deduped in runtime_state under ``ALERT_STATE_KEY`` (with each symbol's newest alerted
+  tracked-signal hit, ``signal_seen``, kept ``SIGNAL_SEEN_DAYS``) plus an in-process memo, so
+  a failed state write cannot cause a resend. A failed send is retried on later ticks, at
+  most ``MAX_SEND_ATTEMPTS`` per kind per day.
 * Inputs and their cost: the rate the backup stop saved this tick (``MARKS_KEY``, used only
   when at most ``MAX_RATE_AGE_SECONDS`` old) or the crypto test's ``last_rate``; entry and
   stop from the scorecard (or the test order); the previous close and ATR from the paper
@@ -65,6 +73,7 @@ MAX_RATE_AGE_SECONDS = 300  # older eToro rates are not used (5 guard ticks)
 SIGNAL_READ_SECONDS = 300  # the tracked-signal store is read at most every 5 minutes
 SIGNAL_READ_LIMIT = 20  # newest stop hits on the live symbols since the last close
 MAX_SEND_ATTEMPTS = 3  # per symbol per kind per day
+SIGNAL_SEEN_DAYS = 7  # newest-alerted-hit marks kept this long (Fri close to Mon open ~2.7 d)
 MAX_BAR_READS_PER_TICK = 3
 BAR_RETRY_SECONDS = 900
 MAX_QUOTE_READS_PER_DAY = 10
@@ -98,13 +107,21 @@ def last_session_date(now: datetime) -> date:
     return day
 
 
+def alert_day(now: datetime) -> date:
+    """The dedupe day: the operator's calendar date in Dubai (UTC+4, no daylight saving).
+
+    Unlike the New York date it does not change inside a weekday off-hours window (16:00 New
+    York = 00:00 Dubai in summer time, 01:00 in winter time; the 09:30 open = 17:30 / 18:30)."""
+
+    return now.astimezone(DUBAI).date()
+
+
 def signal_window_start(now: datetime) -> datetime:
     """Tracked-signal stop hits count from the close (16:00 New York) that began the current
-    off-hours window, but not before midnight New York (the dedupe day)."""
+    off-hours window (the weekend's from Friday's close). No midnight floor: a hit is kept
+    from being re-sent by the newest-alerted-hit mark, so none is dropped at a day change."""
 
-    close = datetime.combine(last_session_date(now), REGULAR_CLOSE, tzinfo=NEW_YORK)
-    midnight = datetime.combine(now.astimezone(NEW_YORK).date(), time(0), tzinfo=NEW_YORK)
-    return max(close, midnight)
+    return datetime.combine(last_session_date(now), REGULAR_CLOSE, tzinfo=NEW_YORK)
 
 
 def reference_from_bars(frame: Any, *, crypto: bool, now: datetime) -> dict[str, Any] | None:
@@ -164,8 +181,9 @@ class OvernightAdverseMoveAlert:
         self._refs: dict[tuple[str, str], dict[str, Any]] = {}
         self._signals: list[dict[str, Any]] | None = None
         self._signals_read_at: datetime | None = None
-        self._done: set[tuple[str, str, str]] = set()  # (ny_date, symbol, kind): no more today
-        self._noted: set[tuple[str, str]] = set()  # (ny_date, step) logged to run_logs
+        self._done: set[tuple[str, str, str]] = set()  # (day, symbol, kind): no more today
+        self._noted: set[tuple[str, str]] = set()  # (day, step) logged to run_logs
+        self._seen: dict[str, datetime] = {}  # symbol -> newest tracked-signal hit alerted
         self._quote_reads: dict[str, int] = {}
         self._bar_reads = 0
 
@@ -205,7 +223,8 @@ class OvernightAdverseMoveAlert:
         positions = self._positions(now)
         if not positions:
             return 0
-        ny_date = ny.date().isoformat()
+        day = alert_day(now).isoformat()
+        self._done = {k for k in self._done if k[0] == day}
         self._bar_reads = 0
         self._refresh_signal_stops([p["symbol"] for p in positions], now)
         candidates: list[tuple[dict[str, Any], dict[str, str]]] = []
@@ -216,12 +235,12 @@ class OvernightAdverseMoveAlert:
             except Exception as exc:  # noqa: BLE001 - the other positions are still checked
                 self._note(now, f"check:{symbol}", exc)
                 continue
-            found = {k: v for k, v in found.items() if (ny_date, symbol, k) not in self._done}
+            found = {k: v for k, v in found.items() if (day, symbol, k) not in self._done}
             if found:
                 candidates.append((position, found))
         if not candidates:
             return 0
-        return self._alert(candidates, now, ny_date)
+        return self._alert(candidates, now, day)
 
     def _kinds(self, position: dict[str, Any], now: datetime) -> dict[str, str]:
         symbol, rate, stop = position["symbol"], position.get("rate"), position.get("stop")
@@ -252,9 +271,7 @@ class OvernightAdverseMoveAlert:
         hits = self._signal_stops(symbol, now)
         position["signal_hits"] = hits
         if hits:
-            found["signal_stop"] = "; ".join(_signal_line(h) for h in hits[:3]) + (
-                f"; +{len(hits) - 3} more" if len(hits) > 3 else ""
-            )
+            found["signal_stop"] = _signal_text(hits, now)
         return found
 
     def _reference(self, position: dict[str, Any], now: datetime) -> dict[str, Any] | None:
@@ -313,40 +330,67 @@ class OvernightAdverseMoveAlert:
             self._signals = None
 
     def _signal_stops(self, symbol: str, now: datetime) -> list[dict[str, Any]]:
-        start = signal_window_start(now)
+        start, seen = signal_window_start(now), self._seen.get(symbol)
         return [
             s
             for s in self._signals or []
-            if s["symbol"] == symbol and s["role"] != "entry_short" and s["closed_at"] >= start
+            if s["symbol"] == symbol
+            and s["role"] != "entry_short"
+            and s["closed_at"] >= start
+            and (seen is None or s["closed_at"] > seen)
         ]
+
+    def _merge_seen(self, stored: Any, now: datetime) -> dict[str, str]:
+        """Each symbol's newest alerted tracked-signal hit: the memo and runtime_state merged
+        (a restart or the other caller may have alerted one); marks older than
+        ``SIGNAL_SEEN_DAYS`` are dropped (the signal window never reaches back that far)."""
+
+        for symbol, at in stored.items() if isinstance(stored, dict) else ():
+            moment = _when(at)
+            if moment is not None and (symbol not in self._seen or moment > self._seen[symbol]):
+                self._seen[symbol] = moment
+        cutoff = now - timedelta(days=SIGNAL_SEEN_DAYS)
+        self._seen = {s: t for s, t in self._seen.items() if t >= cutoff}
+        return {s: t.isoformat() for s, t in self._seen.items()}
 
     # -- alerting --------------------------------------------------------------
     def _alert(
-        self, candidates: list[tuple[dict[str, Any], dict[str, str]]], now: datetime, ny_date: str
+        self, candidates: list[tuple[dict[str, Any], dict[str, str]]], now: datetime, day: str
     ) -> int:
         raw = self.mirror.state.get(ALERT_STATE_KEY)  # unreadable: skip the tick (run() logs)
         try:
             data = json.loads(raw or "{}")
         except (TypeError, ValueError):
             data = {}
-        if not isinstance(data, dict) or data.get("ny_date") != ny_date:
-            data = {"ny_date": ny_date, "sent": {}, "failed": {}}
+        data = data if isinstance(data, dict) else {}
+        seen = self._merge_seen(data.get("signal_seen"), now)  # kept across days
+        if data.get("dubai_date") != day:
+            data = {"dubai_date": day, "sent": {}, "failed": {}}
+        data["signal_seen"] = seen
         sent, failed = data.setdefault("sent", {}), data.setdefault("failed", {})
         due: list[tuple[dict[str, Any], dict[str, str]]] = []
         for position, found in candidates:
             symbol = position["symbol"]
+            if "signal_stop" in found:  # drop hits the stored mark shows were already alerted
+                mark = self._seen.get(symbol)
+                hits = [h for h in position["signal_hits"] if mark is None or h["closed_at"] > mark]
+                position["signal_hits"] = hits
+                if hits:
+                    found["signal_stop"] = _signal_text(hits, now)
+                else:
+                    found.pop("signal_stop")
             for kind in list(found):
                 if kind in (sent.get(symbol) or {}):
-                    self._done.add((ny_date, symbol, kind))  # sent by another process
+                    self._done.add((day, symbol, kind))  # sent by another process
                     found.pop(kind)
                 elif int(failed.get(f"{symbol}:{kind}") or 0) >= MAX_SEND_ATTEMPTS:
-                    self._done.add((ny_date, symbol, kind))  # gave up for today
+                    self._done.add((day, symbol, kind))  # gave up for today
                     found.pop(kind)
             if found:
                 due.append((position, found))
         if not due:
             return 0
-        quotes = self._quotes([p for p, _ in due], now, ny_date)
+        quotes = self._quotes([p for p, _ in due], now, day)
         count = 0
         for position, found in due:
             symbol = position["symbol"]
@@ -355,16 +399,19 @@ class OvernightAdverseMoveAlert:
             ok = self._send(text, now, symbol)
             for kind in found:
                 if ok:
-                    self._done.add((ny_date, symbol, kind))
+                    self._done.add((day, symbol, kind))
                     sent.setdefault(symbol, {})[kind] = now.isoformat()
                 else:
                     failed[f"{symbol}:{kind}"] = int(failed.get(f"{symbol}:{kind}") or 0) + 1
+            if ok and "signal_stop" in found:
+                self._seen[symbol] = max(h["closed_at"] for h in position["signal_hits"])
+                seen[symbol] = self._seen[symbol].isoformat()
             count += 1 if ok else 0
             self._log(
                 "etoro_live_overnight_alert_sent"
                 if ok
                 else "etoro_live_overnight_alert_send_failed",
-                _log_payload(position, found, quote, ny_date),
+                _log_payload(position, found, quote, day),
             )
         try:
             self.mirror.state.set(ALERT_STATE_KEY, json.dumps(data))
@@ -373,7 +420,7 @@ class OvernightAdverseMoveAlert:
         return count
 
     def _quotes(
-        self, positions: list[dict[str, Any]], now: datetime, ny_date: str
+        self, positions: list[dict[str, Any]], now: datetime, day: str
     ) -> dict[str, dict[str, Any]]:
         """eToro bid/ask for these instruments: one bounded read, never in a cooldown."""
 
@@ -387,9 +434,9 @@ class OvernightAdverseMoveAlert:
             if etoro_cooldown_remaining(getattr(client, "settings", None)) > 0:
                 self._note(now, "quotes_cooldown", "eToro cooldown: no bid/ask read", gap=True)
                 return {}
-            if self._quote_reads.get(ny_date, 0) >= MAX_QUOTE_READS_PER_DAY:
+            if self._quote_reads.get(day, 0) >= MAX_QUOTE_READS_PER_DAY:
                 return {}
-            self._quote_reads = {ny_date: self._quote_reads.get(ny_date, 0) + 1}
+            self._quote_reads = {day: self._quote_reads.get(day, 0) + 1}
             payload = client._request(
                 "GET", "/market-data/instruments/rates", params={"instrumentIds": ",".join(ids)}
             )
@@ -472,9 +519,9 @@ class OvernightAdverseMoveAlert:
     # -- logging ---------------------------------------------------------------
     def _note(self, now: datetime, step: str, error: Any, *, gap: bool = False) -> None:
         """Log a failure (app log every time) or a data gap (app log once a day); both go to
-        run_logs once per step per New York date, so a lasting problem cannot flood it."""
+        run_logs once per step per day (``alert_day``), so a lasting problem cannot flood it."""
 
-        key = (now.astimezone(NEW_YORK).date().isoformat(), step)
+        key = (alert_day(now).isoformat(), step)
         first = key not in self._noted
         if not gap:
             logger.warning("eToro overnight alert %s failed: %s", step, error)
@@ -564,24 +611,32 @@ def _signal_row(row: Any) -> dict[str, Any] | None:
     }
 
 
-def _signal_line(hit: dict[str, Any]) -> str:
+def _signal_text(hits: list[dict[str, Any]], now: datetime) -> str:
+    return "; ".join(_signal_line(h, now) for h in hits[:3]) + (
+        f"; +{len(hits) - 3} more" if len(hits) > 3 else ""
+    )
+
+
+def _signal_line(hit: dict[str, Any], now: datetime) -> str:
     quote = f"its quote {_px(hit['price'])}"
     if hit.get("bid") and hit.get("ask"):
         quote += f", bid {_px(hit['bid'])} / ask {_px(hit['ask'])}"
+    at = hit["closed_at"].astimezone(UTC)
+    day = "" if at.date() == now.astimezone(UTC).date() else f" {at:%a %d %b}"  # an older hit
     return (
         f"tracked signal {hit['strategy']} {hit['timeframe']} hit its own stop {_px(hit['stop'])}"
-        f" at {hit['closed_at'].astimezone(UTC):%H:%M} UTC ({quote})"
+        f" at {at:%H:%M} UTC{day} ({quote})"
     )
 
 
 def _log_payload(
-    position: dict[str, Any], found: dict[str, str], quote: dict[str, Any] | None, ny_date: str
+    position: dict[str, Any], found: dict[str, str], quote: dict[str, Any] | None, day: str
 ) -> dict[str, Any]:
     ref = position.get("ref") or {}
     return {
         "symbol": position["symbol"],
         "kinds": [kind for kind in KINDS if kind in found],
-        "ny_date": ny_date,
+        "dubai_date": day,
         "rate": position.get("rate"),
         "entry": position.get("entry"),
         "stop": position.get("stop"),

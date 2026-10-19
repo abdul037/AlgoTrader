@@ -26,6 +26,7 @@ from app.broker.etoro_live_overnight_alert import (
     MAX_QUOTE_READS_PER_DAY,
     MAX_SEND_ATTEMPTS,
     OvernightAdverseMoveAlert,
+    alert_day,
     in_alert_window,
     last_session_date,
     reference_from_bars,
@@ -264,8 +265,9 @@ def test_amd_replay_alerts_once_with_all_three_reasons(tmp_path) -> None:
     assert "12:11 UTC / 16:11 Dubai, Thu 15 Oct" in text
     assert "Alert only: nothing was closed or changed" in text
     saved = json.loads(mirror.state[ALERT_STATE_KEY])
-    assert saved["ny_date"] == "2026-10-15"
+    assert saved["dubai_date"] == "2026-10-15"
     assert set(saved["sent"]["AMD"]) == {"gap_down", "near_stop", "signal_stop"}
+    assert saved["signal_seen"] == {"AMD": "2026-10-15T12:10:05+00:00"}  # newest hit alerted
     [sent] = logs.named("etoro_live_overnight_alert_sent")
     assert sent["kinds"] == ["gap_down", "near_stop", "signal_stop"]
     assert sent["bid"] == 547.49 and sent["ask"] == 595.77 and sent["signal_stops"] == 1
@@ -275,7 +277,7 @@ def test_amd_replay_alerts_once_with_all_three_reasons(tmp_path) -> None:
     assert _errors(logs) == []
 
 
-def test_at_most_one_alert_per_symbol_per_kind_per_new_york_day(tmp_path) -> None:
+def test_at_most_one_alert_per_symbol_per_kind_per_day(tmp_path) -> None:
     state = _state()
     alert, mirror, _ = _alert(tmp_path, state=state)
     assert alert.run(now=AMD_NOW) == 1
@@ -286,8 +288,8 @@ def test_at_most_one_alert_per_symbol_per_kind_per_new_york_day(tmp_path) -> Non
     again, _, _ = _alert(tmp_path, state=state, notifier=mirror.notifier, client=mirror.client)
     assert again.run(now=AMD_NOW + timedelta(minutes=2)) == 0
     assert len(mirror.notifier.sent) == 1 and len(mirror.client.requests) == 1
-    # Next New York date: the 15 Oct bar is now complete (close 551.00), so no gap; the
-    # signal stop was before the 15 Oct 16:00 close; only the near-stop alert is new.
+    # The next night (16 Oct in Dubai): the 15 Oct bar is now complete (close 551.00), so no
+    # gap; the signal stop was before the 15 Oct 16:00 close; only the near-stop alert is new.
     bars = _Bars(_frame(partial=551.0))
     nxt, _, _ = _alert(tmp_path, state=state, notifier=mirror.notifier, bars=bars)
     next_day = datetime.fromisoformat("2026-10-16T12:00:00+00:00")
@@ -482,10 +484,10 @@ def test_last_session_and_signal_window_follow_winter_time() -> None:
     assert session("2027-01-14T21:00:00+00:00") == "2027-01-14"  # 16:00 EST close
     assert session("2026-11-02T20:30:00+00:00") == "2026-10-30"  # Mon 15:30 EST: Friday's
     assert start("2027-01-14T21:30:00+00:00") == "2027-01-14T21:00:00+00:00"  # the EST close
-    assert start("2027-01-15T12:00:00+00:00") == "2027-01-15T05:00:00+00:00"  # midnight EST
-    assert start("2026-11-02T12:00:00+00:00") == "2026-11-02T05:00:00+00:00"  # first EST Monday
-    # Sun 1 Nov: midnight was still summer time (the clocks went back at 02:00).
-    assert start("2026-11-01T12:00:00+00:00") == "2026-11-01T04:00:00+00:00"
+    assert start("2027-01-15T12:00:00+00:00") == "2027-01-14T21:00:00+00:00"  # next morning
+    # Mon 2 Nov, the first EST morning: the window began at Friday's 16:00 EDT close.
+    assert start("2026-11-02T12:00:00+00:00") == "2026-10-30T20:00:00+00:00"
+    assert start("2026-11-02T21:00:00+00:00") == "2026-11-02T21:00:00+00:00"  # 16:00 EST
 
 
 @pytest.mark.parametrize(
@@ -509,33 +511,94 @@ def test_winter_time_alerts_before_the_open_and_reads_nothing_in_regular_hours(
     # The unfinished bar of ``day`` (Alpaca stamps it 05:00 UTC) is not the previous close.
     assert f"- down 3.4% from the last close 570.82 ({prev})" in text
     assert "14:00 UTC / 18:00 Dubai" in text
-    assert json.loads(state[ALERT_STATE_KEY])["ny_date"] == day
+    assert json.loads(state[ALERT_STATE_KEY])["dubai_date"] == day  # 18:00 Dubai, same date
+
+
+# -- one alert per kind per day: the day is the operator's Dubai date ---------------------------
+# A weekday off-hours window (16:00 New York to the next 09:30) is 00:00-17:30 Dubai in summer
+# time and 01:00-18:30 Dubai in winter time, so neither UTC nor New York midnight splits it.
+def _window_minutes(close_utc, open_utc):
+    now, end = _at(close_utc), _at(open_utc)
+    while now < end:
+        yield now
+        now += timedelta(minutes=1)
 
 
 @pytest.mark.parametrize(
-    ("first", "second", "ny_date"),
+    ("close_utc", "open_utc", "day"),
     [
-        # 19:30 and 20:30 EDT on Wed 14 Oct: UTC midnight falls in between.
-        ("2026-10-14T23:30:00+00:00", "2026-10-15T00:30:00+00:00", "2026-10-14"),
-        # 18:30 and 23:30 EST on Thu 14 Jan: UTC midnight falls in between.
-        ("2027-01-14T23:30:00+00:00", "2027-01-15T04:30:00+00:00", "2027-01-14"),
+        ("2026-10-14T20:00:00+00:00", "2026-10-15T13:30:00+00:00", "2026-10-15"),  # EDT
+        ("2027-01-14T21:00:00+00:00", "2027-01-15T14:30:00+00:00", "2027-01-15"),  # EST
+        ("2026-03-09T20:00:00+00:00", "2026-03-10T13:30:00+00:00", "2026-03-10"),  # first EDT
+        ("2026-11-02T21:00:00+00:00", "2026-11-03T14:30:00+00:00", "2026-11-03"),  # first EST
     ],
 )
-def test_no_resend_across_utc_midnight_on_the_same_new_york_date(
-    tmp_path, first, second, ny_date
+def test_a_weekday_off_hours_window_is_one_dubai_date(close_utc, open_utc, day) -> None:
+    minutes = list(_window_minutes(close_utc, open_utc))
+    assert all(in_alert_window(m, crypto=False) for m in minutes)
+    assert not in_alert_window(_at(close_utc) - timedelta(minutes=1), crypto=False)
+    assert not in_alert_window(_at(open_utc), crypto=False)
+    assert {alert_day(m).isoformat() for m in minutes} == {day}
+    assert len({m.astimezone(overnight.NEW_YORK).date() for m in minutes}) == 2  # NY splits it
+
+
+def test_the_weekend_gives_friday_evening_and_monday_morning_their_own_day() -> None:
+    friday = [_at("2026-10-30T20:00:00+00:00"), _at("2026-10-31T03:59:00+00:00")]  # EDT
+    monday = [_at("2026-11-02T05:00:00+00:00"), _at("2026-11-02T14:29:00+00:00")]  # EST
+    assert {alert_day(m).isoformat() for m in friday} == {"2026-10-31"}  # Saturday in Dubai
+    assert {alert_day(m).isoformat() for m in monday} == {"2026-11-02"}
+
+
+@pytest.mark.parametrize(
+    ("close_utc", "open_utc", "session"),
+    [
+        ("2026-10-14T20:00:00+00:00", "2026-10-15T13:30:00+00:00", "2026-10-14"),  # EDT
+        ("2027-01-14T21:00:00+00:00", "2027-01-15T14:30:00+00:00", "2027-01-14"),  # EST
+    ],
+)
+def test_a_gap_that_lasts_all_night_is_alerted_once(tmp_path, close_utc, open_utc, session) -> None:
+    # 550 is 3.6% under the 570.82 close and 10 (0.43 ATR) above the 540 stop: both kinds,
+    # all night. Checked every minute from the close to the open, across UTC and New York
+    # midnight: one message.
+    state = _state(cards={"et1": _card(stop=540.0, broker_stop=540.0)})
+    bars = _Bars(_frame(last_day=session))
+    signals = _Signals(fail=True)  # a lasting failure: one run-log row a day, not two
+    alert, mirror, logs = _alert(tmp_path, state=state, bars=bars, signals=signals)
+    sent = 0
+    for minute in _window_minutes(close_utc, open_utc):
+        _mark(state, minute, rate=550.0)
+        sent += alert.run(now=minute)
+    assert sent == 1 and len(mirror.notifier.sent) == 1
+    assert len(signals.calls) > 200 and _errors(logs) == ["tracked_signals"]
+    text = mirror.notifier.sent[0]
+    assert "- down 3.6% from the last close 570.82" in text
+    assert "- 0.43 average daily moves above the stop" in text
+    assert text.splitlines()[0].endswith("AMD (after hours)")
+
+
+@pytest.mark.parametrize(
+    ("evening", "after_midnight", "session", "day"),
+    [
+        # 17:00 EDT Wed 14 Oct, then 00:05 EDT Thu 15 Oct (UTC midnight is in between too).
+        ("2026-10-14T21:00:00+00:00", "2026-10-15T04:05:00+00:00", "2026-10-14", "2026-10-15"),
+        # 17:00 EST Thu 14 Jan, then 00:05 EST Fri 15 Jan.
+        ("2027-01-14T22:00:00+00:00", "2027-01-15T05:05:00+00:00", "2027-01-14", "2027-01-15"),
+    ],
+)
+def test_no_resend_after_new_york_midnight_in_process_or_after_a_restart(
+    tmp_path, evening, after_midnight, session, day
 ) -> None:
-    first, second = _at(first), _at(second)
-    # Flat vs the close and 15 above the stop (ATR 23.4): near_stop only.
-    state = _state(cards={"et1": _card(stop=556.0, broker_stop=556.0)})
-    bars = _Bars(_frame(last_close=571.0, last_day=ny_date))
-    _mark(state, first, rate=571.0)
-    alert, mirror, _ = _alert(tmp_path, state=state, bars=bars, signals=_Signals([]))
-    assert alert.run(now=first) == 1
-    assert mirror.notifier.sent[0].splitlines()[0].endswith("AMD (after hours)")
-    assert "average daily moves above the stop" in mirror.notifier.sent[0]
-    assert json.loads(state[ALERT_STATE_KEY])["ny_date"] == ny_date
-    _mark(state, second, rate=571.0)
-    assert alert.run(now=second) == 0  # the in-process memo
+    evening, after_midnight = _at(evening), _at(after_midnight)
+    state = _state(cards={"et1": _card(stop=400.0, broker_stop=400.0)})
+    bars = _Bars(_frame(last_day=session))
+    _mark(state, evening, rate=550.0)
+    alert, mirror, logs = _alert(tmp_path, state=state, bars=bars, signals=_Signals([]))
+    assert alert.run(now=evening) == 1
+    saved = json.loads(state[ALERT_STATE_KEY])
+    assert saved["dubai_date"] == day and set(saved["sent"]["AMD"]) == {"gap_down"}
+    assert logs.named("etoro_live_overnight_alert_sent")[0]["dubai_date"] == day
+    _mark(state, after_midnight, rate=550.0)
+    assert alert.run(now=after_midnight) == 0  # the in-process memo
     restarted, _, _ = _alert(
         tmp_path,
         state=state,
@@ -544,8 +607,30 @@ def test_no_resend_across_utc_midnight_on_the_same_new_york_date(
         bars=bars,
         signals=_Signals([]),
     )
-    assert restarted.run(now=second) == 0  # a restart: the stored dedupe
+    assert restarted.run(now=after_midnight) == 0  # a restart: the stored dedupe
     assert len(mirror.notifier.sent) == 1
+    # The next night is the next Dubai date: a gap below the next close may be alerted again.
+    next_night = evening + timedelta(days=1)
+    _mark(state, next_night, rate=550.0)
+    restarted.bars = _Bars(_frame(last_day=next_night.date().isoformat()))
+    assert restarted.run(now=next_night) == 1
+
+
+def test_crypto_on_the_weekend_gets_one_alert_per_kind_per_dubai_date(tmp_path) -> None:
+    test_order = {"status": "open", "symbol": "ETH", "position_id": 9, "stop_loss": 2_000.0}
+    state = _state(cards={})
+    eth_bars = _Bars(_frame(last_close=2_700.0, atr=60.0, last_day="2026-10-16"))
+    alert, mirror, _ = _alert(tmp_path, state=state, bars=eth_bars, signals=_Signals([]))
+    for when, sends in (
+        ("2026-10-17T10:00:00+00:00", 1),  # Sat 14:00 Dubai
+        ("2026-10-17T19:59:00+00:00", 0),  # Sat 23:59 Dubai: the same day
+        ("2026-10-17T20:00:00+00:00", 1),  # Sun 00:00 Dubai: a new day
+        ("2026-10-18T19:00:00+00:00", 0),  # Sun 23:00 Dubai
+    ):
+        state[TEST_STATE_KEY] = json.dumps({**test_order, "last_rate": 2_590, "last_rate_at": when})
+        assert alert.run(now=_at(when)) == sends, when
+    assert len(mirror.notifier.sent) == 2
+    assert {key[0] for key in alert._done} == {"2026-10-18"}  # the memo keeps only today
 
 
 # -- thresholds ------------------------------------------------------------------------------
@@ -735,9 +820,9 @@ def test_tracked_signals_are_read_at_most_every_five_minutes(tmp_path) -> None:
     alert, _, _ = _alert(tmp_path, signals=signals)
     for minute in (0, 1, 4):
         alert.run(now=AMD_NOW + timedelta(minutes=minute))
-    # Only the live symbols, only since midnight New York (04:00 UTC), which is after the
-    # 14 Oct 16:00 close.
-    assert signals.calls == [(["AMD"], "2026-10-15T04:00:00+00:00")]
+    # Only the live symbols, only since the 14 Oct 16:00 close (20:00 UTC) that began the
+    # window: no midnight floor, so a hit late on 14 Oct New York time still counts.
+    assert signals.calls == [(["AMD"], "2026-10-14T20:00:00+00:00")]
     alert.run(now=AMD_NOW + timedelta(minutes=5))
     assert len(signals.calls) == 2
 
@@ -748,7 +833,6 @@ def test_tracked_signals_are_read_at_most_every_five_minutes(tmp_path) -> None:
         _signal(role="entry_short"),  # a short's stop is above: not adverse for the long
         _signal(symbol="NVDA"),
         _signal(closed_at="2026-10-14T19:59:00+00:00"),  # before the 14 Oct 16:00 close
-        _signal(closed_at="2026-10-15T03:59:00+00:00"),  # 14 Oct 23:59 NY: yesterday's alert day
     ],
 )
 def test_signal_stop_needs_a_long_signal_on_the_symbol_since_the_close(tmp_path, record) -> None:
@@ -759,9 +843,10 @@ def test_signal_stop_needs_a_long_signal_on_the_symbol_since_the_close(tmp_path,
 
 def test_a_signal_stop_at_the_window_start_counts(tmp_path) -> None:
     state = _state(cards={"et1": _card(stop=400.0, broker_stop=400.0)}, marks={})
-    record = _signal(closed_at="2026-10-15T04:00:00+00:00")  # 00:00 NY on 15 Oct
+    record = _signal(closed_at="2026-10-14T20:00:00+00:00")  # the 14 Oct 16:00 NY close
     alert, mirror, _ = _alert(tmp_path, state=state, signals=_Signals([record]))
-    assert alert.run(now=AMD_NOW) == 1 and "at 04:00 UTC" in mirror.notifier.sent[0]
+    assert alert.run(now=AMD_NOW) == 1
+    assert "at 20:00 UTC Wed 14 Oct (its quote" in mirror.notifier.sent[0]  # not today's UTC date
 
 
 def test_tracked_signal_read_failure_is_logged_and_price_reasons_still_work(tmp_path) -> None:
@@ -922,13 +1007,151 @@ def test_amd_replay_through_the_real_tracked_signal_store(tmp_path) -> None:
     assert logs.named("etoro_live_overnight_alert_sent")[0]["signal_stops"] == 3
 
 
-def test_signal_window_starts_at_the_close_or_midnight_new_york() -> None:
+def test_signal_window_starts_at_the_close_that_began_the_window() -> None:
     def start(text):
         return signal_window_start(datetime.fromisoformat(text)).astimezone(UTC).isoformat()
 
     assert start("2026-10-14T21:00:00+00:00") == "2026-10-14T20:00:00+00:00"  # evening: close
-    assert start("2026-10-15T12:11:00+00:00") == "2026-10-15T04:00:00+00:00"  # next morning
-    assert start("2026-10-17T15:00:00+00:00") == "2026-10-17T04:00:00+00:00"  # Saturday
+    assert start("2026-10-15T12:11:00+00:00") == "2026-10-14T20:00:00+00:00"  # next morning
+    assert start("2026-10-17T15:00:00+00:00") == "2026-10-16T20:00:00+00:00"  # Saturday
+    assert start("2026-10-19T12:00:00+00:00") == "2026-10-16T20:00:00+00:00"  # Monday
+
+
+@pytest.mark.parametrize(
+    ("last_read", "hit", "after_midnight"),
+    [
+        # 23:55 EDT read finds nothing; the hit closes 23:57 EDT; the next read is 00:00:30.
+        ("2026-10-15T03:55:00+00:00", "2026-10-15T03:57:00+00:00", "2026-10-15T04:00:30+00:00"),
+        # The same in winter time: 23:55 / 23:57 / 00:00:30 EST.
+        ("2027-01-15T04:55:00+00:00", "2027-01-15T04:57:00+00:00", "2027-01-15T05:00:30+00:00"),
+    ],
+)
+def test_a_signal_stop_just_before_new_york_midnight_is_still_alerted(
+    tmp_path, last_read, hit, after_midnight
+) -> None:
+    state = _state(cards={"et1": _card(stop=400.0, broker_stop=400.0)}, marks={})
+    signals = _Signals([])
+    alert, mirror, _ = _alert(tmp_path, state=state, signals=signals)
+    assert alert.run(now=_at(last_read)) == 0
+    signals.records = [_signal(closed_at=hit)]
+    assert alert.run(now=_at(after_midnight)) == 1
+    assert f"at {_at(hit):%H:%M} UTC (its quote" in mirror.notifier.sent[0]
+    close = signal_window_start(_at(last_read)).astimezone(UTC).isoformat()
+    assert [since for _, since in signals.calls] == [close, close]  # no midnight floor
+
+
+def test_the_weekend_signal_stops_are_alerted_once_across_days(tmp_path) -> None:
+    friday = _at("2026-10-16T21:00:00+00:00")  # 17:00 EDT, Sat 01:00 Dubai
+    last_friday_read = _at("2026-10-17T03:55:00+00:00")  # 23:55 EDT Friday
+    monday = _at("2026-10-19T04:00:00+00:00")  # 00:00 EDT, Mon 08:00 Dubai
+    early = {**_signal(closed_at="2026-10-16T20:30:00+00:00"), "strategy_name": "early"}
+    mid = {**_signal(closed_at="2026-10-16T20:45:00+00:00"), "strategy_name": "mid"}
+    late = {**_signal(closed_at="2026-10-17T03:57:00+00:00"), "strategy_name": "late"}
+    for restart in (False, True):
+        state = _state(cards={"et1": _card(stop=400.0, broker_stop=400.0)})
+        bars = _Bars(_frame(last_day="2026-10-16"))
+        signals = _Signals([mid, early])  # newest first, like the store
+        alert, mirror, _ = _alert(tmp_path, state=state, bars=bars, signals=signals)
+        _mark(state, friday, rate=550.0)
+        assert alert.run(now=friday) == 1
+        assert "tracked signal mid" in mirror.notifier.sent[0]
+        assert "tracked signal early" in mirror.notifier.sent[0]
+        assert "down 3.6%" in mirror.notifier.sent[0]
+        _mark(state, last_friday_read, rate=550.0)
+        assert alert.run(now=last_friday_read) == 0
+        signals.records = [late, mid, early]
+        if restart:
+            alert, _, _ = _alert(
+                tmp_path,
+                state=state,
+                notifier=mirror.notifier,
+                client=mirror.client,
+                bars=bars,
+                signals=signals,
+            )
+        _mark(state, monday, rate=550.0)
+        assert alert.run(now=monday) == 1  # a new Dubai day: the gap again, and only the new hit
+        text = mirror.notifier.sent[1]
+        assert "tracked signal late 1d hit its own stop 556.10 at 03:57 UTC Sat 17 Oct" in text
+        assert "tracked signal early" not in text and "tracked signal mid" not in text
+        assert "- down 3.6% from the last close 570.82 (2026-10-16)" in text
+        saved = json.loads(state[ALERT_STATE_KEY])
+        assert saved["dubai_date"] == "2026-10-19"
+        assert saved["signal_seen"] == {"AMD": "2026-10-17T03:57:00+00:00"}
+        assert alert.run(now=monday + timedelta(minutes=10)) == 0
+        assert len(mirror.notifier.sent) == 2
+
+
+def test_an_already_alerted_hit_costs_no_state_read_on_a_new_day(tmp_path) -> None:
+    friday, monday = _at("2026-10-16T21:00:00+00:00"), _at("2026-10-19T04:00:00+00:00")
+    state = _state(cards={"et1": _card(stop=400.0, broker_stop=400.0)}, marks={})
+    signals = _Signals([_signal(closed_at="2026-10-16T20:30:00+00:00")])
+    alert, mirror, _ = _alert(tmp_path, state=state, signals=signals)
+    assert alert.run(now=friday) == 1
+    state.gets.clear()
+    assert alert.run(now=monday) == 0  # the same hit, a new Dubai day: nothing new
+    assert len(signals.calls) == 2 and ALERT_STATE_KEY not in state.gets
+    assert len(mirror.notifier.sent) == 1
+
+
+def test_a_failed_state_write_never_rolls_the_hit_mark_back(tmp_path) -> None:
+    friday, monday = _at("2026-10-16T21:00:00+00:00"), _at("2026-10-19T04:00:00+00:00")
+    old, new = "2026-10-16T20:10:00+00:00", "2026-10-16T20:30:00+00:00"
+    state = _state(cards={"et1": _card(stop=400.0, broker_stop=400.0)}, fail_set={ALERT_STATE_KEY})
+    stored = {"dubai_date": "2026-10-17", "sent": {}, "failed": {}, "signal_seen": {"AMD": old}}
+    dict.__setitem__(state, ALERT_STATE_KEY, json.dumps(stored))  # another caller alerted ``old``
+    signals = _Signals([_signal(closed_at=new), _signal(closed_at=old)])
+    bars = _Bars(_frame(last_day="2026-10-16"))
+    alert, mirror, _ = _alert(tmp_path, state=state, bars=bars, signals=signals)
+    _mark(state, friday, rate=571.0)  # flat: only the tracked signal
+    assert alert.run(now=friday) == 1
+    [first] = mirror.notifier.sent
+    assert "at 20:30 UTC" in first and "at 20:10 UTC" not in first  # ``old`` was alerted before
+    for minute in (0, 5, 10):  # the write keeps failing, so runtime_state still says ``old``
+        _mark(state, monday + timedelta(minutes=minute), rate=550.0)
+        alert.run(now=monday + timedelta(minutes=minute))
+    assert len(mirror.notifier.sent) == 2 and "tracked signal" not in mirror.notifier.sent[1]
+
+
+def test_a_failed_send_keeps_the_hit_for_the_retry(tmp_path) -> None:
+    state = _state(cards={"et1": _card(stop=400.0, broker_stop=400.0)}, marks={})
+    notifier = _Notifier(ok=False)
+    alert, _, _ = _alert(tmp_path, state=state, notifier=notifier)
+    assert alert.run(now=AMD_NOW) == 0
+    notifier.ok = True
+    assert alert.run(now=AMD_NOW + timedelta(minutes=1)) == 1
+    assert len(notifier.sent) == 2 and "tracked signal" in notifier.sent[1]
+    assert json.loads(state[ALERT_STATE_KEY])["signal_seen"] == {"AMD": "2026-10-15T12:10:05+00:00"}
+
+
+def test_a_hit_mark_outlives_the_longest_window(tmp_path) -> None:
+    # Friday 16:00 EDT to Monday 09:30 EDT is ~2.7 days: a hit just after Friday's close must
+    # still be known on Monday morning, after a restart, or it would be alerted twice.
+    friday, monday = _at("2026-10-16T20:01:00+00:00"), _at("2026-10-19T13:29:00+00:00")
+    state = _state(cards={"et1": _card(stop=400.0, broker_stop=400.0)}, marks={})
+    signals = _Signals([_signal(closed_at="2026-10-16T20:00:30+00:00")])
+    alert, mirror, _ = _alert(tmp_path, state=state, signals=signals)
+    assert alert.run(now=friday) == 1
+    restarted, _, _ = _alert(
+        tmp_path, state=state, notifier=mirror.notifier, client=mirror.client, signals=signals
+    )
+    _mark(state, monday, rate=550.0)  # a Monday gap reaches the dedupe state
+    assert restarted.run(now=monday) == 1
+    assert len(mirror.notifier.sent) == 2 and "tracked signal" not in mirror.notifier.sent[1]
+    assert overnight.SIGNAL_SEEN_DAYS == 7  # a margin over the ~2.7-day weekend window
+
+
+def test_signal_marks_older_than_a_week_are_dropped(tmp_path) -> None:
+    state = _state()
+    stale = (AMD_NOW - timedelta(days=7, minutes=1)).isoformat()
+    kept = (AMD_NOW - timedelta(days=6)).isoformat()
+    old = {"dubai_date": "2026-10-09", "sent": {"AMD": {"gap_down": stale}}, "failed": {}}
+    state[ALERT_STATE_KEY] = json.dumps({**old, "signal_seen": {"NVDA": stale, "MSFT": kept}})
+    alert, _, _ = _alert(tmp_path, state=state)
+    assert alert.run(now=AMD_NOW) == 1  # the old day's sent list does not carry over
+    saved = json.loads(state[ALERT_STATE_KEY])
+    assert saved["dubai_date"] == "2026-10-15"
+    assert saved["signal_seen"] == {"MSFT": kept, "AMD": "2026-10-15T12:10:05+00:00"}
 
 
 def test_an_evening_signal_stop_is_not_resent_after_midnight_new_york(tmp_path) -> None:

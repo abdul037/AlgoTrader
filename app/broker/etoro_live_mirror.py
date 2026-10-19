@@ -68,7 +68,8 @@ guard every minute, Telegrams the operator when, outside 09:30-16:00 New York on
 (and all weekend for crypto), a live position's fresh eToro rate is ``ALERT_DROP_PCT`` (3%)
 or more below the previous close, or within ``ALERT_STOP_ATR_MULT`` (1) ATR of its stop, or a
 tracked signal on the same symbol hits its own stop. Code constants; at most one alert per
-symbol per kind per New York date; it never blocks, sizes or closes a copy and adds no
+symbol per kind per Dubai date (the operator's day: a whole weekday night in New York is one
+Dubai date in summer and winter time); it never blocks, sizes or closes a copy and adds no
 refusal reason here. Setting ``etoro_live_overnight_alert_enabled`` (default on).
 """
 
