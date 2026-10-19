@@ -15,9 +15,12 @@ have done:
 2. A fresh quote comes from the order path's own call (``get_quote`` with the equities broker
    as provider, force_refresh). The entry is re-anchored to it, the signal's absolute stop and
    target are kept, and the live gates are re-checked at that price: the coordinator's quote
-   checks (provider, direct, age, missing), the screener's spread ceiling, the entry drift from
-   the signal's price, and the bracket at the quote with the live minimum R:R (1.0). Then the
-   eToro mirror's per-trade copy rules (+0.03 R edge, 8% stop cap, sizing so a stop-out costs
+   checks (provider, direct, age, missing), the screener's spread ceiling and the bracket at the
+   quote with the live minimum R:R (1.0). The entry drift from the signal's price (the gap to
+   the open) is recorded: an order priced at the quote would see about none at the
+   coordinator's check (quote vs proposed price), so it gates only the second ranking,
+   ``drift_gated``, until the operator rules which reading applies. Then the eToro mirror's
+   per-trade copy rules (+0.03 R edge, 8% stop cap, sizing so a stop-out costs
    0.5% of equity, eToro's $10 minimum) and its room (symbol open, 9 positions, 4 per
    correlation group, free cash) as hints from stored state only, leaving out the copies the
    live bot opened that day (these entries would have taken their place).
@@ -28,7 +31,8 @@ have done:
 
 It runs last in a ``workflow_cadence`` tick, after every live bucket, and only once the live
 market-open scan has completed that day, when no bucket was deferred and at least
-``MIN_START_SECONDS`` of the tick's scan budget are left. It stops at the tick's scan stop or
+``MIN_START_SECONDS`` of the tick's scan budget are left (the cadence backstop's own margin, so
+never after a bucket that backstop skipped and left due). It stops at the tick's scan stop or
 after ``RUN_SECONDS``, whichever is first, resumes on the next tick from its cursor, and at
 10:30 New York time is closed with what it has. It writes only
 ``runtime_state['premarket:open_shadow:<NY date>']`` and, once the day is done, one
@@ -51,7 +55,11 @@ from typing import Any
 from uuid import uuid4
 
 from app.utils.time import utc_now
-from app.workflow.cadence_budget import POST_SCAN_RESERVE_SECONDS
+from app.workflow.cadence_budget import (
+    MIN_USEFUL_SCAN_SECONDS,
+    POST_SCAN_RESERVE_SECONDS,
+    SCAN_SETUP_SECONDS,
+)
 
 RECORD_KEY = "premarket:open_shadow:{date}"
 SCHEMA_VERSION = 1
@@ -61,7 +69,10 @@ TOP_ITEMS = 10  # setups re-checked at the open: each costs a history and a quot
 DEADLINE = (10, 30)  # New York: entries "at the open" end here; an open record is closed
 CLOSE_OUT_ENDS = (16, 0)  # a record still open at the deadline is closed until the bell
 RUN_SECONDS = 30.0  # per tick at most; the rest on the next tick
-MIN_START_SECONDS = 10.0  # of the tick's scan budget, or this tick is skipped
+# Of the tick's scan budget, or this tick is skipped. run_scan_task's backstop skips a bucket
+# (which stays due for the next tick) with less than this left, so a tick that skipped one never
+# reaches the shadow with this much: it never adds to that bucket's wait (review 10-18).
+MIN_START_SECONDS = SCAN_SETUP_SECONDS + MIN_USEFUL_SCAN_SECONDS
 FINAL = frozenset(
     {
         "complete",
@@ -77,9 +88,10 @@ FINAL = frozenset(
 RULES = (
     "shadow only: completed-bar re-check with the live build (a mismatch is skipped); entry "
     "re-anchored to a fresh quote, the signal's stop and target kept; live gates at the quote "
-    "(quote checks, spread, entry drift, R:R); eToro per-trade copy rules and room hints (stored "
-    "state only); ranked eToro-copyable, strict before weak (eToro), OOS expectancy R, R:R; "
-    "2 eToro slots, the rest paper-only"
+    "(quote checks, spread, R:R); entry drift from the signal's price (the gap to the open) "
+    "recorded and gating only drift_gated, the same ranking, until the operator rules; eToro "
+    "per-trade copy rules and room hints (stored state only); ranked eToro-copyable, strict "
+    "before weak (eToro), OOS expectancy R, R:R; 2 eToro slots, the rest paper-only"
 )
 
 
@@ -144,9 +156,10 @@ def _tick(service: Any, started_at: float, deferred: list[str], clock: Any) -> d
     if now_ny < _at(now_ny, opens) or now_ny >= _at(now_ny, CLOSE_OUT_ENDS):
         return None
     job = float(getattr(settings, "scheduler_job_timeout_seconds", 240) or 240)
-    stop_at = min(started_at + job - POST_SCAN_RESERVE_SECONDS, clock() + RUN_SECONDS)
-    if stop_at - clock() < MIN_START_SECONDS:
-        return None  # only with budget left
+    left = started_at + job - POST_SCAN_RESERVE_SECONDS - clock()  # the cadence budget's rule
+    if left < MIN_START_SECONDS:
+        return None  # only with budget left, and never after the backstop skipped a bucket
+    stop_at = clock() + min(left, RUN_SECONDS)
     key = RECORD_KEY.format(date=session_date)
     first = _get_many(service.runtime_state, [key, MARKET_OPEN_KEY])
     record = _json(first.get(key))
@@ -461,9 +474,10 @@ def _check(service, record, candidate, specs, cache, now_ny, budget) -> dict[str
     if price is None or price <= 0:
         reasons = gates if "quote_missing" in gates else [*gates, "quote_missing"]
         return {**result, "status": "gate_failed", "gate_reasons": reasons}
-    drift = abs(price - entry) / entry * 10_000.0  # from the signal's price (its bar's close)
-    if drift > float(getattr(settings, "execution_max_entry_drift_bps", 35.0)):
-        gates.append("entry_drift_too_large")
+    # From the signal's price (its bar's close): the gap to the open. Not a gate here: the order
+    # would be priced at this quote, so the coordinator's drift check would see about none.
+    drift = abs(price - entry) / entry * 10_000.0
+    drift_ok = drift <= float(getattr(settings, "execution_max_entry_drift_bps", 35.0))
     order = SimpleNamespace(side="buy", stop_loss=stop, take_profit=target)
     min_rr = float(getattr(settings, "execution_min_reward_to_risk_at_quote", 1.0) or 0.0)
     gates += ExecutionCoordinator._alpaca_bracket_reasons(
@@ -483,6 +497,7 @@ def _check(service, record, candidate, specs, cache, now_ny, budget) -> dict[str
     result.update(
         entry_at_quote=round(price, 4),
         entry_drift_bps=round(drift, 2),
+        drift_from_signal_ok=drift_ok,  # False: left out of drift_gated
         rr_at_quote=round((target - price) / (price - stop), 3) if price > stop else None,
         stop_pct_at_quote=None if stop_pct is None else round(stop_pct, 3),
         gate_reasons=gates,
@@ -581,8 +596,22 @@ def rank_key(item: dict[str, Any]) -> tuple[Any, ...]:
 
 
 def _finalize(record: dict[str, Any], *, complete: bool) -> None:
-    """Rank the setups that passed and hand out the eToro slots; room is checked against the
-    stored account plus the slots already handed out."""
+    """Rank the setups that passed and hand out the eToro slots, then the same ranking with the
+    entry drift from the signal's price as a gate (``drift_gated``: the other reading)."""
+
+    etoro = record.get("etoro") or {}
+    entered = sorted((r for r in record["results"] if r.get("status") == "entered"), key=rank_key)
+    for row, mark in _slots(entered, etoro):
+        row.update(mark)
+    record.update(_entries(entered))
+    gated = [r for r in entered if r.get("drift_from_signal_ok") is not False]
+    record["drift_gated"] = _entries([{**row, **mark} for row, mark in _slots(gated, etoro)])
+    record["status"] = "complete" if complete else "incomplete_at_deadline"
+
+
+def _slots(rows: list[dict[str, Any]], etoro: dict[str, Any]) -> list[tuple[dict, dict]]:
+    """Each row with its rank, slot and room hints. Room is checked against the stored account
+    plus the slots already handed out."""
 
     from app.broker.etoro_live_mirror import (
         CASH_RESERVE_USD,
@@ -591,14 +620,13 @@ def _finalize(record: dict[str, Any], *, complete: bool) -> None:
     )
     from app.broker.etoro_live_room import bucket_blockers
 
-    etoro = record.get("etoro") or {}
     held, cash = set(etoro.get("open_symbols") or []), _finite(etoro.get("cash"))
-    slots, taken = HARD_MAX_TRADES_PER_DAY, set()
-    entered = sorted((r for r in record["results"] if r.get("status") == "entered"), key=rank_key)
-    for rank, row in enumerate(entered, start=1):
-        row["rank"] = rank
+    slots, taken, out = HARD_MAX_TRADES_PER_DAY, set(), []
+    for rank, row in enumerate(sorted(rows, key=rank_key), start=1):
+        mark: dict[str, Any] = {"rank": rank}
+        out.append((row, mark))
         if row["symbol"] in taken:
-            row["slot"] = "duplicate_symbol"  # one position per symbol
+            mark["slot"] = "duplicate_symbol"  # one position per symbol
             continue
         taken.add(row["symbol"])
         amount = _finite(row.get("etoro_amount_usd"))
@@ -608,24 +636,27 @@ def _finalize(record: dict[str, Any], *, complete: bool) -> None:
         room += bucket_blockers(row["symbol"], sorted(held))
         if amount and cash is not None and cash - CASH_RESERVE_USD < amount:
             room.append("etoro_live_insufficient_cash")
-        row["etoro_room_hints"] = room
+        mark["etoro_room_hints"] = room
         if row.get("etoro_copy_rules_ok") and not room and slots > 0:
-            row["slot"], slots = "etoro", slots - 1
+            mark["slot"], slots = "etoro", slots - 1
             held.add(row["symbol"])
             cash = None if cash is None or amount is None else cash - amount
         else:
-            row["slot"] = "paper_only"
+            mark["slot"] = "paper_only"
             if row.get("etoro_copy_rules_ok") and not room:
-                row["etoro_room_hints"] = ["etoro_daily_slots_taken"]
-    fields = ("rank", "symbol", "strategy", "kind", "slot", "entry_at_quote", "stop", "target")
-    record["entries"] = [
-        {k: row.get(k) for k in (*fields, "rr_at_quote", "etoro_amount_usd", "oos_expectancy_r")}
-        for row in entered
-        if row["slot"] != "duplicate_symbol"
-    ]
-    record["etoro_slots"] = [e["symbol"] for e in record["entries"] if e["slot"] == "etoro"]
-    record["paper_only"] = [e["symbol"] for e in record["entries"] if e["slot"] == "paper_only"]
-    record["status"] = "complete" if complete else "incomplete_at_deadline"
+                mark["etoro_room_hints"] = ["etoro_daily_slots_taken"]
+    return out
+
+
+def _entries(rows: list[dict[str, Any]]) -> dict[str, list]:
+    fields = ("rank", "symbol", "strategy", "kind", "slot", "entry_at_quote", "entry_drift_bps")
+    fields += ("stop", "target", "rr_at_quote", "etoro_amount_usd", "oos_expectancy_r")
+    entries = [{k: r.get(k) for k in fields} for r in rows if r["slot"] != "duplicate_symbol"]
+    return {
+        "entries": entries,
+        "etoro_slots": [e["symbol"] for e in entries if e["slot"] == "etoro"],
+        "paper_only": [e["symbol"] for e in entries if e["slot"] == "paper_only"],
+    }
 
 
 def _close(service: Any, key: str, record: dict[str, Any]) -> dict[str, Any] | None:
@@ -661,6 +692,7 @@ def _close(service: Any, key: str, record: dict[str, Any]) -> dict[str, Any] | N
             for e in record.get("entries") or []
         ],
         "etoro_slots": record.get("etoro_slots") or [],
+        "drift_gated_etoro_slots": (record.get("drift_gated") or {}).get("etoro_slots") or [],
         "etoro_account_hints": (record.get("etoro") or {}).get("account_hints") or [],
         "paused_reason": record.get("paused_reason"),
         "ticks": record.get("ticks"),
@@ -710,6 +742,7 @@ def _report(runtime_state: Any, db: Any, cards: dict, settings: Any, days: int) 
         statuses = Counter(
             r.get("status") for r in record.get("results") or [] if isinstance(r, dict)
         )
+        gated = record.get("drift_gated") if isinstance(record.get("drift_gated"), dict) else {}
         out.append(
             {
                 "session_date": day,
@@ -719,6 +752,9 @@ def _report(runtime_state: Any, db: Any, cards: dict, settings: Any, days: int) 
                 "phase3_entries": entries,
                 "phase3_etoro": record.get("etoro_slots") or [],
                 "phase3_paper_only": record.get("paper_only") or [],
+                "phase3_drift_gated": {
+                    k: gated.get(k) or [] for k in ("etoro_slots", "paper_only")
+                },
                 "live_paper_entries": paper.get(day, []),
                 "live_etoro_entries": etoro.get(day, []),
                 "same_symbols": sorted(phase3 & live),

@@ -213,12 +213,14 @@ def test_best_first_entries_take_the_two_etoro_slots_and_the_rest_are_paper_only
         ("CCC", "paper_only"),
     ]
     assert record["etoro_slots"] == ["DDD", "AAA"] and record["paper_only"] == ["BBB", "CCC"]
+    assert record["drift_gated"]["etoro_slots"] == ["DDD", "AAA"]  # 10 bps: within 35 either way
     rows = env.by_symbol()
     assert ("EEE", "gamma") not in rows  # no evidence: never a candidate
     aaa = rows[("AAA", "alpha")]
     assert aaa["entry_at_quote"] == 100.1 and (aaa["stop"], aaa["target"]) == (95.0, 112.0)
     assert aaa["rr_at_quote"] == round((112 - 100.1) / (100.1 - 95), 3)
     assert aaa["entry_drift_bps"] == 10.0 and aaa["gate_reasons"] == []
+    assert aaa["drift_from_signal_ok"] is True
     assert rows[("BBB", "alpha")]["etoro_room_hints"] == ["etoro_daily_slots_taken"]
     assert rows[("CCC", "beta")]["etoro_copy_reasons"] == ["strategy_edge_below_bar"]
     # The order path's quote: the equities broker as provider, always fresh.
@@ -308,14 +310,9 @@ def test_a_bar_newer_or_older_than_the_signals_is_a_mismatch(tmp_path, monkeypat
         (_quote(100.1, spread_bps=80.0), {}, ["spread_too_wide"]),
         (_quote(100.1, source="yfinance"), {}, ["quote_provider_not_alpaca"]),
         (_quote(100.1, source="alpaca", derived=True), {}, ["quote_not_direct"]),
-        (_quote(101.0), {}, ["entry_drift_too_large"]),  # 100 bps from the signal's price
-        (
-            _quote(106.0),
-            {"execution_max_entry_drift_bps": 1000.0},
-            ["reward_to_risk_below_min_at_quote"],
-        ),
-        (_quote(94.0), {"execution_max_entry_drift_bps": 1000.0}, ["stop_loss_not_below_entry"]),
-        (_quote(113.0), {"execution_max_entry_drift_bps": 2000.0}, ["take_profit_not_above_entry"]),
+        (_quote(106.0), {}, ["reward_to_risk_below_min_at_quote"]),
+        (_quote(94.0), {}, ["stop_loss_not_below_entry"]),
+        (_quote(113.0), {}, ["take_profit_not_above_entry"]),
     ],
 )
 def test_the_live_gates_at_the_quote(tmp_path, monkeypatch, quote, settings, reasons) -> None:
@@ -326,6 +323,43 @@ def test_the_live_gates_at_the_quote(tmp_path, monkeypatch, quote, settings, rea
     assert row["status"] == "gate_failed" and row["gate_reasons"] == reasons
     assert "AAA" not in env.record()["etoro_slots"] + env.record()["paper_only"]
     assert env.record()["etoro_slots"] == ["DDD", "BBB"]  # the next copyable takes the slot
+
+
+@pytest.mark.parametrize("gap_bps", [50, 100])
+def test_a_normal_opening_gap_is_recorded_and_ranked_both_ways(
+    tmp_path, monkeypatch, gap_bps
+) -> None:
+    # Every setup opens 50-100 bps above its signal's close. The order would be priced at the
+    # quote (no drift at the coordinator's check), so the headline keeps them; drift_gated,
+    # where the gap from the signal's price is the 35 bps drift gate, has none.
+    env = _env(tmp_path, monkeypatch)
+    for (_, symbol), spec in env.signals.items():
+        env.quotes[symbol] = _quote(round(spec["price"] * (1 + gap_bps / 10_000.0), 4))
+    env.run()
+    record, rows = env.record(), env.by_symbol()
+    assert all(r["status"] == "entered" and r["gate_reasons"] == [] for r in rows.values())
+    assert {r["entry_drift_bps"] for r in rows.values()} == {float(gap_bps)}
+    assert not any(r["drift_from_signal_ok"] for r in rows.values())
+    assert record["etoro_slots"] == ["DDD", "AAA"] and record["paper_only"] == ["BBB", "CCC"]
+    assert [e["entry_drift_bps"] for e in record["entries"]] == [float(gap_bps)] * 4
+    assert record["drift_gated"] == {"entries": [], "etoro_slots": [], "paper_only": []}
+    logged = env.service.run_logs.items[0][1]
+    assert logged["etoro_slots"] == ["DDD", "AAA"] and logged["drift_gated_etoro_slots"] == []
+
+
+def test_the_drift_gated_ranking_hands_out_its_own_slots(tmp_path, monkeypatch) -> None:
+    env = _env(tmp_path, monkeypatch)
+    env.quotes["DDD"] = _quote(201.0)  # 50 bps: out of drift_gated only
+    env.run()
+    record = env.record()
+    assert record["etoro_slots"] == ["DDD", "AAA"]
+    gated = record["drift_gated"]
+    assert gated["etoro_slots"] == ["AAA", "BBB"] and gated["paper_only"] == ["CCC"]
+    ranked = [(e["rank"], e["symbol"]) for e in gated["entries"]]
+    assert ranked == [(1, "AAA"), (2, "BBB"), (3, "CCC")]
+    assert env.service.run_logs.items[0][1]["drift_gated_etoro_slots"] == ["AAA", "BBB"]
+    rows = env.by_symbol()  # the rows keep the headline's ranks and slots
+    assert (rows[("DDD", "alpha")]["rank"], rows[("BBB", "alpha")]["slot"]) == (1, "paper_only")
 
 
 def test_a_quote_without_a_price_is_a_gate_failure(tmp_path, monkeypatch) -> None:
@@ -342,7 +376,7 @@ def test_the_etoro_copy_rules_are_checked_at_the_quote(tmp_path, monkeypatch) ->
         ("alpha", "AAA"): {"price": 100.0, "stop": 92.1, "target": 130.0},
         ("alpha", "DDD"): {"price": 200.0, "stop": 190.0, "target": 230.0},
     }
-    env = _env(tmp_path, monkeypatch, signals=signals, execution_max_entry_drift_bps=100.0)
+    env = _env(tmp_path, monkeypatch, signals=signals)
     env.quotes["AAA"] = _quote(100.4)
     env.run()
     rows = env.by_symbol()
@@ -408,6 +442,78 @@ def test_room_hints_come_from_stored_state_without_the_copies_opened_that_day(
     # GOOGL took the 4th tech place and $1,000 of the cash: JPM has no cash left.
     assert rows[("JPM", "alpha")]["etoro_room_hints"] == ["etoro_live_insufficient_cash"]
     assert record["etoro_slots"] == ["GOOGL"]
+
+
+_ROOM_SIGNALS = {  # all strict and copyable; ranked by R:R at the quote: X1, X2, X3
+    "X1": {"price": 100.0, "stop": 95.0, "target": 120.0},
+    "X2": {"price": 100.0, "stop": 95.0, "target": 115.0},
+    "X3": {"price": 100.0, "stop": 95.0, "target": 110.0},
+}
+_NOT_TECH = ["XOM", "CVX", "JPM", "BAC", "GS", "COST", "WMT", "UNH", "JNJ"]  # <= 3 per group
+
+
+def _room_env(tmp_path, monkeypatch, tickers, held):
+    picks = zip(tickers, _ROOM_SIGNALS, strict=False)
+    signals = {("alpha", ticker): _ROOM_SIGNALS[x] for ticker, x in picks}
+    return _env(
+        tmp_path, monkeypatch, signals=signals, symbols=tickers, etoro={"open_symbols": held}
+    )
+
+
+@pytest.mark.parametrize(
+    ("held", "slots", "capped"),
+    [
+        # 3 tech held: GOOGL takes the 4th tech place, so AAPL finds the group full.
+        (["NVDA", "AMD", "MSFT"], ["GOOGL", "BAC"], ["AAPL"]),
+        # 4 tech held before today: no tech setup fits.
+        (["NVDA", "AMD", "MSFT", "META"], ["BAC"], ["GOOGL", "AAPL"]),
+    ],
+)
+def test_the_correlation_group_cap_counts_the_slots_already_handed_out(
+    tmp_path, monkeypatch, held, slots, capped
+) -> None:
+    env = _room_env(tmp_path, monkeypatch, ["GOOGL", "AAPL", "BAC"], held)
+    env.run()
+    rows, record = env.by_symbol(), env.record()
+    assert record["etoro_slots"] == slots and record["paper_only"] == capped
+    for symbol in capped:
+        row = rows[(symbol, "alpha")]
+        assert row["etoro_room_hints"] == ["etoro_live_bucket_cap"] and row["slot"] == "paper_only"
+
+
+@pytest.mark.parametrize(
+    ("held", "slots", "capped"),
+    [
+        (_NOT_TECH, [], ["NVDA", "AAPL"]),  # 9 open: no room at all
+        (_NOT_TECH[:-1], ["NVDA"], ["AAPL"]),  # 8 open: NVDA takes the 9th place
+    ],
+)
+def test_the_open_position_cap_counts_the_slots_already_handed_out(
+    tmp_path, monkeypatch, held, slots, capped
+) -> None:
+    env = _room_env(tmp_path, monkeypatch, ["NVDA", "AAPL"], held)
+    env.run()
+    rows, record = env.by_symbol(), env.record()
+    assert record["etoro_slots"] == slots and record["paper_only"] == capped
+    for symbol in capped:
+        assert rows[(symbol, "alpha")]["etoro_room_hints"] == ["etoro_live_open_position_cap"]
+
+
+@pytest.mark.parametrize(
+    ("etoro", "settings", "hints"),
+    [
+        ({"last_equity": 9_500.0}, {}, ["etoro_live_daily_loss_stop"]),  # 5% down on the day
+        ({"last_equity": 9_501.0}, {}, []),
+        ({}, {"etoro_live_mirror_enabled": False}, ["etoro_live_mirror_disabled"]),
+    ],
+)
+def test_the_account_hints_are_hints_only(tmp_path, monkeypatch, etoro, settings, hints) -> None:
+    env = _env(tmp_path, monkeypatch, etoro=etoro, **settings)
+    env.run()
+    record = env.record()
+    assert record["etoro"]["account_hints"] == hints
+    assert env.service.run_logs.items[0][1]["etoro_account_hints"] == hints
+    assert record["etoro_slots"] == ["DDD", "AAA"]  # ranked as if the account could copy
 
 
 def test_one_entry_per_symbol(tmp_path, monkeypatch) -> None:
@@ -513,13 +619,12 @@ def test_it_never_runs_while_a_live_bucket_waits_or_without_budget(tmp_path, mon
     env = _env(tmp_path, monkeypatch)
     env.service.runtime_state = _CountingState(env.service.runtime_state.values)
     assert env.run(deferred=["swing_hourly"]) is None
+    assert shadow.MIN_START_SECONDS == 55.0  # the cadence backstop's margin: setup + useful scan
     job = env.service.settings.scheduler_job_timeout_seconds
-    late = env.mono["t"] - (
-        job - 60.0 - shadow.MIN_START_SECONDS + 0.5
-    )  # 9.5 s of scan budget left
+    late = env.mono["t"] - (job - 60.0 - 55.0 + 0.5)  # 54.5 s of scan budget left
     assert env.run(started_at=late) is None
     assert env.service.runtime_state.reads == 0 and env.service.market_data.quote_calls == []
-    env.run(started_at=late + 1.0)  # 10.5 s left
+    env.run(started_at=late + 1.0)  # 55.5 s left
     assert env.record()["status"] == "complete"
 
 
@@ -582,9 +687,12 @@ def test_a_fetch_cut_short_by_the_budget_is_retried_on_the_next_tick(tmp_path, m
         return real(label, timeout, func, *args, **kwargs)
 
     monkeypatch.setattr(support, "_bounded_call", bounded)
-    env.run(started_at=env.mono["t"] - (180.0 - 15.0))  # 15 s left: every fetch is cut short
+    env.seconds_per_history = 12.0  # the quote after it has 18 s of the tick's 30: cut short
+    env.run()
     record = env.record()
     assert record["status"] == "running" and record["cursor"] == 0 and record["results"] == []
+    assert env.service.market_data.quote_calls == []
+    env.seconds_per_history = 0.0
     env.run()
     assert env.record()["status"] == "complete"
 
@@ -658,6 +766,22 @@ def test_a_record_it_cannot_resume_starts_over(tmp_path, monkeypatch) -> None:
     assert env.record()["status"] == "complete" and env.record()["etoro_slots"] == ["DDD", "AAA"]
 
 
+def test_a_day_another_run_closed_meanwhile_is_left_as_it_is(tmp_path, monkeypatch) -> None:
+    env = _env(tmp_path, monkeypatch)
+    other = {"schema_version": 1, "session_date": DAY, "status": "complete", "run_id": "other"}
+    quote = env.service.market_data.get_quote
+
+    def quote_while_another_run_closes(symbol, **kwargs):
+        env.service.runtime_state.set(RECORD, json.dumps(other))
+        return quote(symbol, **kwargs)
+
+    env.service.market_data.get_quote = quote_while_another_run_closes
+    assert env.run() is None
+    assert env.record() == other and env.events() == []  # not replaced, no second run log
+    env.service.runtime_state = _Boom()
+    assert env.run() is None and env.events() == []  # and done for the day
+
+
 def test_it_never_raises_and_logs_a_failure_once_a_day(tmp_path, monkeypatch) -> None:
     env = _env(tmp_path, monkeypatch)
 
@@ -721,6 +845,7 @@ def test_the_cadence_tick_runs_it_last_and_passes_the_deferred_buckets(
     monkeypatch.setattr(
         flow, "_bucket_due", lambda name: name in {"market_open_scan", "swing_hourly"}
     )
+
     def ran(name, **kwargs):
         calls.append(name)
         return SimpleNamespace(status="ok", alerts_sent=0)
@@ -742,6 +867,61 @@ def test_the_cadence_tick_runs_it_last_and_passes_the_deferred_buckets(
     )
     flow.run_scheduled_tasks()
     assert calls[0] == "market_open_scan" and calls[-1][1] == ["swing_hourly"]
+
+
+def test_after_the_cadence_backstop_skipped_a_bucket_it_does_not_run(tmp_path, monkeypatch) -> None:
+    # The swing scan is admitted with 58.5 s of scan budget left, its guard runs 1 s over its
+    # 3 s estimate and run_scan_task's backstop skips it (it stays due for the next tick). It is
+    # not in the deferred list, yet the shadow must not add its 30 s to that bucket's wait.
+    import app.workflow.cadence_budget as cadence
+    import app.workflow.service as workflow_service
+    from tests.test_workflow_service import FakeAlertHistory, FakeNotifier, FakeTrackedSignals
+
+    env = _env(tmp_path, monkeypatch, screener_scheduler_enabled=True)
+    clock = {"t": 5_000.0}
+    fake_time = SimpleNamespace(monotonic=lambda: clock["t"])
+    monkeypatch.setattr(cadence, "time", fake_time)
+    monkeypatch.setattr(workflow_service, "time", fake_time)
+    shadow_tick, passed = workflow_service.run_open_shadow, []
+
+    def run_shadow(service, **kwargs):
+        passed.append(kwargs["deferred"])
+        return shadow_tick(service, clock=lambda: clock["t"], **kwargs)
+
+    monkeypatch.setattr(workflow_service, "run_open_shadow", run_shadow)
+    flow = workflow_service.SignalWorkflowService(
+        settings=env.service.settings,
+        market_screener=env.service.market_screener,
+        market_data_engine=env.service.market_data,
+        notifier=FakeNotifier(),
+        tracked_signals=FakeTrackedSignals(),
+        alert_history=FakeAlertHistory(),
+        runtime_state=env.service.runtime_state,
+        run_logs=env.service.run_logs,
+    )
+    scan_budget = env.service.settings.scheduler_job_timeout_seconds - 60.0
+
+    def due(name):
+        if name == "swing_hourly":
+            clock["t"] += scan_budget - 58.5  # what ran before it in this tick
+        return name == "swing_hourly"
+
+    lock = flow._acquire_lock
+
+    def slow_lock(task):
+        clock["t"] += 4.0
+        return lock(task)
+
+    monkeypatch.setattr(flow, "_bucket_due", due)
+    monkeypatch.setattr(flow, "_acquire_lock", slow_lock)
+    flow.run_scheduled_tasks()
+    assert "workflow_scan_budget_deferred" in env.events()  # the real backstop
+    assert "workflow_cadence_deferred" not in env.events() and passed == [[]]
+    assert env.record() is None and env.service.market_data.quote_calls == []
+    clock["t"] += 600.0  # the next tick, with its whole budget: the shadow runs
+    monkeypatch.setattr(flow, "_bucket_due", lambda name: False)
+    flow.run_scheduled_tasks()
+    assert env.record()["status"] == "complete"
 
 
 def test_the_boot_snapshot_shows_the_switch(tmp_path) -> None:
@@ -856,18 +1036,20 @@ def test_the_live_scorecard_shows_phase3_next_to_the_live_entries(tmp_path, monk
     ]
     record = {"session_date": DAY, "status": "complete", "entries": entries}
     record.update(etoro_slots=["AAA"], paper_only=["DDD"], results=[{"status": "mismatch"}])
+    record["drift_gated"] = {"entries": entries[1:], "etoro_slots": ["DDD"], "paper_only": []}
     state.set(RECORD, json.dumps(record))
     executions = ExecutionRepository(app.state.db)
-    for symbol, at, status in (
-        ("AAA", "2026-10-12T13:37:00+00:00", "submitted"),
-        ("MSFT", "2026-10-12T17:00:00+00:00", "submitted"),
-        ("NVDA", "2026-10-12T18:00:00+00:00", "failed"),  # not an entry
-        ("JPM", "2026-10-13T03:00:00+00:00", "submitted"),  # 23:00 New York: still 10-12
-        ("XOM", "2026-10-13T14:00:00+00:00", "submitted"),  # the next day
+    for symbol, at, status, side in (
+        ("AAA", "2026-10-12T13:37:00+00:00", "submitted", "buy"),
+        ("MSFT", "2026-10-12T17:00:00+00:00", "submitted", "buy"),
+        ("NVDA", "2026-10-12T18:00:00+00:00", "failed", "buy"),  # not an entry
+        ("COST", "2026-10-12T19:00:00+00:00", "submitted", "sell"),  # an exit, not an entry
+        ("JPM", "2026-10-13T03:00:00+00:00", "submitted", "buy"),  # 23:00 New York: still 10-12
+        ("XOM", "2026-10-13T14:00:00+00:00", "submitted", "buy"),  # the next day
     ):
         order = {
             "symbol": symbol,
-            "side": "buy",
+            "side": side,
             "strategy_name": "live",
             "metadata": {"timeframe": "1d"},
         }
@@ -882,6 +1064,7 @@ def test_the_live_scorecard_shows_phase3_next_to_the_live_entries(tmp_path, monk
     state.set(SCORECARD_KEY, json.dumps(cards))
     day = client.get("/performance/live-scorecard").json()["open_shadow"]["days"][0]
     assert day["session_date"] == DAY and day["phase3_etoro"] == ["AAA"]
+    assert day["phase3_drift_gated"] == {"etoro_slots": ["DDD"], "paper_only": []}
     assert [e["symbol"] for e in day["live_paper_entries"]] == ["AAA", "MSFT", "JPM"]
     assert [c["symbol"] for c in day["live_etoro_entries"]] == ["COST"]
     assert day["same_symbols"] == ["AAA"] and day["phase3_only"] == ["DDD"]
