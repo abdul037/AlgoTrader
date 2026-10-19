@@ -4,7 +4,10 @@ Post-mortem item 8: the pre-market scan carried no market context (no rates, oil
 or calendar) while AI and chip stocks turned from 6 Oct. Once per New York date this records,
 from Yahoo Finance (yfinance, already a dependency), one daily history per symbol:
 
-* overnight Asia: Kospi ``^KS11`` and Nikkei ``^N225``, the last session's % change;
+* overnight Asia: Kospi ``^KS11`` and Nikkei ``^N225``, the last session's % change (today's,
+  closed by 02:30 New York time: Yahoo's daily bar for it has no close yet, so its close is
+  Yahoo's quote of that session; with neither, the symbol is missing, see
+  ``yahoo_daily_closes``);
 * Nasdaq-100 futures ``NQ=F``: the latest price against the prior daily close (about the
   settle; Yahoo's quotes are delayed ~10 min);
 * US 10-year yield ``^TNX``: the level and the 1- and 5-session changes in bp, on completed
@@ -35,9 +38,11 @@ before it; the counts are the 106 weekday mornings from 19 May to 19 Oct):
 The obvious rule, "the 10y rose AND chips trail", never fired in the episode: the 10y FELL on
 every morning of it (5-session change -0.6 to -14.6 bp from 8 Oct). On 7 Oct, AMD's entry
 day, every reading here was ``neutral``: this panel would not have flagged that trade.
-``asia_selloff`` (Kospi or Nikkei <= -2% on today's session; -2.6 to -7.6% on 8, 12, 13 and
-15 Oct) and ``futures_down`` (NQ <= -1% on today's session, as after 15 Oct's 08:30 producer
-prices) are recorded beside the label, not in it.
+``asia_selloff`` (Kospi or Nikkei <= -2% on today's session) and ``futures_down`` (NQ <= -1%
+on today's session, as after 15 Oct's 08:30 producer prices) are recorded beside the label,
+not in it. On Yahoo's complete daily closes Kospi read -2.6 to -7.6% on 8, 12, 13 and 15 Oct;
+a morning reads that session from Yahoo's quote instead (on 19 Oct each index's closing
+print), and what the quote said on those mornings can no longer be read back.
 
 Where it runs: last in a ``workflow_cadence`` tick (through ``open_shadow.run_open_shadow``,
 before the Phase 3 shadow, whose window starts at the open), only on weekdays once today's
@@ -124,17 +129,58 @@ def enabled(settings: Any) -> bool:
 def yahoo_daily_closes(symbol: str) -> list[tuple[str, float]]:
     """(session date, close) of Yahoo's daily bars, oldest first (network; the caller bounds the
     time). Dates are the exchange's own (Seoul, Tokyo, New York, Chicago); closes are adjusted
-    for dividends, so a fund's ex-dividend day is not read as a drop."""
+    for dividends, so a fund's ex-dividend day is not read as a drop.
+
+    Yahoo's daily bar can stay without a close for the rest of its day: on 19 Oct 2026 at noon
+    in New York, nine hours after both had closed, Kospi's and Nikkei's bars for that date had
+    none (yfinance 0.2.66 kept Kospi's with an empty close and dropped Nikkei's, which reports
+    no volume, unless ``keepna``). The same response carries the regular-market quote (that
+    day, each index's closing print), so the session the quote is dated in the exchange's zone
+    takes it as its close: it fills an empty last close or adds a session the bars left out,
+    and never replaces a close Yahoo has. Without such a quote the empty close stays, and
+    ``read_rows`` records the session as missing rather than reading the one before."""
 
     import yfinance as yf
 
-    frame = yf.Ticker(symbol).history(period=HISTORY_PERIOD, interval="1d", auto_adjust=True)
+    ticker = yf.Ticker(symbol)
+    frame = ticker.history(period=HISTORY_PERIOD, interval="1d", auto_adjust=True, keepna=True)
     if frame is None or len(frame) == 0 or "Close" not in frame:
         return []
-    return [
-        (stamp.date().isoformat(), float(close))
+    rows = [
+        (stamp.date().isoformat(), math.nan if _number(close) is None else float(close))
         for stamp, close in zip(frame.index, frame["Close"], strict=True)
     ]
+    quote = _session_quote(ticker, getattr(frame.index, "tz", None))
+    if quote is not None:
+        if quote[0] == rows[-1][0] and _number(rows[-1][1]) is None:
+            rows[-1] = quote
+        elif quote[0] > rows[-1][0]:
+            rows.append(quote)
+    return rows
+
+
+def _session_quote(ticker: Any, zone: Any) -> tuple[str, float] | None:
+    """(session date, price) of the regular-market quote in the chart response ``history`` has
+    just read, dated in the exchange's ``zone``; None when it is not there. It reads the
+    metadata already fetched: the public ``history_metadata`` would send a request of its own
+    for the trading hours a daily chart does not carry."""
+
+    meta = getattr(getattr(ticker, "_price_history", None), "_history_metadata", None)
+    price = _number(meta.get("regularMarketPrice")) if isinstance(meta, dict) else None
+    if zone is None or price is None or price <= 0:
+        return None
+    stamp = meta.get("regularMarketTime")
+    seconds = None if isinstance(stamp, datetime) else _number(stamp)  # Yahoo sends epoch s
+    try:
+        if isinstance(stamp, datetime) and stamp.tzinfo is not None:  # yfinance's formatted one
+            moment = stamp.astimezone(zone)
+        elif seconds is not None:
+            moment = datetime.fromtimestamp(seconds, tz=zone)
+        else:
+            return None
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+    return moment.date().isoformat(), price
 
 
 def run_market_panel(
@@ -259,17 +305,23 @@ def read_rows(kind: str, rows: Any, today: date) -> dict[str, Any]:
 
     "session": the latest row (a forming futures session included) against the one before;
     ``current`` when it is dated ``today`` (Asia's session of the same date has closed by the
-    New York morning; an older one is a holiday or a late feed).
+    New York morning; an older one is a holiday or a late feed). A row for today without a
+    close raises ``today_close_unavailable``: the session before is never read as if today
+    were a holiday.
     "yield": completed sessions (before ``today``) for the level and its 1- and 5-session
     changes in bp; a row for today, if any, is shown as ``today_level_pct``.
     "fund": completed sessions only, 5- and 20-session returns in %.
     A date listed twice keeps its last row; a row dated after ``today`` is never read."""
 
+    rows = list(rows or [])
     by_day = {
         str(day)[:10]: float(close)
-        for day, close in rows or []
+        for day, close in rows
         if _number(close) is not None and float(close) > 0
     }
+    listed_today = any(str(day)[:10] == today.isoformat() for day, _ in rows)
+    if kind == "session" and listed_today and today.isoformat() not in by_day:
+        raise ValueError("today_close_unavailable")
     clean = sorted(item for item in by_day.items() if item[0] <= today.isoformat())
     if not clean:
         raise ValueError("no_data")

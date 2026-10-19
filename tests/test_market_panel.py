@@ -9,6 +9,7 @@ provider is a fake, the clocks are injected.
 from __future__ import annotations
 
 import json
+import math
 import sys
 import threading
 from datetime import UTC, date, datetime, timedelta
@@ -54,8 +55,9 @@ TNX = [
     ("2026-10-12", 5.24), ("2026-10-13", 5.217), ("2026-10-14", 5.19), ("2026-10-15", 5.089),
     ("2026-10-16", 5.098),
 ]  # fmt: skip
-# The 15 Oct morning: Asia's sessions of that date (Kospi -7.6%, Nikkei -4.9%) and a stand-in
-# 08:35 futures and oil print (Yahoo's daily rows have only the close).
+# The 15 Oct morning: Asia's sessions of that date (Kospi -7.6%, Nikkei -4.9%; the reader takes
+# that close from Yahoo's quote, the daily bar has none yet) and a stand-in 08:35 futures and
+# oil print (Yahoo's daily rows have only the close).
 ROWS = {
     "^KS11": [("2026-10-14", 6008.81), ("2026-10-15", 5554.22)],
     "^N225": [("2026-10-14", 67744.289), ("2026-10-15", 64425.949)],
@@ -483,7 +485,8 @@ def test_the_yahoo_reader_keeps_the_exchanges_own_dates(monkeypatch) -> None:
     rows = panel.yahoo_daily_closes("^KS11")
     # 15 Oct in Seoul is 14 Oct 15:00 UTC: the session date is Seoul's
     assert rows == [("2026-10-14", 6008.81), ("2026-10-15", 5554.22)]
-    assert calls == [("^KS11", {"period": "3mo", "interval": "1d", "auto_adjust": True})]
+    kwargs = {"period": "3mo", "interval": "1d", "auto_adjust": True, "keepna": True}
+    assert calls == [("^KS11", kwargs)]  # keepna: a bar without a close is still seen
 
     class _Empty(_Ticker):
         def history(self, **kwargs):
@@ -491,6 +494,129 @@ def test_the_yahoo_reader_keeps_the_exchanges_own_dates(monkeypatch) -> None:
 
     monkeypatch.setitem(sys.modules, "yfinance", SimpleNamespace(Ticker=_Empty))
     assert panel.yahoo_daily_closes("SMH") == []
+
+
+def _yahoo(monkeypatch, zone, bars, meta):
+    """A fake yfinance whose history() returns ``bars`` as yfinance 0.2.66 shapes Yahoo's chart
+    (auto_adjust leaves a bar without a close all-NaN but its volume) and keeps the response's
+    metadata where yfinance does; ``meta`` None: no metadata there."""
+
+    import pandas as pd
+
+    class _Ticker:
+        def __init__(self, symbol):
+            self.symbol = symbol
+
+        def history(self, **kwargs):
+            if meta is not None:
+                self._price_history = SimpleNamespace(_history_metadata=dict(meta))
+            nan = float("nan")
+            index = pd.DatetimeIndex([day for day, _ in bars]).tz_localize(zone)
+            closes = [nan if close is None else close for _, close in bars]
+            opens = [nan if close is None else close for _, close in bars]
+            return pd.DataFrame({"Open": opens, "Close": closes, "Volume": 292781}, index=index)
+
+    monkeypatch.setitem(sys.modules, "yfinance", SimpleNamespace(Ticker=_Ticker))
+
+
+def _epoch(*moment) -> int:
+    return int(datetime(*moment, tzinfo=UTC).timestamp())
+
+
+# Kospi on the 15 Oct morning: Seoul closed at 15:30 KST (06:30 UTC), its bar has no close.
+KOSPI_BARS = [("2026-10-13", 6035.35), ("2026-10-14", 6008.81), ("2026-10-15", None)]
+KOSPI_QUOTE = {"regularMarketPrice": 5554.22, "regularMarketTime": _epoch(2026, 10, 15, 6, 30)}
+
+
+def test_todays_asian_close_comes_from_the_quote_when_the_bar_has_none(monkeypatch) -> None:
+    today = date(2026, 10, 15)
+    _yahoo(monkeypatch, "Asia/Seoul", KOSPI_BARS, KOSPI_QUOTE)
+    rows = panel.yahoo_daily_closes("^KS11")
+    assert rows[-1] == ("2026-10-15", 5554.22) and len(rows) == 3
+    reading = panel.read_rows("session", rows, today)
+    assert reading["as_of"] == "2026-10-15" and reading["current"] is True
+    assert reading["change_pct"] == -7.57  # not 14 Oct's -0.44% read as if Seoul were shut
+    # Nikkei's bar, which reports no volume, is dropped by yfinance: the quote's session is added
+    bars = [("2026-10-13", 67777.523), ("2026-10-14", 67744.289)]
+    quote = {"regularMarketPrice": 64425.949, "regularMarketTime": _epoch(2026, 10, 15, 6, 45)}
+    _yahoo(monkeypatch, "Asia/Tokyo", bars, quote)
+    rows = panel.yahoo_daily_closes("^N225")
+    assert rows[-1] == ("2026-10-15", 64425.949)
+    nikkei = panel.read_rows("session", rows, today)
+    assert nikkei["change_pct"] == -4.9 and nikkei["current"] is True
+    symbols = {"^KS11": reading, "^N225": nikkei}
+    view = panel.build_panel({s: {"status": "ok", "reading": r} for s, r in symbols.items()})
+    assert panel.regime_label(view)["components"]["asia_selloff"] is True
+
+
+def test_the_quote_is_dated_in_the_exchanges_zone_and_never_replaces_a_close(monkeypatch) -> None:
+    # 14 Oct 16:00 UTC is 15 Oct 01:00 in Seoul: the quote belongs to the 15th's bar
+    quote = dict(KOSPI_QUOTE, regularMarketTime=_epoch(2026, 10, 14, 16, 0))
+    _yahoo(monkeypatch, "Asia/Seoul", KOSPI_BARS, quote)
+    assert panel.yahoo_daily_closes("^KS11")[-1] == ("2026-10-15", 5554.22)
+    # yfinance's formatted metadata carries an aware time instead of epoch seconds
+    aware = dict(KOSPI_QUOTE, regularMarketTime=datetime(2026, 10, 15, 6, 30, tzinfo=UTC))
+    _yahoo(monkeypatch, "Asia/Seoul", KOSPI_BARS, aware)
+    assert panel.yahoo_daily_closes("^KS11")[-1] == ("2026-10-15", 5554.22)
+    # a bar with its close keeps it (the futures, the 10y, oil, the funds)
+    bars = [("2026-10-14", 30182.75), ("2026-10-15", 29870.0)]
+    live = {"regularMarketPrice": 29900.0, "regularMarketTime": _epoch(2026, 10, 15, 12, 30)}
+    _yahoo(monkeypatch, "America/New_York", bars, live)
+    assert panel.yahoo_daily_closes("NQ=F") == bars
+    # Seoul shut today: the quote is the last session's, which has its close; nothing added
+    older = dict(
+        KOSPI_QUOTE, regularMarketPrice=6000.0, regularMarketTime=_epoch(2026, 10, 14, 6, 30)
+    )
+    _yahoo(monkeypatch, "Asia/Seoul", KOSPI_BARS[:2], older)
+    assert panel.yahoo_daily_closes("^KS11") == [("2026-10-13", 6035.35), ("2026-10-14", 6008.81)]
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [
+        None,  # no metadata where yfinance keeps it
+        dict(KOSPI_QUOTE, regularMarketTime=_epoch(2026, 10, 14, 6, 30)),  # the session before
+        dict(KOSPI_QUOTE, regularMarketPrice=None),
+        dict(KOSPI_QUOTE, regularMarketPrice=0.0),
+        dict(KOSPI_QUOTE, regularMarketTime=None),
+        dict(KOSPI_QUOTE, regularMarketTime="soon"),
+        dict(KOSPI_QUOTE, regularMarketTime=datetime(2026, 10, 15, 6, 30)),  # no time zone
+    ],
+)
+def test_without_a_quote_of_that_session_today_is_missing_not_the_day_before(
+    monkeypatch, meta
+) -> None:
+    _yahoo(monkeypatch, "Asia/Seoul", KOSPI_BARS, meta)
+    rows = panel.yahoo_daily_closes("^KS11")
+    assert rows[-1][0] == "2026-10-15" and math.isnan(rows[-1][1])
+    with pytest.raises(ValueError, match="today_close_unavailable"):
+        panel.read_rows("session", rows, date(2026, 10, 15))
+
+
+def test_a_close_missing_today_only_matters_to_a_session_reading() -> None:
+    nan = float("nan")
+    today = date(2026, 10, 15)
+    for bad in ([("2026-10-14", 1.0), ("2026-10-15", nan)], [("2026-10-15", None)]):
+        with pytest.raises(ValueError, match="today_close_unavailable"):
+            panel.read_rows("session", bad, today)
+    # yesterday's empty bar is skipped as before; the 10y and the funds read completed sessions
+    rows = [("2026-10-12", 2.0), ("2026-10-13", nan), ("2026-10-14", 1.0)]
+    assert panel.read_rows("session", rows, date(2026, 10, 14))["prior_date"] == "2026-10-12"
+    level = panel.read_rows("yield", TNX[:-2] + [("2026-10-15", nan)], today)
+    assert level["as_of"] == "2026-10-14" and "today_level_pct" not in level
+    fund = panel.read_rows("fund", SMH[:-2] + [("2026-10-15", nan)], today)
+    assert fund["as_of"] == "2026-10-14"
+
+
+def test_a_session_without_todays_close_is_a_missing_symbol(tmp_path, monkeypatch) -> None:
+    rows = dict(ROWS, **{"^KS11": [("2026-10-14", 6008.81), ("2026-10-15", float("nan"))]})
+    env = _env(tmp_path, monkeypatch, rows=rows)
+    summary = env.run()
+    assert summary["status"] == "complete_with_gaps" and summary["missing"] == ["^KS11"]
+    record = env.record()
+    assert record["symbols"]["^KS11"]["error"] == "ValueError: today_close_unavailable"
+    assert record["panel"]["asia"]["kospi"] is None
+    assert summary["components"]["asia_selloff"] is True  # Nikkei's -4.9% still read
 
 
 # --------------------------------------------------------------------------- the wiring
