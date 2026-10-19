@@ -6,7 +6,10 @@ maintenance step asks Yahoo Finance (yfinance, already a dependency) for the ear
 every universe equity: at most one fetch per symbol per New York day (a failed fetch counts),
 each on a daemon thread with its own timeout, the run bounded by a small budget and stopped by
 a few failures in a row (Yahoo throttles cloud IPs; the next run tries the rest). Crypto and
-ETFs are never fetched: they report no earnings.
+ETFs are never fetched: they report no earnings. While crypto trades no tick is off-hours (its
+scan places orders around the clock, inside the same tick budget as maintenance), so the refresh
+never runs then, as the short shadow ledger and the short research pass; the cached dates age
+out as stale and the proposal logs say so.
 
 The dates are stored in ``runtime_state['event_risk:earnings']`` and kept in memory. The
 proposal path reads the memory copy only (``cached_snapshot``): no network, no database. A
@@ -143,22 +146,24 @@ def refresh_earnings_cache(
 ) -> dict[str, Any] | None:
     """Off-hours, once a day: fetch the universe equities not yet checked today.
 
-    None when nothing was due (no database call when the memory copy shows the day done).
+    None when nothing was due: the switch off, crypto trading on, the session hours, or (no
+    database call) the memory copy shows the New York day done.
     ``provider(symbol) -> dates`` defaults to Yahoo. Raises only if the stored copy cannot be
     read or written (the maintenance step records it); a fetch failure never raises."""
 
     from app.universe import resolve_universe
-    from app.workflow.event_risk import enabled
-    from app.workflow.premarket_deep_scan import _zone
+    from app.workflow.event_risk import NEW_YORK, enabled
     from app.workflow.shadow_ledger import _short_quiet as session_hours  # weekdays 08:00-16:30 NY
 
     settings = service.settings
     if not enabled(settings):
         return None
+    if bool(getattr(settings, "crypto_trading_enabled", False)):
+        return None  # crypto trades around the clock: no tick is off-hours then
     now = utc_now()
     if session_hours(now, settings):
         return None  # off-hours only: never during the session or the pre-market scan
-    today = now.astimezone(_zone(settings)).date().isoformat()
+    today = now.astimezone(NEW_YORK).date().isoformat()
     memory = cached_snapshot()
     if memory is not None and memory.get("done_on") == today:
         return None

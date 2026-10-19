@@ -16,7 +16,8 @@ the same horizon, and the strategy-lab daily templates cap holds at 12-20 bars. 
 has no time exit, so a trade can run longer; 10 sessions covers the horizon the backtest priced.
 Intraday strategies (5m/15m/... 1h) are flattened before the close, so their window is the entry
 session alone. Sessions are weekdays, as everywhere else in the bot (no holiday calendar), so
-around a holiday the window ends a day early.
+around a holiday the window ends a day early. Days and the 16:00 close are New York's, whatever
+``schedule_timezone`` is: the sessions and the earnings dates are US ones.
 
 Where it is recorded:
 
@@ -33,6 +34,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.utils.time import utc_now
 
@@ -40,6 +42,7 @@ EVENT = "event_risk_shadow"
 HOLD_SESSIONS = 10  # daily and longer: the walk-forward fold, about 10 sessions
 INTRADAY_HOLD_SESSIONS = 1  # flattened before the close: the entry session alone
 MAX_AGE_DAYS = 7  # earnings dates fetched longer ago than this are not trusted
+NEW_YORK = ZoneInfo("America/New_York")  # the US session's clock and day, not schedule_timezone
 SESSION_CLOSE = (16, 0)  # New York: a proposal after the close enters on the next session
 # Reasons that clear an entry: no report in its window, or an instrument that never reports.
 CLEAR_REASONS = frozenset({"no_earnings_in_window", "not_applicable"})
@@ -138,13 +141,12 @@ def watchlist_hint(service: Any) -> Any:
     None when the switch is off or no earnings were ever cached. The hint never raises."""
 
     from app.workflow import earnings_calendar
-    from app.workflow.premarket_deep_scan import _zone
 
     if not enabled(service.settings):
         return None
     try:
         snapshot = earnings_calendar.snapshot_for_scan(service)
-        today = utc_now().astimezone(_zone(service.settings)).date()
+        today = utc_now().astimezone(NEW_YORK).date()
     except Exception:  # noqa: BLE001 - a hint only: the scan goes on without it
         return None
     if snapshot is None:
@@ -177,14 +179,13 @@ def log_proposal_event_risk(service: Any, created: list[tuple[Any, Any]]) -> Non
     outage must not cost one pool timeout per proposal)."""
 
     from app.workflow import earnings_calendar
-    from app.workflow.premarket_deep_scan import _zone
 
     try:
         settings = service.settings
         if not created or not enabled(settings):
             return
         snapshot = earnings_calendar.cached_snapshot()
-        now_ny = utc_now().astimezone(_zone(settings))
+        now_ny = utc_now().astimezone(NEW_YORK)
     except Exception:  # noqa: BLE001 - shadow only
         return
     today = now_ny.date()

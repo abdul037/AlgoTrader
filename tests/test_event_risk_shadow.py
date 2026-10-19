@@ -29,6 +29,8 @@ from tests.test_workflow_service import FakeLogs, FakeState
 MONDAY_0100_NY = datetime(2026, 10, 19, 5, 0, tzinfo=UTC)  # 01:00 EDT: off-hours
 MONDAY_1000_NY = datetime(2026, 10, 19, 14, 0, tzinfo=UTC)  # in the session
 MONDAY_0835_NY = datetime(2026, 10, 19, 12, 35, tzinfo=UTC)  # the pre-market scan
+MONDAY_1300_NY = datetime(2026, 10, 19, 17, 0, tzinfo=UTC)  # in the session; past 16:00 UTC
+MONDAY_2100_NY = datetime(2026, 10, 20, 1, 0, tzinfo=UTC)  # off-hours; Tuesday in UTC
 SUNDAY_1100_NY = datetime(2026, 10, 18, 15, 0, tzinfo=UTC)  # a weekend day: off-hours
 
 
@@ -88,13 +90,7 @@ def _stored(service) -> dict:
 
 def test_each_equity_is_fetched_once_a_day_and_funds_or_crypto_never(tmp_path, monkeypatch) -> None:
     provider = _Provider({"AAA": ["2026-10-28"], "BBB": [date(2026, 11, 3)]})
-    service = _service(
-        tmp_path,
-        monkeypatch,
-        symbols=("AAA", "SPY", "BBB", "CCC"),
-        crypto_trading_enabled=True,
-        crypto_symbols=["BTC/USD"],
-    )
+    service = _service(tmp_path, monkeypatch, symbols=("AAA", "SPY", "BBB", "CCC", "BTC/USD"))
     summary = cal.refresh_earnings_cache(service, provider=provider)
     assert provider.calls == ["AAA", "BBB", "CCC"]  # never SPY (a fund) or BTC/USD
     stored = _stored(service)
@@ -134,6 +130,41 @@ def test_it_runs_off_hours_only_and_only_with_the_switch(tmp_path, monkeypatch) 
     cal.reset_memory()
     weekend = _service(tmp_path, monkeypatch, now=SUNDAY_1100_NY)
     assert cal.refresh_earnings_cache(weekend, provider=provider)["day"] == "2026-10-18"
+
+
+def test_it_never_runs_while_crypto_trades(tmp_path, monkeypatch) -> None:
+    # Crypto trades around the clock: every tick's crypto scan places orders inside the same
+    # tick budget as maintenance, so no tick is off-hours (as the short shadow ledger).
+    provider = _Provider({"AAA": ["2026-10-28"]})
+    for now in (MONDAY_0100_NY, MONDAY_2100_NY, SUNDAY_1100_NY):
+        service = _service(
+            tmp_path, monkeypatch, now=now, crypto_trading_enabled=True, crypto_symbols=["BTC/USD"]
+        )
+        assert cal.refresh_earnings_cache(service, provider=provider) is None
+        assert service.runtime_state.reads == [] and service.run_logs.items == []
+    assert provider.calls == [] and cal.cached_snapshot() is None
+    off = _service(tmp_path, monkeypatch, crypto_trading_enabled=False, crypto_symbols=["BTC/USD"])
+    assert cal.refresh_earnings_cache(off, provider=provider)["fetched"] == 3
+
+
+@pytest.mark.parametrize("zone", ["America/New_York", "Europe/London"])
+def test_the_day_is_new_yorks_whatever_the_utc_or_schedule_day(tmp_path, monkeypatch, zone) -> None:
+    # 21:00 New York on Monday is Tuesday in UTC and in London: still Monday's one fetch.
+    service = _service(tmp_path, monkeypatch, now=MONDAY_2100_NY, schedule_timezone=zone)
+    provider = _Provider({"AAA": ["2026-10-19"]})
+    summary = cal.refresh_earnings_cache(service, provider=provider)
+    assert summary["day"] == "2026-10-19" and summary["done_for_today"]
+    record = _stored(service)["symbols"]["AAA"]
+    assert (record["checked_on"], record["upcoming"], record["last"]) == (
+        "2026-10-19",
+        ["2026-10-19"],  # still today's report in New York, not a past one
+        None,
+    )
+    monkeypatch.setattr(cal, "utc_now", lambda: MONDAY_2100_NY + timedelta(hours=2))
+    assert cal.refresh_earnings_cache(service, provider=provider) is None  # 23:00: done
+    monkeypatch.setattr(cal, "utc_now", lambda: MONDAY_2100_NY + timedelta(hours=4))
+    assert cal.refresh_earnings_cache(service, provider=provider)["day"] == "2026-10-20"
+    assert provider.calls == ["AAA", "BBB", "CCC"] * 2  # 01:00 Tuesday: the next day's
 
 
 def test_a_slow_or_failing_fetch_keeps_the_old_dates_and_waits_a_day(tmp_path, monkeypatch) -> None:
@@ -434,6 +465,19 @@ def test_the_scan_reads_the_stored_copy_once_when_memory_is_empty(tmp_path, monk
     assert risk.watchlist_hint(off) is None  # the switch off: no hint, cached or not
 
 
+def test_the_hint_enters_on_the_new_york_session_whatever_schedule_timezone(
+    tmp_path, monkeypatch
+) -> None:
+    # 08:35 New York on Monday 10-12 is already Tuesday in Auckland: the entry is still Monday.
+    monkeypatch.setattr(risk, "utc_now", lambda: scan_tests.MONDAY_0835_NY)
+    cal._publish(_cache())
+    for zone in ("America/New_York", "Pacific/Auckland"):
+        settings = make_settings(tmp_path, event_risk_shadow_enabled=True, schedule_timezone=zone)
+        hint = risk.watchlist_hint(SimpleNamespace(settings=settings, runtime_state=FakeState()))
+        flag = hint("S00", "2026-10-09")
+        assert (flag["would_block"], flag["window_end"]) == (True, "2026-10-23"), zone
+
+
 # --------------------------------------------------------------------------- (c) the reports
 
 
@@ -731,6 +775,30 @@ def test_the_entry_session_hold_and_funds_on_the_proposal_log(tmp_path, monkeypa
     off = SimpleNamespace(settings=make_settings(tmp_path), run_logs=FakeLogs())
     risk.log_proposal_event_risk(off, created)
     assert off.run_logs.items == []
+
+
+@pytest.mark.parametrize("zone", ["America/New_York", "Asia/Tokyo"])
+def test_the_entry_day_is_new_yorks_whatever_the_utc_or_schedule_clock(
+    tmp_path, monkeypatch, zone
+) -> None:
+    # 13:00 New York is past 16:00 in UTC and Tuesday in Tokyo: it still enters on Monday.
+    upcoming = {"status": "ok", "upcoming": ["2026-10-20"], "fetched_on": "2026-10-19"}
+    cal._publish({"symbols": {"NVDA": upcoming}})
+    settings = make_settings(tmp_path, event_risk_shadow_enabled=True, schedule_timezone=zone)
+    service = SimpleNamespace(settings=settings, run_logs=FakeLogs())
+    candidate = SimpleNamespace(symbol="NVDA", timeframe="5m", strategy_name="s")
+    monkeypatch.setattr(risk, "utc_now", lambda: MONDAY_1300_NY)
+    risk.log_proposal_event_risk(service, [("p1", candidate)])
+    row = service.run_logs.items[-1][1]
+    assert (row["entry_day"], row["window_end"], row["would_block"], row["reason"]) == (
+        "2026-10-19",
+        "2026-10-19",
+        False,
+        "no_earnings_in_window",  # an intraday entry is flat before Tuesday's report
+    )
+    monkeypatch.setattr(risk, "utc_now", lambda: MONDAY_1300_NY + timedelta(hours=3, minutes=5))
+    risk.log_proposal_event_risk(service, [("p2", candidate)])
+    assert service.run_logs.items[-1][1]["entry_day"] == "2026-10-20"  # 16:05 New York
 
 
 def test_the_proposal_log_has_no_network_or_database_reads_in_its_source() -> None:
