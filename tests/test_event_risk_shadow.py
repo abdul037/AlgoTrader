@@ -239,6 +239,38 @@ def test_a_listed_date_that_passes_becomes_the_last_report(tmp_path, monkeypatch
     assert flag["earnings_date"] == "2026-10-20"
 
 
+def test_the_last_report_survives_every_refresh_after_yahoo_moves_on(tmp_path, monkeypatch) -> None:
+    # Friday's report, one refresh per New York day Thursday..Monday (the weekend refreshes
+    # too); from Saturday Yahoo lists only next quarter. Monday's entry from Friday's bar must
+    # still see Friday's report, else it is counted as unflagged in the ledger cohorts.
+    service = _service(tmp_path, monkeypatch, symbols=("AAA",))
+    friday, next_quarter = ["2026-10-23"], ["2027-01-28"]
+    days = {3: friday, 4: friday, 5: next_quarter, 6: next_quarter, 7: next_quarter}
+    for offset, dates in days.items():  # Thu 10-22 .. Mon 10-26, 01:00 New York each
+        monkeypatch.setattr(cal, "utc_now", lambda o=offset: MONDAY_0100_NY + timedelta(days=o))
+        summary = cal.refresh_earnings_cache(service, provider=_Provider({"AAA": dates}))
+        assert summary["fetched"] == 1 and summary["done_for_today"]
+        record = cal.cached_snapshot()["symbols"]["AAA"]
+        assert record["last"] == (None if offset < 5 else "2026-10-23"), record["checked_on"]
+    assert record == {
+        "status": "ok",
+        "upcoming": ["2027-01-28"],
+        "last": "2026-10-23",  # two refreshes after the one that turned it into the last
+        "fetched_on": "2026-10-26",
+        "checked_on": "2026-10-26",
+    }
+    assert _stored(service)["symbols"]["AAA"] == record
+    flag = risk.assess(
+        record,
+        signal_day=date(2026, 10, 23),
+        entry_day=date(2026, 10, 26),
+        hold=risk.HOLD_SESSIONS,
+        today=date(2026, 10, 26),
+    )
+    assert flag["would_block"] and flag["reason"] == "earnings_before_entry"
+    assert flag["earnings_date"] == "2026-10-23"
+
+
 @pytest.mark.parametrize("stored", ["not json", "[1]", json.dumps({"symbols": {"AAA": "x"}})])
 def test_an_unreadable_stored_copy_starts_over(tmp_path, monkeypatch, stored) -> None:
     service = _service(tmp_path, monkeypatch, symbols=("AAA",))
