@@ -29,6 +29,7 @@ from app.broker.etoro_live_overnight_alert import (
     in_alert_window,
     last_session_date,
     reference_from_bars,
+    signal_window_start,
     stop_hit_reader,
 )
 from app.broker.etoro_live_room import ROOM_REASONS, room_verdict
@@ -157,12 +158,13 @@ class _Signals:
 
 
 def _frame(last_close=570.82, atr=23.4, last_day="2026-10-14", days=20, partial=None):
-    """Weekday daily bars at 04:00 UTC (Alpaca style), constant close, true range = ``atr``."""
+    """Weekday daily bars stamped at midnight New York as Alpaca does (04:00 UTC in summer
+    time, 05:00 UTC in winter time), constant close, true range = ``atr``."""
 
-    stamps = pd.bdate_range(end=last_day, periods=days, tz="UTC") + pd.Timedelta(hours=4)
+    stamps = pd.bdate_range(end=last_day, periods=days, tz="America/New_York")
     rows = [
         {
-            "timestamp": ts,
+            "timestamp": ts.tz_convert("UTC"),
             "open": last_close,
             "high": last_close + atr / 2,
             "low": last_close - atr / 2,
@@ -171,8 +173,9 @@ def _frame(last_close=570.82, atr=23.4, last_day="2026-10-14", days=20, partial=
         }
         for ts in stamps
     ]
-    if partial is not None:  # today's unfinished pre-market bar
-        rows.append({**rows[-1], "timestamp": stamps[-1] + pd.Timedelta(days=1), "close": partial})
+    if partial is not None:  # the next session's unfinished pre-market bar
+        nxt = (stamps[-1] + pd.offsets.BDay(1)).tz_convert("UTC")
+        rows.append({**rows[-1], "timestamp": nxt, "close": partial})
     return pd.DataFrame(rows)
 
 
@@ -390,8 +393,163 @@ def test_crypto_test_order_not_yet_filled_is_not_alerted(tmp_path) -> None:
     assert alert.run(now=saturday) == 1
 
 
+# -- time zones: New York summer time (EDT, UTC-4) and winter time (EST, UTC-5) ----------------
+# US clocks go back on Sun 1 Nov 2026, so Mon 2 Nov is the first winter-time session; the AMD
+# case (15 Oct) was summer time. In winter regular hours are 14:30-21:00 UTC, not 13:30-20:00.
+# (Clocks went forward on Sun 8 Mar 2026 and go forward again on Sun 14 Mar 2027.)
+def _at(text):
+    return datetime.fromisoformat(text)
+
+
+@pytest.mark.parametrize(
+    ("when", "inside"),
+    [
+        ("2027-01-14T13:45:00+00:00", True),  # Thu 08:45 EST: the last pre-market hour
+        ("2027-01-14T14:29:00+00:00", True),  # 09:29 EST
+        ("2027-01-14T14:30:00+00:00", False),  # 09:30 EST: the open
+        ("2027-01-14T20:30:00+00:00", False),  # 15:30 EST: still regular hours
+        ("2027-01-14T20:59:00+00:00", False),  # 15:59 EST
+        ("2027-01-14T21:00:00+00:00", True),  # 16:00 EST: the close
+        ("2027-01-16T04:59:00+00:00", True),  # Fri 23:59 EST
+        ("2027-01-16T05:00:00+00:00", False),  # Sat 00:00 EST: weekend, stocks are not checked
+        # The switch: Fri 30 Oct 2026 is summer time, Mon 2 Nov winter time.
+        ("2026-10-30T13:29:00+00:00", True),  # 09:29 EDT
+        ("2026-10-30T13:30:00+00:00", False),  # 09:30 EDT: the open
+        ("2026-10-30T19:59:00+00:00", False),  # 15:59 EDT
+        ("2026-10-30T20:00:00+00:00", True),  # 16:00 EDT: the close
+        ("2026-11-02T04:30:00+00:00", False),  # Sun 1 Nov 23:30 EST: still the weekend
+        ("2026-11-02T05:00:00+00:00", True),  # Mon 00:00 EST
+        ("2026-11-02T13:30:00+00:00", True),  # 08:30 EST (the open a week earlier)
+        ("2026-11-02T14:29:00+00:00", True),  # 09:29 EST
+        ("2026-11-02T14:30:00+00:00", False),  # 09:30 EST: the open
+        ("2026-11-02T20:00:00+00:00", False),  # 15:00 EST (the close a week earlier)
+        ("2026-11-02T20:59:00+00:00", False),  # 15:59 EST
+        ("2026-11-02T21:00:00+00:00", True),  # 16:00 EST: the close
+        # The spring switch: Fri 6 Mar 2026 is winter time, clocks go forward Sun 8 Mar.
+        ("2026-03-06T14:29:00+00:00", True),  # 09:29 EST
+        ("2026-03-06T14:30:00+00:00", False),  # 09:30 EST: the open
+        ("2026-03-06T20:59:00+00:00", False),  # 15:59 EST
+        ("2026-03-06T21:00:00+00:00", True),  # 16:00 EST: the close
+        ("2026-03-09T03:30:00+00:00", False),  # Sun 8 Mar 23:30 EDT: still the weekend
+        ("2026-03-09T04:00:00+00:00", True),  # Mon 00:00 EDT
+        ("2026-03-09T13:29:00+00:00", True),  # 09:29 EDT
+        ("2026-03-09T13:30:00+00:00", False),  # 09:30 EDT: the open (14:30 UTC a week earlier)
+        ("2026-03-09T19:59:00+00:00", False),  # 15:59 EDT
+        ("2026-03-09T20:00:00+00:00", True),  # 16:00 EDT: the close (21:00 UTC a week earlier)
+    ],
+)
+def test_alert_window_follows_new_york_summer_and_winter_time(when, inside) -> None:
+    assert in_alert_window(_at(when), crypto=False) is inside
+
+
+def test_bar_dates_follow_winter_time() -> None:
+    # Alpaca stamps a daily bar at midnight New York: 05:00 UTC in winter time. Before the
+    # Tue 15 Dec open the newest completed session is Mon 14 Dec; after the close it is 15 Dec.
+    frame = _frame(last_close=100.0, atr=2.0, last_day="2026-12-14", partial=90.0)
+    assert pd.to_datetime(frame["timestamp"].iloc[-1]).isoformat() == "2026-12-15T05:00:00+00:00"
+    pre_market = reference_from_bars(frame, crypto=False, now=_at("2026-12-15T13:11:00+00:00"))
+    assert pre_market["prev_close"] == 100.0 and pre_market["bar_date"] == "2026-12-14"
+    still_open = reference_from_bars(frame, crypto=False, now=_at("2026-12-15T20:59:00+00:00"))
+    assert still_open["bar_date"] == "2026-12-14"  # 15:59 EST: 15 Dec has not closed
+    closed = reference_from_bars(frame, crypto=False, now=_at("2026-12-15T21:00:00+00:00"))
+    assert closed["prev_close"] == 90.0 and closed["bar_date"] == "2026-12-15"
+
+
+def test_amd_style_replay_in_winter_time(tmp_path) -> None:
+    now = _at("2026-12-15T13:11:00+00:00")  # Tue 08:11 EST, as AMD's 08:11 EDT on 15 Oct
+    state = _state(marks={"AMD": {"rate": 551.34, "at": "2026-12-15T13:10:30+00:00"}})
+    bars = _Bars(_frame(last_day="2026-12-14", partial=600.0))
+    signals = _Signals([_signal(closed_at="2026-12-15T13:10:05+00:00")])
+    alert, mirror, logs = _alert(tmp_path, state=state, bars=bars, signals=signals)
+    assert alert.run(now=now) == 1
+    [text] = mirror.notifier.sent
+    assert text.splitlines()[0] == "eToro LIVE overnight alert: AMD (pre-market)"
+    assert "- down 3.4% from the last close 570.82 (2026-12-14)" in text
+    assert "- 0.42 average daily moves above the stop (ATR 23.40)" in text
+    assert "- tracked signal momentum_breakout 1d hit its own stop 556.10 at 13:10 UTC" in text
+    assert "13:11 UTC / 17:11 Dubai, Tue 15 Dec" in text
+    assert _errors(logs) == []
+
+
+def test_last_session_and_signal_window_follow_winter_time() -> None:
+    def session(text):
+        return last_session_date(_at(text)).isoformat()
+
+    def start(text):
+        return signal_window_start(_at(text)).astimezone(UTC).isoformat()
+
+    assert session("2027-01-14T20:59:00+00:00") == "2027-01-13"  # 15:59 EST: not closed yet
+    assert session("2027-01-14T21:00:00+00:00") == "2027-01-14"  # 16:00 EST close
+    assert session("2026-11-02T20:30:00+00:00") == "2026-10-30"  # Mon 15:30 EST: Friday's
+    assert start("2027-01-14T21:30:00+00:00") == "2027-01-14T21:00:00+00:00"  # the EST close
+    assert start("2027-01-15T12:00:00+00:00") == "2027-01-15T05:00:00+00:00"  # midnight EST
+    assert start("2026-11-02T12:00:00+00:00") == "2026-11-02T05:00:00+00:00"  # first EST Monday
+    # Sun 1 Nov: midnight was still summer time (the clocks went back at 02:00).
+    assert start("2026-11-01T12:00:00+00:00") == "2026-11-01T04:00:00+00:00"
+
+
+@pytest.mark.parametrize(
+    ("day", "prev"), [("2026-11-02", "2026-10-30"), ("2027-01-14", "2027-01-13")]
+)
+def test_winter_time_alerts_before_the_open_and_reads_nothing_in_regular_hours(
+    tmp_path, day, prev
+) -> None:
+    regular = _at(f"{day}T20:30:00+00:00")  # 15:30 EST (16:30 in summer time)
+    state = _state(marks={"AMD": {"rate": 551.34, "at": regular.isoformat()}})
+    bars = _Bars(_frame(last_day=prev, partial=600.0))
+    alert, mirror, _ = _alert(tmp_path, state=state, bars=bars, signals=_Signals([]))
+    assert alert.run(now=regular) == 0
+    assert state.gets == [] and bars.calls == [] and mirror.notifier.sent == []
+    pre_market = _at(f"{day}T14:00:00+00:00")  # 09:00 EST (10:00 in summer time)
+    state = _state(marks={"AMD": {"rate": 551.34, "at": pre_market.isoformat()}})
+    alert, mirror, _ = _alert(tmp_path, state=state, bars=bars, signals=_Signals([]))
+    assert alert.run(now=pre_market) == 1
+    [text] = mirror.notifier.sent
+    assert text.splitlines()[0] == "eToro LIVE overnight alert: AMD (pre-market)"
+    # The unfinished bar of ``day`` (Alpaca stamps it 05:00 UTC) is not the previous close.
+    assert f"- down 3.4% from the last close 570.82 ({prev})" in text
+    assert "14:00 UTC / 18:00 Dubai" in text
+    assert json.loads(state[ALERT_STATE_KEY])["ny_date"] == day
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "ny_date"),
+    [
+        # 19:30 and 20:30 EDT on Wed 14 Oct: UTC midnight falls in between.
+        ("2026-10-14T23:30:00+00:00", "2026-10-15T00:30:00+00:00", "2026-10-14"),
+        # 18:30 and 23:30 EST on Thu 14 Jan: UTC midnight falls in between.
+        ("2027-01-14T23:30:00+00:00", "2027-01-15T04:30:00+00:00", "2027-01-14"),
+    ],
+)
+def test_no_resend_across_utc_midnight_on_the_same_new_york_date(
+    tmp_path, first, second, ny_date
+) -> None:
+    first, second = _at(first), _at(second)
+    # Flat vs the close and 15 above the stop (ATR 23.4): near_stop only.
+    state = _state(cards={"et1": _card(stop=556.0, broker_stop=556.0)})
+    bars = _Bars(_frame(last_close=571.0, last_day=ny_date))
+    _mark(state, first, rate=571.0)
+    alert, mirror, _ = _alert(tmp_path, state=state, bars=bars, signals=_Signals([]))
+    assert alert.run(now=first) == 1
+    assert mirror.notifier.sent[0].splitlines()[0].endswith("AMD (after hours)")
+    assert "average daily moves above the stop" in mirror.notifier.sent[0]
+    assert json.loads(state[ALERT_STATE_KEY])["ny_date"] == ny_date
+    _mark(state, second, rate=571.0)
+    assert alert.run(now=second) == 0  # the in-process memo
+    restarted, _, _ = _alert(
+        tmp_path,
+        state=state,
+        notifier=mirror.notifier,
+        client=mirror.client,
+        bars=bars,
+        signals=_Signals([]),
+    )
+    assert restarted.run(now=second) == 0  # a restart: the stored dedupe
+    assert len(mirror.notifier.sent) == 1
+
+
 # -- thresholds ------------------------------------------------------------------------------
-@pytest.mark.parametrize(("drop_pct", "fires"), [(2.9, False), (3.1, True)])
+@pytest.mark.parametrize(("drop_pct", "fires"), [(2.9, False), (3.0, True), (3.1, True)])
 def test_gap_down_threshold(tmp_path, drop_pct, fires) -> None:
     rate = round(570.82 * (1 - drop_pct / 100), 4)
     state = _state(
@@ -403,7 +561,9 @@ def test_gap_down_threshold(tmp_path, drop_pct, fires) -> None:
     assert any("from the last close" in t for t in mirror.notifier.sent) is fires
 
 
-@pytest.mark.parametrize(("atrs_above", "fires"), [(1.05, False), (0.95, True), (-0.1, True)])
+@pytest.mark.parametrize(
+    ("atrs_above", "fires"), [(1.05, False), (1.0, True), (0.95, True), (-0.1, True)]
+)
 def test_near_stop_threshold(tmp_path, atrs_above, fires) -> None:
     rate = 570.82  # flat vs the close: only the stop distance matters
     stop = round(rate - atrs_above * 23.4, 4)
@@ -484,7 +644,7 @@ def test_send_failures_are_retried_at_most_three_times(tmp_path) -> None:
     alert, _, logs = _alert(tmp_path, state=state, notifier=notifier)
     for minute in range(6):
         assert alert.run(now=AMD_NOW + timedelta(minutes=minute)) == 0
-    assert len(notifier.sent) == MAX_SEND_ATTEMPTS
+    assert len(notifier.sent) == MAX_SEND_ATTEMPTS == 3
     assert len(logs.named("etoro_live_overnight_alert_send_failed")) == MAX_SEND_ATTEMPTS
     saved = json.loads(state[ALERT_STATE_KEY])
     assert saved["sent"] == {} and saved["failed"]["AMD:gap_down"] == MAX_SEND_ATTEMPTS
@@ -595,6 +755,13 @@ def test_signal_stop_needs_a_long_signal_on_the_symbol_since_the_close(tmp_path,
     state = _state(cards={"et1": _card(stop=400.0, broker_stop=400.0)}, marks={})
     alert, mirror, _ = _alert(tmp_path, state=state, signals=_Signals([record]))
     assert alert.run(now=AMD_NOW) == 0 and mirror.notifier.sent == []
+
+
+def test_a_signal_stop_at_the_window_start_counts(tmp_path) -> None:
+    state = _state(cards={"et1": _card(stop=400.0, broker_stop=400.0)}, marks={})
+    record = _signal(closed_at="2026-10-15T04:00:00+00:00")  # 00:00 NY on 15 Oct
+    alert, mirror, _ = _alert(tmp_path, state=state, signals=_Signals([record]))
+    assert alert.run(now=AMD_NOW) == 1 and "at 04:00 UTC" in mirror.notifier.sent[0]
 
 
 def test_tracked_signal_read_failure_is_logged_and_price_reasons_still_work(tmp_path) -> None:
@@ -727,8 +894,9 @@ def test_recent_stop_hits_reads_only_stop_hits_on_the_symbols_since_the_close(tm
     _stored_signal(
         repo, symbol="AMD", strategy="f", status="stop_hit", closed_at=later, role="entry_short"
     )
+    _stored_signal(repo, symbol="AMD", strategy="g", status="stop_hit", closed_at=since)
     rows = recent_stop_hits(repo.db, symbols=["amd"], since_iso=since)
-    assert [r["strategy_name"] for r in rows] == ["f", "a"]  # newest first
+    assert [r["strategy_name"] for r in rows] == ["f", "a", "g"]  # newest first, from ``since``
     assert rows[1]["signal_role"] == "entry_long" and rows[0]["signal_role"] == "entry_short"
     assert rows[1]["current_bid"] == 547.49 and rows[1]["current_ask"] == 595.77
     assert rows[1]["stop_loss"] == 556.1 and rows[1]["closed_at"] == hit
@@ -755,8 +923,6 @@ def test_amd_replay_through_the_real_tracked_signal_store(tmp_path) -> None:
 
 
 def test_signal_window_starts_at_the_close_or_midnight_new_york() -> None:
-    from app.broker.etoro_live_overnight_alert import signal_window_start
-
     def start(text):
         return signal_window_start(datetime.fromisoformat(text)).astimezone(UTC).isoformat()
 

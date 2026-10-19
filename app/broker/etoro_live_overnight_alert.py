@@ -16,10 +16,12 @@ filled at 13:27 UTC and nothing told the operator. The guard (``run_live_checks`
   ``SIGNAL_READ_SECONDS`` through ``app/storage/tracked_signal_stops.py``: only the stop hits
   on the live symbols since that close, never the whole table).
 
-"Outside regular hours" means weekdays outside 09:30-16:00 New York; crypto (the one-off
-eToro test order) is also checked all weekend. The message gives the symbol, entry, stop,
-eToro's bid/ask and spread (``THIN_SPREAD_PCT`` % or wider is flagged as a thin quote), the
-% vs entry and vs stop, and the time in UTC and Dubai.
+"Outside regular hours" means weekdays outside 09:30-16:00 New York wall-clock time (zoneinfo,
+so it follows US daylight saving: regular hours are 13:30-20:00 UTC in summer time and
+14:30-21:00 UTC in winter time, from 1 Nov 2026); crypto (the one-off eToro test order) is
+also checked all weekend. The message gives the symbol, entry, stop, eToro's bid/ask and
+spread (``THIN_SPREAD_PCT`` % or wider is flagged as a thin quote), the % vs entry and vs
+stop, and the time in UTC and Dubai.
 
 * Alert only: it never opens, closes, blocks or resizes anything and writes no mirror state
   (halt flag, room, copy rules, stops); paper is untouched.
