@@ -37,9 +37,10 @@ coverage record or the notification; nothing anywhere trades a short. Its backte
 from the short research verdicts (a reporting-only key the live evidence gate never reads).
 A short that fails to record counts in ``short_errors`` and never stops the long scan.
 
-Event risk (operator 2026-10-18 -- SHADOW ONLY): with ``event_risk_shadow_enabled`` and an
-earnings cache, each long item carries an ``event_risk`` hint (``app/workflow/event_risk.py``):
-whether an earnings rule would block it. Never in the ranking, ``tradeable`` or the note.
+Event risk (operator 2026-10-18 -- SHADOW ONLY): with ``event_risk_shadow_enabled`` (and an
+earnings cache, or its macro part on), each long item carries an ``event_risk`` hint
+(``app/workflow/event_risk.py``): whether an earnings rule, or (its ``macro`` block) a CPI /
+PPI / jobs / FOMC-day rule, would block it. Never in the ranking, ``tradeable`` or the note.
 
 Market panel (operator 2026-10-18 -- SHADOW ONLY): once this scan's list is final, its own step
 (``app/workflow/market_panel.py``, never in this scan's ticks) records the morning's market
@@ -530,7 +531,7 @@ def _item(
             and not pending
         ),
     }
-    hint = context.get("event_risk")  # earnings shadow check: a hint, never ranked or gated
+    hint = context.get("event_risk")  # earnings/macro shadow check: a hint, never ranked or gated
     flag = hint(symbol, item["signal_bar_ts"]) if hint is not None else None
     if flag is not None:
         item["event_risk"] = flag
@@ -696,7 +697,7 @@ def _prefetch(service: Any) -> dict[str, Any]:
         "etoro_open": set(etoro_open),
         "etoro_bucket_full": lambda symbol: bucket_blockers(symbol, etoro_open),
         "short_verdicts": short_verdicts,  # the short items' figures only, never the gate's
-        "event_risk": watchlist_hint(service),  # shadow only: long items' earnings hint, or None
+        "event_risk": watchlist_hint(service),  # shadow only: long items' event hint, or None
     }
 
 

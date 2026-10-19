@@ -1,9 +1,10 @@
-"""Event-risk (earnings) check -- SHADOW ONLY (operator-approved 2026-10-18).
+"""Event-risk (earnings and US macro) check -- SHADOW ONLY (operator-approved 2026-10-18).
 
-It records which entries an earnings rule WOULD have blocked; nothing reads the flag to decide
-anything. It never blocks, creates, changes or reorders a proposal, order, approval, scan
-decision, alert or Telegram message. Setting ``event_risk_shadow_enabled`` (default on) stops
-all of it: the earnings refresh, the watchlist hints and the proposal logs.
+It records which entries an earnings rule, or a macro-calendar rule, WOULD have blocked; nothing
+reads the flags to decide anything. It never blocks, creates, changes or reorders a proposal,
+order, approval, scan decision, alert or Telegram message. Setting ``event_risk_shadow_enabled``
+(default on) stops all of it: the earnings refresh, the watchlist hints and the proposal logs;
+``event_risk_macro_shadow_enabled`` (default on) stops the macro part alone.
 
 The rule: a known earnings date (``earnings_calendar``) inside the entry's window flags it. The
 window runs from the signal bar's session (a report after that close, or before the next open,
@@ -19,15 +20,29 @@ session alone. Sessions are weekdays, as everywhere else in the bot (no holiday 
 around a holiday the window ends a day early. Days and the 16:00 close are New York's, whatever
 ``schedule_timezone`` is: the sessions and the earnings dates are US ones.
 
+The macro rule (``assess_macro``, the post-mortem's calendar item): a scheduled CPI, PPI, jobs
+report (Employment Situation) or FOMC statement day from the entry session through the same
+window end flags the entry -- an entry made on an event day, or held across one. A release
+before the entry session is in the entry's price (all four come out before the close), so the
+macro window starts at the entry, not the signal bar. The dates come from the static table in
+``macro_calendar`` (no network, no database); a window the table cannot vouch for reads
+``calendar_unknown``, never clear. Every instrument is assessed, funds and crypto too: a
+release moves the whole market. The flag rides as a ``macro`` block on the same hint and the
+same log row, so it costs no extra call or database round trip.
+
 Where it is recorded:
 
 * (a) the pre-market deep scan's long watchlist items: an ``event_risk`` hint, never in
-  ``rank_key`` or ``tradeable`` (absent when the switch is off or no earnings were ever cached);
+  ``rank_key`` or ``tradeable`` (absent when the switch is off, or when the macro part is off
+  too and no earnings were ever cached; with no earnings cached its earnings reason is
+  ``no_cache``);
 * (b) each auto-created proposal: one ``event_risk_shadow`` run log, written after the scan's
   whole proposal loop (after every approval and order), from the in-memory cache only -- no
   network and no database read on that path;
 * (c) ``GET /performance/live-scorecard`` -> ``event_risk_shadow``: the shadow ledger's setups
-  and the eToro live trades, flagged against unflagged.
+  and the eToro live trades, flagged against unflagged -- by earnings (the top level), by the
+  macro calendar (``macro``; ``macro.entry_day`` splits off the entries made on an event day)
+  and by either rule (``any_event``).
 """
 
 from __future__ import annotations
@@ -46,18 +61,31 @@ NEW_YORK = ZoneInfo("America/New_York")  # the US session's clock and day, not s
 SESSION_CLOSE = (16, 0)  # New York: a proposal after the close enters on the next session
 # Reasons that clear an entry: no report in its window, or an instrument that never reports.
 CLEAR_REASONS = frozenset({"no_earnings_in_window", "not_applicable"})
+MACRO_CLEAR_REASONS = frozenset({"no_macro_in_window"})  # never calendar_unknown
 COHORTS = ("flagged", "unflagged", "no_data", "not_assessed")
 RULE = (
     "would block: a known earnings date from the signal bar's session through the entry's "
     f"hold window ({HOLD_SESSIONS} sessions from the entry for daily strategies, the entry "
     "session for intraday ones); shadow only, nothing is blocked"
 )
+MACRO_RULE = (
+    "would block: a scheduled US CPI, PPI, jobs report (Employment Situation) or FOMC "
+    "statement day from the entry session through the same hold window; a window the in-code "
+    "calendar cannot vouch for is calendar_unknown; shadow only, nothing is blocked"
+)
+ANY_RULE = "flagged by either rule; unflagged only when both are clear; shadow only"
 
 
 def enabled(settings: Any) -> bool:
     """The switch. A settings object without the field (test fakes) reads as off."""
 
     return bool(getattr(settings, "event_risk_shadow_enabled", False))
+
+
+def macro_enabled(settings: Any) -> bool:
+    """The macro sub-switch (default on), only ever on with the event-risk switch."""
+
+    return enabled(settings) and bool(getattr(settings, "event_risk_macro_shadow_enabled", True))
 
 
 def hold_sessions(timeframe: Any, settings: Any) -> int:
@@ -136,37 +164,80 @@ def assess(
     }
 
 
+def assess_macro(*, entry_day: date, window_end: date, calendar: Any = None) -> dict[str, Any]:
+    """``would_block``, the ``reason`` and the scheduled ``events`` from the entry session
+    through ``window_end``, for one entry; ``unknown_kinds`` are the kinds the table cannot
+    vouch for over that span. Pure: it reads the in-code ``macro_calendar`` table only."""
+
+    from app.workflow.macro_calendar import scheduled
+
+    events, unknown = scheduled(entry_day, max(window_end, entry_day), calendar)
+    if events:
+        on_entry = events[0]["date"] == entry_day.isoformat()
+        reason = "macro_on_entry_day" if on_entry else "macro_within_hold"
+    else:
+        reason = "calendar_unknown" if unknown else "no_macro_in_window"
+    return {
+        "would_block": bool(events),
+        "reason": reason,
+        "events": events,
+        "unknown_kinds": unknown,
+    }
+
+
+def _macro_for(entry: date, hold: Any) -> dict[str, Any]:
+    """The macro flag from ``entry`` through its ``hold``-th session (the earnings window's
+    end), or an error row. Never raises."""
+
+    try:
+        return assess_macro(entry_day=entry, window_end=add_sessions(entry, max(int(hold), 1) - 1))
+    except Exception as exc:  # noqa: BLE001 - shadow only
+        flag = {"would_block": False, "reason": "error", "events": [], "unknown_kinds": []}
+        return {**flag, "error": str(exc)[:160]}
+
+
 def watchlist_hint(service: Any) -> Any:
     """For the deep scan: ``hint(symbol, signal_bar_ts) -> dict | None`` on one cache read, or
-    None when the switch is off or no earnings were ever cached. The hint never raises."""
+    None when the switch is off, or the macro part is off and no earnings were ever cached
+    (or the stored copy cannot be read). The hint never raises."""
 
     from app.workflow import earnings_calendar
 
     if not enabled(service.settings):
         return None
     try:
-        snapshot = earnings_calendar.snapshot_for_scan(service)
+        macro = macro_enabled(service.settings)
         today = utc_now().astimezone(NEW_YORK).date()
     except Exception:  # noqa: BLE001 - a hint only: the scan goes on without it
         return None
-    if snapshot is None:
+    try:
+        snapshot = earnings_calendar.snapshot_for_scan(service)
+    except Exception:  # noqa: BLE001 - a hint only: the macro part goes on without earnings
+        snapshot = None
+    if snapshot is None and not macro:
         return None
-    records = snapshot.get("symbols") or {}
+    records = (snapshot or {}).get("symbols") or {}
     entry = next_session(today)  # the deep scan runs before the session it enters on
 
     def hint(symbol: str, signal_bar_ts: Any) -> dict[str, Any] | None:
         try:
-            signal_day = _day(str(signal_bar_ts or "")[:10]) or entry
-            flag = assess(
-                _record(records, symbol),
-                signal_day=signal_day,
-                entry_day=entry,
-                hold=HOLD_SESSIONS,
-                today=today,
-            )
+            if snapshot is None:  # no earnings cached (or unreadable): the macro part alone
+                flag = {"would_block": False, "earnings_date": None, "reason": "no_cache"}
+                flag["window_end"] = add_sessions(entry, HOLD_SESSIONS - 1).isoformat()
+            else:
+                flag = assess(
+                    _record(records, symbol),
+                    signal_day=_day(str(signal_bar_ts or "")[:10]) or entry,
+                    entry_day=entry,
+                    hold=HOLD_SESSIONS,
+                    today=today,
+                )
         except Exception:  # noqa: BLE001 - a hint only
             return None
-        return {k: flag[k] for k in ("would_block", "earnings_date", "reason", "window_end")}
+        out = {k: flag[k] for k in ("would_block", "earnings_date", "reason", "window_end")}
+        if macro:
+            out["macro"] = _macro_for(entry, HOLD_SESSIONS)
+        return out
 
     return hint
 
@@ -175,8 +246,9 @@ def log_proposal_event_risk(service: Any, created: list[tuple[Any, Any]]) -> Non
     """One ``event_risk_shadow`` run log per (proposal id, candidate), after the proposal loop.
 
     Reads the in-memory earnings cache only (no network, no database read; "no_cache" before
-    the first refresh or load). Never raises; a failing log write stops the rest (a database
-    outage must not cost one pool timeout per proposal)."""
+    the first refresh or load) and the in-code macro table (a ``macro`` block on the same
+    row). Never raises; a failing log write stops the rest (a database outage must not cost
+    one pool timeout per proposal)."""
 
     from app.workflow import earnings_calendar
 
@@ -184,6 +256,7 @@ def log_proposal_event_risk(service: Any, created: list[tuple[Any, Any]]) -> Non
         settings = service.settings
         if not created or not enabled(settings):
             return
+        macro = macro_enabled(settings)
         snapshot = earnings_calendar.cached_snapshot()
         now_ny = utc_now().astimezone(NEW_YORK)
     except Exception:  # noqa: BLE001 - shadow only
@@ -194,6 +267,7 @@ def log_proposal_event_risk(service: Any, created: list[tuple[Any, Any]]) -> Non
     )
     for proposal_id, candidate in created:
         payload: dict[str, Any] = {"proposal_id": str(proposal_id)}
+        hold: Any = HOLD_SESSIONS
         try:
             symbol = str(getattr(candidate, "symbol", "") or "").upper()
             timeframe = str(getattr(candidate, "timeframe", "") or "")
@@ -217,6 +291,8 @@ def log_proposal_event_risk(service: Any, created: list[tuple[Any, Any]]) -> Non
             payload.update(flag, cache_day=(snapshot or {}).get("day"))
         except Exception as exc:  # noqa: BLE001 - recorded as an error row, never raised
             payload.update(would_block=False, earnings_date=None, reason="error", error=str(exc)[:160])
+        if macro:
+            payload["macro"] = _macro_for(entry, hold)
         payload["shadow_only"] = True
         try:
             service.run_logs.log(EVENT, payload)
@@ -231,8 +307,10 @@ def event_risk_report(
     proposal_logs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Outcomes of flagged against unflagged setups: the shadow ledger's (from the watchlist
-    hint) and the eToro live trades' (from their proposal's ``event_risk_shadow`` log)."""
+    hint) and the eToro live trades' (from their proposal's ``event_risk_shadow`` log), by
+    earnings (the top level), by the macro calendar (``macro``) and by either (``any_event``)."""
 
+    from app.workflow.macro_calendar import describe
     from app.workflow.shadow_ledger import LEDGER_KEY, _load, _summary
 
     entries = list((_load(runtime_state, LEDGER_KEY).get("entries") or {}).values())
@@ -242,23 +320,51 @@ def event_risk_report(
         payload = (row or {}).get("payload") if isinstance(row, dict) else None
         if isinstance(payload, dict) and payload.get("proposal_id"):
             flags.setdefault(str(payload["proposal_id"]), payload)
-    live: dict[str, list[dict[str, Any]]] = {name: [] for name in COHORTS}
-    for trade in trades or []:
-        live[_cohort(flags.get(str(trade.get("proposal_id") or "")))].append(trade)
+
+    def split(cohort: Any) -> dict[str, Any]:
+        live: dict[str, list[dict[str, Any]]] = {name: [] for name in COHORTS}
+        for trade in trades or []:
+            live[cohort(flags.get(str(trade.get("proposal_id") or "")))].append(trade)
+        return {
+            "shadow_ledger": {
+                name: _summary([e for e in taken if cohort(e.get("event_risk")) == name])
+                for name in COHORTS
+            },
+            "live_trades": {name: _live_summary(rows) for name, rows in live.items()},
+        }
+
     flagged = [p for p in flags.values() if p.get("would_block") is True]
+    macro_flagged = [p for p in flags.values() if _macro_cohort(p) == "flagged"]
     return {
         "rule": RULE,
-        "shadow_ledger": {
-            name: _summary([e for e in taken if _cohort(e.get("event_risk")) == name])
-            for name in COHORTS
-        },
-        "live_trades": {name: _live_summary(rows) for name, rows in live.items()},
+        **split(_cohort),
         "proposals_logged": len(flags),
         "proposals_flagged": len(flagged),
         "recent_flagged": [
             {k: p.get(k) for k in ("symbol", "strategy", "proposal_id", "earnings_date", "reason")}
             for p in flagged[:20]
         ],
+        "macro": {
+            "rule": MACRO_RULE,
+            "calendar": describe(),
+            **split(_macro_cohort),
+            # A 10-session window holds an event most weeks: entries made ON an event day
+            # against the other assessed ones (flagged within the hold, or clear).
+            "entry_day": split(_entry_day_cohort),
+            "proposals_flagged": len(macro_flagged),
+            "recent_flagged": [
+                {
+                    **{k: p.get(k) for k in ("symbol", "strategy", "proposal_id", "entry_day")},
+                    **{k: p["macro"].get(k) for k in ("reason", "events")},
+                }
+                for p in macro_flagged[:20]
+            ],
+        },
+        "any_event": {
+            "rule": ANY_RULE,
+            **split(_any_cohort),
+            "proposals_flagged": sum(1 for p in flags.values() if _any_cohort(p) == "flagged"),
+        },
         "shadow_only": True,
     }
 
@@ -278,6 +384,37 @@ def _cohort(flag: Any) -> str:
     if flag.get("would_block") is True:
         return "flagged"
     return "unflagged" if flag.get("reason") in CLEAR_REASONS else "no_data"
+
+
+def _macro_cohort(flag: Any) -> str:
+    macro = flag.get("macro") if isinstance(flag, dict) else None
+    if not isinstance(macro, dict):
+        return "not_assessed"  # no macro block: recorded before it shipped, or its switch off
+    if macro.get("would_block") is True:
+        return "flagged"
+    return "unflagged" if macro.get("reason") in MACRO_CLEAR_REASONS else "no_data"
+
+
+def _entry_day_cohort(flag: Any) -> str:
+    """Flagged only for an event on the entry session; any other flag or a clear window is
+    unflagged here."""
+
+    cohort = _macro_cohort(flag)
+    if cohort != "flagged":
+        return cohort
+    on_entry = flag["macro"].get("reason") == "macro_on_entry_day"
+    return "flagged" if on_entry else "unflagged"
+
+
+def _any_cohort(flag: Any) -> str:
+    """Flagged by either rule; unflagged only when both rules are clear."""
+
+    earnings, macro = _cohort(flag), _macro_cohort(flag)
+    if earnings == "not_assessed":
+        return "not_assessed"
+    if "flagged" in (earnings, macro):
+        return "flagged"
+    return "unflagged" if earnings == macro == "unflagged" else "no_data"
 
 
 def _live_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:

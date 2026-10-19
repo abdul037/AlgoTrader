@@ -19,8 +19,9 @@ sell signals, financing and max-hold metadata are not replayed. R = (exit - entr
 It reads the watchlists and daily bars (the deep scan's request, so usually the cache) and
 writes only ``premarket:shadow_ledger`` (+ its small state key) and one run log. It never
 creates proposals or orders and never touches the eToro mirror. A setup's ``event_risk`` hint
-(the earnings shadow check) is kept on its entry for ``event_risk.event_risk_report``, and its
-morning's market-panel label (``market_regime``) for ``market_panel.market_panel_report``.
+(the earnings and macro-calendar shadow check) is kept on its entry for
+``event_risk.event_risk_report``, and its morning's market-panel label (``market_regime``) for
+``market_panel.market_panel_report``.
 
 Shorts (operator 2026-10-17, step 2): the watchlists' ``short_signals`` are followed in their
 own ledger, ``premarket:shadow_ledger:short`` (+ its own state key), by
@@ -437,11 +438,15 @@ def _entry(item: dict[str, Any], signal_date: str) -> dict[str, Any] | None:
         "target": target,
         "status": "pending",
     }
-    risk = item.get("event_risk")  # the deep scan's earnings shadow hint, when it recorded one
+    risk = item.get("event_risk")  # the deep scan's event-risk shadow hint, when it recorded one
     if isinstance(risk, dict):
         entry["event_risk"] = {
             k: risk.get(k) for k in ("would_block", "earnings_date", "reason", "window_end")
         }
+        macro = risk.get("macro")  # its macro-calendar block, when the hint carried one
+        if isinstance(macro, dict):
+            keys = ("would_block", "reason", "events", "unknown_kinds")
+            entry["event_risk"]["macro"] = {k: macro.get(k) for k in keys}
     return entry
 
 

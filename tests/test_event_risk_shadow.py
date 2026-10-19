@@ -445,7 +445,10 @@ def test_long_watchlist_items_carry_the_hint_and_nothing_else_changes(tmp_path, 
     assert short_tests._digest(view_off) == short_tests.GOLDEN_DEEP_SCAN
     signals = view_on[0]["signals"]
     assert signals and all("event_risk" in item for item in signals)
-    by_symbol = {item["symbol"]: item["event_risk"] for item in signals}
+    by_symbol = {  # the earnings part (the macro block: tests/test_event_risk_macro_shadow.py)
+        item["symbol"]: {k: v for k, v in item["event_risk"].items() if k != "macro"}
+        for item in signals
+    }
     assert by_symbol["S00"] == {
         "would_block": True,
         "earnings_date": "2026-10-14",
@@ -462,9 +465,13 @@ def test_long_watchlist_items_carry_the_hint_and_nothing_else_changes(tmp_path, 
     assert shorts and not any("event_risk" in item for item in shorts)  # long items only
     assert on.notifier.messages == off.notifier.messages  # nothing in any note
 
-    cal.reset_memory()  # the switch on, no earnings ever cached: the list is unchanged
+    cal.reset_memory()  # the switch on, its macro part off, no earnings ever cached: unchanged
     never = short_tests._scan(
-        tmp_path / "never", monkeypatch, short_verdicts=True, event_risk_shadow_enabled=True
+        tmp_path / "never",
+        monkeypatch,
+        short_verdicts=True,
+        event_risk_shadow_enabled=True,
+        event_risk_macro_shadow_enabled=False,
     )
     assert short_tests._long_scan_view(never) == view_off
     assert never.runtime_state.get(cal.CACHE_KEY) is None
@@ -491,6 +498,9 @@ def test_the_scan_reads_the_stored_copy_once_when_memory_is_empty(tmp_path, monk
 
     cal.reset_memory()
     service.runtime_state = _Down()
+    service.settings = make_settings(
+        tmp_path, event_risk_shadow_enabled=True, event_risk_macro_shadow_enabled=False
+    )
     assert risk.watchlist_hint(service) is None  # the scan goes on without hints
     cal._publish(_cache())
     off = SimpleNamespace(settings=make_settings(tmp_path), runtime_state=_Down())
@@ -632,7 +642,7 @@ def _candidates():
     return [base, base.model_copy(update={"symbol": "AMD"})]
 
 
-def _propose(tmp_path, monkeypatch, *, enabled=True, logs=None, state=None):
+def _propose(tmp_path, monkeypatch, *, enabled=True, logs=None, state=None, **overrides):
     from app.models.screener import ScreenerRunResponse
     from app.workflow.operations import auto_propose_candidates
     from app.workflow.service import SignalWorkflowService
@@ -654,6 +664,7 @@ def _propose(tmp_path, monkeypatch, *, enabled=True, logs=None, state=None):
             auto_propose_enabled=True,
             paper_auto_operation_mode="supervised",
             event_risk_shadow_enabled=enabled,
+            **overrides,
         ),
         market_screener=FakeMarketScreener([]),
         market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="NVDA", last_execution=101.0)),
