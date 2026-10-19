@@ -39,8 +39,9 @@ after ``RUN_SECONDS``, whichever is first, resumes on the next tick from its cur
 ``premarket_open_shadow_completed`` run log. It never creates proposals, orders, approvals,
 scan decisions, alerts or Telegram messages, never calls the eToro LIVE account, and never
 raises: a failure is logged once a day and the scheduler carries on. Its market data are the
-deep scan's and the order path's own requests. ``premarket_open_shadow_enabled`` (default on)
-and the deep scan's flag switch it.
+deep scan's and the order path's own requests, but read-only on the shared market-data cache
+(``write_cache=False``): a frame it fetched is never served to a live scan (review 10-19).
+``premarket_open_shadow_enabled`` (default on) and the deep scan's flag switch it.
 """
 
 from __future__ import annotations
@@ -97,7 +98,9 @@ RULES = (
 
 class CompletedBarsMarketData:
     """The market data engine with today's forming daily bar dropped (the deep scan's rule:
-    the UTC date of a daily bar is its session date). Everything else is the engine's own."""
+    the UTC date of a daily bar is its session date), and never writing the shared cache: the
+    live swing scan reads 1d frames from it (force_refresh=False), so a frame fetched here would
+    be its input for the cache's TTL. Everything else is the engine's own."""
 
     def __init__(self, market_data: Any, now_ny: datetime) -> None:
         self._market_data, self._now_ny = market_data, now_ny
@@ -105,6 +108,7 @@ class CompletedBarsMarketData:
     def get_history(self, symbol: str, *, timeframe: str = "1d", **kwargs: Any) -> Any:
         from app.workflow.premarket_deep_scan import completed_daily_bars
 
+        kwargs["write_cache"] = False
         frame = self._market_data.get_history(symbol, timeframe=timeframe, **kwargs)
         return completed_daily_bars(frame, self._now_ny) if timeframe == "1d" else frame
 
@@ -441,8 +445,8 @@ def _check(service, record, candidate, specs, cache, now_ny, budget) -> dict[str
             ("quote", symbol),
             budget,
             settings,
-            lambda: service.market_data.get_quote(
-                symbol, timeframe="1d", provider=provider, force_refresh=True
+            lambda: service.market_data.get_quote(  # its history fallback: not cached either
+                symbol, timeframe="1d", provider=provider, force_refresh=True, write_cache=False
             ),
         )
     except (_NoAnswer, EToroRateLimitError):

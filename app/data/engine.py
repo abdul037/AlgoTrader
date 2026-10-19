@@ -59,8 +59,12 @@ class MarketDataEngine:
         bars: int = 250,
         provider: str | None = None,
         force_refresh: bool = False,
+        write_cache: bool = True,
     ) -> pd.DataFrame:
-        """Return normalized OHLCV history for a symbol and timeframe."""
+        """Return normalized OHLCV history for a symbol and timeframe.
+
+        ``write_cache=False`` still reads a fresh cached frame but never stores a fetched one:
+        for shadow readers, whose requests must not become a live scan's input (2026-10-19)."""
 
         normalized_symbol = symbol.upper().strip()
         normalized_timeframe = self._normalize_timeframe(timeframe)
@@ -109,10 +113,11 @@ class MarketDataEngine:
                 from_cache=False,
                 data_age_seconds=0.0,
             )
-            self._write_cached_frame(
-                self._cache_path(normalized_symbol, normalized_timeframe, candidate_provider),
-                frame,
-            )
+            if write_cache:
+                self._write_cached_frame(
+                    self._cache_path(normalized_symbol, normalized_timeframe, candidate_provider),
+                    frame,
+                )
             return frame.tail(bars).reset_index(drop=True)
 
         raise RuntimeError(
@@ -127,8 +132,10 @@ class MarketDataEngine:
         timeframe: str = "1d",
         provider: str | None = None,
         force_refresh: bool = False,
+        write_cache: bool = True,
     ) -> MarketQuote:
-        """Return the best available quote for a symbol."""
+        """Return the best available quote for a symbol (``write_cache``: as in get_history,
+        for the fallback that derives the quote from history)."""
 
         normalized_symbol = symbol.upper().strip()
         normalized_timeframe = self._normalize_timeframe(timeframe)
@@ -182,6 +189,7 @@ class MarketDataEngine:
             bars=2,
             provider="yfinance" if provider_name != "etoro" else None,
             force_refresh=force_refresh,
+            write_cache=write_cache,
         )
         last = frame.iloc[-1]
         attrs = dict(frame.attrs)

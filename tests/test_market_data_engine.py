@@ -84,6 +84,64 @@ class FakeEtoroClient:
         }
 
 
+class DailyHistoryService:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def load_yfinance(self, symbol: str, *, period: str, interval: str, auto_adjust: bool = False):
+        self.calls += 1
+        timestamps = pd.date_range("2026-01-01", periods=30, freq="1D", tz="UTC")
+        return pd.DataFrame(
+            {
+                "timestamp": timestamps,
+                "open": [100.0] * 30,
+                "high": [101.0] * 30,
+                "low": [99.0] * 30,
+                "close": [100.5] * 30,
+                "volume": [1_000_000] * 30,
+            }
+        )
+
+
+def _yfinance_engine(tmp_path, history) -> MarketDataEngine:
+    return MarketDataEngine(
+        make_settings(
+            tmp_path,
+            primary_market_data_provider="yfinance",
+            fallback_market_data_provider="none",
+            market_data_cache_dir=str(tmp_path / "cache"),
+        ),
+        history_service=history,
+    )
+
+
+def test_market_data_engine_write_cache_false_reads_the_cache_but_never_stores(tmp_path) -> None:
+    """Shadow readers (review 10-19): a fresh cached frame is still served, a fetched one is
+    never stored (it would be a live scan's input); every other caller stores as before."""
+
+    history = DailyHistoryService()
+    engine = _yfinance_engine(tmp_path, history)
+    cached = tmp_path / "cache" / "yfinance" / "1d" / "NVDA.csv"
+
+    engine.get_history("NVDA", timeframe="1d", bars=20, write_cache=False)
+    assert history.calls == 1 and not cached.exists()
+    engine.get_history("NVDA", timeframe="1d", bars=20)  # the default: fetched and stored
+    assert history.calls == 2 and cached.exists()
+    frame = engine.get_history("NVDA", timeframe="1d", bars=20, write_cache=False)
+    assert history.calls == 2 and frame.attrs["from_cache"] is True
+
+
+def test_market_data_engine_quote_from_history_honours_write_cache(tmp_path) -> None:
+    history = DailyHistoryService()
+    engine = _yfinance_engine(tmp_path, history)
+    cached = tmp_path / "cache" / "yfinance" / "1d" / "NVDA.csv"
+
+    quote = engine.get_quote("NVDA", timeframe="1d", force_refresh=True, write_cache=False)
+    assert quote.quote_derived_from_history and history.calls == 1 and not cached.exists()
+    engine.get_quote("NVDA", timeframe="1d", force_refresh=True)
+    assert history.calls == 2 and cached.exists()
+
+
 def test_market_data_engine_retries_transient_provider_failure(tmp_path) -> None:
     history = FlakyHistoryService()
     engine = MarketDataEngine(

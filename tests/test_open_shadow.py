@@ -100,18 +100,24 @@ class _Market:
     def __init__(self, env):
         self.env = env
         self.history_calls: list[str] = []
+        self.history_cache_writes: list[bool] = []
         self.quote_calls: list[tuple] = []
 
-    def get_history(self, symbol, *, timeframe="1d", bars=250, force_refresh=False):
+    def get_history(
+        self, symbol, *, timeframe="1d", bars=250, force_refresh=False, write_cache=True
+    ):
         self.history_calls.append(symbol)
+        self.history_cache_writes.append(write_cache)
         self.env.mono["t"] += self.env.seconds_per_history
         failure = self.env.history_errors.get(symbol)
         if failure is not None:
             raise failure
         return _frame(1)  # Friday's completed bar plus Monday's forming bar
 
-    def get_quote(self, symbol, *, timeframe="1d", provider=None, force_refresh=False):
-        self.quote_calls.append((symbol, provider, force_refresh))
+    def get_quote(
+        self, symbol, *, timeframe="1d", provider=None, force_refresh=False, write_cache=True
+    ):
+        self.quote_calls.append((symbol, provider, force_refresh, write_cache))
         quote = self.env.quotes.get(symbol)
         if isinstance(quote, Exception):
             raise quote
@@ -191,6 +197,7 @@ def _env(
     env.service.notifier = env.service.tracked_signals = env.service.alert_history = _Boom()
     env.service.run_logs = FakeLogs()
     env.service.market_data.history_calls.clear()
+    env.service.market_data.history_cache_writes.clear()
     env.seen_bars.clear()
     env.at(OPEN_AT)
     state.set(shadow.MARKET_OPEN_KEY, datetime(2026, 10, 12, 13, 36, tzinfo=UTC).isoformat())
@@ -223,8 +230,11 @@ def test_best_first_entries_take_the_two_etoro_slots_and_the_rest_are_paper_only
     assert aaa["drift_from_signal_ok"] is True
     assert rows[("BBB", "alpha")]["etoro_room_hints"] == ["etoro_daily_slots_taken"]
     assert rows[("CCC", "beta")]["etoro_copy_reasons"] == ["strategy_edge_below_bar"]
-    # The order path's quote: the equities broker as provider, always fresh.
-    assert {(p, f) for _, p, f in env.service.market_data.quote_calls} == {("alpaca", True)}
+    # The order path's quote: the equities broker as provider, always fresh. Neither request
+    # stores what it fetched in the shared market-data cache (review 10-19).
+    market = env.service.market_data
+    assert {(p, f, w) for _, p, f, w in market.quote_calls} == {("alpaca", True, False)}
+    assert market.history_cache_writes and set(market.history_cache_writes) == {False}
     assert env.events() == ["premarket_open_shadow_completed"]  # one run log
     logged = env.service.run_logs.items[0][1]
     assert logged["shadow_only"] is True and logged["etoro_slots"] == ["DDD", "AAA"]
@@ -291,6 +301,61 @@ def test_the_recheck_sees_completed_bars_only(tmp_path, monkeypatch) -> None:
     )
     assert len(adapter.get_history("AAA", timeframe="5m")) == len(_frame(1))  # intraday untouched
     assert adapter.other() == "same"
+
+
+def test_the_shadow_reads_the_shared_cache_but_never_feeds_a_live_scan(
+    tmp_path, monkeypatch
+) -> None:
+    """Review 10-19: the live swing scan reads its 1d frames from the engine's cache
+    (force_refresh=False), so a frame the shadow fetched must never be stored there. The real
+    engine; only its provider requests and Alpaca quotes are fakes."""
+
+    from app.data.engine import MarketDataEngine
+
+    env = _env(
+        tmp_path,
+        monkeypatch,
+        market_data_cache_dir=str(tmp_path / "cache"),
+        market_data_retry_attempts=1,
+        market_data_retry_backoff_seconds=0.0,
+    )
+    prices = {"AAA": 100.1, "BBB": 50.05, "DDD": 200.2}
+
+    class _Alpaca:
+        @staticmethod
+        def get_quote(symbol):
+            if symbol not in prices:  # CCC: the engine falls back to a quote from history
+                raise RuntimeError("no quote")
+            return _quote(prices[symbol]).model_copy(update={"symbol": symbol})
+
+    engine = MarketDataEngine(env.service.settings, alpaca_provider=_Alpaca())
+    fetches: list[str] = []
+
+    def fetch(symbol, *, timeframe, bars, provider):
+        fetches.append(symbol)
+        return _frame(1)
+
+    monkeypatch.setattr(engine, "_fetch_history_from_provider", fetch)
+    env.service.market_data = engine
+    engine.get_history("DDD", timeframe="1d", bars=400)  # a live scan's frame, stored as ever
+    cache = tmp_path / "cache"
+    assert fetches == ["DDD"] and [p.name for p in cache.rglob("*.csv")] == ["DDD.csv"]
+    env.run()
+    rows = env.by_symbol()
+    assert env.record()["status"] == "complete"
+    assert {k[0]: r["status"] for k, r in rows.items()} == {
+        "AAA": "entered",
+        "BBB": "entered",
+        "DDD": "entered",
+        "CCC": "gate_failed",  # its quote came from history
+    }
+    # DDD came from the live scan's fresh frame; CCC's history and its quote's history fetched.
+    assert sorted(fetches[1:]) == ["AAA", "BBB", "CCC", "CCC"]
+    assert [p.name for p in cache.rglob("*.csv")] == ["DDD.csv"]  # nothing of the shadow's
+    # The live swing scan's own call a few minutes later fetches its own frame and stores it.
+    frame = engine.get_history("AAA", timeframe="1d", bars=400, force_refresh=False)
+    assert fetches[-1] == "AAA" and len(fetches) == 6 and frame.attrs["from_cache"] is False
+    assert (cache / "yfinance" / "1d" / "AAA.csv").exists()
 
 
 def test_a_bar_newer_or_older_than_the_signals_is_a_mismatch(tmp_path, monkeypatch) -> None:
