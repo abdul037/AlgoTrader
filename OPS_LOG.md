@@ -12,6 +12,62 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-10-19 (Mon) → 10-20 (Tue) — post-mortem release: copy rules, overnight alert, shadows
+
+- **Operator approvals (all recorded on question cards):** 10-18 ~05:40 UTC weak-valid cap by date,
+  eToro fees in backtests, event-risk check in shadow, Phase 3 open entries in shadow; 10-18 the
+  four eToro live copy rules (planner buy-now, per-signal backtest, 24 h evidence streak, no
+  chasing) and the overnight alert; 10-19 deploy before the open once fully reviewed. Paper room
+  (10-19 ~15:30 and 10-20 ~05:20 UTC): `MAX_OPEN_POSITIONS` 8 -> 12 and
+  `PORTFOLIO_MAX_GROSS_EXPOSURE_PCT` 60 -> 100 (paper only, cash, no margin; symbol 15%, sector
+  25% and correlated 60% unchanged). eToro HARD_* caps unchanged.
+- **Missed window:** the 10-19 pre-open deploy slipped (session usage limit during the final
+  review), and the 10-19 after-close deploy slipped (container restart). Nothing was pushed
+  mid-session.
+- **Shipped as `354cc2c..46c8da8` (15 commits)**, each item built in a worktree, 3 adversarial
+  reviewers per round until no blocker/major, then a 4-lens final review of the combined chain
+  with an adjudicator:
+  - **Weak-valid cap by date:** counts today's (UTC) promoted weak-valid candidates by an indexed
+    date read, not the newest 5,000 rows; an unreadable count fails closed (limit reached, logged
+    `paper_supervised_weak_valid_daily_count_failed`).
+  - **eToro fees in backtests:** $1 a leg in the batch walk-forward behind the live evidence, about
+    -0.020R per strategy; phases in over one cursor sweep (~7 days of mixed rows). Of the two
+    strategies passing at deploy, `inside_bar_narrow_range_breakout:1d` (+0.040R) should stay
+    above 0 but fall below the +0.03R copy bar, and `trend_following:1d` (+0.016R) below 0.
+  - **Event-risk shadow:** off-hours yfinance earnings dates; logs per proposal whether an earnings
+    rule would have blocked it (`event_risk_shadow`), never blocks. Setting
+    `event_risk_shadow_enabled`.
+  - **Phase 3 shadow:** after the 09:35 market-open scan, re-checks the watchlist's top setups on
+    completed bars and a fresh quote, ranks them and logs what entering at the open would have
+    done (`premarket:open_shadow:<date>`); never trades, never writes the shared bar cache.
+    Setting `premarket_open_shadow_enabled`.
+  - **Four eToro copy rules** (live copies only; none is a room reason, so refused orders fall
+    back to paper's own room rules): planner `timing_label` must be `immediate`;
+    `backtest_validated` must be true; the pooled evidence must have passed unbroken for 24 h,
+    counted only to the last refresh; no copy after a >15% 20-session rise, RSI(14) >= 68 or a
+    252-session closing high on the signal bar or the bar before. Missing inputs block. All 10
+    copies since 10-05 would have been refused (none had `immediate`, none `backtest_validated`).
+    Streaks start from zero at deploy, so no copy for at least 24 h; intraday (15m/1h) copies
+    are never possible (no daily extension inputs).
+  - **Overnight alert:** outside 09:30-16:00 New York, Telegram when a live eToro position is 3%+
+    below the previous close, within 1 ATR of its stop, or a tracked signal on it hits its stop;
+    one per symbol per kind per Dubai day; shows bid/ask. Setting
+    `etoro_live_overnight_alert_enabled`.
+- **Final review findings, fixed in `46c8da8`:** (1) the alert ran on the guard thread, so a slow
+  Telegram or an Alpaca read could push backup-stop passes to 111-162 s apart; it now runs on
+  its own daemon thread, one at a time. (2) A 429 on the alert's bid/ask read opened the LIVE
+  key's 300 s cooldown and blinded the backup stop; that read no longer opens the cooldown and
+  stops bid/ask reads for the day instead. Re-review approved.
+- **Verification before push:** full suite on `46c8da8` green (Postgres-only tests skipped);
+  architecture fitness passed; diff check: no change under `app/execution`, `app/risk` or
+  `app/paper`, no HARD_* cap changed, new settings are the three shadow/alert switches only.
+- **Next after-close release (built, reviewed, not shipped):** market panel in the pre-market
+  scan and an economic-calendar flag on the event-risk shadow (both shadow only). **Approved,
+  to build:** a paper learning lane (up to 2 paper entries a day from strategies failing the
+  evidence check, half size, never copied to eToro) and a fee-free evidence bar for paper (eToro
+  copies keep the fee-inclusive +0.03R bar).
+- **Dashboard:** live release and trading metrics page (Supabase queries) for the operator.
+
 ## 2026-10-17 (Sat) → 10-18 (Sun) — Phase 2 scan-speed wins, shorts research and shadow
 
 - **Operator approved shorts steps 1-2 (10-17 ~03:45 UTC):** backtest short setups and record
