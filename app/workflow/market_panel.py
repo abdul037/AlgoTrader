@@ -15,8 +15,9 @@ from Yahoo Finance (yfinance, already a dependency), one daily history per symbo
 * WTI oil ``CL=F``: the latest price and its % change against the prior daily close;
 * chips against staples: ``SMH`` minus ``XLP``, 5- and 20-session returns (dividend-adjusted,
   completed sessions only);
-* the day's economic events: no economic calendar exists on this build (the calendar half of
-  post-mortem item 1 is not built), so the field is kept, empty, for it.
+* the day's economic events: the US CPI, PPI, jobs-report and FOMC days the in-code table
+  (``macro_calendar``, the event-risk shadow's ``macro`` part) lists for that date, and the
+  kinds it cannot vouch for then (``unknown_kinds``): no fetch, never in the label.
 
 The regime label is LOGGED ONLY (``regime_label``). Nothing reads it to decide anything: it
 never blocks, creates, changes, ranks or reorders a proposal, order, approval, scan decision,
@@ -115,7 +116,10 @@ REGIME_RULE = (
     "SMH trails XLP by 5 pp or more over 5 sessions and the 10y fell 5 bp or more; chips_weak "
     "= the same chip lag otherwise; neutral = none; unknown = an input missing"
 )
-EVENTS_NOTE = "no economic calendar on this build; this field is kept for it"
+EVENTS_NOTE = (
+    "the day's US CPI, PPI, jobs-report and FOMC days from the in-code macro calendar "
+    "(app/workflow/macro_calendar.py); unknown_kinds: kinds it cannot vouch for that day"
+)
 
 
 def enabled(settings: Any) -> bool:
@@ -520,6 +524,23 @@ def _refresh(record: dict[str, Any]) -> None:
     record["regime"] = regime_label(record["panel"])
     record["missing"] = [s for s in SYMBOLS if (symbols.get(s) or {}).get("status") == "missing"]
     record["not_fetched"] = [s for s in SYMBOLS if s not in symbols]
+    record["economic_events"] = economic_events(record.get("session_date"))
+    record["economic_events_note"] = EVENTS_NOTE
+
+
+def economic_events(day: Any) -> dict[str, Any]:
+    """The macro calendar's events on ``day`` (an ISO date) and the kinds it cannot vouch for
+    then. Pure (the in-code table, no I/O) and never raises: logged only, read by nothing. A
+    day it cannot read vouches for no kind, as the event-risk shadow reads the table."""
+
+    from app.workflow.macro_calendar import KINDS, scheduled
+
+    try:
+        session = date.fromisoformat(str(day))
+        events, unknown = scheduled(session, session)
+    except Exception as exc:  # noqa: BLE001 - a logged field never stops the panel
+        return {"events": [], "unknown_kinds": list(KINDS), "error": str(exc)[:160]}
+    return {"events": events, "unknown_kinds": unknown}
 
 
 def _new_record(day: str) -> dict[str, Any]:
@@ -531,8 +552,6 @@ def _new_record(day: str) -> dict[str, Any]:
         "started_at": utc_now().isoformat(),
         "ticks": 0,
         "symbols": {},
-        "economic_events": None,  # no economic calendar on this build: kept for it
-        "economic_events_note": EVENTS_NOTE,
         "shadow_only": True,
     }
 

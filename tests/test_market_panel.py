@@ -301,7 +301,11 @@ def test_once_the_deep_scan_is_final_it_records_the_panel_once_a_day(tmp_path, m
     assert view["wti_oil"]["last"] == 96.2 and view["wti_oil"]["change_pct"] == 1.17
     chips = view["chips_vs_staples"]
     assert chips["relative_5d_pp"] == -14.99 and chips["relative_20d_pp"] == 0.24
-    assert record["economic_events"] is None and record["economic_events_note"]
+    # 15 Oct 2026 is a producer-price day (08:30): the macro calendar's, never in the label
+    ppi = {"events": [{"date": DAY, "kind": "ppi"}], "unknown_kinds": []}
+    assert record["economic_events"] == ppi and summary["economic_events"] == ppi
+    assert record["economic_events_note"] == panel.EVENTS_NOTE
+    assert "economic_events" not in json.dumps(panel.regime_tag(json.dumps(record)))
     assert record["regime"]["components"]["asia_selloff"] is True
     assert record["regime"]["components"]["futures_down"] is True
     # it writes only its own key and one run log
@@ -455,6 +459,40 @@ def test_an_unreadable_record_starts_over(tmp_path, monkeypatch) -> None:
         assert env.run()["status"] == "complete"
 
 
+def test_a_record_from_before_the_calendar_resumes_with_its_events(tmp_path, monkeypatch) -> None:
+    env = _env(tmp_path, monkeypatch)
+    earlier = {  # written by the build before the macro calendar, mid-morning
+        "schema_version": 1, "session_date": DAY, "status": "partial", "ticks": 1,
+        "symbols": {}, "economic_events": None, "economic_events_note": "no calendar",
+    }  # fmt: skip
+    env.service.runtime_state.values[KEY] = json.dumps(earlier)
+    assert env.run()["status"] == "complete"
+    record = env.record()
+    assert record["ticks"] == 2  # resumed, not started over
+    assert record["economic_events"]["events"] == [{"date": DAY, "kind": "ppi"}]
+    assert record["economic_events_note"] == panel.EVENTS_NOTE
+
+
+def test_the_days_economic_events_are_the_calendars_and_fail_closed() -> None:
+    from app.workflow.macro_calendar import KINDS
+
+    def kinds(day):
+        return [e["kind"] for e in panel.economic_events(day)["events"]]
+
+    assert kinds("2026-10-14") == ["cpi"] and kinds("2026-10-28") == ["fomc"]
+    assert kinds("2026-11-06") == ["jobs"] and kinds("2026-10-16") == []
+    assert panel.economic_events("2026-10-16")["unknown_kinds"] == []
+    # outside the span a kind vouches for: unknown, never clear
+    assert panel.economic_events("2026-09-30") == {"events": [], "unknown_kinds": list(KINDS)}
+    late = panel.economic_events("2028-01-26")
+    assert late["events"] == [{"date": "2028-01-26", "kind": "fomc"}]
+    assert late["unknown_kinds"] == ["cpi", "ppi", "jobs"]
+    for bad in (None, "", "15 Oct", "2026-02-30", 15):
+        unreadable = panel.economic_events(bad)
+        assert unreadable["events"] == [] and unreadable["unknown_kinds"] == list(KINDS)
+        assert unreadable["error"]
+
+
 def test_yesterdays_record_is_not_today_s(tmp_path, monkeypatch) -> None:
     env = _env(tmp_path, monkeypatch)
     env.run()
@@ -464,6 +502,7 @@ def test_yesterdays_record_is_not_today_s(tmp_path, monkeypatch) -> None:
     ).isoformat()
     summary = env.run()
     assert summary["session_date"] == "2026-10-16" and len(env.provider.calls) == 14
+    assert summary["economic_events"] == {"events": [], "unknown_kinds": []}  # none on 16 Oct
     assert json.loads(env.service.runtime_state.values[KEY])["status"] == "complete"  # kept
 
 
