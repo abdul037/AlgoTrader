@@ -12,6 +12,46 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-10-20 (Tue) → 10-21 (Wed) — shadow-only release; paper-only trades move to their own account
+
+- **10-20 05:45 UTC deploy verified:** Railway `1415d95c` SUCCESS on `5126da6`; boot snapshot
+  paper, real trading off, `max_open_positions` 12, event-risk and Phase 3 shadows on; guard
+  heartbeat fresh; CI green. `MAX_OPEN_POSITIONS=12` and `PORTFOLIO_MAX_GROSS_EXPOSURE_PCT=100`
+  were set in Railway before the push (skipDeploys), picked up by that deploy.
+- **Trades:** none on 10-19 or 10-20 (paper and eToro). 10-20: 26 signals refused for
+  `strategy_lacks_oos_evidence`, 1 for `strategy_not_production_approved`; the two passing
+  strategies did not signal; no eToro copy (24 h streak still building).
+- **Operator decisions 10-20:** (1) intraday plan: both fast execution and short-horizon
+  (10m first) paper trading; intraday paper verdicts judged under Alpaca costs plus a stress
+  profile; eToro keeps the eToro-cost bar. (2) The learning lane runs on a **separate Alpaca
+  paper account** (keys `ALPACA_LEARNING_API_KEY`, `ALPACA_LEARNING_SECRET_KEY`,
+  `ALPACA_LEARNING_EXPECTED_ACCOUNT_NUMBER`, entered in Railway by the operator only).
+  (3) **Every paper-only trade** (lane and fee-band: strategies that pass without eToro fees
+  but not with them) goes to that account; the main paper account keeps only trades eToro could
+  copy. (4) Plan (not execute) the Supabase move to US West; plan written
+  (`db_region_migration_plan.md`, rehearsal Thu 10-22 06:00 UTC and move Sat 10-24 07:00 UTC
+  proposed, pending the operator's approval of the windows).
+- **Held, not shipped:** the fee-free paper bar and the main-account learning lane. Reviews
+  showed paper-only trades on the main account can change real-money decisions: a lane trade in a
+  symbol the real account holds drives that position's exit copy; lane results feed the
+  name-keyed strategy demotion; lane and fee-band losses share paper's loss halts that also stop
+  eToro copies; a fee-band candidate can take a symbol from an eToro-copyable one in the same
+  pass; fee-band specs join every focused swing run. Decision (3) removes all of these.
+- **Shipped as `5126da6..63387e2` (4 commits), shadow only:** market panel in the pre-market
+  scan (Asia, Nasdaq futures, 10-year yield, oil, chips vs staples, the day's macro events;
+  logged regime flag; setting on by default) and an economic-calendar flag on the event-risk
+  shadow (CPI/PPI/FOMC/jobs from a dated, source-verified in-code table; days past the verified
+  horizon read `calendar_unknown`, never clear). Neither reaches a proposal, order, ranking,
+  alert or eToro decision. 2/2 reviewers approved; no HARD_*, execution, risk, paper or mirror
+  file changed.
+- **Verification before push:** full suite on `63387e2` green, architecture fitness passed.
+- **Built and reviewed, next after-close window:** Stage 3 intraday exits (`0521b15a`, 3/3):
+  own exit thread with time stops for intraday paper positions only (never swing, never a symbol
+  with an eToro copy), cancel-legs-then-close without ever selling more than held, EOD flatten
+  also from that thread, last intraday entry 15:30 New York (close-30 on half days).
+  **Held:** the Stage 2 fast-path build (early dispatch could change which trade eToro copies;
+  a double POST timeout could trip the emergency stop); `ALPACA_TRADE_STREAM_ENABLED` stays off.
+
 ## 2026-10-19 (Mon) → 10-20 (Tue) — post-mortem release: copy rules, overnight alert, shadows
 
 - **Operator approvals (all recorded on question cards):** 10-18 ~05:40 UTC weak-valid cap by date,
