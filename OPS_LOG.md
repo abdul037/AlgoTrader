@@ -12,6 +12,60 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-10-21 (Wed) — intraday Stage 1: honest minute-bar evidence; learning account paused
+
+- **10-21 04:29 UTC deploy verified:** Railway `41870f57` SUCCESS on `1046d29`; boot snapshot
+  paper, real trading off, `max_open_positions` 12, `premarket_market_panel_enabled` and
+  `event_risk_macro_shadow_enabled` present; guard heartbeat fresh; CI green.
+- **Operator delegated the order of work (10-21, "do what you think is best; every line of code
+  must have value").** Decisions taken on that basis:
+  - **Learning account paused** (code kept on branches `integrate-paper-learning` and
+    `build-learning-account`). Alpaca paper fills are themselves simulated, and every screened
+    signal is already followed to its stop or target in `tracked_signals`, so a forward test
+    needs no new trading code: the dashboard now reports tracked-signal R by timeframe and
+    strategy. The fee-free paper bar stays held with it.
+  - **Database move deferred** (operator agreed). Revisit if Stage 1 finds an intraday edge or
+    scan deferrals start costing signals from passing strategies. The operator has two other
+    projects that may use this database; they must be repointed if it ever moves. Plan kept
+    (`db_region_migration_plan.md` in the session scratchpad).
+  - **Intraday exits (Stage 3, `0521b15a`) held** until an intraday strategy can trade.
+- **Forward check (tracked signals closed in the last 60 days, before costs):** 15m +0.06R
+  ±0.09 (259), 5m +0.12R ±0.12 (140), 10m +0.08R ±0.17 (56), 1d -0.06R ±0.21 (39). After 4 bps
+  (Alpaca) roughly zero; after 12 bps (stress) negative. No proven intraday edge; Stage 1 exists
+  to measure it honestly, not to switch intraday trading on.
+- **Shipped as `1046d29..1da9af3` (2 commits), Stage 1 of the intraday plan:**
+  - 10m is treated as intraday in backtests (`bars_per_year` 9828: session flatten, session-ATR
+    stop floor, extended-hours spread) and added to the backtest scheduler
+    (`1d,15m,5m,10m`; 1m stays out).
+  - Minute-bar backtests fetch a fresh, session-counted ~126-day window (was ~90 calendar days,
+    sometimes a live scan's short cached frame); that fetch writes no cache. Live scan windows
+    are unchanged. Minute rows from a fallback provider or with fewer than 2 folds are not
+    written (`backtest_oos_row_skipped`). 1d rows unchanged.
+  - Minute-bar evidence fills one bar later (`WALK_FORWARD_INTRADAY_ENTRY_DELAY_BARS`, default
+    1), never across a session close, never from a signal fired while holding or while an entry
+    is pending. 1h/1d/1w unchanged.
+  - Minute rows also store Alpaca (~4.3 bps round trip) and stress (~12.3 bps) cost profiles,
+    from a replay of the eToro run's signals (about 2x faster per spec). Minute verdicts gain
+    `paper_passed`; on the main paper account a minute strategy now needs the fee-inclusive
+    `passed` AND `paper_passed` (stricter only; a missing field fails closed; crypto keeps the
+    old gate). Every eToro path still reads `passed` alone.
+  - Boot snapshot now shows `backtest_scheduler_timeframes` and
+    `walk_forward_intraday_entry_delay_bars`.
+- **Reviews:** 3 reviewers on `a14f90b` (one blocker: venue costs could add fee-band minute
+  passes on the main account, the coupling held on 10-20; one major: a signal fired while an
+  entry was pending could open a second trade); both fixed in `1da9af3`, re-reviewed 2/2
+  (30 of 31 mutants killed; byte-identical 1d/1h/1w rows versus `1046d29`). Production check:
+  current 5m/15m OOS rows have 9 folds over ~90 days, so minute bars are regular-hours only and
+  the longer window will add folds.
+- **Expect:** minute keys fail the paper gate for roughly the first sweep (no rows with cost
+  profiles yet); the full sweep takes ~16-20 h; 1d rows stay inside the 7-day pool.
+- **Known minors / follow-ups:** the backtests table has no retention and minute rows now carry
+  full trade lists (~+10 MB/day raw); a retention rule is an operator decision. A failed Alpaca
+  minute fetch still runs on the Yahoo frame before the row is discarded (wasted pass time). Two
+  alert-path readers take the latest row of any timeframe (pre-existing). The paper pool can
+  cover fewer symbols than the eToro pool while rows turn over (never looser: `passed` is still
+  required).
+
 ## 2026-10-20 (Tue) → 10-21 (Wed) — shadow-only release; paper-only trades move to their own account
 
 - **10-20 05:45 UTC deploy verified:** Railway `1415d95c` SUCCESS on `5126da6`; boot snapshot
