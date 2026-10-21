@@ -78,11 +78,12 @@ def _run(data: pd.DataFrame, strategy, *, delay: int):
 
 
 @pytest.mark.parametrize("delay", [0, 1, 2])
-def test_a_signal_fills_delay_bars_after_the_next_open(delay: int) -> None:
+@pytest.mark.parametrize("signal_bar", [0, 10])  # bar 0: the first evaluated bar waits too
+def test_a_signal_fills_delay_bars_after_the_next_open(delay: int, signal_bar: int) -> None:
     data = _flat_sessions()
-    trades = _run(data, BuyOnBars(10), delay=delay)
+    trades = _run(data, BuyOnBars(signal_bar), delay=delay)
 
-    fill_bar = 11 + delay
+    fill_bar = signal_bar + 1 + delay
     assert len(trades) == 1
     assert pd.Timestamp(trades[0]["entry_time"]) == data["timestamp"][fill_bar]
     assert trades[0]["entry_price"] == pytest.approx(data["open"][fill_bar])
@@ -117,4 +118,35 @@ def test_a_signal_fired_while_holding_is_not_acted_on_after_the_exit() -> None:
     assert [pd.Timestamp(t["entry_time"]) for t in later] == [
         data["timestamp"][7],
         data["timestamp"][11],
+    ]
+
+
+def test_a_signal_fired_while_the_order_was_pending_never_enters() -> None:
+    # Bar 5's signal is ordered at bar 6 and fills at bar 7, which stops it out at once; bar
+    # 6's signal fired before that fill, with the order on its way, so it must not enter.
+    data = _flat_sessions(dip_at=7)
+
+    trades = _run(data, BuyOnBars(5, 6), delay=1)
+    assert [(t["reason"], pd.Timestamp(t["entry_time"])) for t in trades] == [
+        ("stop_loss", data["timestamp"][7])
+    ]
+
+
+def test_a_run_with_its_own_starting_cash_keeps_every_other_knob() -> None:
+    # engine.run(initial_cash=...) used to rebuild the config and drop the delay, the
+    # session flatten and the stop floor.
+    data = _flat_sessions()
+    config = EngineConfig(
+        bars_per_year=bars_per_year_for("5m"),
+        cost_model=zero_cost_model(),
+        flatten_at_session_end=True,
+        entry_delay_bars=1,
+    )
+    result = BacktestEngine(config=config).run(
+        symbol="SYN", strategy=BuyOnBars(10), data=data, file_path="t", initial_cash=50_000.0
+    )
+
+    assert result.initial_cash == 50_000.0
+    assert [(pd.Timestamp(t["entry_time"]), t["reason"]) for t in result.trades] == [
+        (data["timestamp"][12], "session_close")
     ]

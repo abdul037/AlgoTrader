@@ -149,8 +149,9 @@ def _unit_service(monkeypatch, clock_values):
 def test_mid_symbol_stop_reports_resume_point_and_resumes_there(monkeypatch) -> None:
     # 2026-10-03: one symbol's intraday sweep (strategies x variants) exceeds a
     # pass's deadline; advancing by whole symbols would never reach its later
-    # strategies. Pass 1: started_at, symbol-top, then units 1-4 under budget, 5th trips.
-    service, ran = _unit_service(monkeypatch, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 100.0])
+    # strategies. Pass 1: started_at, symbol-top, then units 1-4 under budget, 5th trips
+    # (one more read before the 5m fetch: a minute-bar fetch is skipped past the deadline).
+    service, ran = _unit_service(monkeypatch, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 100.0])
     first = service.run(symbols=["ONLY"], timeframes=["1d", "5m"], deadline_seconds=50.0)
     assert ran == ["1d-s1", "1d-s2", "1d-s3", "5m-s1"]
     assert first.stopped_mid_symbol and first.resume_unit == 4

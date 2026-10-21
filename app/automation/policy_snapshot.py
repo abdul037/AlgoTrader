@@ -59,6 +59,10 @@ def effective_execution_policy(settings: Any) -> dict[str, Any]:
         "backtest_scheduler_deadline_seconds": float(
             _get("backtest_scheduler_deadline_seconds", 0.0) or 0.0
         ),
+        # Intraday evidence (2026-10-20): whether 10m is really scheduled (a Railway variable
+        # replaces the default list) and the modelled signal-to-order delay on minute bars.
+        "backtest_scheduler_timeframes": [str(tf) for tf in _get("backtest_scheduler_timeframes", []) or []],
+        "walk_forward_intraday_entry_delay_bars": int(_get("walk_forward_intraday_entry_delay_bars", 0) or 0),
         "screener_batch_deadline_seconds": float(_get("screener_batch_deadline_seconds", 0.0) or 0.0),
         "market_universe_limit": int(_get("market_universe_limit", 0) or 0),
         "alpaca_data_feed": str(_get("alpaca_data_feed", "")),

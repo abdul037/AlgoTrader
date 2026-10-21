@@ -138,7 +138,7 @@ class _Bars:
             hedge[column] = frame[column] * noise
         self.hedge = hedge
 
-    def get_history(self, symbol, *, timeframe, bars=None, provider=None, force_refresh=False):
+    def get_history(self, symbol, *, timeframe, bars=None, provider=None, force_refresh=False, backtest=False):
         return (self.frame if symbol.upper() == SYMBOL else self.hedge).copy()
 
 

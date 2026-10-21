@@ -14,9 +14,11 @@ trades on Alpaca paper, though, so for its paper verdict the batch also scores i
   where most 5m/15m entries size, that matches the eToro model (10 bps plus $2 = 12 bps);
   below the cap eToro's flat $2 weighs more.
 
-The paper gate passes such a strategy only when both profiles' pooled OOS and holdout
-expectancy are positive (app/performance/strategy_evidence.py). Both runs replay the eToro
-run's signals (``RecordedSignals``), so only fills and costs differ between the three.
+The main paper account's gate asks a minute-bar strategy for positive pooled OOS and holdout
+expectancy under both profiles on top of the fee-inclusive verdict, so they only ever tighten
+it (app/performance/strategy_evidence.py): fee-band trades wait for a separate paper account.
+Both runs replay the eToro run's signals (``RecordedSignals``), so only fills and costs
+differ between the three.
 Crypto rows get no profiles: this is an equities cost model.
 """
 

@@ -21,9 +21,9 @@ from app.backtesting.walk_forward import WalkForwardSplitter
 _MINUTES = {"1m": 1, "2m": 2, "3m": 3, "5m": 5, "10m": 10, "15m": 15, "30m": 30, "1h": 60}
 SESSION_MINUTES = 390
 # The minute bars the intraday strategies trade (operator 2026-10-20). Their evidence fetches
-# full-length history, fills a bar late like the live bot and, for paper, is judged on Alpaca
-# costs (app/backtesting/venue_costs.py). 1h shares the fold plan above but none of that, so
-# 1h/1d/1w evidence is unchanged.
+# full-length history, fills a bar late like the live bot and, for paper, must also clear
+# Alpaca and stress costs (app/backtesting/venue_costs.py). 1h shares the fold plan above but
+# none of that, so 1h/1d/1w evidence is unchanged.
 MINUTE_BAR_TIMEFRAMES = frozenset({"1m", "5m", "10m", "15m"})
 
 

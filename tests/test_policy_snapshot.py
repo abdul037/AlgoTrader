@@ -116,3 +116,16 @@ def test_snapshot_shows_whether_short_setups_are_recorded_in_shadow(tmp_path) ->
     assert effective_execution_policy(make_settings(tmp_path))["premarket_short_shadow_enabled"] is True
     off = make_settings(tmp_path, premarket_short_shadow_enabled=False)
     assert effective_execution_policy(off)["premarket_short_shadow_enabled"] is False
+
+
+def test_snapshot_shows_the_scheduled_backtest_timeframes_and_minute_bar_delay(tmp_path) -> None:
+    # A Railway variable replaces the default list, so whether 10m is really scheduled is
+    # only checkable from the boot log (2026-10-20).
+    settings = make_settings(
+        tmp_path,
+        backtest_scheduler_timeframes="1d,15m,5m,10m",
+        walk_forward_intraday_entry_delay_bars=1,
+    )
+    snapshot = effective_execution_policy(settings)
+    assert snapshot["backtest_scheduler_timeframes"] == ["1d", "15m", "5m", "10m"]
+    assert snapshot["walk_forward_intraday_entry_delay_bars"] == 1

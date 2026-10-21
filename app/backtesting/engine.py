@@ -29,7 +29,7 @@ broken. Do not work around them silently.
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -268,6 +268,9 @@ class BacktestEngine:
                         continue
                     open_trade = entry_attempt.open_trade
                     cash = entry_attempt.cash_after_entry
+                    # Signals that fired while this order was pending were seen with a position
+                    # on the way: none may enter after it, even if it stops out on its fill bar.
+                    recent_signals.clear()
 
                 equity = _mark_to_market(cash=cash, open_trade=open_trade, bar=bar)
                 equity_curve.append(equity)
@@ -366,15 +369,8 @@ class _EntryAttempt:
 
 
 def _override_cash(config: EngineConfig, initial_cash: float) -> EngineConfig:
-    return EngineConfig(
-        initial_cash=initial_cash,
-        risk_per_trade_pct=config.risk_per_trade_pct,
-        leverage=config.leverage,
-        bars_per_year=config.bars_per_year,
-        cost_model=config.cost_model,
-        allow_extended_hours=config.allow_extended_hours,
-        short_entries=config.short_entries,
-    )
+    # Every other knob carries over (it used to drop the flatten, stop floor and entry delay).
+    return replace(config, initial_cash=initial_cash)
 
 
 def _opens_position(signal: Any, *, short: bool) -> bool:

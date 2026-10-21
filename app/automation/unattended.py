@@ -181,11 +181,15 @@ class PaperAutoTradingService:
             blockers.append("strategy_not_production_approved")
         # Phase 2: only strategies with pooled out-of-sample evidence create
         # proposals (when enabled); the rest stay scanned/tracked as shadow signals.
-        # In paper, minute-bar strategies are judged on Alpaca costs (operator 2026-10-20).
+        # In paper, a minute-bar strategy must also clear Alpaca and stress costs (2026-10-20);
+        # that only tightens: fee-band trades never run on this account. Crypto rows carry no
+        # venue profiles, so crypto keeps the fee-inclusive verdict alone.
         from app.performance.strategy_evidence import evidence_blocker
 
-        paper = str(getattr(self.settings, "execution_mode", "")) == "paper" and not bool(
-            getattr(self.settings, "enable_real_trading", False)
+        paper = (
+            str(getattr(self.settings, "execution_mode", "")) == "paper"
+            and not bool(getattr(self.settings, "enable_real_trading", False))
+            and not crypto_symbols.is_crypto_symbol(symbol)
         )
         evidence = evidence_blocker(
             self.settings,

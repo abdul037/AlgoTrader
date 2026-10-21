@@ -147,16 +147,30 @@ class BatchBacktestService:
                     unit += len(specs)
                     continue
                 minute_bars = is_minute_bar(timeframe)
+                if (
+                    minute_bars
+                    and deadline_seconds is not None
+                    and deadline_seconds > 0
+                    and (time.monotonic() - started_at) >= deadline_seconds
+                ):
+                    # Stop before the long minute-bar fetch, not after it: no spec could use it.
+                    resume_unit, stopped_mid_symbol = max(unit, skip_units), True
+                    truncated = True
+                    errors.append("backtest_deadline_exceeded")
+                    break
+                fetch = {
+                    "timeframe": timeframe,
+                    "bars": history_bars_for(timeframe, self.settings),
+                    "provider": provider,
+                    "force_refresh": force_refresh,
+                }
+                if minute_bars:
+                    # The whole window, refetched every pass and cached nowhere
+                    # (MarketDataEngine.get_history): the cache serves any fresh frame of 20+
+                    # bars, so a live scan's ~320 bars left these runs 0 folds (2026-10-20).
+                    fetch["backtest"] = True
                 try:
-                    # Minute bars always refetch: the cache serves any fresh frame of 20+ bars,
-                    # so a live scan's ~320 bars left these runs 0 folds (2026-10-20).
-                    history = self.market_data.get_history(
-                        symbol,
-                        timeframe=timeframe,
-                        bars=history_bars_for(timeframe, self.settings),
-                        provider=provider,
-                        force_refresh=force_refresh or minute_bars,
-                    )
+                    history = self.market_data.get_history(symbol, **fetch)
                 except Exception as exc:
                     errors.append(f"{symbol} {timeframe}: {exc}")
                     continue
@@ -182,7 +196,7 @@ class BatchBacktestService:
                     cost_model=with_etoro_trade_fees(engine_config.cost_model, crypto=crypto),
                 )
                 engine = BacktestEngine(self.backtests, config=engine_config)
-                # Minute-bar paper evidence is judged on Alpaca costs (app/backtesting/venue_costs.py).
+                # Minute-bar paper evidence must also clear Alpaca costs (app/backtesting/venue_costs.py).
                 cost_profiles = (
                     {name: replace(engine_config, cost_model=model) for name, model in venue_cost_models().items()}
                     if minute_bars and walk_forward and not crypto
@@ -392,27 +406,34 @@ class BatchBacktestService:
         # fold ever trained or tested on). This is the honest final check the
         # brief mandates; its result gates promotion in _promotion_hint.
         metrics.update(self._evaluate_holdout(engine, symbol, strategy, history, splitter, file_path))
-        if cost_profiles and metrics["fold_count"]:
-            metrics[COST_PROFILES_FIELD] = {
-                name: profile_metrics(
-                    self._run_strategy(
-                        engine=BacktestEngine(config=config),
-                        symbol=symbol,
-                        strategy=strategy,
-                        history=history.copy(),
-                        timeframe=timeframe,
-                        provider=provider,
-                        walk_forward=True,
-                        persist=False,
+        skip = _minute_row_skip(timeframe, history, metrics["fold_count"]) if persist else None
+        if cost_profiles and metrics["fold_count"] and not skip:
+            try:
+                metrics[COST_PROFILES_FIELD] = {
+                    name: profile_metrics(
+                        self._run_strategy(
+                            engine=BacktestEngine(config=config),
+                            symbol=symbol,
+                            strategy=strategy,
+                            history=history.copy(),
+                            timeframe=timeframe,
+                            provider=provider,
+                            walk_forward=True,
+                            persist=False,
+                        )
                     )
-                )
-                for name, config in cost_profiles.items()
-            }
+                    for name, config in cost_profiles.items()
+                }
+            except Exception as exc:  # noqa: BLE001 - the eToro row stands; paper then fails closed
+                if self.logs is not None:
+                    self.logs.log(
+                        "backtest_cost_profiles_failed",
+                        {"symbol": symbol.upper(), "strategy_name": row_name or strategy.name,
+                         "timeframe": timeframe, "error": f"{type(exc).__name__}: {exc}"[:300]},
+                    )
 
         completed_at = utc_now().isoformat()
-        if persist and not metrics["fold_count"] and is_minute_bar(timeframe):
-            # No fold fit (e.g. a 30-day yfinance fallback): a 0-trade row would replace this
-            # symbol's last real one in the pooled verdict, so none is written.
+        if skip:
             if self.logs is not None:
                 self.logs.log(
                     "backtest_oos_row_skipped",
@@ -421,7 +442,8 @@ class BatchBacktestService:
                         "strategy_name": row_name or strategy.name,
                         "timeframe": timeframe,
                         "bars": len(history),
-                        "reason": "no_walk_forward_fold",
+                        "folds": metrics["fold_count"],
+                        "reason": skip,
                     },
                 )
         elif persist and self.backtests is not None:
@@ -617,6 +639,24 @@ class BatchBacktestService:
 
 
 __all__ = ["BatchBacktestService"]
+
+# One 7-day fold is a single week, not a walk-forward; the full minute-bar window fits ~14.
+MIN_MINUTE_BAR_FOLDS = 2
+
+
+def _minute_row_skip(timeframe: str, history: Any, folds: int) -> str | None:
+    """Why a 1m/5m/10m/15m OOS row must not be written (None: write it). The row replaces the
+    symbol's last one in the pooled verdict, so it must stand for the full plan: a frame from a
+    fallback provider (yfinance serves 30-60 days) would be saved under the requested
+    provider's path, and fewer than ``MIN_MINUTE_BAR_FOLDS`` folds is a data gap, not evidence."""
+
+    if not is_minute_bar(timeframe):
+        return None
+    if bool((getattr(history, "attrs", None) or {}).get("used_fallback")):
+        return "fallback_provider"
+    if folds < MIN_MINUTE_BAR_FOLDS:
+        return "too_few_folds"
+    return None
 
 
 def _avg(items: list[dict[str, Any]], key: str, *, cap: float | None = None) -> float:

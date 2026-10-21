@@ -1,11 +1,13 @@
 """Honest minute-bar walk-forward evidence (operator plan, Stage 1, 2026-10-20).
 
 * 10m is backtested (as an intraday timeframe) and 1m stays out of the scheduler;
-* minute-bar backtests refetch full history and never write a 0-fold row;
+* minute-bar backtests refetch full history and never write a row from a fallback frame or
+  with fewer than two folds;
 * their entries fill a bar late, the live scan-to-order delay;
-* their PAPER verdict needs positive OOS and holdout expectancy under both the Alpaca and the
-  stress cost profile, while every eToro use and every 1h/1d/1w verdict keeps reading the
-  fee-inclusive numbers unchanged.
+* on the main paper account a minute-bar strategy also needs positive OOS and holdout
+  expectancy under both the Alpaca and the stress cost profile, on top of the fee-inclusive
+  verdict: the profiles only tighten it (fee-band trades wait for their own account), and
+  every eToro use and every 1h/1d/1w verdict keeps reading the fee-inclusive numbers.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from app.backtesting.cost_model import CostModel
 from app.backtesting.engine import BacktestEngine, EngineConfig
 from app.backtesting.metrics import bars_per_year_for
 from app.backtesting.strategy_selection import strategy_kwargs_for, strategy_specs_for
-from app.backtesting.venue_costs import COST_PROFILES_FIELD, profile_metrics, venue_cost_models
+from app.backtesting.venue_costs import COST_PROFILES_FIELD, venue_cost_models
 from app.performance.strategy_evidence import (
     VERDICTS_KEY,
     compute_verdicts,
@@ -83,8 +85,10 @@ class FakeMarketData:
         self.frames = frames
         self.calls: list[tuple[str, str, bool]] = []
 
-    def get_history(self, symbol, *, timeframe, bars, provider=None, force_refresh=False):
-        self.calls.append((symbol, timeframe, force_refresh))
+    def get_history(
+        self, symbol, *, timeframe, bars, provider=None, force_refresh=False, backtest=False
+    ):
+        self.calls.append((symbol, timeframe, backtest))
         return self.frames[(symbol, timeframe)].copy()
 
 
@@ -131,9 +135,9 @@ def test_scheduler_backtests_10m_not_1m_and_fills_minute_bars_a_bar_late() -> No
 
 
 def test_short_minute_frames_refetch_and_write_no_row_while_daily_is_unchanged(tmp_path) -> None:
-    # A live scan's ~320 cached 5m bars (4 sessions) fit no fold. The batch now refetches
-    # minute bars instead of serving the cache, and a run that still fits no fold writes no
-    # row, so the symbol's last real row keeps counting. 1d keeps the cache and its rows.
+    # A live scan's ~320 cached 5m bars (4 sessions) fit no fold. The batch now asks for the
+    # backtest fetch (refetched, cached nowhere) for minute bars, and a run that still fits no
+    # fold writes no row, so the symbol's last real row keeps counting. 1d is unchanged.
     frames = {("AAA", "5m"): _sessions(4, minutes=5, seed=1), ("AAA", "1d"): _daily(60)}
     service, db = _service(tmp_path, frames)
 
@@ -152,9 +156,71 @@ def test_short_minute_frames_refetch_and_write_no_row_while_daily_is_unchanged(t
             "strategy_name": "rsi_vwap_ema_confluence",
             "timeframe": "5m",
             "bars": 4 * 78,
-            "reason": "no_walk_forward_fold",
+            "folds": 0,
+            "reason": "too_few_folds",
         }
     ]
+
+
+def test_minute_rows_from_a_fallback_frame_or_one_fold_are_not_written(tmp_path) -> None:
+    # yfinance serves 30 days of 5m: saved under the requested provider's path, its 1-fold
+    # (or, for 15m's 60 days, ~5-fold) row would replace the symbol's ~14-fold one.
+    fallback = _sessions(34, minutes=5, seed=3)
+    fallback.attrs["used_fallback"] = True
+    frames = {("AAA", "5m"): fallback, ("BBB", "5m"): _sessions(22, minutes=5, seed=4)}
+    service, db = _service(tmp_path, frames)
+
+    service.run(
+        symbols=["AAA", "BBB"], timeframes=["5m"], strategy_names=["vwap_reclaim"], provider="t"
+    )
+
+    assert _rows(db) == {}
+    skipped = _logs(db, "backtest_oos_row_skipped")
+    assert [(e["symbol"], e["folds"], e["reason"]) for e in skipped] == [
+        ("AAA", 3, "fallback_provider"),
+        ("BBB", 1, "too_few_folds"),
+    ]
+
+
+def test_a_failing_profile_run_still_writes_the_etoro_row(tmp_path, monkeypatch) -> None:
+    def broken(_summary):
+        raise RuntimeError("profile boom")
+
+    monkeypatch.setattr(batch_module, "profile_metrics", broken)
+    service, db = _service(tmp_path, {("AAA", "5m"): _sessions(34, minutes=5, seed=11)})
+
+    service.run(symbols=["AAA"], timeframes=["5m"], strategy_names=["vwap_reclaim"], provider="t")
+
+    row = _rows(db)["vwap_reclaim t:5m:AAA:walk_forward_oos"]
+    assert row["number_of_trades"] > 10 and COST_PROFILES_FIELD not in row  # paper fails closed
+    assert _logs(db, "backtest_cost_profiles_failed") == [
+        {
+            "symbol": "AAA",
+            "strategy_name": "vwap_reclaim",
+            "timeframe": "5m",
+            "error": "RuntimeError: profile boom",
+        }
+    ]
+
+
+def test_the_deadline_is_checked_before_the_long_minute_fetch(tmp_path, monkeypatch) -> None:
+    # Clock reads: the pass start, the symbol, the one 1d spec, then the 5m fetch is due.
+    clock = iter([0.0, 0.0, 0.0, 100.0])
+    monkeypatch.setattr(batch_module.time, "monotonic", lambda: next(clock, 1e9))
+    frames = {("AAA", "1d"): _daily(60), ("AAA", "5m"): _sessions(4, minutes=5, seed=1)}
+    service, _ = _service(tmp_path, frames)
+
+    summary = service.run(
+        symbols=["AAA"],
+        timeframes=["1d", "5m"],
+        strategy_names=["rsi_vwap_ema_confluence"],
+        provider="t",
+        deadline_seconds=50.0,
+    )
+
+    assert service.market_data.calls == [("AAA", "1d", False)]  # the 5m fetch never went out
+    assert summary.stopped_mid_symbol and summary.resume_unit == 1
+    assert summary.errors == ["backtest_deadline_exceeded"]
 
 
 # --- latency: a bar late on minute bars only ------------------------------------------------
@@ -284,8 +350,14 @@ def test_minute_rows_carry_both_profiles_from_one_evaluation_of_the_strategy(
             walk_forward=True,
             persist=False,
         )
-        assert profiles[name] == profile_metrics(direct), name  # replay == a fresh evaluation
-        assert profiles[name]["number_of_trades"] > 10
+        # Replay == a fresh evaluation, pinned to that run's own OOS and holdout numbers.
+        assert profiles[name] == {
+            "number_of_trades": direct["number_of_trades"],
+            "expectancy_usd": round(direct["expectancy_usd"], 4),
+            "holdout_trades": direct["holdout_trades"],
+            "holdout_expectancy_usd": direct["holdout_expectancy_usd"],
+        }, name
+        assert direct["number_of_trades"] > 10 and direct["holdout_trades"] > 5
     assert built[0].calls == fresh.calls > 1000
 
 
@@ -366,6 +438,18 @@ def _verdict_db(tmp_path):
             holdout_trades=5,
             holdout_expectancy=-2.0,
             profiles={"alpaca": (4.0, 2.0), "stress": (-0.5, 1.0)},
+        )
+        # Passes with eToro's fees and on both venue profiles.
+        _row(
+            db,
+            symbol=symbol,
+            strategy="intraday_vwap_trend",
+            tf="15m",
+            trades=20,
+            expectancy=3.0,
+            holdout_trades=5,
+            holdout_expectancy=1.0,
+            profiles={"alpaca": (9.0, 5.0), "stress": (2.5, 0.5)},
         )
         # Rows written before the profiles existed.
         _row(
@@ -498,10 +582,13 @@ def test_only_the_paper_gate_reads_the_paper_verdict(tmp_path) -> None:
     def gate(strategy, timeframe, **kwargs):
         return evidence_blocker(on, state, strategy=strategy, timeframe=timeframe, **kwargs)
 
-    # Paper (Alpaca) gate: minute bars by paper_passed, 1d by the fee-inclusive verdict.
-    assert gate("vwap_reclaim", "5m", paper=True) is None
+    # Main paper account: a minute key needs the fee-inclusive pass AND both venue profiles.
+    assert gate("intraday_vwap_trend", "15m", paper=True) is None
+    assert gate("vwap_reclaim", "5m", paper=True) == "strategy_lacks_oos_evidence"  # fee-band
     assert gate("rsi_reversal", "15m", paper=True) == "strategy_lacks_oos_evidence"
-    assert gate("ema_trend_stack", "10m", paper=True) == "strategy_lacks_oos_evidence"
+    assert (
+        gate("ema_trend_stack", "10m", paper=True) == "strategy_lacks_oos_evidence"
+    )  # no profiles
     assert gate("momentum_breakout", "1d", paper=True) is None
     # Every other caller (the eToro mirror, its +0.03R bar, the hints) reads `passed` as before.
     assert gate("vwap_reclaim", "5m") == "strategy_lacks_oos_evidence"
@@ -511,15 +598,31 @@ def test_only_the_paper_gate_reads_the_paper_verdict(tmp_path) -> None:
     payload = json.loads(state.get(VERDICTS_KEY))
     assert sorted(payload["passing_since"]) == [
         "ema_trend_stack:10m",
+        "intraday_vwap_trend:15m",
         "momentum_breakout:1d",
     ]  # streaks: `passed`
+    # A cached minute verdict written before paper_passed existed fails the paper gate only.
+    old = {
+        VERDICTS_KEY: json.dumps({"verdicts": {"s:5m": {"passed": True}, "s:1d": {"passed": True}}})
+    }
+    for timeframe, paper_result in (("5m", "strategy_lacks_oos_evidence"), ("1d", None)):
+        kwargs = {"strategy": "s", "timeframe": timeframe}
+        assert (
+            evidence_blocker(on, SimpleNamespace(get=old.get), paper=True, **kwargs) == paper_result
+        )
+        assert evidence_blocker(on, SimpleNamespace(get=old.get), **kwargs) is None
 
 
-def test_the_paper_proposal_gate_judges_minute_bars_on_venue_costs(tmp_path) -> None:
+def test_the_main_paper_gate_only_tightens_on_minute_bars(tmp_path) -> None:
+    # Operator decision 3 (2026-10-20): fee-band trades never run on the main paper account,
+    # so the venue profiles can block a minute-bar candidate there but never let one in.
     settings = make_settings(tmp_path, require_strategy_oos_evidence=True)
     verdicts = {
-        "vwap_reclaim:5m": {"passed": False, "paper_passed": True},
+        "vwap_reclaim:5m": {"passed": False, "paper_passed": True},  # fee-band
         "rsi_reversal:15m": {"passed": True, "paper_passed": False},
+        "ema_trend_stack:10m": {"passed": True},  # written before the profiles existed
+        "intraday_vwap_trend:15m": {"passed": True, "paper_passed": True},
+        "momentum_breakout:1d": {"passed": True},
     }
     service = PaperAutoTradingService(
         settings=settings,
@@ -537,14 +640,21 @@ def test_the_paper_proposal_gate_judges_minute_bars_on_venue_costs(tmp_path) -> 
         runtime_state=SimpleNamespace(get={VERDICTS_KEY: json.dumps({"verdicts": verdicts})}.get),
     )
 
-    def blockers(strategy, timeframe):
+    def blockers(strategy, timeframe, symbol="AAPL"):
         return service.candidate_proposal_blockers(
-            SimpleNamespace(symbol="AAPL", strategy_name=strategy, timeframe=timeframe)
+            SimpleNamespace(symbol=symbol, strategy_name=strategy, timeframe=timeframe)
         )
 
+    lacks = ["strategy_lacks_oos_evidence"]
     assert settings.execution_mode == "paper" and not settings.enable_real_trading
-    assert blockers("vwap_reclaim", "5m") == []
-    assert blockers("rsi_reversal", "15m") == ["strategy_lacks_oos_evidence"]
+    assert blockers("intraday_vwap_trend", "15m") == []
+    assert blockers("vwap_reclaim", "5m") == lacks
+    assert blockers("rsi_reversal", "15m") == lacks
+    assert blockers("ema_trend_stack", "10m") == lacks
+    assert blockers("momentum_breakout", "1d") == []
+    # Crypto rows carry no venue profiles: crypto keeps the fee-inclusive verdict alone.
+    assert blockers("ema_trend_stack", "10m", symbol="BTCUSD") == []
+    assert blockers("vwap_reclaim", "5m", symbol="BTCUSD") == lacks
 
 
 # --- regression: today's 5m/15m eToro verdicts with the new options off -----------------------

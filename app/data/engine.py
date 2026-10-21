@@ -61,12 +61,20 @@ class MarketDataEngine:
         provider: str | None = None,
         force_refresh: bool = False,
         write_cache: bool = True,
+        backtest: bool = False,
     ) -> pd.DataFrame:
         """Return normalized OHLCV history for a symbol and timeframe.
 
         ``write_cache=False`` still reads a fresh cached frame but never stores a fetched one:
-        for shadow readers, whose requests must not become a live scan's input (2026-10-19)."""
+        for shadow readers, whose requests must not become a live scan's input (2026-10-19).
+        ``backtest=True`` is the batch backtest's long minute-bar fetch (2026-10-20): always
+        fetched, its Alpaca window counts the bars as whole sessions (live callers keep the
+        calendar-day window), and it is stored in neither cache, so it never becomes a live
+        scan's input and adds no parquet file per pass."""
 
+        if backtest:
+            force_refresh, write_cache = True, False
+        fetch_options = {"backtest": True} if backtest else {}  # only when set: live calls as before
         normalized_symbol = symbol.upper().strip()
         normalized_timeframe = self._normalize_timeframe(timeframe)
         provider_name = self._resolve_provider(normalized_timeframe, provider)
@@ -94,6 +102,7 @@ class MarketDataEngine:
                         timeframe=normalized_timeframe,
                         bars=bars,
                         provider=candidate_provider,
+                        **fetch_options,
                     )
                     break
                 except EToroRateLimitError:
@@ -216,6 +225,7 @@ class MarketDataEngine:
         timeframe: str,
         bars: int,
         provider: str,
+        backtest: bool = False,
     ) -> pd.DataFrame:
         if provider == "etoro":
             if self.etoro_client is None:
@@ -244,7 +254,11 @@ class MarketDataEngine:
             return frame
 
         if provider == "alpaca":
-            start, end = self._history_window(timeframe, bars)
+            start, end = self._history_window(timeframe, bars, sessions=backtest)
+            if backtest:
+                return self._get_alpaca_provider().get_bars(
+                    symbol, timeframe=timeframe, start=start, end=end, cache=False
+                )
             return self._get_alpaca_provider().get_bars(symbol, timeframe=timeframe, start=start, end=end)
 
         raise ValueError(f"Unsupported provider: {provider}")
@@ -407,7 +421,7 @@ class MarketDataEngine:
         return self.alpaca_provider
 
     @staticmethod
-    def _history_window(timeframe: str, bars: int) -> tuple[datetime, datetime]:
+    def _history_window(timeframe: str, bars: int, *, sessions: bool = False) -> tuple[datetime, datetime]:
         end = datetime.now(UTC)
         if timeframe == "1d":
             lookback_days = max(10, int(bars * 3))
@@ -415,11 +429,14 @@ class MarketDataEngine:
             lookback_days = max(10, int(bars // 4) + 5)
         elif timeframe.endswith("m"):
             minutes = int(timeframe[:-1])
-            # ``bars`` fill this many 6.5 h sessions, and 5 sessions take 7 calendar days. Counting
-            # sessions as calendar days fetched ~90 days for the 120-day intraday walk-forward
-            # (2026-10-20), so it fit ~10 folds instead of ~13; +5 days covers holidays.
-            sessions = (bars * minutes) / (60 * 6.5)
-            lookback_days = max(5, math.ceil(sessions * 7 / 5) + 5)
+            session_count = (bars * minutes) / (60 * 6.5)
+            if sessions:
+                # The batch backtest's long fetch: 5 sessions take 7 calendar days. Counted as
+                # calendar days, the 120-day intraday walk-forward got ~90 days and fit ~10 folds
+                # instead of ~13 (2026-10-20); +5 days covers holidays.
+                lookback_days = max(5, math.ceil(session_count * 7 / 5) + 5)
+            else:  # live scans keep the window, so their frames and indicators do too
+                lookback_days = max(5, int(session_count) + 5)
         else:
             lookback_days = max(10, int(bars * 7))
         return end - timedelta(days=lookback_days), end

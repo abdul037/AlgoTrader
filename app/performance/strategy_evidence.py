@@ -29,8 +29,11 @@ hint) reads the streaks.
 Venue costs (operator 2026-10-20): every field above is priced with eToro's fees, and every
 eToro use reads only those. A 1m/5m/10m/15m key also carries ``cost_profiles`` (the same pools
 under Alpaca and stress costs, app/backtesting/venue_costs.py) and ``paper_passed`` /
-``paper_reasons``: the Alpaca paper gate (``evidence_blocker(paper=True)``) passes such a
-strategy only when both profiles clear the same bars. 1h/1d/1w keys are unchanged.
+``paper_reasons``. The main paper account's gate (``evidence_blocker(paper=True)``) passes
+such an equity strategy only when the fee-inclusive verdict passes AND both profiles clear the
+same bars, so the profiles only ever tighten it: a fee-band strategy (passing without eToro's
+fees but not with them) waits for a separate paper account (operator decision 3, 2026-10-20).
+1h/1d/1w keys are unchanged.
 """
 
 from __future__ import annotations
@@ -153,9 +156,9 @@ def _judge(
     return reasons, expectancy, holdout_expectancy
 
 
-# Minute-bar keys only (operator 2026-10-20): the Alpaca paper gate passes a 1m/5m/10m/15m
-# strategy only when its OOS and holdout pools are positive under both venue cost profiles
-# (app/backtesting/venue_costs.py), with the same trade counts and R bar as ``passed``.
+# Minute-bar keys only (operator 2026-10-20): true when the OOS and holdout pools are positive
+# under both venue cost profiles (app/backtesting/venue_costs.py), with the same trade counts
+# and R bar as ``passed``. The main paper gate asks for it on top of ``passed``, never instead.
 PAPER_PASSED_FIELD = "paper_passed"
 
 
@@ -330,9 +333,12 @@ def evidence_blocker(
 
     ``min_expectancy_r`` > 0 also asks a passing strategy for at least that pooled OOS
     expectancy in R (``EDGE_BELOW_BAR`` otherwise) -- the eToro live copy's own bar.
-    ``paper`` (the Alpaca paper proposal gate only) judges a 1m/5m/10m/15m strategy by
-    ``PAPER_PASSED_FIELD`` (Alpaca and stress costs) instead of the fee-inclusive ``passed``;
-    a verdict without it fails. Every other caller, the eToro ones included, reads ``passed``.
+    ``paper`` (the main Alpaca paper proposal gate only) also asks a 1m/5m/10m/15m strategy
+    for ``PAPER_PASSED_FIELD`` (Alpaca and stress costs) on top of the fee-inclusive
+    ``passed``, and a verdict without it fails: it only ever tightens. A fee-band strategy
+    (passing without eToro's fees but not with them) never trades on the main account
+    (operator decision 3, 2026-10-20) until it has its own. Every other caller, the eToro ones
+    included, reads ``passed`` alone.
     """
 
     if not bool(getattr(settings, "require_strategy_oos_evidence", False)) or runtime_state is None:
@@ -342,13 +348,13 @@ def evidence_blocker(
     except (TypeError, ValueError):
         cached = {}
     verdict = (cached.get("verdicts") or {}).get(f"{strategy}:{str(timeframe or '').lower()}")
-    passed_field = "passed"
+    if verdict is None or not verdict.get("passed"):
+        return "strategy_lacks_oos_evidence"
     if paper:
         from app.backtesting.intraday_plan import is_minute_bar
 
-        passed_field = PAPER_PASSED_FIELD if is_minute_bar(timeframe) else "passed"
-    if verdict is None or not verdict.get(passed_field):
-        return "strategy_lacks_oos_evidence"
+        if is_minute_bar(timeframe) and not verdict.get(PAPER_PASSED_FIELD):
+            return "strategy_lacks_oos_evidence"
     if _stale(cached.get("computed_at")):  # refreshed every 30 min; a day-old pass is not trusted
         return "strategy_evidence_stale"
     if min_expectancy_r > 0 and not _edge_r(verdict) >= min_expectancy_r:
