@@ -48,6 +48,8 @@ Real money. The mirror only acts when ALL of these hold:
   below the entry;
 * the four 2026-10-18 rules above hold (planner, per-signal backtest, evidence streak,
   no chase);
+* the order is not tagged paper-only (operator option B, 2026-10-21: admitted on paper's
+  OOS bar alone; app/performance/paper_only.py), refused as ``etoro_live_paper_only``;
 * the mirror is not halted.
 
 Hard caps are code constants, not settings: at most
@@ -124,6 +126,7 @@ COPY_RULE_REASONS = frozenset(  # none is a room reason: paper keeps its own roo
         "etoro_live_extended_new_high",
     }
 )
+PAPER_ONLY_REASON = "etoro_live_paper_only"  # a tagged paper-only order; not a room reason
 LEVERAGE_TEST_AFTER_1X_TRADES = 2
 # Operator 2026-10-06 "try the 2x leverage": eToro's Amount is margin, so the 2x test sends
 # half the usual amount -- same $ exposure as a 1x trade ($500 x 2 = $1,000 notional).
@@ -324,6 +327,12 @@ class EtoroLiveMirrorService:
         order = proposal.order
         if str(getattr(order.side, "value", order.side)).lower() != "buy":
             reasons.append("mirror_long_only")
+        from app.performance.paper_only import is_paper_only
+
+        # Option B (2026-10-21): an entry admitted on paper's OOS bar alone is never copied,
+        # whatever the other checks say. Not a room reason: paper's own room rules decide it.
+        if is_paper_only(getattr(order, "metadata", None)):
+            reasons.append(PAPER_ONLY_REASON)
         from app.broker import crypto as crypto_symbols
 
         bare = str(order.symbol or "").strip().upper()  # eToro names crypto "BTC", "ETH"

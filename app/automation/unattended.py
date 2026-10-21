@@ -325,10 +325,16 @@ class PaperAutoTradingService:
     def refresh_strategy_health(self) -> list[dict[str, Any]]:
         if not bool(getattr(self.settings, "strategy_health_enabled", True)):
             return []
+        from app.performance.paper_only import request_is_paper_only
+
         groups: dict[str, list[float]] = {}
         for execution in self.executions.list(limit=2000):
             strategy = str((execution.request_payload or {}).get("strategy_name") or "")
             if not strategy or strategy == "manual_smoke":
+                continue
+            # Paper-only trades (option B, 2026-10-21) are left out: health is keyed by strategy
+            # name across timeframes, so they must not switch off eToro-copyable entries.
+            if request_is_paper_only(execution.request_payload):
                 continue
             if not self._is_reconciled_closed_execution(execution):
                 continue

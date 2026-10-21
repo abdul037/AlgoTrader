@@ -57,6 +57,8 @@ class PaperTradingService:
         live_quote: Any,
         signal_snapshot: Any | None = None,
     ) -> PaperPositionRecord:
+        from app.performance.paper_only import paper_only_tags
+
         order = proposal.order
         side = order.side.value
         quote_price = float(live_quote.last_execution or live_quote.ask or live_quote.bid or order.proposed_price)
@@ -86,6 +88,7 @@ class PaperTradingService:
                 "signal_snapshot": signal_snapshot.model_dump() if signal_snapshot is not None else None,
                 "quote_price": quote_price,
                 "quote_timestamp": getattr(live_quote, "timestamp", None),
+                **paper_only_tags(getattr(order, "metadata", None)),  # option B (performance/paper_only)
             },
         )
         self.positions.create(record)

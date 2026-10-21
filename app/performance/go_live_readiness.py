@@ -13,20 +13,35 @@ refresh after ``require_strategy_oos_evidence`` was switched on):
 It also keeps a per-strategy scorecard in R (P&L / planned risk). The report is
 refreshed in maintenance, stored in ``runtime_state`` and logged; the Phase 4
 live guard (``AutomationService``) refuses live trading until ``ready`` is true.
+
+Paper-only trades (operator option B, 2026-10-21; app/performance/paper_only.py) count for none
+of it: they are left out of the trade count, profit factor and scorecard
+(``paper_only_trades_excluded`` says how many), and the drawdown reads each reconciled equity
+reading NET of their P&L (the account's equity includes their fills: a paper-only win before a
+dip raises the peak, one during it hides part of the dip, a loss deepens it). A paper-only
+position counts from the first reading after it opened, at its booked P&L once closed and at
+its marked P&L while open (the paper ledger's ``paper_positions``), so a reading taken while
+one is open is netted with that position's mark at the refresh (30 minutes apart), and a fill
+the ledger has not synced yet is netted from the refresh after it is.
+``paper_only_pnl_netted_usd`` is the paper-only P&L taken out of the latest reading.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from bisect import bisect_right
 from datetime import UTC, datetime, timedelta
+from itertools import accumulate
 from typing import Any
 
+from app.performance.paper_only import PAPER_ONLY_FIELD, is_paper_only, request_is_paper_only
 from app.utils.time import utc_now
 
 READINESS_KEY = "go_live:readiness"
 PHASE3_START_KEY = "go_live:phase3_started_at"
 EQUITY_STATE_KEY = "go_live:equity_watermark"
+DRAWDOWN_BASIS = "net_of_paper_only"  # the watermark's equity: account equity minus paper-only P&L
 INCIDENT_EVENTS = (
     "kill_switch_emergency_stop",
     "workflow_scheduler_paused",
@@ -78,35 +93,89 @@ def _closed_trades(connection: Any, since: str) -> list[dict[str, Any]]:
                 "timeframe": str(dict(request.get("metadata") or {}).get("timeframe") or ""),
                 "pnl": pnl,
                 "r": pnl / risk if risk > 0 else None,
+                "paper_only": request_is_paper_only(request),
             }
         )
     return trades
 
 
-def _update_drawdown(connection: Any, runtime_state: Any, since: str) -> float:
+def _when(value: Any) -> datetime:
+    """A stored time as an aware datetime; naive is UTC, unreadable is the earliest time."""
+
+    try:
+        parsed = (
+            value
+            if isinstance(value, datetime)
+            else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        )
+    except (TypeError, ValueError):
+        return datetime.min.replace(tzinfo=UTC)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _paper_only_marks(connection: Any) -> tuple[list[datetime], list[float]]:
+    """(open times, running P&L) of the paper-only positions, oldest first: entry i of the
+    running P&L sums every paper-only position opened at or before open time i (booked P&L
+    once closed, marked P&L while open)."""
+
+    rows = connection.execute(
+        "SELECT opened_at, status, realized_pnl_usd, unrealized_pnl_usd, payload_json "
+        "FROM paper_positions WHERE payload_json LIKE ?",
+        (f"%{PAPER_ONLY_FIELD}%",),
+    ).fetchall()
+    marks: list[tuple[datetime, float]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except (TypeError, ValueError):
+            payload = {PAPER_ONLY_FIELD: True}  # it matched the tag; unreadable: net it anyway
+        if not is_paper_only(payload):
+            continue
+        is_open = str(row["status"] or "").lower() == "open"
+        pnl = float((row["unrealized_pnl_usd"] if is_open else row["realized_pnl_usd"]) or 0.0)
+        marks.append((_when(row["opened_at"]), pnl))
+    marks.sort(key=lambda mark: mark[0])
+    return [when for when, _ in marks], list(accumulate(pnl for _, pnl in marks))
+
+
+def _update_drawdown(connection: Any, runtime_state: Any, since: str) -> tuple[float, float]:
+    """(max drawdown %, paper-only P&L netted out of the latest reading), tracked incrementally
+    on the reconciled equity net of the paper-only P&L."""
+
     try:
         state = json.loads(runtime_state.get(EQUITY_STATE_KEY) or "{}")
     except (TypeError, ValueError):
         state = {}
+    opened, running = _paper_only_marks(connection)
     if state.get("since") != since:
         state = {"since": since, "last_ts": "", "peak": 0.0, "max_dd_pct": 0.0}
+    if state.get("basis") != DRAWDOWN_BASIS:
+        # A watermark from before paper-only P&L was netted is kept only when no paper-only
+        # position had opened by its last reading (it is then the same number); else rebuilt.
+        if state["last_ts"] and opened and opened[0] <= _when(state["last_ts"]):
+            state = {"since": since, "last_ts": "", "peak": 0.0, "max_dd_pct": 0.0}
+        state["basis"] = DRAWDOWN_BASIS
     rows = connection.execute(
         "SELECT created_at, payload_json FROM run_logs WHERE event_type = ? AND created_at >= ? AND created_at > ? "
         "ORDER BY created_at LIMIT 20000",
         ("alpaca_reconciliation_ok", since, state["last_ts"]),
     ).fetchall()
+    netted = float(state.get("paper_only_pnl_netted_usd") or 0.0)
     for row in rows:
         match = _EQUITY_RE.search(str(row["payload_json"] or ""))
         if match:
-            equity = float(match.group(1))
+            index = bisect_right(opened, _when(row["created_at"]))
+            netted = running[index - 1] if index else 0.0
+            equity = float(match.group(1)) - netted
             state["peak"] = max(float(state["peak"]), equity)
             if state["peak"] > 0:
                 state["max_dd_pct"] = max(
                     float(state["max_dd_pct"]), (state["peak"] - equity) / state["peak"] * 100.0
                 )
         state["last_ts"] = str(row["created_at"])
+    state["paper_only_pnl_netted_usd"] = round(netted, 2)
     runtime_state.set(EQUITY_STATE_KEY, json.dumps(state))
-    return round(float(state["max_dd_pct"]), 4)
+    return round(float(state["max_dd_pct"]), 4), round(netted, 2)
 
 
 def _clean_weeks(connection: Any, start: datetime, now: datetime) -> int:
@@ -149,8 +218,11 @@ def compute_readiness(
     since = start.isoformat()
     with db.connect() as connection:
         trades = _closed_trades(connection, since)
-        drawdown = _update_drawdown(connection, runtime_state, since)
+        drawdown, paper_only_netted = _update_drawdown(connection, runtime_state, since)
         clean_weeks = _clean_weeks(connection, start, now)
+    # Paper-only trades (option B, 2026-10-21) never count toward the bar or the scorecard.
+    paper_only = sum(1 for t in trades if t["paper_only"])
+    trades = [t for t in trades if not t["paper_only"]]
     gross_win = sum(t["pnl"] for t in trades if t["pnl"] > 0)
     gross_loss = -sum(t["pnl"] for t in trades if t["pnl"] < 0)
     profit_factor = (
@@ -192,6 +264,8 @@ def compute_readiness(
         "max_drawdown_pct": drawdown,
         "clean_weeks": clean_weeks,
         "scorecard": scorecard,
+        "paper_only_trades_excluded": paper_only,
+        "paper_only_pnl_netted_usd": paper_only_netted,
         "computed_at": now.isoformat(),
     }
 

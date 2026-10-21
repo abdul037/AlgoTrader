@@ -83,6 +83,8 @@ def _positions_by_execution(service: Any) -> dict[str, PaperPositionRecord]:
 
 
 def _open_position(service: Any, execution: PaperBrokerExecutionRecord) -> PaperPositionRecord:
+    from app.performance.paper_only import paper_only_tags
+
     request = dict(execution.payload.get("request") or {})
     metadata = dict(request.get("metadata") or {})
     trade_plan = dict(metadata.get("trade_plan") or {})
@@ -117,6 +119,9 @@ def _open_position(service: Any, execution: PaperBrokerExecutionRecord) -> Paper
             "risk_reward_ratio": metadata.get("risk_reward_ratio") or metadata.get("estimated_reward_to_risk"),
             "proposed_price": _optional_float(request.get("proposed_price")),
             "slippage_bps": None,
+            # Paper-only (option B, 2026-10-21): rides into the closed trade, so what is keyed
+            # by strategy name or judged for real money leaves it out (app/performance/paper_only.py).
+            **paper_only_tags(metadata),
         },
     )
     service.positions.create(record)

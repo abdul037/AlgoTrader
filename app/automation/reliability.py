@@ -241,7 +241,9 @@ def _strategy_evidence_blockers(*, settings: Any, candidate: Any, lifecycles: li
     closed = [
         item
         for item in lifecycles
-        if str(getattr(item, "strategy_name", "") or "") == strategy and lifecycle_complete(item)
+        if str(getattr(item, "strategy_name", "") or "") == strategy
+        and lifecycle_complete(item)
+        and not _paper_only_lifecycle(item)  # never qualifies a strategy name (2026-10-21)
     ]
     minimum = max(int(getattr(settings, "paper_auto_min_strategy_closed_trades", 30) or 0), 0)
     blockers: list[str] = []
@@ -258,3 +260,13 @@ def _strategy_evidence_blockers(*, settings: Any, candidate: Any, lifecycles: li
         if profit_factor < float(getattr(settings, "paper_auto_min_strategy_profit_factor", 1.20) or 1.20):
             blockers.append("strategy_profit_factor_below_auto_gate")
     return blockers
+
+
+def _paper_only_lifecycle(lifecycle: Any) -> bool:
+    """A paper-only entry (option B, 2026-10-21; the eToro mirror refuses it): it must not
+    qualify the strategy NAME for tier 3, which auto-approves its eToro-copyable entries."""
+
+    from app.performance.paper_only import request_is_paper_only
+
+    payload = getattr(getattr(lifecycle, "execution", None), "payload", None)
+    return isinstance(payload, dict) and request_is_paper_only(payload.get("request"))

@@ -427,9 +427,10 @@ def _daily_strategy_scorecard_lines(service: Any) -> list[str]:
     if not trades:
         return []
 
+    from app.performance.paper_only import without_paper_only
     from app.performance.strategy_performance import analyze_by_strategy, decay_verdict
 
-    performances = analyze_by_strategy(trades)
+    performances = analyze_by_strategy(without_paper_only(trades))  # as the demotion reads them
     if not performances:
         return []
     baseline: dict[str, float] = {}

@@ -113,6 +113,12 @@ def live_scorecard(request: Request):
         report["market_panel"] = market_panel_report(state, settings=settings)
     except Exception:  # noqa: BLE001 - a shadow section never takes the scorecard down
         report["market_panel"] = {"error": "market_panel_report_failed", "shadow_only": True}
+    try:  # paper-only entries (option B, 2026-10-21): paper's OOS bar alone, never copied
+        from app.performance.paper_only import paper_only_report
+
+        report["paper_only"] = paper_only_report(db)
+    except Exception:  # noqa: BLE001 - a report section never takes the scorecard down
+        report["paper_only"] = {"error": "paper_only_report_failed"}
     return report
 
 
