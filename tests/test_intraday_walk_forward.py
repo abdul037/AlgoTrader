@@ -103,6 +103,27 @@ def test_session_close_never_carries_overnight() -> None:
     assert any(t["reason"] == "session_close" for t in result.trades)
 
 
+def test_10m_bars_get_the_intraday_session_rules() -> None:
+    # 2026-10-20: 10m had no annualization entry, fell back to 252 and ran as a daily
+    # strategy (held overnight), though the live bot flattens 10m before the close.
+    assert bars_per_year_for("10m") == 9828  # 39 bars a session x 252
+    config = EngineConfig(
+        initial_cash=100_000.0, bars_per_year=bars_per_year_for("10m"), flatten_at_session_end=True
+    )
+    result = BacktestEngine(config=config).run(
+        symbol="SYN",
+        strategy=EveryNthBarLong(every=30, stop_pct=0.05, target_pct=0.1),
+        data=_sessions(6, minutes=10),
+        file_path="t",
+    )
+
+    assert result.trades, "fixture must trade"
+    assert {t["reason"] for t in result.trades} == {"session_close"}
+    for trade in result.trades:
+        entry = pd.Timestamp(trade["entry_time"]).tz_convert("America/New_York").date()
+        assert entry == pd.Timestamp(trade["exit_time"]).tz_convert("America/New_York").date()
+
+
 def test_session_atr_uses_prior_sessions_only() -> None:
     data = _sessions(20)
     atr = session_atr_by_bar(data)

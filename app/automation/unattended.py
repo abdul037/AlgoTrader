@@ -181,10 +181,18 @@ class PaperAutoTradingService:
             blockers.append("strategy_not_production_approved")
         # Phase 2: only strategies with pooled out-of-sample evidence create
         # proposals (when enabled); the rest stay scanned/tracked as shadow signals.
+        # In paper, minute-bar strategies are judged on Alpaca costs (operator 2026-10-20).
         from app.performance.strategy_evidence import evidence_blocker
 
+        paper = str(getattr(self.settings, "execution_mode", "")) == "paper" and not bool(
+            getattr(self.settings, "enable_real_trading", False)
+        )
         evidence = evidence_blocker(
-            self.settings, self.runtime_state, strategy=strategy, timeframe=getattr(candidate, "timeframe", None)
+            self.settings,
+            self.runtime_state,
+            strategy=strategy,
+            timeframe=getattr(candidate, "timeframe", None),
+            paper=paper,
         )
         if strategy and evidence:
             blockers.append(evidence)

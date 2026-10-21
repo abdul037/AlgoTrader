@@ -193,7 +193,8 @@ def test_phase2_evidence_gate_blocks_proposals_only_when_enabled(tmp_path):
         exploration_enabled=True,
         bypass_production_approval=True,
     )
-    state = {VERDICTS_KEY: json.dumps({"verdicts": {"swing_trend:15m": {"passed": True}}})}
+    # In paper a 15m verdict passes on venue costs (paper_passed, operator 2026-10-20).
+    state = {VERDICTS_KEY: json.dumps({"verdicts": {"swing_trend:15m": {"passed": True, "paper_passed": True}}})}
     service.runtime_state = SimpleNamespace(get=state.get)
     passing = SimpleNamespace(**{**vars(_candidate()), "timeframe": "15m"})
     failing = SimpleNamespace(**{**vars(_candidate()), "timeframe": "5m"})

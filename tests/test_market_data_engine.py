@@ -338,3 +338,21 @@ def test_market_data_engine_auto_stays_yfinance_without_alpaca_credentials(tmp_p
     )
 
     assert engine._resolve_provider("1d", None) == "yfinance"
+
+
+def test_alpaca_minute_window_counts_sessions_not_calendar_days() -> None:
+    def calendar_days(timeframe: str, bars: int) -> int:
+        start, end = MarketDataEngine._history_window(timeframe, bars)
+        return (end - start).days
+
+    # The 120-day intraday walk-forward asks for ~85.7 sessions of bars; counted as calendar
+    # days they fetched 90 (~64 sessions, ~10 folds instead of ~13). 126 days = 18 weeks = 90
+    # weekdays, enough for the 86 sessions plus holidays (2026-10-20).
+    for timeframe, bars in (("1m", 33429), ("5m", 6686), ("10m", 3343), ("15m", 2229)):
+        assert calendar_days(timeframe, bars) == 126, timeframe
+    # Live scan sizes keep a whole-session margin (were 5 / 9 / 13 / 16 days).
+    assert [calendar_days(tf, bars) for tf, bars in (("1m", 360), ("5m", 320), ("10m", 320), ("15m", 300))] == [
+        7, 11, 17, 22,
+    ]
+    # 1h / 1d / 1w windows are unchanged.
+    assert [calendar_days("1h", 300), calendar_days("1d", 500), calendar_days("1w", 520)] == [80, 1500, 3640]

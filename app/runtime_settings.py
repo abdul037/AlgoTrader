@@ -208,8 +208,10 @@ class AppSettings(BaseSettings):
     backtest_scheduler_enabled: bool = False
     backtest_scheduler_interval_seconds: int = 21600
     # 15m/5m added 2026-10-03 so the intraday strategies (most live trades) get
-    # walk-forward OOS evidence; see app/backtesting/intraday_plan.py.
-    backtest_scheduler_timeframes: list[str] = Field(default_factory=lambda: ["1d", "15m", "5m"])
+    # walk-forward OOS evidence; see app/backtesting/intraday_plan.py. 10m added 2026-10-20,
+    # last so a saved mid-symbol cursor keeps pointing at the same strategy. 1m stays out:
+    # 4 tracked 1m signals so far, and costs swamp its ~0.1% stops.
+    backtest_scheduler_timeframes: list[str] = Field(default_factory=lambda: ["1d", "15m", "5m", "10m"])
     backtest_scheduler_symbol_limit: int = 0
     # Soft per-run wall-clock budget for the batch backtester. A full-universe
     # walk-forward pass cannot finish inside the scheduler's hard job cap
@@ -634,6 +636,10 @@ class AppSettings(BaseSettings):
     walk_forward_intraday_variants: list[str] = Field(
         default_factory=lambda: ["hold_overnight", "stop_floor_0.5", "stop_floor_1.0"]
     )
+    # 1m/5m/10m/15m evidence fills a signal this many bars after the next bar's open, the
+    # live scan-to-order delay (scans run minutes after a bar closes). 0 = next-bar open,
+    # the pre-2026-10-20 evidence. 1h/1d/1w evidence always fills at the next bar's open.
+    walk_forward_intraday_entry_delay_bars: int = 1
     execution_mode: Literal["paper", "live"] = "paper"
     broker_for_equities: Literal["alpaca", "etoro", "none"] = "alpaca"
     broker_for_non_equities: Literal["alpaca", "etoro", "none"] = "etoro"

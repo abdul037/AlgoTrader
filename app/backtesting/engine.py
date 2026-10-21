@@ -5,6 +5,7 @@ Design rules (enforced by tests):
 1. **No same-bar fills.** A strategy that produces a signal using bar N's close
    cannot fill on bar N. The fill lands on bar N+1's open, with cost-model
    friction applied. If bar N+1 does not exist the signal is dropped.
+   ``entry_delay_bars`` = k moves an entry to bar N+1+k's open (the live delay).
 2. **Gap-through losses.** Stop fills assume the worse of (stop_price,
    bar.open). Take-profit fills assume the better of (tp_price, bar.open) for
    the trader, i.e. no free intrabar TP overshoot.
@@ -27,6 +28,7 @@ broken. Do not work around them silently.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -93,6 +95,11 @@ class EngineConfig:
     short_entries: bool = False
     """Research only: open bracketed ``entry_short`` SELLs (filled at the bid) instead of
     BUYs. Never set on the live evidence path; see app/backtesting/short_research.py."""
+    entry_delay_bars: int = 0
+    """Bars between a signal and its order: a signal on bar N's close fills at bar N+1+k's
+    open, as the live bot's order goes in a scan after the bar closed. 0 = bar N+1. A delayed
+    entry is dropped when a session ends in between (intraday flatten on) or a position was
+    open when the signal fired."""
 
 
 class BacktestResult(BaseModel):
@@ -169,6 +176,8 @@ class BacktestEngine:
         session_atr = (
             session_atr_by_bar(normalized) if intraday and run_config.min_stop_session_atr_multiple > 0 else []
         )
+        delay = max(int(run_config.entry_delay_bars or 0), 0)
+        recent_signals: deque[tuple[int, Any]] = deque(maxlen=delay + 1)  # (bar index, entry signal)
         with precomputed_indicators(normalized):
             for index in range(total_bars):
                 bar = normalized.iloc[index]
@@ -233,12 +242,14 @@ class BacktestEngine:
                         warnings.append(warning)
                     open_trade = None
 
-                # --- Entry handling using next-bar open. -------------------------
+                # --- Entry handling using next-bar open, ``delay`` bars late. ------
+                recent_signals.append((index, signal if open_trade is None else None))
+                entry_signal = _entry_signal(recent_signals, index=index, delay=delay, session_ends=session_ends)
                 if (
                     open_trade is None
                     and not at_session_end
-                    and signal is not None
-                    and _opens_position(signal, short=run_config.short_entries)
+                    and entry_signal is not None
+                    and _opens_position(entry_signal, short=run_config.short_entries)
                 ):
                     next_bar = _maybe_next_bar(normalized, index)
                     if next_bar is None:
@@ -246,7 +257,7 @@ class BacktestEngine:
                         continue
                     atr = session_atr[index] if session_atr else None
                     entry_attempt = _attempt_entry(
-                        signal=signal,
+                        signal=entry_signal,
                         next_bar=next_bar,
                         cash=cash,
                         config=run_config,
@@ -409,6 +420,21 @@ def _maybe_next_bar(frame: pd.DataFrame, index: int) -> pd.Series | None:
     if index + 1 >= len(frame):
         return None
     return frame.iloc[index + 1]
+
+
+def _entry_signal(
+    recent: deque[tuple[int, Any]], *, index: int, delay: int, session_ends: list[bool]
+) -> Any | None:
+    """The signal to act on at bar ``index``: the one from ``delay`` bars back (``recent``
+    holds the last ``delay + 1`` evaluated bars), or None when that bar was not evaluated or a
+    session ended since (a late order never carries over the close). ``delay`` 0 is this bar's."""
+
+    signal_index, signal = recent[0]
+    if signal_index != index - delay:
+        return None
+    if delay and session_ends and any(session_ends[signal_index:index]):
+        return None
+    return signal
 
 
 def _evaluate_exit(

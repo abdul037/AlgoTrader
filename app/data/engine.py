@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 from contextlib import suppress
@@ -414,7 +415,11 @@ class MarketDataEngine:
             lookback_days = max(10, int(bars // 4) + 5)
         elif timeframe.endswith("m"):
             minutes = int(timeframe[:-1])
-            lookback_days = max(5, int((bars * minutes) / (60 * 6.5)) + 5)
+            # ``bars`` fill this many 6.5 h sessions, and 5 sessions take 7 calendar days. Counting
+            # sessions as calendar days fetched ~90 days for the 120-day intraday walk-forward
+            # (2026-10-20), so it fit ~10 folds instead of ~13; +5 days covers holidays.
+            sessions = (bars * minutes) / (60 * 6.5)
+            lookback_days = max(5, math.ceil(sessions * 7 / 5) + 5)
         else:
             lookback_days = max(10, int(bars * 7))
         return end - timedelta(days=lookback_days), end

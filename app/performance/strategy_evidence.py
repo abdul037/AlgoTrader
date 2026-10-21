@@ -25,6 +25,12 @@ between) restarts every run. The previous payload lives in ``runtime_state`` (th
 so a deploy or restart keeps the runs. The verdicts, their fields and the paper gate
 (``evidence_blocker``) are unchanged; only ``passing_hours`` (the live copy, the deep-scan
 hint) reads the streaks.
+
+Venue costs (operator 2026-10-20): every field above is priced with eToro's fees, and every
+eToro use reads only those. A 1m/5m/10m/15m key also carries ``cost_profiles`` (the same pools
+under Alpaca and stress costs, app/backtesting/venue_costs.py) and ``paper_passed`` /
+``paper_reasons``: the Alpaca paper gate (``evidence_blocker(paper=True)``) passes such a
+strategy only when both profiles clear the same bars. 1h/1d/1w keys are unchanged.
 """
 
 from __future__ import annotations
@@ -67,49 +73,36 @@ def compute_verdicts(
     in the SQL would parse as a bind). The default matches only the long rows.
     """
 
+    from app.backtesting.intraday_plan import is_minute_bar
+    from app.backtesting.venue_costs import COST_PROFILES_FIELD, VENUE_PROFILE_NAMES
+
     lookback = int(getattr(settings, "strategy_evidence_lookback_days", 7) or 7)
-    min_trades = int(getattr(settings, "strategy_evidence_min_trades", 40) or 40)
-    min_holdout = int(getattr(settings, "strategy_evidence_min_holdout_trades", 10) or 10)
-    min_r = float(getattr(settings, "strategy_evidence_min_expectancy_r", 0.0) or 0.0)
+    thresholds = (
+        int(getattr(settings, "strategy_evidence_min_trades", 40) or 40),
+        int(getattr(settings, "strategy_evidence_min_holdout_trades", 10) or 10),
+        float(getattr(settings, "strategy_evidence_min_expectancy_r", 0.0) or 0.0),
+    )
     cutoff = ((now or utc_now()) - timedelta(days=lookback)).isoformat()
     with db.connect() as connection:
         rows = connection.execute(_LATEST_OOS_SQL, (pattern, cutoff)).fetchall()
 
-    pooled: dict[str, dict[str, float]] = {}
+    pooled: dict[str, dict[str, Any]] = {}
     for row in rows:
         try:
             metrics = json.loads(row["metrics_json"] or "{}")
         except (TypeError, ValueError):
             continue
         key = f"{row['strategy_name']}:{_timeframe(row['file_path'])}"
-        bucket = pooled.setdefault(
-            key, {"symbols": 0, "trades": 0, "pnl": 0.0, "holdout_trades": 0, "holdout_pnl": 0.0}
-        )
-        trades = int(metrics.get("number_of_trades", 0) or 0)
-        holdout_trades = int(metrics.get("holdout_trades", 0) or 0)
-        bucket["symbols"] += 1
-        bucket["trades"] += trades
-        bucket["pnl"] += float(metrics.get("expectancy_usd", 0.0) or 0.0) * trades
-        bucket["holdout_trades"] += holdout_trades
-        bucket["holdout_pnl"] += (
-            float(metrics.get("holdout_expectancy_usd", 0.0) or 0.0) * holdout_trades
-        )
+        bucket = pooled.setdefault(key, {**_empty_pool(), "profiles": {}})
+        _pool(bucket, metrics)
+        profiles = metrics.get(COST_PROFILES_FIELD)
+        for name, profile in (profiles if isinstance(profiles, dict) else {}).items():
+            if isinstance(profile, dict):
+                _pool(bucket["profiles"].setdefault(name, _empty_pool()), profile)
 
     verdicts: dict[str, dict[str, Any]] = {}
     for key, b in pooled.items():
-        expectancy = b["pnl"] / b["trades"] if b["trades"] else 0.0
-        holdout_expectancy = b["holdout_pnl"] / b["holdout_trades"] if b["holdout_trades"] else 0.0
-        reasons = []
-        if b["trades"] < min_trades:
-            reasons.append("too_few_oos_trades")
-        if expectancy <= 0:
-            reasons.append("oos_expectancy_not_positive")
-        elif min_r > 0 and expectancy < min_r * BACKTEST_RISK_USD:
-            reasons.append(f"oos_expectancy_below_{min_r:g}R")
-        if b["holdout_trades"] < min_holdout:
-            reasons.append("too_few_holdout_trades")
-        elif holdout_expectancy <= 0:
-            reasons.append("holdout_expectancy_not_positive")
+        reasons, expectancy, holdout_expectancy = _judge(b, *thresholds)
         verdicts[key] = {
             "passed": not reasons,
             "reasons": reasons,
@@ -120,7 +113,76 @@ def compute_verdicts(
             "holdout_trades": int(b["holdout_trades"]),
             "holdout_expectancy_usd": round(holdout_expectancy, 4),
         }
+        if is_minute_bar(_timeframe_of_key(key)):
+            verdicts[key].update(_paper_verdict(b["profiles"], VENUE_PROFILE_NAMES, thresholds))
     return verdicts
+
+
+def _empty_pool() -> dict[str, Any]:
+    return {"symbols": 0, "trades": 0, "pnl": 0.0, "holdout_trades": 0, "holdout_pnl": 0.0}
+
+
+def _pool(bucket: dict[str, Any], metrics: dict[str, Any]) -> None:
+    trades = int(metrics.get("number_of_trades", 0) or 0)
+    holdout_trades = int(metrics.get("holdout_trades", 0) or 0)
+    bucket["symbols"] += 1
+    bucket["trades"] += trades
+    bucket["pnl"] += float(metrics.get("expectancy_usd", 0.0) or 0.0) * trades
+    bucket["holdout_trades"] += holdout_trades
+    bucket["holdout_pnl"] += float(metrics.get("holdout_expectancy_usd", 0.0) or 0.0) * holdout_trades
+
+
+def _judge(
+    b: dict[str, Any], min_trades: int, min_holdout: int, min_r: float
+) -> tuple[list[str], float, float]:
+    """A pool's failing reasons (none = pass) and its OOS / holdout expectancy in $."""
+
+    expectancy = b["pnl"] / b["trades"] if b["trades"] else 0.0
+    holdout_expectancy = b["holdout_pnl"] / b["holdout_trades"] if b["holdout_trades"] else 0.0
+    reasons = []
+    if b["trades"] < min_trades:
+        reasons.append("too_few_oos_trades")
+    if expectancy <= 0:
+        reasons.append("oos_expectancy_not_positive")
+    elif min_r > 0 and expectancy < min_r * BACKTEST_RISK_USD:
+        reasons.append(f"oos_expectancy_below_{min_r:g}R")
+    if b["holdout_trades"] < min_holdout:
+        reasons.append("too_few_holdout_trades")
+    elif holdout_expectancy <= 0:
+        reasons.append("holdout_expectancy_not_positive")
+    return reasons, expectancy, holdout_expectancy
+
+
+# Minute-bar keys only (operator 2026-10-20): the Alpaca paper gate passes a 1m/5m/10m/15m
+# strategy only when its OOS and holdout pools are positive under both venue cost profiles
+# (app/backtesting/venue_costs.py), with the same trade counts and R bar as ``passed``.
+PAPER_PASSED_FIELD = "paper_passed"
+
+
+def _paper_verdict(
+    profiles: dict[str, dict[str, Any]], names: tuple[str, ...], thresholds: tuple[int, int, float]
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    numbers: dict[str, dict[str, Any]] = {}
+    for name in names:
+        pool = profiles.get(name)
+        if pool is None:  # rows written before the profiles existed, or crypto only
+            reasons.append(f"{name}:no_cost_profile_rows")
+            continue
+        failing, expectancy, holdout_expectancy = _judge(pool, *thresholds)
+        reasons += [f"{name}:{reason}" for reason in failing]
+        numbers[name] = {
+            "symbols": int(pool["symbols"]),
+            "oos_trades": int(pool["trades"]),
+            "oos_expectancy_usd": round(expectancy, 4),
+            "holdout_trades": int(pool["holdout_trades"]),
+            "holdout_expectancy_usd": round(holdout_expectancy, 4),
+        }
+    return {PAPER_PASSED_FIELD: not reasons, "paper_reasons": reasons, "cost_profiles": numbers}
+
+
+def _timeframe_of_key(key: str) -> str:
+    return key.rsplit(":", 1)[-1]
 
 
 def refresh_verdicts(
@@ -262,11 +324,15 @@ def evidence_blocker(
     strategy: str,
     timeframe: str | None,
     min_expectancy_r: float = 0.0,
+    paper: bool = False,
 ) -> str | None:
     """``"strategy_lacks_oos_evidence"`` when enforcement is on and the strategy fails.
 
     ``min_expectancy_r`` > 0 also asks a passing strategy for at least that pooled OOS
     expectancy in R (``EDGE_BELOW_BAR`` otherwise) -- the eToro live copy's own bar.
+    ``paper`` (the Alpaca paper proposal gate only) judges a 1m/5m/10m/15m strategy by
+    ``PAPER_PASSED_FIELD`` (Alpaca and stress costs) instead of the fee-inclusive ``passed``;
+    a verdict without it fails. Every other caller, the eToro ones included, reads ``passed``.
     """
 
     if not bool(getattr(settings, "require_strategy_oos_evidence", False)) or runtime_state is None:
@@ -276,7 +342,12 @@ def evidence_blocker(
     except (TypeError, ValueError):
         cached = {}
     verdict = (cached.get("verdicts") or {}).get(f"{strategy}:{str(timeframe or '').lower()}")
-    if verdict is None or not verdict.get("passed"):
+    passed_field = "passed"
+    if paper:
+        from app.backtesting.intraday_plan import is_minute_bar
+
+        passed_field = PAPER_PASSED_FIELD if is_minute_bar(timeframe) else "passed"
+    if verdict is None or not verdict.get(passed_field):
         return "strategy_lacks_oos_evidence"
     if _stale(cached.get("computed_at")):  # refreshed every 30 min; a day-old pass is not trusted
         return "strategy_evidence_stale"

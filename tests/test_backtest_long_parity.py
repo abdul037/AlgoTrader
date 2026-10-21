@@ -27,6 +27,11 @@ every cost leg non-zero (the Alpaca preset, which also sets the short-only borro
 commission, FX and weekend financing), and two 15m strategies with the live session flatten
 and the hold_overnight / stop_floor variants.
 
+The 15m case runs with the 2026-10-20 options off (``walk_forward_intraday_entry_delay_bars``
+0), and its rows' additive ``cost_profiles`` (the Alpaca / stress re-runs, which bc82efd never
+wrote) are left out of the comparison: everything else, the replayed variants included, must
+still match bc82efd exactly.
+
 Re-baseline only after a deliberate long change, from a known-good commit: copy its
 ``app/backtesting/<name>.py`` over ``tests/long_parity_reference/<name>.py.txt``, update
 ``REFERENCE_COMMIT`` and ``REFERENCE_SHA256``, and say so in the commit.
@@ -53,6 +58,7 @@ from app.backtesting import batch as batch_module
 from app.backtesting import cost_model as cost_module
 from app.backtesting import engine as engine_module
 from app.backtesting import walk_forward as walk_forward_module
+from app.backtesting.venue_costs import COST_PROFILES_FIELD
 from tests.conftest import make_settings
 
 SYMBOL = "SYNA"
@@ -162,7 +168,11 @@ def _every_cost_leg(cost_model_module):
 
 def _cases(tmp_dir):
     daily = make_settings(tmp_dir, walk_forward_intraday_variants=[])
-    intraday = make_settings(tmp_dir, walk_forward_intraday_variants=["hold_overnight", "stop_floor_1.0"])
+    intraday = make_settings(
+        tmp_dir,
+        walk_forward_intraday_variants=["hold_overnight", "stop_floor_1.0"],
+        walk_forward_intraday_entry_delay_bars=0,
+    )
     # (case, settings, frame, seed, timeframe, walk_forward, strategies, every cost leg)
     return [
         ("daily7_wf", daily, _daily_frame(7), 7, "1d", True, None, False),
@@ -185,15 +195,20 @@ def _patched(module, name, value):
 def _record(case, summary, rows, events) -> list[tuple[str, str]]:
     """What a run leaves behind, as (label, exact text) pairs."""
 
+    def etoro_priced(metrics: dict) -> dict:  # key order kept
+        return {key: value for key, value in metrics.items() if key != COST_PROFILES_FIELD}
+
     out = []
     for row in rows:  # exactly what BacktestRepository.create persists, minus id and stamps
         label = f"{case} row {row['strategy_name']} {row['file_path']}"
         out.append((f"{label} keys", json.dumps(sorted(row))))
         out.append((label, json.dumps([row["symbol"], row["strategy_name"], row["file_path"]])))
-        out.append((f"{label} metrics", json.dumps(row["metrics"])))
+        out.append((f"{label} metrics", json.dumps(etoro_priced(row["metrics"]))))
         out.append((f"{label} trades", json.dumps(row["trades"])))
     out += [(f"{case} log {event}", json.dumps(payload)) for event, payload in events]
-    out.append((f"{case} summary", json.dumps(summary.model_dump(exclude={"generated_at"}))))
+    dumped = summary.model_dump(exclude={"generated_at"})
+    dumped["results"] = [etoro_priced(result) for result in dumped["results"]]
+    out.append((f"{case} summary", json.dumps(dumped)))
     return out
 
 
