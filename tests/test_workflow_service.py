@@ -277,7 +277,7 @@ class FakeSupervisedAutoTrading:
         self.approve_calls = 0
 
     @staticmethod
-    def candidate_proposal_blockers(_candidate):
+    def candidate_proposal_blockers(_candidate, *, paper_only=None):
         return []
 
     def approve_enqueue_execute(self, _proposal, _candidate, *, funnel=None):

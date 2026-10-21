@@ -34,6 +34,15 @@ such an equity strategy only when the fee-inclusive verdict passes AND both prof
 same bars, so the profiles only ever tighten it: a fee-band strategy (passing without eToro's
 fees but not with them) waits for a separate paper account (operator decision 3, 2026-10-20).
 1h/1d/1w keys are unchanged.
+
+Paper OOS bar (operator option B, 2026-10-21): every verdict also carries
+``paper_oos_passed`` -- its fee-inclusive pooled OOS part passes on its own (the trade count,
+"> 0" and any R bar above; the holdout is ignored), and for a 1m/5m/10m/15m key so do the OOS
+parts of both venue profiles. With ``paper_oos_bar_enabled`` on, the main paper account's gate
+(``evidence_blocker(paper=True)``) also admits such a key; an entry it admits only that way is
+paper-only (``paper_oos_only``: app/workflow/paper_only.py tags it and guards eToro from it).
+Crypto, the eToro mirror, its +0.03R bar, the 24 h streak, Phase 3 and the deep-scan hints
+read ``passed`` alone, as before.
 """
 
 from __future__ import annotations
@@ -115,10 +124,26 @@ def compute_verdicts(
             "oos_expectancy_r": round(expectancy / BACKTEST_RISK_USD, 4),
             "holdout_trades": int(b["holdout_trades"]),
             "holdout_expectancy_usd": round(holdout_expectancy, 4),
+            PAPER_OOS_PASSED_FIELD: _oos_part_passes(reasons),
         }
         if is_minute_bar(_timeframe_of_key(key)):
-            verdicts[key].update(_paper_verdict(b["profiles"], VENUE_PROFILE_NAMES, thresholds))
+            paper = _paper_verdict(b["profiles"], VENUE_PROFILE_NAMES, thresholds)
+            verdicts[key].update(paper)
+            # Stage 1 holds on this path too: both profiles' OOS parts must pass as well.
+            profile_reasons = [reason.split(":", 1)[-1] for reason in paper["paper_reasons"]]
+            verdicts[key][PAPER_OOS_PASSED_FIELD] &= _oos_part_passes(profile_reasons)
     return verdicts
+
+
+# Paper OOS bar (operator option B, 2026-10-21): the pooled OOS part of a verdict on its own.
+PAPER_OOS_PASSED_FIELD = "paper_oos_passed"
+_HOLDOUT_REASONS = frozenset({"too_few_holdout_trades", "holdout_expectancy_not_positive"})
+
+
+def _oos_part_passes(reasons: list[str]) -> bool:
+    """True when no reason but the holdout's fails (``_judge``'s OOS count, "> 0" and R bar)."""
+
+    return not set(reasons) - _HOLDOUT_REASONS
 
 
 def _empty_pool() -> dict[str, Any]:
@@ -335,10 +360,11 @@ def evidence_blocker(
     expectancy in R (``EDGE_BELOW_BAR`` otherwise) -- the eToro live copy's own bar.
     ``paper`` (the main Alpaca paper proposal gate only) also asks a 1m/5m/10m/15m strategy
     for ``PAPER_PASSED_FIELD`` (Alpaca and stress costs) on top of the fee-inclusive
-    ``passed``, and a verdict without it fails: it only ever tightens. A fee-band strategy
-    (passing without eToro's fees but not with them) never trades on the main account
-    (operator decision 3, 2026-10-20) until it has its own. Every other caller, the eToro ones
-    included, reads ``passed`` alone.
+    ``passed``, and a verdict without it fails. A fee-band strategy (passing without eToro's
+    fees but not with them) never trades on the main account (operator decision 3,
+    2026-10-20). ``paper`` also admits a verdict whose ``PAPER_OOS_PASSED_FIELD`` is set while
+    ``paper_oos_bar_enabled`` is on (``paper_oos_only``; a verdict without it fails). Every
+    other caller, the eToro ones included, reads ``passed`` alone.
     """
 
     if not bool(getattr(settings, "require_strategy_oos_evidence", False)) or runtime_state is None:
@@ -348,18 +374,47 @@ def evidence_blocker(
     except (TypeError, ValueError):
         cached = {}
     verdict = (cached.get("verdicts") or {}).get(f"{strategy}:{str(timeframe or '').lower()}")
-    if verdict is None or not verdict.get("passed"):
+    if verdict is None:
         return "strategy_lacks_oos_evidence"
     if paper:
-        from app.backtesting.intraday_plan import is_minute_bar
-
-        if is_minute_bar(timeframe) and not verdict.get(PAPER_PASSED_FIELD):
-            return "strategy_lacks_oos_evidence"
+        admitted = _paper_full(verdict, timeframe) or _oos_bar(settings, verdict)
+    else:
+        admitted = bool(verdict.get("passed"))
+    if not admitted:
+        return "strategy_lacks_oos_evidence"
     if _stale(cached.get("computed_at")):  # refreshed every 30 min; a day-old pass is not trusted
         return "strategy_evidence_stale"
     if min_expectancy_r > 0 and not _edge_r(verdict) >= min_expectancy_r:
         return EDGE_BELOW_BAR
     return None
+
+
+def paper_oos_only(settings: Any, verdict: Any, timeframe: Any) -> bool:
+    """True when the main paper gate admits ``verdict`` ONLY through the paper OOS bar: such an
+    entry is paper-only (the eToro mirror refuses it; app/workflow/paper_only.py)."""
+
+    return (
+        isinstance(verdict, dict)
+        and _oos_bar(settings, verdict)
+        and not _paper_full(verdict, timeframe)
+    )
+
+
+def _paper_full(verdict: dict[str, Any], timeframe: Any) -> bool:
+    """The paper gate before option B: ``passed``, and a minute key's ``PAPER_PASSED_FIELD``."""
+
+    from app.backtesting.intraday_plan import is_minute_bar
+
+    if not verdict.get("passed"):
+        return False
+    return not is_minute_bar(timeframe) or bool(verdict.get(PAPER_PASSED_FIELD))
+
+
+def _oos_bar(settings: Any, verdict: dict[str, Any]) -> bool:
+    """Option B's path: the switch is on and the verdict's pooled OOS part passes."""
+
+    enabled = bool(getattr(settings, "paper_oos_bar_enabled", False))  # absent: off
+    return enabled and bool(verdict.get(PAPER_OOS_PASSED_FIELD))
 
 
 def _edge_r(verdict: dict[str, Any]) -> float:

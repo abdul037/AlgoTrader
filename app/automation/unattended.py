@@ -162,8 +162,11 @@ class PaperAutoTradingService:
             blockers.append("proposal_quality_not_tradeable")
         return sorted(set(blockers))
 
-    def candidate_proposal_blockers(self, candidate: Any) -> list[str]:
-        """Return persistent safety blocks that apply before proposal creation."""
+    def candidate_proposal_blockers(self, candidate: Any, *, paper_only: Any = None) -> list[str]:
+        """Return persistent safety blocks that apply before proposal creation.
+
+        ``paper_only`` is the auto-propose pass's ``PaperOnlyPass`` (app/workflow/paper_only.py:
+        the verdicts and its guards' records read once a pass); without one, a fresh one."""
 
         symbol = str(getattr(candidate, "symbol", "") or "").upper()
         strategy = str(getattr(candidate, "strategy_name", "") or "")
@@ -183,9 +186,12 @@ class PaperAutoTradingService:
         # proposals (when enabled); the rest stay scanned/tracked as shadow signals.
         # In paper, a minute-bar strategy must also clear Alpaca and stress costs (2026-10-20);
         # that only tightens: fee-band trades never run on this account. Crypto rows carry no
-        # venue profiles, so crypto keeps the fee-inclusive verdict alone.
+        # venue profiles, so crypto keeps the fee-inclusive verdict alone. Option B (2026-10-21):
+        # paper also admits pooled OOS evidence whose holdout fails, as a paper-only entry.
         from app.performance.strategy_evidence import evidence_blocker
+        from app.workflow.paper_only import PaperOnlyPass
 
+        paper_only = PaperOnlyPass(self) if paper_only is None else paper_only
         paper = (
             str(getattr(self.settings, "execution_mode", "")) == "paper"
             and not bool(getattr(self.settings, "enable_real_trading", False))
@@ -193,13 +199,15 @@ class PaperAutoTradingService:
         )
         evidence = evidence_blocker(
             self.settings,
-            self.runtime_state,
+            paper_only.state,  # the verdicts as the pass read them
             strategy=strategy,
             timeframe=getattr(candidate, "timeframe", None),
             paper=paper,
         )
         if strategy and evidence:
             blockers.append(evidence)
+        elif strategy and not blockers:  # option B (2026-10-21): paper-only stands aside for eToro
+            blockers.extend(paper_only.blockers(candidate))
         return blockers
 
     def _paper_exploration_strategy_approved(self, strategy: str) -> bool:

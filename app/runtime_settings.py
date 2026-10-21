@@ -597,6 +597,10 @@ class AppSettings(BaseSettings):
     # Minimum pooled OOS expectancy in R (1 R = the backtest's $100 risk per trade). 0 keeps
     # the original "> 0" bar; the operator picks the level (2026-10-06: +0.05R proposed).
     strategy_evidence_min_expectancy_r: float = 0.0
+    # Paper OOS bar (operator option B, 2026-10-21): on the main paper account a strategy whose
+    # pooled OOS evidence passes may trade though its holdout does not; such entries are
+    # paper-only (app/workflow/paper_only.py). eToro keeps the full check. Off = the old gate.
+    paper_oos_bar_enabled: bool = True
     # Phase 3 go-live readiness bar (see app/performance/go_live_readiness.py).
     go_live_phase3_start_date: str = ""
     go_live_min_closed_trades: int = 50

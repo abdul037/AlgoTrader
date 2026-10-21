@@ -30,7 +30,12 @@ def run_scan_task(
     force_refresh: bool,
     symbols: list[str] | None = None,
 ) -> WorkflowTaskResponse:
-    from app.workflow.swing_focus import advance_symbols, focused_spec_batch, rotate_symbols
+    from app.workflow.swing_focus import (
+        advance_symbols,
+        focused_spec_batch,
+        rotate_symbols,
+        scan_run,
+    )
 
     budget = current_budget()  # set only inside a scheduled cadence tick
     if budget is not None and not budget.scan_fits():
@@ -72,7 +77,7 @@ def run_scan_task(
     if budget is not None and budget.enforces_scan_stop and "cancel_event" in scan_params:
         kwargs["cancel_event"] = ScanDeadline(budget.scan_stop_at)  # stop in time for the post-scan work
     try:
-        response = service.market_screener.scan_universe(**kwargs)
+        response = scan_run(service, kwargs, spec_batch)  # paper-only specs after (option B)
     except Exception as exc:  # noqa: BLE001 - workflow must not block future runs
         error = f"scan_failed:{exc}"
         service.run_logs.log(
@@ -866,7 +871,10 @@ def auto_propose_candidates(service: Any, response: Any, *, origin: str, notify:
     }
     created = 0
     shadow_event_risk: list[tuple[Any, Any]] = []  # (proposal id, candidate): logged after the loop
-    candidates = list(getattr(response, "candidates", []) or [])
+    from app.workflow.paper_only import PaperOnlyPass  # option B (2026-10-21)
+
+    paper_only = PaperOnlyPass(service.auto_trading)  # one verdicts read; paper-only ranked last
+    candidates = paper_only.order(list(getattr(response, "candidates", []) or []))
     funnel: Counter[str] = Counter()
     funnel["entered"] = len(candidates)
     for candidate in candidates:
@@ -875,7 +883,7 @@ def auto_propose_candidates(service: Any, response: Any, *, origin: str, notify:
             funnel["dropped:duplicate_or_no_symbol"] += 1
             continue
         if service.auto_trading is not None:
-            proposal_blockers = service.auto_trading.candidate_proposal_blockers(candidate)
+            proposal_blockers = service.auto_trading.candidate_proposal_blockers(candidate, paper_only=paper_only)
             if proposal_blockers:
                 funnel["safety_blocked"] += 1
                 funnel.update(f"safety_blocked:{blocker}" for blocker in proposal_blockers)
@@ -922,6 +930,7 @@ def auto_propose_candidates(service: Any, response: Any, *, origin: str, notify:
                     proposal_quality in {"supervised_weak_valid", "paper_near_miss"}
                     or str(getattr(service.settings, "paper_auto_operation_mode", "shadow")) != "unattended"
                 ),
+                **paper_only.tags(candidate),
             }
             proposal = service.proposal_service.create_proposal(request)
         except Exception as exc:  # noqa: BLE001
@@ -932,6 +941,7 @@ def auto_propose_candidates(service: Any, response: Any, *, origin: str, notify:
             )
             continue
         existing_symbols.add(symbol)
+        paper_only.created()
         created += 1
         shadow_event_risk.append((proposal.id, candidate))
         funnel["proposals_created"] += 1

@@ -535,6 +535,7 @@ def test_minute_verdicts_add_a_paper_verdict_and_keep_the_etoro_fields(tmp_path)
         "oos_expectancy_r",
         "holdout_trades",
         "holdout_expectancy_usd",
+        "paper_oos_passed",  # option B (2026-10-21): every key, tests/test_paper_oos_bar.py
     }
     # The same trade-count and R bars apply to each profile.
     strict = compute_verdicts(

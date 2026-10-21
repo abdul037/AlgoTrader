@@ -63,6 +63,9 @@ def effective_execution_policy(settings: Any) -> dict[str, Any]:
         # replaces the default list) and the modelled signal-to-order delay on minute bars.
         "backtest_scheduler_timeframes": [str(tf) for tf in _get("backtest_scheduler_timeframes", []) or []],
         "walk_forward_intraday_entry_delay_bars": int(_get("walk_forward_intraday_entry_delay_bars", 0) or 0),
+        # Paper OOS bar (operator option B, 2026-10-21): paper-only entries on pooled OOS evidence
+        # alone; off restores the old paper gate. Read as the gate reads it (absent = off).
+        "paper_oos_bar_enabled": bool(_get("paper_oos_bar_enabled", False)),
         "screener_batch_deadline_seconds": float(_get("screener_batch_deadline_seconds", 0.0) or 0.0),
         "market_universe_limit": int(_get("market_universe_limit", 0) or 0),
         "alpaca_data_feed": str(_get("alpaca_data_feed", "")),
