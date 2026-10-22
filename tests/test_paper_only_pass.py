@@ -29,7 +29,7 @@ from app.live_signal_schema import MarketQuote
 from app.models.screener import ScreenerRunResponse
 from app.performance.strategy_evidence import VERDICTS_KEY
 from app.workflow.operations import auto_propose_candidates
-from app.workflow.paper_only import LEAVE_FOR_ETORO, PaperOnlyPass
+from app.workflow.paper_only import LEAVE_FOR_ETORO, LEAVE_IN_GROUP, PaperOnlyPass
 from app.workflow.service import SignalWorkflowService
 from app.workflow.swing_focus import PAPER_ONLY_CURSOR_KEY, scan_run
 from tests.conftest import make_settings
@@ -348,24 +348,36 @@ def test_a_paper_only_entry_leaves_two_of_the_days_paper_trades(tmp_path) -> Non
     ]  # today, as paper counts
 
 
-def test_a_paper_only_entry_leaves_two_of_its_groups_daily_entries(tmp_path) -> None:
-    # Production's group cap is 2: a paper-only entry can then only open outside every group.
+def test_a_paper_only_entry_leaves_one_of_its_groups_daily_entries(tmp_path) -> None:
+    # Production's group cap is 2: a group takes a paper-only entry only while it has none today.
+    assert LEAVE_IN_GROUP == 1
     auto, _ = _auto(tmp_path)
-    assert _blockers(auto, _candidate("AAPL", "momentum_breakout")) == [
-        "paper_only_headroom_correlation_bucket"
-    ]
-    assert _blockers(auto, _candidate("AAPL", "inside_bar_narrow_range_breakout")) == []
+    assert _blockers(auto, _candidate("AAPL", "momentum_breakout")) == []
     assert _blockers(auto, _candidate("UBER", "momentum_breakout")) == []  # unclassified
-    three, _ = _auto(tmp_path / "3", max_daily_entries_per_correlation_bucket=3)
-    assert _blockers(three, _candidate("AAPL", "momentum_breakout")) == []
-    used, _ = _auto(
-        tmp_path / "u", max_daily_entries_per_correlation_bucket=3, executions=_Executions(["MSFT"])
-    )
+    used, _ = _auto(tmp_path / "u", executions=_Executions(["MSFT"]))
     assert _blockers(used, _candidate("AAPL", "momentum_breakout")) == [
         "paper_only_headroom_correlation_bucket"
     ]
+    assert _blockers(used, _candidate("AAPL", "inside_bar_narrow_range_breakout")) == []
     assert _blockers(used, _candidate("JPM", "momentum_breakout")) == []  # another group
-    off, _ = _auto(tmp_path / "off", max_daily_entries_per_correlation_bucket=0)
+    assert _blockers(used, _candidate("UBER", "momentum_breakout")) == []  # unclassified
+    three, _ = _auto(
+        tmp_path / "3", max_daily_entries_per_correlation_bucket=3, executions=_Executions(["MSFT"])
+    )
+    assert _blockers(three, _candidate("AAPL", "momentum_breakout")) == []
+    two_used, _ = _auto(
+        tmp_path / "2u",
+        max_daily_entries_per_correlation_bucket=3,
+        executions=_Executions(["MSFT", "NVDA"]),
+    )
+    assert _blockers(two_used, _candidate("AAPL", "momentum_breakout")) == [
+        "paper_only_headroom_correlation_bucket"
+    ]
+    off, _ = _auto(
+        tmp_path / "off",
+        max_daily_entries_per_correlation_bucket=0,
+        executions=_Executions(["MSFT", "NVDA"]),
+    )
     assert _blockers(off, _candidate("AAPL", "momentum_breakout")) == []
 
 

@@ -15,16 +15,18 @@ every decision from one read of the verdicts) gives it four rules:
    SYMBOL (``copy_paper_exits``), so a paper-only position there would hold a real position
    open or close it at market. An unreadable record refuses the pass's paper-only entries.
    A symbol the pass itself sends to eToro is already taken by its own proposal.
-3. Headroom (``LEAVE_FOR_ETORO``): a paper-only entry must leave 2 of the day's paper trades
-   (``max_trades_per_day``) and 2 of its correlation group's daily entries
-   (``max_daily_entries_per_correlation_bucket``; unclassified symbols have no group cap),
+3. Headroom: a paper-only entry must leave 2 of the day's paper trades (``LEAVE_FOR_ETORO`` of
+   ``max_trades_per_day``) and 1 of its correlation group's daily entries (``LEAVE_IN_GROUP``
+   of ``max_daily_entries_per_correlation_bucket``; unclassified symbols have no group cap),
    counted as paper's own checks count them (today's execution rows), read once a pass and
    again after each proposal the pass creates. Two is the most eToro copies a day
    (``HARD_MAX_TRADES_PER_DAY``), so whatever paper-only entries come first, two
-   eToro-eligible entries still fit that day, in any group. With the group cap at its
-   production 2 a paper-only entry can only open in an unclassified symbol. Proposals still
-   waiting for a person's approval are not counted (the unattended account has none).
-   Unreadable counts refuse.
+   eToro-eligible entries still fit that day. With the production group cap of 2 a group
+   takes a paper-only entry only while it has none that day, and keeps one entry for an
+   eToro-eligible one; a second eToro-eligible entry in that group that day is then refused
+   (fewer copies, never extra ones). Leaving 2 would bar 23 of the 24 universe symbols, all
+   grouped (operator decision, 2026-10-22). Proposals still waiting for a person's approval
+   are not counted (the unattended account has none). Unreadable counts refuse.
 4. Tag: its proposal and order carry ``paper_only: true`` and ``paper_only_reason: "oos_only"``
    (``tags``), which make the mirror refuse it (``etoro_live_paper_only``) and keep it out of
    the strategy-name switches and the go-live readiness (app/performance/paper_only.py).
@@ -44,7 +46,8 @@ from typing import Any
 
 from app.utils.time import utc_now
 
-LEAVE_FOR_ETORO = 2  # paper trades a day, and group entries, a paper-only entry must leave
+LEAVE_FOR_ETORO = 2  # paper trades a day a paper-only entry must leave
+LEAVE_IN_GROUP = 1  # entries in its correlation group that day a paper-only entry must leave
 PREFIX = "paper_only_"  # its proposal blockers
 _UNREADABLE = object()  # a read that failed: the pass's paper-only entries stand aside
 
@@ -187,7 +190,7 @@ def _headroom(settings: Any, day: tuple[int, dict[str, int]], symbol: str) -> st
     if (
         cap > 0
         and bucket != UNKNOWN_BUCKET
-        and by_bucket.get(bucket, 0) + 1 + LEAVE_FOR_ETORO > cap
+        and by_bucket.get(bucket, 0) + 1 + LEAVE_IN_GROUP > cap
     ):
         return "headroom_correlation_bucket"
     return None
