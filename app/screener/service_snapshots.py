@@ -9,6 +9,7 @@ from app.intelligence import build_trade_plan
 from app.live_signal_schema import LiveSignalSnapshot, SignalState
 from app.models.screener import ScreenerRunResponse
 from app.screener.accuracy import build_accuracy_profile
+from app.screener.extension import EXTENSION_FIELD, entry_extension
 from app.screener.filters import FilterOutcome, MarketContext, build_market_context
 from app.utils.time import utc_now
 
@@ -137,6 +138,7 @@ def snapshot_from_signal(
             "backtest_sample_reliability_score": backtest_snapshot.get("sample_reliability_score"),
         }
     )
+    metadata[EXTENSION_FIELD] = _signal_bar_extension(context, timeframe)
 
     return LiveSignalSnapshot(
         symbol=signal.symbol.upper(),
@@ -174,6 +176,16 @@ def snapshot_from_signal(
         metadata=metadata,
         backtest_snapshot=backtest_snapshot,
     )
+
+
+def _signal_bar_extension(context: Any, timeframe: str) -> dict[str, Any]:
+    """The eToro copy's extension inputs (nested: never a learning feature), all None unless
+    they were computed on this snapshot's own timeframe."""
+
+    extension = getattr(context, "extension", None)
+    if isinstance(extension, dict) and extension.get("timeframe") == str(timeframe or "").lower():
+        return dict(extension)
+    return entry_extension(None, timeframe=timeframe)
 
 
 def build_no_trade_snapshot(

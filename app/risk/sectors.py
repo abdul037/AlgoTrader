@@ -39,6 +39,18 @@ _CORRELATION_BUCKET_BY_SECTOR_ETF: dict[str, str] = {
 }
 
 
+# Names the sector-ETF map leaves unclassified but whose co-movement is obvious:
+# QQQ is the mega-cap tech basket itself, CSCO is large-cap tech hardware, and
+# the broad index ETFs move with each other.
+_BUCKET_OVERRIDES: dict[str, str] = {
+    "QQQ": "tech_complex",
+    "CSCO": "tech_complex",
+    "SPY": "broad_market",
+    "IWM": "broad_market",
+    "DIA": "broad_market",
+}
+
+
 def sector_for_symbol(symbol: str) -> str:
     """Return the sector-ETF proxy for a symbol, or ``"unknown"``."""
 
@@ -48,4 +60,7 @@ def sector_for_symbol(symbol: str) -> str:
 def correlation_bucket_for_symbol(symbol: str) -> str:
     """Return the broad correlation bucket for a symbol, or ``"unclassified"``."""
 
+    override = _BUCKET_OVERRIDES.get(str(symbol or "").upper())
+    if override:
+        return override
     return _CORRELATION_BUCKET_BY_SECTOR_ETF.get(sector_for_symbol(symbol), UNKNOWN_BUCKET)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import suppress
 from typing import Any
 
 from app.automation.reliability import (
@@ -10,6 +11,7 @@ from app.automation.reliability import (
     auto_approval_tier_blockers,
     proposal_quality_label,
 )
+from app.broker import crypto as crypto_symbols
 from app.models.approval import ApprovalDecisionRequest
 from app.models.execution import ExecutionStatus
 from app.screener.profiles import effective_auto_execution_min_score
@@ -91,7 +93,14 @@ class PaperAutoTradingService:
         regular_hours_required = bool(getattr(self.settings, "auto_execution_regular_hours_only", True))
         if paper_exploration:
             regular_hours_required = bool(getattr(self.settings, "paper_exploration_require_regular_hours", True))
-        if regular_hours_required and (
+        # Crypto trades 24/7, so it is exempt from the regular-hours gate (and
+        # only that gate). Every other hard gate still applies to crypto.
+        is_crypto = (
+            bool(getattr(self.settings, "crypto_trading_enabled", False))
+            and bool(getattr(self.settings, "crypto_regular_hours_exempt", True))
+            and crypto_symbols.is_crypto_symbol(symbol)
+        )
+        if regular_hours_required and not is_crypto and (
             self.alpaca is None or not self.alpaca.is_regular_market_open()
         ):
             blockers.append("outside_regular_market_hours")
@@ -153,8 +162,11 @@ class PaperAutoTradingService:
             blockers.append("proposal_quality_not_tradeable")
         return sorted(set(blockers))
 
-    def candidate_proposal_blockers(self, candidate: Any) -> list[str]:
-        """Return persistent safety blocks that apply before proposal creation."""
+    def candidate_proposal_blockers(self, candidate: Any, *, paper_only: Any = None) -> list[str]:
+        """Return persistent safety blocks that apply before proposal creation.
+
+        ``paper_only`` is the auto-propose pass's ``PaperOnlyPass`` (app/workflow/paper_only.py:
+        the verdicts and its guards' records read once a pass); without one, a fresh one."""
 
         symbol = str(getattr(candidate, "symbol", "") or "").upper()
         strategy = str(getattr(candidate, "strategy_name", "") or "")
@@ -170,6 +182,32 @@ class PaperAutoTradingService:
             and not self._paper_exploration_strategy_approved(strategy)
         ):
             blockers.append("strategy_not_production_approved")
+        # Phase 2: only strategies with pooled out-of-sample evidence create
+        # proposals (when enabled); the rest stay scanned/tracked as shadow signals.
+        # In paper, a minute-bar strategy must also clear Alpaca and stress costs (2026-10-20);
+        # that only tightens: fee-band trades never run on this account. Crypto rows carry no
+        # venue profiles, so crypto keeps the fee-inclusive verdict alone. Option B (2026-10-21):
+        # paper also admits pooled OOS evidence whose holdout fails, as a paper-only entry.
+        from app.performance.strategy_evidence import evidence_blocker
+        from app.workflow.paper_only import PaperOnlyPass
+
+        paper_only = PaperOnlyPass(self) if paper_only is None else paper_only
+        paper = (
+            str(getattr(self.settings, "execution_mode", "")) == "paper"
+            and not bool(getattr(self.settings, "enable_real_trading", False))
+            and not crypto_symbols.is_crypto_symbol(symbol)
+        )
+        evidence = evidence_blocker(
+            self.settings,
+            paper_only.state,  # the verdicts as the pass read them
+            strategy=strategy,
+            timeframe=getattr(candidate, "timeframe", None),
+            paper=paper,
+        )
+        if strategy and evidence:
+            blockers.append(evidence)
+        elif strategy and not blockers:  # option B (2026-10-21): paper-only stands aside for eToro
+            blockers.extend(paper_only.blockers(candidate))
         return blockers
 
     def _paper_exploration_strategy_approved(self, strategy: str) -> bool:
@@ -211,9 +249,11 @@ class PaperAutoTradingService:
             return None
         if funnel is not None:
             funnel["executed"] += 1
+        from app.performance.paper_only import AUTO_REVIEWER  # "paper_auto"
+
         approved = self.proposals.approve_proposal(
             proposal.id,
-            ApprovalDecisionRequest(reviewer="paper_auto", notes="Paper-only auto-approved by safety policy"),
+            ApprovalDecisionRequest(reviewer=AUTO_REVIEWER, notes="Paper-only auto-approved by safety policy"),
         )
         queued = self.execution.enqueue_approved_proposal(approved.id)
         processed = self.execution.process_queue_item(queued.id)
@@ -228,10 +268,14 @@ class PaperAutoTradingService:
             },
         )
         self._announce_auto_trading_started(processed)
+        from app.performance.paper_only import is_paper_only
+
+        paper_only = is_paper_only(getattr(getattr(approved, "order", None), "metadata", None))
         self.notifier.send_text(
             "\n".join(
                 [
                     "Paper auto execution",
+                    *(["Paper-only (not copied to eToro)"] if paper_only else []),
                     f"Symbol: {processed.symbol}",
                     f"Proposal: {approved.id}",
                     f"Queue: {processed.id}",
@@ -279,7 +323,10 @@ class PaperAutoTradingService:
             return None
         try:
             return list(self.paper_trading.lifecycles(limit=1000))
-        except Exception:  # noqa: BLE001 - lack of evidence must block auto, not crash scans
+        except Exception as exc:  # noqa: BLE001 - lack of evidence must block auto, not crash scans
+            if self.logs is not None:
+                with suppress(Exception):
+                    self.logs.log("paper_lifecycle_evidence_unavailable", {"error": str(exc)[:300]})
             return None
 
     def process_ready_queue(self) -> list[Any]:
@@ -292,10 +339,16 @@ class PaperAutoTradingService:
     def refresh_strategy_health(self) -> list[dict[str, Any]]:
         if not bool(getattr(self.settings, "strategy_health_enabled", True)):
             return []
+        from app.performance.paper_only import request_is_paper_only
+
         groups: dict[str, list[float]] = {}
         for execution in self.executions.list(limit=2000):
             strategy = str((execution.request_payload or {}).get("strategy_name") or "")
             if not strategy or strategy == "manual_smoke":
+                continue
+            # Paper-only trades (option B, 2026-10-21) are left out: health is keyed by strategy
+            # name across timeframes, so they must not switch off eToro-copyable entries.
+            if request_is_paper_only(execution.request_payload):
                 continue
             if not self._is_reconciled_closed_execution(execution):
                 continue

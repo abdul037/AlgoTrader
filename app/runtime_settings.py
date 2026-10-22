@@ -156,7 +156,9 @@ class AppSettings(BaseSettings):
     max_market_data_age_seconds: int = 120
     screener_market_data_timeout_seconds: float = 20.0
     screener_intelligence_timeout_seconds: float = 20.0
-    screener_batch_deadline_seconds: float = 180.0
+    # 120 matches production (Railway): with maintenance counted against the cadence soft
+    # budget (240 - deadline - 10), 180 would leave 50 s and starve every scan (10-06 review).
+    screener_batch_deadline_seconds: float = 120.0
     screener_default_timeframes: list[str] = Field(default_factory=lambda: ["15m", "1h", "1d"])
     screener_intraday_timeframes: list[str] = Field(default_factory=lambda: ["1m", "5m", "10m", "15m"])
     intelligent_scan_timeframes: list[str] = Field(default_factory=lambda: ["5m", "15m", "1h", "1d", "1w"])
@@ -186,12 +188,16 @@ class AppSettings(BaseSettings):
     # BELOW the self-heal stale threshold so a genuinely hung job is still
     # bounded before a full worker restart. 240 > 180 batch deadline, < 300 heal.
     scheduler_job_timeout_seconds: int = 240
-    # Soft budget for one workflow-cadence tick: once this much wall-clock has
-    # elapsed the tick stops starting new scan buckets and defers the rest to the
-    # next tick, so a burst of due buckets can't sum past the per-job timeout
-    # above. None -> derived as ~60% of scheduler_job_timeout_seconds; <= 0
-    # disables deferral (buckets always all run).
+    # Soft budget for one workflow-cadence tick. None (production) -> derived per
+    # bucket from scheduler_job_timeout_seconds in app/workflow/cadence_budget.py: a
+    # bucket starts only if its pre-work + a useful scan + the post-scan reserve fit,
+    # and its scan stops in time for that reserve. A number > 0 restores the old rule
+    # exactly (stop starting buckets once that many seconds have elapsed; no backstop,
+    # no scan stop); <= 0 disables deferral and the derived scan stop.
     scheduler_cadence_soft_budget_seconds: float | None = None
+    # How long a timed-out job's still-running (abandoned) thread blocks its next run, so
+    # two cadence runs never overlap (10-09: 21 of 52 did). <= 0 disables the guard.
+    scheduler_overlap_grace_seconds: float = 120.0
     # Scheduled refresh of the internal (self-simulated) paper position ledger.
     paper_position_refresh_enabled: bool = True
     paper_position_refresh_interval_seconds: int = 60
@@ -201,7 +207,11 @@ class AppSettings(BaseSettings):
     # out-of-sample summary exists to validate against.
     backtest_scheduler_enabled: bool = False
     backtest_scheduler_interval_seconds: int = 21600
-    backtest_scheduler_timeframes: list[str] = Field(default_factory=lambda: ["1d"])
+    # 15m/5m added 2026-10-03 so the intraday strategies (most live trades) get
+    # walk-forward OOS evidence; see app/backtesting/intraday_plan.py. 10m added 2026-10-20,
+    # last so a saved mid-symbol cursor keeps pointing at the same strategy. 1m stays out:
+    # 4 tracked 1m signals so far, and costs swamp its ~0.1% stops.
+    backtest_scheduler_timeframes: list[str] = Field(default_factory=lambda: ["1d", "15m", "5m", "10m"])
     backtest_scheduler_symbol_limit: int = 0
     # Soft per-run wall-clock budget for the batch backtester. A full-universe
     # walk-forward pass cannot finish inside the scheduler's hard job cap
@@ -210,9 +220,42 @@ class AppSettings(BaseSettings):
     # stops cleanly at this budget and a persisted cursor rotates the start
     # offset, so successive runs sweep the universe. Keep it under the hard cap.
     backtest_scheduler_deadline_seconds: float = 180.0
+    # Short research (operator 2026-10-17, step 1 -- research only, never trades): after the
+    # long pass, the same job backtests the daily short setups in what is left of its hard
+    # cap (at most this many seconds), outside weekday 08:00-16:30 New York. Rows and verdicts
+    # are invisible to the long evidence gate; see app/backtesting/short_research.py. After a
+    # full 180 s long pass at most ~22 s is left (about one symbol); the backtest_short_research_run
+    # logs show the coverage. Off-hours, the next scheduler tick's jobs can start that much later.
+    backtest_short_research_enabled: bool = True
+    backtest_short_research_deadline_seconds: float = 45.0
     workflow_scan_default_universe_limit: int = 10
     schedule_timezone: str = "America/New_York"
     premarket_scan_enabled: bool = True
+    # Shadow pre-market deep scan (operator 2026-10-10): in the 08:30 ET bucket, every allowed
+    # equity x every 1d strategy on completed bars -> ranked watchlist; never trades.
+    premarket_deep_scan_enabled: bool = False
+    premarket_deep_scan_cutoff_local: str = "09:20"
+    premarket_deep_scan_max_items: int = 25
+    premarket_deep_scan_notify: bool = False
+    # Shorts step 2 (operator 2026-10-17): the deep scan also lists bracketed short setups and an
+    # off-hours shadow ledger follows them. Never traded; off stops both, the long scan unchanged.
+    premarket_short_shadow_enabled: bool = True
+    # Event-risk (earnings) check, SHADOW ONLY (operator 2026-10-18): off-hours yfinance earnings
+    # dates; logs which entries an earnings rule would have blocked, never blocks anything. Off
+    # stops the refresh, the watchlist hints and the proposal logs (app/workflow/event_risk.py).
+    event_risk_shadow_enabled: bool = True
+    # Its macro part (operator 2026-10-18, SHADOW ONLY): also flag entries on, or held across, a
+    # CPI, PPI, jobs-report or FOMC statement day (an in-code dated table, no network). Only with
+    # the switch above; off removes the macro block alone (app/workflow/macro_calendar.py).
+    event_risk_macro_shadow_enabled: bool = True
+    # Phase 3 (operator 2026-10-18), SHADOW ONLY: after the live market-open scan, re-check the
+    # watchlist's top setups on completed bars and at a fresh quote, rank them best-first and log
+    # what entering them at the open would have done. Never trades; off stops it, nothing else.
+    premarket_open_shadow_enabled: bool = True
+    # Market panel, SHADOW ONLY (operator 2026-10-18, post-mortem item 8): once today's deep scan
+    # is final, one yfinance daily history per panel symbol (Asia, NQ futures, 10y, oil, SMH vs
+    # XLP) and a logged-only regime label. Off stops it, nothing else (app/workflow/market_panel.py).
+    premarket_market_panel_enabled: bool = True
     premarket_scan_time_local: str = "08:30"
     market_open_scan_enabled: bool = True
     market_open_scan_time_local: str = "09:35"
@@ -228,6 +271,11 @@ class AppSettings(BaseSettings):
     workflow_lock_timeout_minutes: int = 45
     swing_scan_timeframes: list[str] = Field(default_factory=lambda: ["1d", "1w"])
     swing_scan_interval_minutes: int = 60
+    # Evidence-focused swing scan (app/workflow/swing_focus.py): while the evidence gate is
+    # on, scan only passing specs, rotate the symbol start, and run every N minutes.
+    swing_scan_evidence_focus: bool = True
+    swing_focus_interval_minutes: int = 10
+    swing_focus_shadow_every: int = 6
     intraday_scan_interval_minutes: int = 15
     scalp_scan_batch_size: int = 20
     intraday_active_shortlist_size: int = 20
@@ -331,6 +379,10 @@ class AppSettings(BaseSettings):
     confluence_min_close_location: float = 0.62
 
     max_risk_per_trade_pct: float = 1.0
+    # Size auto-proposals from the stop distance so max_risk_per_trade_pct actually
+    # applies to the unattended path (default off = flat default_trade_amount_usd,
+    # which is also the notional cap when this is on).
+    auto_propose_risk_based_sizing: bool = False
     max_daily_loss_usd: float = 50.0
     max_weekly_loss_usd: float = 125.0
     # Count current open (unrealized) losses toward the daily/weekly loss caps so
@@ -338,6 +390,17 @@ class AppSettings(BaseSettings):
     loss_limit_includes_unrealized: bool = True
     max_open_positions: int = 3
     max_trades_per_day: int = 6
+    # Paper-only: an owned position whose bracket legs are no longer live at the
+    # broker is closed at market by reconciliation instead of tripping the
+    # circuit breaker. Never applies when real trading is enabled.
+    reconciliation_flatten_unprotected_positions: bool = True
+    # Paper-only self-healing: when the circuit breaker (not an operator) tripped
+    # the kill switch, the scheduler keeps probing reconciliation and resumes
+    # automation once the broker state is clean again. Never applies when real
+    # trading is enabled, never overrides KILL_SWITCH_ENABLED or a manual pause.
+    paper_auto_recover_circuit_breaker: bool = True
+    paper_auto_recover_probe_interval_seconds: int = 600
+    paper_auto_recover_max_resumes_per_day: int = 3
     per_symbol_position_limit: int = 1
     max_consecutive_losses_before_cooldown: int = 2
     rollout_stage: str = "stage_1_validation"
@@ -365,10 +428,9 @@ class AppSettings(BaseSettings):
     stage1_decay_min_trades: int = 20
     # Close the profit loop: when true, a strategy that decays to a `demote`
     # verdict (non-positive live expectancy over stage1_decay_min_trades closed
-    # trades) is automatically dropped from the live scan rotation. Default OFF
-    # = observe-only: the demote set is computed and logged each cycle but
-    # selection is unchanged, so it never removes a strategy until you trust it.
-    strategy_auto_demote_enabled: bool = False
+    # trades) is automatically dropped from the live scan rotation. Enforced since
+    # 2026-10-03 (operator plan, Phase 3 step 7); set false for observe-only.
+    strategy_auto_demote_enabled: bool = True
     # Calibrate the backtest cost model to live IEX fill quality: when true, the
     # batch backtester replaces its conservative default slippage_bps with the
     # median realized slippage measured from live fills (>= min_fills samples,
@@ -511,9 +573,81 @@ class AppSettings(BaseSettings):
     strategy_health_rolling_trades: int = 30
     reconciliation_failures_before_kill_switch: int = 3
     execution_max_entry_drift_bps: float = 35.0
+    # Reward:risk re-checked at the live quote just before submit. Entry drift ate
+    # AAPL's edge on 2026-09-28 (1.20 at proposal, 0.69 at fill); never pay more
+    # risk than the target pays.
+    execution_min_reward_to_risk_at_quote: float = 1.0
+    # Block a new entry on a symbol whose last trade closed at a loss this recently
+    # (2026-09-28: NVDA re-bought 1h43m after a stop and stopped again). 0 = off.
+    reentry_cooldown_minutes_after_loss: int = 240
+    # Close intraday-timeframe positions this many minutes before the bell (paper);
+    # swing (1d+) positions keep their GTC brackets. 0 = off.
+    intraday_flatten_minutes_before_close: float = 10.0
+    # New entries allowed per correlation bucket (e.g. tech_complex) per day. 0 = off.
+    max_daily_entries_per_correlation_bucket: int = 2
+    # Block new intraday longs while SPY (and QQQ for tech) is below today's VWAP
+    # and down at least this % from the prior close. 0 = off. See app/risk/market_direction.py.
+    market_direction_min_drop_pct: float = 0.3
+    # Phase 2 (operator plan 2026-10-03): only strategies with pooled walk-forward OOS
+    # evidence create proposals. OFF until the operator decides on the Phase 1 table.
+    require_strategy_oos_evidence: bool = False
+    strategy_evidence_lookback_days: int = 7
+    strategy_evidence_min_trades: int = 40
+    strategy_evidence_min_holdout_trades: int = 10
+    # Minimum pooled OOS expectancy in R (1 R = the backtest's $100 risk per trade). 0 keeps
+    # the original "> 0" bar; the operator picks the level (2026-10-06: +0.05R proposed).
+    strategy_evidence_min_expectancy_r: float = 0.0
+    # Paper OOS bar (operator option B, 2026-10-21): on the main paper account a strategy whose
+    # pooled OOS evidence passes may trade though its holdout does not; such entries are
+    # paper-only (app/workflow/paper_only.py). eToro keeps the full check. Off = the old gate.
+    paper_oos_bar_enabled: bool = True
+    # Phase 3 go-live readiness bar (see app/performance/go_live_readiness.py).
+    go_live_phase3_start_date: str = ""
+    go_live_min_closed_trades: int = 50
+    go_live_min_profit_factor: float = 1.3
+    go_live_max_drawdown_pct: float = 3.0
+    go_live_min_clean_weeks: int = 4
+    # Phase 4: live trading also requires this exact operator-set phrase
+    # (app/automation/service.py LIVE_OPERATOR_ACKNOWLEDGEMENT). Never set by code.
+    live_operator_acknowledgement: str = ""
+    # Capped eToro LIVE test mirror (app/broker/etoro_live_mirror.py; operator decision
+    # 2026-10-04). Real money: inert unless the operator sets ALL of these in Railway.
+    # Keys are secrets -- never commit them or paste them in chat.
+    etoro_live_mirror_enabled: bool = False
+    etoro_live_api_key: str = ""
+    etoro_live_user_key: str = ""
+    etoro_live_acknowledgement: str = ""
+    # Hard-capped at 10% / $1,000 in code, and cut so a stop-out costs <= 0.5% of equity.
+    etoro_live_trade_pct_of_equity: float = 10.0
+    etoro_live_guard_interval_seconds: int = 60  # backup stop / test watch cadence (min 10)
+    # Overnight adverse-move Telegram alert for live eToro positions (operator 2026-10-18;
+    # app/broker/etoro_live_overnight_alert.py). Alert only: no trading change.
+    etoro_live_overnight_alert_enabled: bool = True
+    # Option 3 (operator 2026-10-06): while the mirror would copy an order, eToro's own room
+    # (6 positions, 3 per group, free cash) replaces paper's gross/sector/correlated limits.
+    etoro_live_room_authority_enabled: bool = True
+    # Live stop-width floor in prior-session ATRs (widens stop and target, keeping
+    # R:R; sizing keeps $ risk constant). 0 = off until the intraday walk-forward
+    # shows a floor improves out-of-sample expectancy. Backtests use the same value.
+    min_stop_session_atr_multiple: float = 0.0
+    # Intraday walk-forward plan (see app/backtesting/intraday_plan.py).
+    walk_forward_intraday_lookback_days: int = 120
+    walk_forward_intraday_train_days: int = 5
+    walk_forward_intraday_test_days: int = 7
+    walk_forward_intraday_step_days: int = 7
+    walk_forward_intraday_embargo_days: int = 1
+    walk_forward_intraday_holdout_days: int = 14
+    walk_forward_intraday_variants: list[str] = Field(
+        default_factory=lambda: ["hold_overnight", "stop_floor_0.5", "stop_floor_1.0"]
+    )
+    # 1m/5m/10m/15m evidence fills a signal this many bars after the next bar's open, the
+    # live scan-to-order delay (scans run minutes after a bar closes). 0 = next-bar open,
+    # the pre-2026-10-20 evidence. 1h/1d/1w evidence always fills at the next bar's open.
+    walk_forward_intraday_entry_delay_bars: int = 1
     execution_mode: Literal["paper", "live"] = "paper"
     broker_for_equities: Literal["alpaca", "etoro", "none"] = "alpaca"
     broker_for_non_equities: Literal["alpaca", "etoro", "none"] = "etoro"
+    broker_for_crypto: Literal["alpaca", "etoro", "none"] = "alpaca"
     paper_broker: Literal["alpaca", "self_simulated"] = "alpaca"
     paper_simulated_fallback_enabled: bool = False
     kill_switch_auto_close_positions: bool = False
@@ -602,6 +736,26 @@ class AppSettings(BaseSettings):
         default_factory=lambda: ["OIL", "NATGAS", "SILVER"]
     )
 
+    # Crypto is additive to the equities pipeline and trades 24/7. It is routed
+    # to Alpaca (paper), sized like equities, and — because Alpaca has no native
+    # bracket orders for crypto — protected by a separate stop order plus the
+    # reconciliation auto-flatten of any position left without live protection.
+    # The equity path and every hard risk gate are unchanged; crypto is only
+    # exempt from the regular-hours gate (that is the point of 24/7).
+    # Default off in code; enabled in production via CRYPTO_TRADING_ENABLED=true
+    # so every existing test and scan keeps its equity-only universe unless the
+    # operator explicitly turns crypto on.
+    crypto_trading_enabled: bool = False
+    crypto_symbols: list[str] = Field(
+        default_factory=lambda: ["BTC/USD", "ETH/USD", "SOL/USD", "LTC/USD", "LINK/USD", "AVAX/USD"]
+    )
+    crypto_regular_hours_exempt: bool = True
+    # Crypto trades 24/7, but every equity scan bucket is gated to US market
+    # hours, so without a dedicated bucket crypto is only scanned mid-session.
+    # This bucket scans the crypto pairs on a fixed interval around the clock.
+    crypto_scan_interval_minutes: int = 10
+    crypto_scan_timeframes: list[str] = Field(default_factory=lambda: ["15m", "1h"])
+
     default_equity_leverage: int = 1
     max_equity_leverage: int = 5
     max_gold_leverage: int = 10
@@ -685,6 +839,7 @@ class AppSettings(BaseSettings):
         "paper_near_miss_allowed_reasons",
         "paper_supervised_weak_valid_allowed_reasons",
         "paper_strategy_weak_signal_allowed_strategies",
+        "walk_forward_intraday_variants",
         mode="before",
     )
     @classmethod
@@ -702,6 +857,7 @@ class AppSettings(BaseSettings):
             "paper_near_miss_allowed_reasons",
             "paper_supervised_weak_valid_allowed_reasons",
             "paper_strategy_weak_signal_allowed_strategies",
+            "walk_forward_intraday_variants",
         }
         normalize = str.lower if info.field_name in lowercase_fields else str.upper
         if value is None:

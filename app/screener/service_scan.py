@@ -20,6 +20,7 @@ from app.screener.scan_promotion import (
 from app.screener.scan_support import (
     ScanTimeoutError,
     _bounded_call,
+    _build_for_run,
     _normalize_spec_keys,
     _spec_key,
     _strategy_specs_for_timeframe,
@@ -44,6 +45,24 @@ def scan_universe(
 ) -> ScreenerRunResponse:
     universe = [symbol.upper() for symbol in (symbols or resolve_universe(service.settings))]
     scan_timeframes = [timeframe.lower() for timeframe in (timeframes or service.settings.screener_default_timeframes)]
+    # Rotating scan cursor. The per-symbol data fetch is slow enough that a
+    # scheduled scan routinely hits its wall-clock deadline after only the first
+    # handful of symbols. With a fixed order the tail of the universe -- notably
+    # the crypto pairs appended last -- was never reached, so it never produced a
+    # candidate or a trade (crypto: 0 trades in the first week live). Start each
+    # scan of a given task where the previous one stopped, so the whole universe
+    # -- crypto included -- is covered over successive scans instead of only the
+    # first few names each time. Crypto is rotated alongside equities so neither
+    # can starve the other.
+    scan_offset = 0
+    rotate_universe = symbols is None and len(universe) > 1
+    if rotate_universe:
+        cursors = getattr(service, "_scan_cursors", None)
+        if cursors is None:
+            cursors = {}
+            service._scan_cursors = cursors
+        scan_offset = int(cursors.get(scan_task, 0)) % len(universe)
+        universe = universe[scan_offset:] + universe[:scan_offset]
     requested_spec_keys = _normalize_spec_keys(strategy_spec_keys)
     candidates: list[Any] = []
     errors: list[str] = []
@@ -76,6 +95,7 @@ def scan_universe(
     )
 
     for symbol in universe:
+        service._flush_scan_decisions()  # the previous symbol's queued no_signal rows
         if deadline_seconds > 0 and (time.monotonic() - started_at) >= deadline_seconds:
             errors.append("scan_deadline_exceeded")
             break
@@ -175,8 +195,10 @@ def scan_universe(
                     break
                 evaluated_strategy_runs += 1
                 evaluated_spec_keys.add(_spec_key(spec))
-                strategy = service._build_strategy(spec)
+                strategy, build_error = _build_for_run(service, spec)
                 try:
+                    if strategy is None:  # e.g. a generated strategy retired mid-scan: this run's error
+                        raise RuntimeError(f"generated strategy {spec.name} could not build: {build_error}")
                     signal = strategy.generate_signal(history.copy(), symbol)
                 except Exception as exc:
                     if isinstance(exc, ScanTimeoutError):
@@ -300,7 +322,7 @@ def scan_universe(
                                 )
                                 continue
                         if service.scan_decisions is not None:
-                            service.scan_decisions.create(
+                            service.scan_decisions.create_deferred(
                                 scan_task=scan_task,
                                 symbol=symbol,
                                 strategy_name=spec.name,
@@ -320,7 +342,7 @@ def scan_universe(
                     else:
                         service._increment_rejection(rejection_summary, "no_strategy_signal")
                         if service.scan_decisions is not None:
-                            service.scan_decisions.create(
+                            service.scan_decisions.create_deferred(
                                 scan_task=scan_task,
                                 symbol=symbol,
                                 strategy_name=spec.name,
@@ -908,6 +930,10 @@ def scan_universe(
         item.model_copy(update={"rank": index + 1})
         for index, item in enumerate(ranked[:top_k])
     ]
+    # Advance the rotating cursor so the next scan of this task begins on the
+    # symbols this one did not reach, sweeping the whole universe over time.
+    if rotate_universe:
+        service._scan_cursors[scan_task] = (scan_offset + max(evaluated_symbols, 1)) % len(universe)
     expected_strategy_runs = 0
     for timeframe in scan_timeframes:
         expected_strategy_runs += len(_strategy_specs_for_timeframe(service, timeframe, requested_spec_keys)) * len(universe)

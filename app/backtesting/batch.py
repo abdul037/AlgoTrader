@@ -15,13 +15,32 @@ that still want an in-sample pass can set ``walk_forward=False``.
 
 from __future__ import annotations
 
+import contextlib
+import threading
 import time
+from dataclasses import replace
 from math import isfinite
 from typing import Any
 
+import pandas as pd
+
+from app.backtesting.cost_model import with_etoro_trade_fees
 from app.backtesting.engine import BacktestEngine, EngineConfig
+from app.backtesting.intraday_plan import (
+    history_bars_for,
+    intraday_variants,
+    is_intraday,
+    is_minute_bar,
+    splitter_for,
+)
 from app.backtesting.metrics import bars_per_year_for, leakage_tripwire_triggered
 from app.backtesting.strategy_selection import strategy_kwargs_for, strategy_specs_for
+from app.backtesting.venue_costs import (
+    COST_PROFILES_FIELD,
+    RecordedSignals,
+    profile_metrics,
+    venue_cost_models,
+)
 from app.backtesting.walk_forward import WalkForwardSplitter, aggregate_out_of_sample
 from app.models.screener import BatchBacktestSummary
 from app.runtime_settings import AppSettings
@@ -29,6 +48,23 @@ from app.strategies import get_strategy
 from app.universe import resolve_universe
 from app.utils.ids import generate_id
 from app.utils.time import utc_now
+
+
+def _with_warmup(window: Any) -> pd.DataFrame:
+    """Train bars + test bars, so the strategy has indicator context in the test window.
+
+    The engine is told (via ``trade_window_start``) to evaluate only from the
+    test start, so the train bars never contribute signals, trades or equity
+    points — they are context, exactly as the live scanner sees history before
+    today's bar. Without this every fold was ~10 daily bars and no strategy
+    could ever warm up, so the gate recorded 0 trades in 1.2M runs.
+    """
+
+    train_df = getattr(window, "train_df", None)
+    test_df = window.test_df
+    if train_df is None or len(train_df) == 0:
+        return test_df
+    return pd.concat([train_df, test_df], ignore_index=True)
 
 
 class BatchBacktestService:
@@ -46,6 +82,9 @@ class BatchBacktestService:
         self.market_data = market_data_engine
         self.backtests = backtest_repository
         self.logs = run_log_repository
+        # Per thread: API routes call run() too, and only the scheduled job's own pass
+        # (same thread) may bound the short-research budget that follows it.
+        self._pass_started = threading.local()
 
     def run(
         self,
@@ -60,7 +99,10 @@ class BatchBacktestService:
         walk_forward: bool = True,
         deadline_seconds: float | None = None,
         start_offset: int = 0,
+        start_unit: int = 0,
     ) -> BatchBacktestSummary:
+        from app.broker.crypto import is_crypto_symbol
+
         universe = [symbol.upper() for symbol in (symbols or resolve_universe(self.settings, limit=limit))]
         # Rotate the start so successive scheduled runs sweep the whole universe
         # rather than always re-backtesting the same leading symbols. The runner
@@ -76,8 +118,15 @@ class BatchBacktestService:
         tripwires: list[str] = []
         run_count = 0
         started_at = time.monotonic()
+        self._pass_started.value = started_at
         symbols_covered = 0
         truncated = False
+        # Resume inside the first symbol: one symbol's intraday sweep (strategies x
+        # variants) can exceed a pass's deadline, and advancing by whole symbols
+        # would then never reach its later strategies.
+        skip_units = max(int(start_unit or 0), 0)
+        resume_unit = 0
+        stopped_mid_symbol = False
 
         for symbol in universe:
             if (
@@ -91,15 +140,37 @@ class BatchBacktestService:
             # Count the symbol as covered as soon as it is attempted so the
             # rotation cursor always advances past a slow or failing symbol.
             symbols_covered += 1
+            unit = 0
             for timeframe in scan_timeframes:
+                specs = list(strategy_specs_for(self.settings, timeframe=timeframe, requested=requested))
+                if unit + len(specs) <= skip_units:
+                    unit += len(specs)
+                    continue
+                minute_bars = is_minute_bar(timeframe)
+                if (
+                    minute_bars
+                    and deadline_seconds is not None
+                    and deadline_seconds > 0
+                    and (time.monotonic() - started_at) >= deadline_seconds
+                ):
+                    # Stop before the long minute-bar fetch, not after it: no spec could use it.
+                    resume_unit, stopped_mid_symbol = max(unit, skip_units), True
+                    truncated = True
+                    errors.append("backtest_deadline_exceeded")
+                    break
+                fetch = {
+                    "timeframe": timeframe,
+                    "bars": history_bars_for(timeframe, self.settings),
+                    "provider": provider,
+                    "force_refresh": force_refresh,
+                }
+                if minute_bars:
+                    # The whole window, refetched every pass and cached nowhere
+                    # (MarketDataEngine.get_history): the cache serves any fresh frame of 20+
+                    # bars, so a live scan's ~320 bars left these runs 0 folds (2026-10-20).
+                    fetch["backtest"] = True
                 try:
-                    history = self.market_data.get_history(
-                        symbol,
-                        timeframe=timeframe,
-                        bars=520 if timeframe == "1w" else 500 if timeframe == "1d" else 350,
-                        provider=provider,
-                        force_refresh=force_refresh,
-                    )
+                    history = self.market_data.get_history(symbol, **fetch)
                 except Exception as exc:
                     errors.append(f"{symbol} {timeframe}: {exc}")
                     continue
@@ -108,15 +179,40 @@ class BatchBacktestService:
                     initial_cash=initial_cash,
                     risk_per_trade_pct=float(getattr(self.settings, "max_risk_per_trade_pct", 1.0)),
                     bars_per_year=bars_per_year_for(timeframe),
+                    # Mirror live: intraday positions are closed before the bell,
+                    # and any live stop-width floor applies in the backtest too.
+                    flatten_at_session_end=is_intraday(timeframe)
+                    and float(getattr(self.settings, "intraday_flatten_minutes_before_close", 0) or 0) > 0,
+                    min_stop_session_atr_multiple=float(
+                        getattr(self.settings, "min_stop_session_atr_multiple", 0.0) or 0.0
+                    ),
+                    entry_delay_bars=self._entry_delay_bars() if minute_bars else 0,
+                )
+                # eToro's own trade fees ($1 a side on a US stock, ~1% a side on crypto) on
+                # every row this runner writes, the evidence rows included.
+                crypto = is_crypto_symbol(symbol)
+                engine_config = replace(
+                    engine_config,
+                    cost_model=with_etoro_trade_fees(engine_config.cost_model, crypto=crypto),
                 )
                 engine = BacktestEngine(self.backtests, config=engine_config)
+                # Minute-bar paper evidence must also clear Alpaca costs (app/backtesting/venue_costs.py).
+                cost_profiles = (
+                    {name: replace(engine_config, cost_model=model) for name, model in venue_cost_models().items()}
+                    if minute_bars and walk_forward and not crypto
+                    else None
+                )
 
-                for spec in strategy_specs_for(self.settings, timeframe=timeframe, requested=requested):
+                for spec in specs:
+                    unit += 1
+                    if unit <= skip_units:
+                        continue
                     if (
                         deadline_seconds is not None
                         and deadline_seconds > 0
                         and (time.monotonic() - started_at) >= deadline_seconds
                     ):
+                        resume_unit, stopped_mid_symbol = unit - 1, True
                         # A single symbol's full strategy sweep can itself exceed
                         # the scheduler's hard job cap, so the top-of-symbol check
                         # alone is not enough — it would be killed mid-symbol and
@@ -136,6 +232,8 @@ class BatchBacktestService:
                                 sym, timeframe=_tf, bars=bars, provider=_prov
                             )
                         )
+                    if cost_profiles:
+                        strategy = RecordedSignals(strategy)
                     try:
                         summary = self._run_strategy(
                             engine=engine,
@@ -145,11 +243,14 @@ class BatchBacktestService:
                             timeframe=timeframe,
                             provider=provider,
                             walk_forward=walk_forward,
+                            cost_profiles=cost_profiles,
                         )
                     except Exception as exc:
                         errors.append(f"{symbol} {timeframe} {spec.name}: {exc}")
                         continue
                     results.append(summary)
+                    if walk_forward and is_intraday(timeframe):
+                        self._run_variants(engine_config, symbol, strategy, history, timeframe, provider, summary)
                     triggered, reason = leakage_tripwire_triggered(summary)
                     if triggered:
                         tripwires.append(
@@ -157,6 +258,7 @@ class BatchBacktestService:
                         )
                 if truncated:
                     break
+            skip_units = 0
             if truncated:
                 break
 
@@ -171,6 +273,8 @@ class BatchBacktestService:
             aggregate_metrics=aggregate,
             audit_rankings=self._audit_rankings(results, errors + tripwires),
             errors=errors + tripwires,
+            resume_unit=resume_unit,
+            stopped_mid_symbol=stopped_mid_symbol,
         )
         self.logs.log(
             "batch_backtest_run",
@@ -178,6 +282,9 @@ class BatchBacktestService:
                 "universe": len(universe),
                 "symbols_covered": symbols_covered,
                 "start_offset": start_offset,
+                "start_unit": start_unit,
+                "resume_unit": resume_unit,
+                "stopped_mid_symbol": stopped_mid_symbol,
                 "truncated": truncated,
                 "timeframes": scan_timeframes,
                 "strategy_runs": run_count,
@@ -189,6 +296,25 @@ class BatchBacktestService:
         )
         return summary
 
+    def run_short_research(self, runtime_state: Any) -> dict[str, Any] | None:
+        """Research only: one bounded short walk-forward pass (app/backtesting/short_research.py).
+
+        The scheduled backtest job calls this after its long pass and cursor save, on the
+        same thread, so the budget counts from that pass's start. Never raises: short
+        research must never fail, delay or replace the long evidence job.
+        """
+
+        started = getattr(self._pass_started, "value", None)
+        self._pass_started.value = None
+        try:
+            from app.backtesting.short_research import run_short_pass
+
+            return run_short_pass(self, runtime_state, pass_started=started)
+        except Exception as exc:  # noqa: BLE001 - research never breaks the long job
+            with contextlib.suppress(Exception):
+                self.logs.log("backtest_short_research_failed", {"error": f"{type(exc).__name__}: {exc}"[:300]})
+            return None
+
     def _run_strategy(
         self,
         *,
@@ -199,8 +325,18 @@ class BatchBacktestService:
         timeframe: str,
         provider: str | None,
         walk_forward: bool,
+        persist: bool = True,
+        oos_suffix: str = ":walk_forward_oos",
+        row_name: str | None = None,
+        cost_profiles: dict[str, EngineConfig] | None = None,
     ) -> dict[str, Any]:
-        """Run a single strategy either in-sample or via walk-forward folds."""
+        """Run a single strategy either in-sample or via walk-forward folds.
+
+        ``oos_suffix`` / ``row_name`` relabel the persisted OOS row; only short research
+        sets them, so its rows never match a long evidence lookup. ``cost_profiles`` re-runs
+        the same folds and holdout under each config and keeps their pooled numbers in the
+        row's ``COST_PROFILES_FIELD``; every other metric stays the eToro-priced run's.
+        """
 
         file_path = f"{provider or self.settings.primary_market_data_provider}:{timeframe}:{symbol}"
 
@@ -220,21 +356,25 @@ class BatchBacktestService:
                 **result.metrics,
             }
 
-        splitter = WalkForwardSplitter(
-            train_days=int(getattr(self.settings, "walk_forward_train_days", 180)),
-            test_days=int(getattr(self.settings, "walk_forward_test_days", 14)),
-            step_days=int(getattr(self.settings, "walk_forward_step_days", 14)),
-            embargo_days=int(getattr(self.settings, "walk_forward_embargo_days", 1)),
-            holdout_days=int(getattr(self.settings, "walk_forward_holdout_days", 28)),
-        )
+        splitter = splitter_for(timeframe, self.settings)
         per_fold_trades: list[list[dict]] = []
         per_fold_metrics: list[dict] = []
+        # Folds run through a repo-less engine, like the holdout: each fold used
+        # to be persisted as its own row (~37 per run, every 30 min), which grew
+        # the table to 1.4M rows, slowed every lookup, and made the
+        # expectancy baseline average ~10-bar fold slices instead of the real
+        # OOS aggregate. Only the aggregate walk_forward_oos row is persisted.
+        fold_engine = BacktestEngine(config=engine.config)
         for window in splitter.split(history):
-            fold_result = engine.run(
+            # Feed the train bars as indicator warm-up but evaluate only the
+            # test window: a 14-day fold alone (~10 daily bars) is below every
+            # strategy's warm-up, which is why 1.2M fold runs produced 0 trades.
+            fold_result = fold_engine.run(
                 symbol=symbol,
                 strategy=strategy,
-                data=window.test_df,
+                data=_with_warmup(window),
                 file_path=f"{file_path}:fold:{window.test_start.isoformat()}",
+                trade_window_start=window.test_start,
             )
             per_fold_trades.append(fold_result.trades)
             per_fold_metrics.append(fold_result.metrics)
@@ -246,7 +386,7 @@ class BatchBacktestService:
         aggregated = aggregate_out_of_sample(
             per_fold_trades,
             per_fold_metrics,
-            test_days=int(getattr(self.settings, "walk_forward_test_days", 14)),
+            test_days=splitter.test_days,
         )
         metrics = aggregated["metrics"]
         metrics["out_of_sample"] = True
@@ -266,14 +406,52 @@ class BatchBacktestService:
         # fold ever trained or tested on). This is the honest final check the
         # brief mandates; its result gates promotion in _promotion_hint.
         metrics.update(self._evaluate_holdout(engine, symbol, strategy, history, splitter, file_path))
+        skip = _minute_row_skip(timeframe, history, metrics["fold_count"]) if persist else None
+        if cost_profiles and metrics["fold_count"] and not skip:
+            try:
+                metrics[COST_PROFILES_FIELD] = {
+                    name: profile_metrics(
+                        self._run_strategy(
+                            engine=BacktestEngine(config=config),
+                            symbol=symbol,
+                            strategy=strategy,
+                            history=history.copy(),
+                            timeframe=timeframe,
+                            provider=provider,
+                            walk_forward=True,
+                            persist=False,
+                        )
+                    )
+                    for name, config in cost_profiles.items()
+                }
+            except Exception as exc:  # noqa: BLE001 - the eToro row stands; paper then fails closed
+                if self.logs is not None:
+                    self.logs.log(
+                        "backtest_cost_profiles_failed",
+                        {"symbol": symbol.upper(), "strategy_name": row_name or strategy.name,
+                         "timeframe": timeframe, "error": f"{type(exc).__name__}: {exc}"[:300]},
+                    )
 
         completed_at = utc_now().isoformat()
-        if self.backtests is not None:
+        if skip:
+            if self.logs is not None:
+                self.logs.log(
+                    "backtest_oos_row_skipped",
+                    {
+                        "symbol": symbol.upper(),
+                        "strategy_name": row_name or strategy.name,
+                        "timeframe": timeframe,
+                        "bars": len(history),
+                        "folds": metrics["fold_count"],
+                        "reason": skip,
+                    },
+                )
+        elif persist and self.backtests is not None:
             self.backtests.create(
                 backtest_id=generate_id("bt"),
                 symbol=symbol.upper(),
-                strategy_name=strategy.name,
-                file_path=f"{file_path}:walk_forward_oos",
+                strategy_name=row_name or strategy.name,
+                file_path=f"{file_path}{oos_suffix}",
                 started_at=completed_at,
                 completed_at=completed_at,
                 metrics=metrics,
@@ -281,13 +459,63 @@ class BatchBacktestService:
             )
         return {
             "symbol": symbol.upper(),
-            "strategy_name": strategy.name,
+            "strategy_name": row_name or strategy.name,
             "timeframe": timeframe,
             "provider": provider or self.settings.primary_market_data_provider,
             "out_of_sample": True,
             "fold_count": aggregated["metrics"].get("fold_count", 0),
             **metrics,
         }
+
+    def _run_variants(
+        self,
+        base_config: EngineConfig,
+        symbol: str,
+        strategy: Any,
+        history: Any,
+        timeframe: str,
+        provider: str | None,
+        baseline: dict[str, Any],
+    ) -> None:
+        """Score intraday variants (overnight holds, stop-width floors) on the same
+        folds. Logged to run_logs only: a persisted OOS row would be picked up by
+        get_latest_summary as the strategy's backtest and could gate live trading."""
+
+        for name, overrides in intraday_variants(self.settings):
+            try:
+                variant = self._run_strategy(
+                    engine=BacktestEngine(config=replace(base_config, **overrides)),
+                    symbol=symbol,
+                    strategy=strategy,
+                    history=history.copy(),
+                    timeframe=timeframe,
+                    provider=provider,
+                    walk_forward=True,
+                    persist=False,
+                )
+            except Exception as exc:  # noqa: BLE001 - a variant failure never breaks the gate refresh
+                self.logs.log("backtest_variant_failed", {"symbol": symbol, "variant": name, "error": str(exc)})
+                continue
+            keys = ("number_of_trades", "win_rate", "profit_factor", "expectancy_usd", "total_return_pct",
+                    "max_drawdown_pct", "fold_count", "holdout_trades", "holdout_expectancy_usd")
+            self.logs.log(
+                "backtest_variant_result",
+                {
+                    "symbol": symbol.upper(),
+                    "strategy_name": strategy.name,
+                    "timeframe": timeframe,
+                    "variant": name,
+                    "variant_metrics": {key: variant.get(key) for key in keys},
+                    "baseline_metrics": {key: baseline.get(key) for key in keys},
+                },
+            )
+
+    @staticmethod
+    def _fold_frame_with_warmup(window: Any) -> Any:
+        return _with_warmup(window)
+
+    def _entry_delay_bars(self) -> int:
+        return max(int(getattr(self.settings, "walk_forward_intraday_entry_delay_bars", 1) or 0), 0)
 
     def _evaluate_holdout(
         self,
@@ -313,8 +541,9 @@ class BatchBacktestService:
             result = holdout_engine.run(
                 symbol=symbol,
                 strategy=strategy,
-                data=window.test_df,
+                data=_with_warmup(window),
                 file_path=f"{file_path}:holdout",
+                trade_window_start=window.test_start,
             )
         except Exception:
             return {"holdout_evaluated": False}
@@ -410,6 +639,24 @@ class BatchBacktestService:
 
 
 __all__ = ["BatchBacktestService"]
+
+# One 7-day fold is a single week, not a walk-forward; the full minute-bar window fits ~14.
+MIN_MINUTE_BAR_FOLDS = 2
+
+
+def _minute_row_skip(timeframe: str, history: Any, folds: int) -> str | None:
+    """Why a 1m/5m/10m/15m OOS row must not be written (None: write it). The row replaces the
+    symbol's last one in the pooled verdict, so it must stand for the full plan: a frame from a
+    fallback provider (yfinance serves 30-60 days) would be saved under the requested
+    provider's path, and fewer than ``MIN_MINUTE_BAR_FOLDS`` folds is a data gap, not evidence."""
+
+    if not is_minute_bar(timeframe):
+        return None
+    if bool((getattr(history, "attrs", None) or {}).get("used_fallback")):
+        return "fallback_provider"
+    if folds < MIN_MINUTE_BAR_FOLDS:
+        return "too_few_folds"
+    return None
 
 
 def _avg(items: list[dict[str, Any]], key: str, *, cap: float | None = None) -> float:

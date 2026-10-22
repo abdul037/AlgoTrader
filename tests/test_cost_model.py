@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -111,3 +111,47 @@ class TestMeasuredSlippageBps:
     def test_ignores_none_samples(self) -> None:
         samples = [None] * 5 + [3.0] * 40
         assert measured_slippage_bps(samples, min_samples=30) == 3.0
+
+
+def test_short_holding_cost_adds_borrow_per_calendar_day() -> None:
+    cm = CostModel(overnight_fee_daily_pct=0.00015, weekend_multiplier=3.0, short_borrow_fee_daily_pct=0.0001)
+    entry = datetime(2026, 1, 8, 20, tzinfo=UTC)  # Thursday
+    exit_ = datetime(2026, 1, 12, 15, tzinfo=UTC)  # Monday: 4 calendar days, no Friday multiplier
+    overnight = cm.holding_cost_usd(notional_usd=10_000.0, entry_time=entry, exit_time=exit_)
+    short = cm.short_holding_cost_usd(notional_usd=10_000.0, entry_time=entry, exit_time=exit_)
+    assert overnight == pytest.approx(10_000.0 * 0.00015 * 6)
+    assert short == pytest.approx(overnight + 10_000.0 * 0.0001 * 4)
+    assert cm.short_holding_cost_usd(notional_usd=10_000.0, entry_time=exit_, exit_time=entry) == 0.0
+    with pytest.raises(ValueError):
+        cm.short_holding_cost_usd(notional_usd=1.0, entry_time=entry.replace(tzinfo=None), exit_time=exit_)
+
+
+def test_short_borrow_is_zero_by_default_so_a_short_cfd_pays_the_overnight_fee_only() -> None:
+    cm = CostModel()
+    entry = datetime(2026, 1, 5, tzinfo=UTC)
+    exit_ = entry + timedelta(days=9)
+    assert cm.short_borrow_fee_daily_pct == 0.0
+    assert cm.short_holding_cost_usd(notional_usd=5_000.0, entry_time=entry, exit_time=exit_) == (
+        cm.holding_cost_usd(notional_usd=5_000.0, entry_time=entry, exit_time=exit_)
+    )
+
+
+def test_the_alpaca_preset_charges_an_easy_to_borrow_fee_on_shorts() -> None:
+    cm = CostModel.alpaca_equities()
+    entry = datetime(2026, 1, 5, 15, tzinfo=UTC)
+    exit_ = entry + timedelta(days=3)
+    assert cm.short_borrow_fee_daily_pct == pytest.approx(0.30 / 100 / 360)
+    assert cm.holding_cost_usd(notional_usd=10_000.0, entry_time=entry, exit_time=exit_) == 0.0
+    assert cm.short_holding_cost_usd(notional_usd=10_000.0, entry_time=entry, exit_time=exit_) == pytest.approx(
+        10_000.0 * 0.003 / 360 * 3
+    )
+
+
+def test_long_holding_cost_never_reads_the_borrow_fee() -> None:
+    entry = datetime(2026, 1, 8, tzinfo=UTC)
+    exit_ = entry + timedelta(days=5)
+    plain = CostModel().holding_cost_usd(notional_usd=7_000.0, entry_time=entry, exit_time=exit_)
+    borrowed = CostModel(short_borrow_fee_daily_pct=0.01).holding_cost_usd(
+        notional_usd=7_000.0, entry_time=entry, exit_time=exit_
+    )
+    assert plain == borrowed

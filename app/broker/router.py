@@ -21,16 +21,25 @@ class BrokerRouter:
         etoro_client=None,
         broker_for_equities: Literal["alpaca", "etoro", "none"] = "alpaca",
         broker_for_non_equities: Literal["alpaca", "etoro", "none"] = "etoro",
+        broker_for_crypto: Literal["alpaca", "etoro", "none"] = "alpaca",
     ):
         self._alpaca = alpaca_client
         self._etoro = etoro_client
         self._equities_choice = broker_for_equities
         self._non_equities_choice = broker_for_non_equities
+        self._crypto_choice = broker_for_crypto
         self._emergency_clients: list = []
+
+    def _choice_for(self, asset_class: str) -> str:
+        if asset_class == "equity":
+            return self._equities_choice
+        if asset_class == "crypto":
+            return self._crypto_choice
+        return self._non_equities_choice
 
     def select_broker_for(self, proposal: TradeProposal):
         asset_class = self._asset_class_of(proposal)
-        choice = self._equities_choice if asset_class == "equity" else self._non_equities_choice
+        choice = self._choice_for(asset_class)
         if choice == "alpaca":
             if self._alpaca is None:
                 raise NoBrokerForAssetClass(f"alpaca client not configured for asset_class={asset_class}")
@@ -45,7 +54,7 @@ class BrokerRouter:
         """Return the configured broker name for a proposal's asset class."""
 
         asset_class = self._asset_class_of(proposal)
-        return self._equities_choice if asset_class == "equity" else self._non_equities_choice
+        return self._choice_for(asset_class)
 
     def all_clients(self) -> list:
         """Return configured clients for emergency-stop fanout."""

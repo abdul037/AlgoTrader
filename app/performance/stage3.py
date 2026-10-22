@@ -174,13 +174,15 @@ def assess_stage3(
 
     ``trades`` are closed paper trades (objects with ``realized_pnl_usd`` and an
     ISO ``closed_at``). Sharpe is computed from the daily return series on the
-    given capital; drawdown from the cumulative realized-P&L equity curve.
+    given capital; drawdown from the cumulative realized-P&L equity curve. Paper-only trades
+    (option B, 2026-10-21; app/performance/paper_only.py) are left out: a real-capital record.
     """
 
+    from app.performance.paper_only import without_paper_only
     from app.performance.strategy_performance import daily_pnl_series
 
     gates = gates or Stage3Gates()
-    trade_list = list(trades)
+    trade_list = without_paper_only(trades)
     series = daily_pnl_series(trade_list)
     trading_days = len(series)
     total_trades = len(trade_list)
@@ -280,12 +282,14 @@ def track_record_report(trades: Iterable[Any], *, capital_usd: float) -> TrackRe
 
     Sharpe/Sortino/Calmar from the daily return series; drawdown (depth and
     longest duration) from the cumulative realized-P&L equity curve; monthly
-    returns and profitable-month share for consistency.
+    returns and profitable-month share for consistency. Paper-only trades are left out, as
+    in ``assess_stage3``: this is the record a capital decision reads.
     """
 
+    from app.performance.paper_only import without_paper_only
     from app.performance.strategy_performance import daily_pnl_series
 
-    trade_list = list(trades)
+    trade_list = without_paper_only(trades)
     series = daily_pnl_series(trade_list)
     trading_days = len(series)
     total_trades = len(trade_list)

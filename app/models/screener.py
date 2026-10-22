@@ -64,3 +64,7 @@ class BatchBacktestSummary(BaseModel):
     aggregate_metrics: dict[str, float] = Field(default_factory=dict)
     audit_rankings: list[dict[str, Any]] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    stopped_mid_symbol: bool = False
+    resume_unit: int = 0
+    """When ``stopped_mid_symbol``: (timeframe, strategy) units of the last symbol
+    already done, so the next pass resumes there instead of skipping the rest."""

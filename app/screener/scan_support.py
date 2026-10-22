@@ -32,6 +32,20 @@ def _bounded_call(label: str, timeout_seconds: float, func: Any, *args: Any, **k
         executor.shutdown(wait=False, cancel_futures=True)
 
 
+def _build_for_run(service: Any, spec: Any) -> tuple[Any | None, str]:
+    """(strategy, "") for one scan run, or (None, why) when a generated strategy cannot build.
+
+    A strategy-lab strategy retired mid-scan is that run's error (review 2026-10-10). A
+    built-in strategy that cannot build is a systemic fault, so it still aborts the scan."""
+
+    try:
+        return service._build_strategy(spec), ""
+    except Exception as exc:
+        if str(getattr(spec, "style", "") or "") != "generated":
+            raise
+        return None, f"{type(exc).__name__}: {exc}"
+
+
 def _normalize_spec_keys(strategy_spec_keys: list[str] | set[str] | tuple[str, ...] | None) -> set[str]:
     return {str(item).strip().lower() for item in strategy_spec_keys or [] if str(item).strip()}
 

@@ -213,8 +213,10 @@ def _strategy_performance(state: Any) -> list[dict[str, Any]]:
     trade_repo = getattr(state, "paper_trade_repository", None)
     if trade_repo is None:
         return []
+    from app.performance.paper_only import without_paper_only
+
     trades = trade_repo.list(limit=2000)
-    performances = analyze_by_strategy(trades)
+    performances = analyze_by_strategy(without_paper_only(trades))  # as the demotion reads them
     baseline = _safe(lambda: state.backtest_repository.expectancy_by_strategy(), {})
     min_trades = int(getattr(state.settings, "stage1_decay_min_trades", 20) or 20)
     rows: list[dict[str, Any]] = []
