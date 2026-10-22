@@ -224,9 +224,10 @@ class PaperOnlyPass:
         order was not placed in this pass is rejected at once (rule 6)."""
 
         from app.models.execution_queue import ExecutionQueueStatus
+        from app.performance.paper_only import is_paper_only
 
         auto = service.auto_trading
-        if not self.is_paper_only(candidate):
+        if not is_paper_only(getattr(getattr(proposal, "order", None), "metadata", None)):
             return auto.approve_enqueue_execute(proposal, candidate, funnel=funnel)
         processed = None
         try:
@@ -396,17 +397,20 @@ def _withdraw(service: Any, proposal: Any, processed: Any) -> None:
     from app.performance.paper_only import AUTO_REVIEWER
 
     reason = str(getattr(processed, "validation_reason", "") or "not_executed")
-    try:
-        service.proposal_service.reject_proposal(
-            proposal.id,
-            ApprovalDecisionRequest(
-                reviewer=AUTO_REVIEWER,
-                notes=f"Paper-only entries are automatic only; not placed in its pass: {reason}",
-            ),
-        )
-        rejected = True
-    except Exception:  # noqa: BLE001 - not open any more (expired, executed): nothing holds
-        rejected = False
+    placed = _placed(service, proposal)
+    rejected = False
+    if not placed:  # an order the broker has is left to its proposal; its position is tagged
+        try:
+            service.proposal_service.reject_proposal(
+                proposal.id,
+                ApprovalDecisionRequest(
+                    reviewer=AUTO_REVIEWER,
+                    notes=f"Paper-only entries are automatic only; not placed in its pass: {reason}",
+                ),
+            )
+            rejected = True
+        except Exception:  # noqa: BLE001 - not open any more (expired, executed): nothing holds
+            rejected = False
     with suppress(Exception):  # a log line never fails the pass
         service.run_logs.log(
             "paper_only_proposal_withdrawn",
@@ -416,8 +420,23 @@ def _withdraw(service: Any, proposal: Any, processed: Any) -> None:
                 "queue_status": str(getattr(processed, "status", "") or "") or None,
                 "reason": reason,
                 "rejected": rejected,
+                "order_status": placed or None,
             },
         )
+
+
+def _placed(service: Any, proposal: Any) -> str:
+    """The status of the proposal's latest execution when its order reached the broker
+    (submitted or filled: an error after the submission), else "" (also when unreadable)."""
+
+    from app.models.execution import ExecutionStatus
+
+    with suppress(Exception):
+        row = service.auto_trading.executions.get_latest_by_proposal_id(proposal.id)
+        status = str(getattr(row, "status", "") or "")
+        if status in {ExecutionStatus.SUBMITTED, ExecutionStatus.FILLED}:
+            return status
+    return ""
 
 
 def _budget_spent() -> bool:

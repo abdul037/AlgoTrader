@@ -1328,6 +1328,34 @@ def test_a_paper_only_proposal_not_placed_in_its_pass_is_rejected_at_once(
     assert withdrawn["rejected"] is True and withdrawn["symbol"] == "UBER"
 
 
+@pytest.mark.parametrize(
+    ("status", "rejected"), [("submitted", False), ("filled", False), ("failed", True)]
+)
+def test_a_paper_only_proposal_whose_order_reached_the_broker_is_not_rejected(
+    tmp_path, status, rejected
+) -> None:
+    auto, _ = _auto(tmp_path)
+    workflow, proposals = _stateful(tmp_path, auto)
+    auto.executions.get_latest_by_proposal_id = lambda _pid: SimpleNamespace(status=status)
+
+    def execute(*_a, **_k):
+        raise RuntimeError("notifier failed after the submission")
+
+    auto.approve_enqueue_execute = execute
+    with pytest.raises(RuntimeError):
+        auto_propose_candidates(
+            workflow,
+            _response(_scan_candidate("UBER", "momentum_breakout", 95.0)),
+            origin="swing_scan",
+            notify=False,
+        )
+    (proposal,) = proposals.items.values()
+    assert (proposal.status == ApprovalStatus.REJECTED) is rejected
+    (withdrawn,) = [p for e, p in workflow.run_logs.items if e == "paper_only_proposal_withdrawn"]
+    assert withdrawn["rejected"] is rejected
+    assert withdrawn["order_status"] == (None if rejected else status)
+
+
 def test_an_executed_paper_only_proposal_and_any_untagged_one_are_left_as_they_are(
     tmp_path,
 ) -> None:
@@ -1402,7 +1430,16 @@ def test_a_person_cannot_approve_a_paper_only_proposal(tmp_path) -> None:
         f"/proposals/{by_hand.id}/approve", json={"reviewer": "operator", "notes": "x"}
     )
     assert (response.status_code, response.json()["detail"]) == (409, AUTOMATIC_ONLY)
+    as_auto = TestClient(app).post(
+        f"/proposals/{by_hand.id}/approve", json={"reviewer": AUTO_REVIEWER, "notes": "x"}
+    )  # the unattended path's name is not a client's to give
+    assert (as_auto.status_code, as_auto.json()["detail"]) == (409, AUTOMATIC_ONLY)
     assert service.get_proposal(by_hand.id).status == ApprovalStatus.PENDING
+    plain_as_auto = service.create_proposal(proposal_payload("AMD"))
+    response = TestClient(app).post(
+        f"/proposals/{plain_as_auto.id}/approve", json={"reviewer": AUTO_REVIEWER, "notes": "x"}
+    )
+    assert (response.status_code, response.json()["status"]) == (200, ApprovalStatus.APPROVED)
     assert (
         service.approve_proposal(
             plain.id, ApprovalDecisionRequest(reviewer="telegram:1", notes="x")
