@@ -12,6 +12,64 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-10-22 (Thu) — option B: paper trades on pooled OOS evidence (paper-only entries)
+
+- **Stage 1 (`822e46e`) was never deployed:** Railway missed the 10-21 push (no GitHub
+  deployment record; last boot snapshot 10-21 04:29 UTC on `1046d29`). It ships with this
+  release.
+- **Trading 10-21..22:** paper bought CRM 10-21 18:04 UTC (`etf_mega_cap_relative_strength_rotation`
+  1d near-miss, $5,437, risk $499); the mirror refused it (stop too wide, edge below bar, streak
+  too short). Paper's META hit its stop 10-22 13:33 UTC (-$496.59, -11.1%); its eToro copy
+  (~$999) was closed by the exit copy; eToro equity $9,829.59 -> $9,717.82.
+- **Operator decisions (10-21 and 10-22, after "why are we not able to trade?"):**
+  - **Option B approved:** on the main paper account a strategy:timeframe may trade on paper
+    when its fee-inclusive pooled walk-forward OOS passes (>=40 trades, expectancy > 0) even if
+    the 14-day holdout fails. eToro keeps the full check (`passed`, +0.03R bar, 24 h streak).
+    Residual accepted: paper-only trades share paper's room and loss limits with eToro copies,
+    so they can mean fewer copies, never extra ones.
+  - **Option A approved:** the separate Alpaca paper learning account (ships separately).
+  - **Group headroom leaves 1, not 2** (10-22): with the group cap of 2, leaving 2 would bar 23
+    of the 24 universe symbols.
+  - **At most 3 paper-only positions open** (10-22): paper's 12 places less eToro's 9.
+- **Shipped as `822e46e..a3fc47b` (10 commits, built on branch `build-paper-oos-bar`):**
+  - Verdicts gain `paper_oos_passed`; `evidence_blocker(paper=True)` also admits it while
+    `PAPER_OOS_BAR_ENABLED` (default on; boot snapshot `paper_oos_bar_enabled`). Minute keys
+    also need both Stage 1 venue profiles' OOS parts; crypto unchanged; missing fields fail
+    closed. Every eToro path still reads `passed`.
+  - An entry admitted only that way is tagged `paper_only` (`paper_only_reason: oos_only`); the
+    mirror refuses it (`etoro_live_paper_only`, not a room reason, so paper's own room rules
+    apply) and the eToro demo comparison skips it.
+  - Guards: never a symbol eToro holds or has in flight (checked at proposal and again at
+    execution); never a symbol paper holds or has an unfilled entry in; eToro-eligible
+    candidates go first in a pass; leave 2 of the day's paper trades and 1 of the group's daily
+    entries; open + unfilled + 1 + 2 <= min(max_open_positions, heat cap / per-trade risk);
+    at most 3 open; at most 1 per pass and none within 35 s of the tick's scan stop.
+  - Automatic only: proposed only if the unattended path would execute it at once; rejected at
+    once if its order was not placed in its pass; refused for manual approval (API 409,
+    Telegram). Notices say "Paper-only (not copied to eToro)".
+  - Swing focus scans paper-only 1h/1d/1w specs in a second scan only after the run's own
+    entries are proposed, with the swing due time stamped before it; top 3 candidates.
+  - Paper-only results are kept out of strategy health, auto-demotion, tier-3 and the
+    auto-approval bootstrap, Phase 3/4 go-live readiness (drawdown netted, approximately), the
+    Stage 3 capital record and weekly-target readiness; they stay in paper trades and the
+    learning data. `GET /performance/live-scorecard` gains a `paper_only` section.
+- **Reviews:** 3 reviewers on `0890bf8` (majors: the second scan delayed eToro-eligible
+  proposals; paper-only positions could fill paper's room/heat; unbounded work per pass), 2 on
+  `1b14bb4` (a waiting paper-only proposal held its symbol; the cadence stamp moved), 1 final on
+  `2c72298` (approved; parity re-run: 10k mirror cases and 4k end-to-end auto-propose cases
+  identical to `822e46e` for untagged orders). Its three minors are fixed in `a3fc47b`.
+- **Residuals (stated):** paper-only losses count toward paper's daily/weekly loss limits, the
+  consecutive-loss cooldown and the drawdown governor; while paper's room or heat is full every
+  eToro-eligible entry waits for a position to close; a group that took a paper-only entry
+  refuses its 2nd eToro-eligible entry that day; the two trades left for eToro can also be used
+  by untagged entries the mirror refuses; for the seconds between a paper-only submission and
+  its fill paper's per-symbol check cannot see it.
+- **Expect:** about 2-3 paper-only entries a week once verdicts refresh (<=30 min after boot);
+  none while paper holds more than 9 positions (it held 11 on 10-22). Daily keys likely to
+  qualify: `momentum_breakout`, `ma_crossover`, `relative_strength_momentum`.
+- **Rollback:** set `PAPER_OOS_BAR_ENABLED=false` in Railway. Do not revert the code: a revert
+  would feed paper-only results back into health, demotion, tier-3 and readiness.
+
 ## 2026-10-21 (Wed) — intraday Stage 1: honest minute-bar evidence; learning account paused
 
 - **10-21 04:29 UTC deploy verified:** Railway `41870f57` SUCCESS on `1046d29`; boot snapshot
