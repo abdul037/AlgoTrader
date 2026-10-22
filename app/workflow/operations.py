@@ -893,10 +893,11 @@ def auto_propose_candidates(service: Any, response: Any, *, origin: str, notify:
             if proposal_blockers:
                 funnel["safety_blocked"] += 1
                 funnel.update(f"safety_blocked:{blocker}" for blocker in proposal_blockers)
-                service.run_logs.log(
-                    "auto_proposal_safety_blocked",
-                    {"origin": origin, "symbol": symbol, "blockers": proposal_blockers},
-                )
+                if paper_only.log_blocked(candidate, proposal_blockers):  # paper-only: once a day
+                    service.run_logs.log(
+                        "auto_proposal_safety_blocked",
+                        {"origin": origin, "symbol": symbol, "blockers": proposal_blockers},
+                    )
                 continue
         drop_reason = candidate_propose_drop_reason(candidate)
         if drop_reason is not None:
@@ -947,7 +948,7 @@ def auto_propose_candidates(service: Any, response: Any, *, origin: str, notify:
             )
             continue
         existing_symbols.add(symbol)
-        paper_only.created()
+        paper_only.created(candidate)
         created += 1
         shadow_event_risk.append((proposal.id, candidate))
         funnel["proposals_created"] += 1
@@ -967,6 +968,7 @@ def auto_propose_candidates(service: Any, response: Any, *, origin: str, notify:
                 "\n".join(
                     [
                         "Auto proposal created",
+                        *paper_only.notice(candidate),
                         f"ID: {proposal.id}",
                         f"Symbol: {proposal.order.symbol}",
                         f"Entry: {proposal.order.proposed_price:.2f}",

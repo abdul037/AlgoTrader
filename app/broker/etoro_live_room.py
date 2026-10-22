@@ -66,6 +66,42 @@ def effective_open_symbols(runtime_state: Any, state: dict[str, Any]) -> list[st
     return sorted(symbols)
 
 
+def held_symbols(runtime_state: Any) -> set[str]:
+    """``effective_open_symbols`` from the mirror's three records, read in one round trip;
+    raises when one is unreadable (the room check itself would read it as empty). Option B
+    (2026-10-21): a paper-only entry never opens in these symbols (app/workflow/paper_only.py)."""
+
+    from app.broker.etoro_live_mirror import STATE_KEY
+    from app.broker.etoro_live_scorecard import SCORECARD_KEY
+    from app.broker.etoro_live_test_order import TEST_STATE_KEY
+
+    keys = [STATE_KEY, SCORECARD_KEY, TEST_STATE_KEY]
+    getter = getattr(runtime_state, "get_many", None)
+    values = (
+        dict(getter(keys)) if callable(getter) else {key: runtime_state.get(key) for key in keys}
+    )
+    records = {key: json.loads(values.get(key) or "{}") for key in keys}
+    if not all(isinstance(record, dict) for record in records.values()):
+        raise ValueError("an eToro live record is not a JSON object")
+    return set(effective_open_symbols(SimpleNamespace(get=values.get), records[STATE_KEY]))
+
+
+def paper_only_held_reasons(mirror: Any, order: Any) -> list[str]:
+    """For an order tagged paper-only (option B), the execution-time re-check of its symbol:
+    refused while the real eToro account holds or has it in flight, or when that cannot be
+    read. [] for any other order, and without a mirror (nothing is copied or exit-copied)."""
+
+    from app.performance.paper_only import is_paper_only
+
+    if mirror is None or not is_paper_only(getattr(order, "metadata", None)):
+        return []
+    try:
+        held = held_symbols(mirror.state)
+    except Exception:  # noqa: BLE001 - unknown is refused
+        return ["paper_only_etoro_live_state_unreadable"]
+    return ["paper_only_etoro_live_symbol_held"] if order.symbol.upper() in held else []
+
+
 def bucket_blockers(symbol: str, open_symbols: list[str]) -> list[str]:
     """At most HARD_MAX_OPEN_PER_BUCKET open eToro positions in one correlation group."""
 

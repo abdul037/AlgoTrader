@@ -1,12 +1,16 @@
 """Paper-only entries in the auto-propose pass and the swing scan (operator option B, 2026-10-21).
 
 * an eToro-eligible candidate is considered before a paper-only one: never loses its symbol;
+* at most one paper-only proposal a pass, none once a cadence tick is near its scan stop;
 * a paper-only entry never opens in a symbol the eToro account holds or has in flight (read
-  once a pass, as the mirror's room check reads it; unreadable refuses);
-* it leaves 2 of the day's paper trades and 2 of its group's daily entries;
-* it is tagged; nothing else is, and with the switch off nothing changes;
-* the swing scan scans paper-only specs only after a run's eToro-passing specs reached every
-  symbol, in a second scan inside the same run's deadline.
+  once a pass in one round trip, as the mirror's room check reads it; unreadable refuses);
+* it leaves 2 of the day's paper trades and 1 of its group's daily entries;
+* it leaves room for 2 more positions in paper's open-position and heat capacity, never opens
+  where paper holds or has an unfilled entry, and at most 4 are open at once;
+* it is tagged; nothing else is, and with the switch off nothing changes and nothing is read;
+* its safety blocks are logged once a day; its notices say it is not copied;
+* the swing scan scans paper-only specs only after a run's own entries were proposed, in a
+  second scan inside the same run's deadline.
 
 No wall clock: the pass's clock and the scan's monotonic clock are patched.
 """
@@ -14,7 +18,7 @@ No wall clock: the pass's clock and the scan's monotonic clock are patched.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -30,7 +34,14 @@ from app.live_signal_schema import MarketQuote
 from app.models.screener import ScreenerRunResponse
 from app.performance.strategy_evidence import VERDICTS_KEY
 from app.workflow.operations import auto_propose_candidates
-from app.workflow.paper_only import LEAVE_FOR_ETORO, LEAVE_IN_GROUP, PaperOnlyPass
+from app.workflow.paper_only import (
+    LEAVE_FOR_ETORO,
+    LEAVE_IN_GROUP,
+    MAX_OPEN_PAPER_ONLY,
+    MAX_PER_PASS,
+    PROPOSAL_SECONDS,
+    PaperOnlyPass,
+)
 from app.workflow.service import SignalWorkflowService
 from app.workflow.swing_focus import (
     PAPER_ONLY_CURSOR_KEY,
@@ -63,7 +74,11 @@ TAGS = {"paper_only": True, "paper_only_reason": "oos_only"}
 
 @pytest.fixture(autouse=True)
 def _clock(monkeypatch):
+    import app.risk.context as risk_context
+
     monkeypatch.setattr(paper_only_module, "utc_now", lambda: NOW)
+    monkeypatch.setattr(risk_context, "utc_now", lambda: NOW)
+    monkeypatch.setattr(paper_only_module, "_LOGGED", {})
 
 
 class _State(dict):
@@ -72,27 +87,39 @@ class _State(dict):
     def __init__(self, values=None):
         super().__init__(values or {})
         self.reads: list[str] = []
+        self.many: list[list[str]] = []
 
     def get(self, key, default=None):
         self.reads.append(key)
         return super().get(key, default)
 
+    def get_many(self, keys):
+        self.many.append(list(keys))
+        return {key: super(_State, self).get(key) for key in keys}
+
     def set(self, key, value):
         self[key] = value
 
 
-class _Executions:
-    """Today's paper execution rows, as count_since and entries_today_by_bucket read them."""
+def _row(symbol, *, status="filled", tagged=False, created_at=NOW):
+    metadata = dict(TAGS) if tagged else {}
+    return SimpleNamespace(
+        created_at=created_at.isoformat(),
+        status=status,
+        request_payload={"symbol": symbol, "metadata": metadata},
+        response_payload={},
+        realized_pnl_usd=0.0,
+    )
 
-    def __init__(self, symbols=(), fail=False):
-        self.rows = [
-            SimpleNamespace(
-                created_at=NOW.isoformat(), status="filled", request_payload={"symbol": s}
-            )
-            for s in symbols
-        ]
+
+class _Executions:
+    """Paper execution rows (newest first), as paper's risk context and day counts read them."""
+
+    def __init__(self, symbols=(), fail=False, rows=()):
+        self.rows = [*rows, *(_row(s) for s in symbols)]
         self.fail = fail
         self.counts: list[datetime] = []
+        self.loss_reads = 0  # build_risk_context's reads: the book, not the day
 
     def count_since(self, since):
         if self.fail:
@@ -100,17 +127,56 @@ class _Executions:
         self.counts.append(since)
         return len(self.rows)
 
+    @property
+    def day_reads(self):
+        return len(self.counts) - self.loss_reads
+
+    def daily_loss_stats(self):
+        self.loss_reads += 1
+        return 0.0, 0
+
+    def period_realized_pnl(self, *, days):
+        return 0.0
+
     def list(self, limit=200):
-        return list(self.rows)
+        return list(self.rows)[:limit]
 
 
-def _auto(tmp_path, *, verdicts=VERDICTS, eto=None, executions=None, **settings):
+class _Broker:
+    """Alpaca paper's portfolio, as build_risk_context reads it."""
+
+    def __init__(self, symbols=(), fail=False):
+        self.symbols, self.fail, self.calls = list(symbols), fail, 0
+
+    def get_portfolio(self):
+        from app.models.execution import AccountSummary, PortfolioPosition, PortfolioSummary
+
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("broker down")
+        return PortfolioSummary(
+            mode="alpaca_paper",
+            account=AccountSummary(cash_balance=100_000.0, equity=100_000.0),
+            positions=[PortfolioPosition(symbol=s, market_value=5_000.0) for s in self.symbols],
+        )
+
+
+BOOK = dict(  # production's paper room: 12 positions, 6% heat at 0.5% a position
+    paper_broker="alpaca",
+    max_open_positions=12,
+    portfolio_max_heat_pct=6.0,
+    institutional_portfolio_controls_enabled=True,
+    portfolio_future_max_risk_per_trade_pct=0.5,
+)
+
+
+def _auto(tmp_path, *, verdicts=VERDICTS, eto=None, executions=None, broker=None, **settings):
     values = dict(require_strategy_oos_evidence=True, max_trades_per_day=15)
     values.update(settings)
     state = _State({VERDICTS_KEY: json.dumps({"verdicts": verdicts}), **(eto or {})})
     auto = PaperAutoTradingService(
         settings=make_settings(tmp_path, **values),
-        proposal_service=None,
+        proposal_service=SimpleNamespace(broker=broker if broker is not None else _Broker()),
         execution_coordinator=SimpleNamespace(etoro_live_mirror=SimpleNamespace(state=state)),
         automation=None,
         reconciliation=None,
@@ -219,20 +285,133 @@ def test_a_paper_only_entry_is_tagged_and_an_etoro_eligible_one_is_not(tmp_path)
     assert [r.symbol for r in proposals.created] == ["ADP", "UBER"]  # eToro-eligible first
 
 
-def test_the_pass_counts_its_own_entries_before_the_next_paper_only_one(tmp_path) -> None:
-    executions = _Executions(["X"] * 10)
+def test_the_pass_counts_its_own_entries_before_its_paper_only_one(tmp_path) -> None:
+    executions = _Executions(["X"] * 12)
     auto, _state = _auto(tmp_path, executions=executions)
     workflow, proposals = _workflow(tmp_path, auto)
-    auto.approve_enqueue_execute = lambda *_a, **_k: executions.rows.append(executions.rows[0])
+    auto.approve_enqueue_execute = lambda *_a, **_k: executions.rows.append(_row("X"))
     response = _response(  # every entry is placed: one more execution row today
-        _scan_candidate("UBER", "momentum_breakout", 95.0),  # 12 after it
-        _scan_candidate("ADP", "inside_bar_narrow_range_breakout", 90.0),  # first: 11 after it
-        _scan_candidate("V", "momentum_breakout", 85.0),  # 13 after it: 2 of 15 left
-        _scan_candidate("MA", "momentum_breakout", 80.0),  # would take one of those 2
+        _scan_candidate("UBER", "momentum_breakout", 95.0),  # 13 + 1 + 2 > 15: refused
+        _scan_candidate("ADP", "inside_bar_narrow_range_breakout", 90.0),  # first: 13 after it
+    )
+    assert auto_propose_candidates(workflow, response, origin="swing_scan", notify=False) == 1
+    assert [r.symbol for r in proposals.created] == ["ADP"]
+    eleven = _Executions(["X"] * 11)
+    auto, _state = _auto(tmp_path / "11", executions=eleven)
+    workflow, proposals = _workflow(tmp_path / "11", auto)
+    auto.approve_enqueue_execute = lambda *_a, **_k: eleven.rows.append(_row("X"))
+    assert auto_propose_candidates(workflow, response, origin="swing_scan", notify=False) == 2
+    assert [r.symbol for r in proposals.created] == ["ADP", "UBER"]
+
+
+def test_at_most_one_paper_only_proposal_a_pass(tmp_path) -> None:
+    assert MAX_PER_PASS == 1
+    auto, _state = _auto(tmp_path)
+    workflow, proposals = _workflow(tmp_path, auto)
+    response = _response(
+        _scan_candidate("UBER", "momentum_breakout", 95.0),
+        _scan_candidate("V", "momentum_breakout", 90.0),
+        _scan_candidate("ADP", "inside_bar_narrow_range_breakout", 80.0),
+        _scan_candidate("MA", "inside_bar_narrow_range_breakout", 70.0),
     )
     assert auto_propose_candidates(workflow, response, origin="swing_scan", notify=False) == 3
-    assert [r.symbol for r in proposals.created] == ["ADP", "UBER", "V"]
-    assert len(executions.counts) == 3  # read once, then again after each of the 2 entries
+    assert [r.symbol for r in proposals.created] == ["ADP", "MA", "UBER"]  # V: the pass's limit
+    blocked = [p for e, p in workflow.run_logs.items if e == "auto_proposal_safety_blocked"]
+    assert blocked == [
+        {"origin": "swing_scan", "symbol": "V", "blockers": ["paper_only_pass_limit"]}
+    ]
+    paper_pass = PaperOnlyPass(auto)  # an eToro-eligible proposal never uses the allowance
+    paper_pass.created(_candidate("ADP", "inside_bar_narrow_range_breakout"))
+    assert _blockers(auto, _candidate("UBER", "momentum_breakout"), paper_pass) == []
+    paper_pass.created(_candidate("UBER", "momentum_breakout"))
+    assert _blockers(auto, _candidate("V", "momentum_breakout"), paper_pass) == [
+        "paper_only_pass_limit"
+    ]
+
+
+def test_no_paper_only_proposal_once_the_cadence_tick_nears_its_scan_stop(
+    tmp_path, monkeypatch
+) -> None:
+    from app.workflow.cadence_budget import CadenceBudget, tick_budget
+
+    clock = SimpleNamespace(now=1_000.0)
+    monkeypatch.setattr(paper_only_module.time, "monotonic", lambda: clock.now)
+    auto, _state = _auto(tmp_path)
+    budget = CadenceBudget(started_at=1_000.0, job_timeout=240.0)  # scan stop at 1_180
+    assert PROPOSAL_SECONDS == 20.0
+    with tick_budget(budget):
+        clock.now = 1_159.9
+        assert _blockers(auto, _candidate("UBER", "momentum_breakout")) == []
+        clock.now = 1_160.0  # 20 s before the stop: the reserve is the run's own
+        assert _blockers(auto, _candidate("UBER", "momentum_breakout")) == [
+            "paper_only_cadence_budget_spent"
+        ]
+        assert _blockers(auto, _candidate("UBER", "inside_bar_narrow_range_breakout")) == []
+    legacy = CadenceBudget(started_at=1_000.0, job_timeout=240.0, legacy_soft_budget=110.0)
+    with tick_budget(legacy):  # no scan stop in the legacy mode: nothing to keep
+        assert _blockers(auto, _candidate("UBER", "momentum_breakout")) == []
+    assert _blockers(auto, _candidate("UBER", "momentum_breakout")) == []  # no tick: manual run
+
+
+def test_a_paper_only_proposal_and_its_execution_say_they_are_not_copied(tmp_path) -> None:
+    auto, _state = _auto(tmp_path)
+    workflow, proposals = _workflow(tmp_path, auto)
+    response = _response(
+        _scan_candidate("UBER", "momentum_breakout", 95.0),
+        _scan_candidate("ADP", "inside_bar_narrow_range_breakout", 80.0),
+    )
+    assert auto_propose_candidates(workflow, response, origin="swing_scan", notify=True) == 2
+    notices = [m for m in workflow.notifier.messages if m.startswith("Auto proposal created")]
+    assert [("Paper-only (not copied to eToro)" in m) for m in notices] == [False, True]
+    assert notices[1].splitlines()[:2] == [
+        "Auto proposal created",
+        "Paper-only (not copied to eToro)",
+    ]
+    for metadata, expected in ((dict(TAGS), True), ({}, False)):
+        sent = []
+        auto.notifier = SimpleNamespace(send_text=sent.append)
+        auto.logs = FakeLogs()
+        auto.candidate_blockers = lambda _c: []
+        order = SimpleNamespace(symbol="UBER", metadata=metadata)
+        auto.proposals = SimpleNamespace(
+            approve_proposal=lambda *_a, order=order: SimpleNamespace(id="p1", order=order)
+        )
+        processed = SimpleNamespace(id="q1", symbol="UBER", status="executed", validation_reason="")
+        auto.execution = SimpleNamespace(
+            enqueue_approved_proposal=lambda _id: SimpleNamespace(id="q1"),
+            process_queue_item=lambda _id, processed=processed: processed,
+        )
+        PaperAutoTradingService.approve_enqueue_execute(  # the real one: _workflow stubs it
+            auto, SimpleNamespace(id="p1", order=order), None
+        )
+        assert ("Paper-only (not copied to eToro)" in sent[-1]) is expected
+
+
+def test_a_paper_only_safety_block_is_logged_once_a_day(tmp_path, monkeypatch) -> None:
+    executions = _Executions(["X"] * 13)  # every paper-only entry is refused for headroom
+    auto, _state = _auto(tmp_path, executions=executions)
+    workflow, _proposals = _workflow(tmp_path, auto)
+    auto.safety = SimpleNamespace(
+        is_blacklisted=lambda s: s == "MA", strategy_active=lambda _s: True
+    )
+    response = _response(
+        _scan_candidate("UBER", "momentum_breakout", 95.0),
+        _scan_candidate("MA", "inside_bar_narrow_range_breakout", 80.0),  # blacklisted
+    )
+
+    def blocked():
+        return [
+            p["symbol"] for e, p in workflow.run_logs.items if e == "auto_proposal_safety_blocked"
+        ]
+
+    for _ in range(3):
+        auto_propose_candidates(workflow, response, origin="swing_scan", notify=False)
+    assert blocked() == ["MA", "UBER", "MA", "MA"]  # the eToro-eligible one each time
+    funnels = [p for e, p in workflow.run_logs.items if e == "auto_propose_funnel"]
+    assert [f["safety_blocked"] for f in funnels] == [2, 2, 2]  # the funnel still counts it
+    monkeypatch.setattr(paper_only_module, "utc_now", lambda: NOW + timedelta(days=1))
+    auto_propose_candidates(workflow, response, origin="swing_scan", notify=False)
+    assert blocked()[-2:] == ["MA", "UBER"]  # a new day
 
 
 def test_the_order_is_stable_and_only_paper_only_candidates_move(tmp_path) -> None:
@@ -248,14 +427,29 @@ def test_the_order_is_stable_and_only_paper_only_candidates_move(tmp_path) -> No
     assert [c.symbol for c in ordered] == ["B", "C", "BTCUSD", "A", "D"]
 
 
-def test_off_restores_the_old_gate_and_tags_nothing(tmp_path) -> None:
-    auto, _state = _auto(tmp_path, paper_oos_bar_enabled=False)
+@pytest.mark.parametrize(
+    "settings", [{"paper_oos_bar_enabled": False}, {"require_strategy_oos_evidence": False}]
+)
+def test_off_restores_the_old_gate_reads_nothing_and_tags_nothing(tmp_path, settings) -> None:
+    auto, state = _auto(tmp_path, eto=_etoro(), **settings)
     paper_pass = PaperOnlyPass(auto)
+    assert paper_pass.state is state  # the gate reads the runtime state itself, as before
+    candidates = [_candidate(s, k) for s in ("UBER", "V") for k in VERDICTS]
+    assert [c.symbol for c in paper_pass.order(candidates)] == [c.symbol for c in candidates]
+    for candidate in candidates:
+        assert paper_pass.tags(candidate) == {} and paper_pass.notice(candidate) == []
+        assert paper_pass.log_blocked(candidate, ["x"]) and paper_pass.log_blocked(candidate, ["x"])
+        assert paper_pass.blockers(candidate) == []
+        paper_pass.created(candidate)
+    assert state.reads == [] and state.many == [] and auto.executions.counts == []
+    # The gate's own reads: one a candidate, as at 822e46e.
     candidate = _candidate("UBER", "momentum_breakout")
-    assert _blockers(auto, candidate, paper_pass) == ["strategy_lacks_oos_evidence"]
-    assert paper_pass.tags(candidate) == {} and not paper_pass.is_paper_only(candidate)
-    gate_off, _ = _auto(tmp_path / "gate", require_strategy_oos_evidence=False)
-    assert not PaperOnlyPass(gate_off).is_paper_only(candidate)  # no gate: nothing is paper-only
+    blockers = [_blockers(auto, candidate, paper_pass) for _ in range(3)]
+    if "paper_oos_bar_enabled" in settings:  # the old gate: refused, one read a candidate
+        assert blockers == [["strategy_lacks_oos_evidence"]] * 3
+        assert state.reads == [VERDICTS_KEY] * 3
+    else:  # no gate at all: admitted, nothing read
+        assert blockers == [[]] * 3 and state.reads == []
     assert not PaperOnlyPass(None).is_paper_only(candidate)
 
 
@@ -301,11 +495,8 @@ def test_a_paper_only_entry_never_opens_where_the_etoro_account_holds_or_has_in_
     assert _blockers(auto, _candidate("V", "momentum_breakout"), paper_pass) == []  # closed
     # An eToro-eligible entry is not paper-only: this guard never touches it.
     assert _blockers(auto, _candidate("UBER", "inside_bar_narrow_range_breakout"), paper_pass) == []
-    assert [state.reads.count(key) for key in (STATE_KEY, SCORECARD_KEY, TEST_STATE_KEY)] == [
-        1,
-        1,
-        1,
-    ]
+    assert state.many == [[STATE_KEY, SCORECARD_KEY, TEST_STATE_KEY]]  # one round trip a pass
+    assert not {STATE_KEY, SCORECARD_KEY, TEST_STATE_KEY} & set(state.reads)
 
 
 @pytest.mark.parametrize(
@@ -335,7 +526,25 @@ def test_without_a_mirror_the_records_are_read_from_the_runtime_state(tmp_path) 
 def test_a_candidate_the_loop_drops_anyway_reads_nothing(tmp_path) -> None:
     auto, state = _auto(tmp_path, eto=_etoro())
     assert _blockers(auto, _candidate("UBER", "momentum_breakout", ready=False)) == []
-    assert STATE_KEY not in state.reads and auto.executions.counts == []
+    assert state.many == [] and auto.executions.counts == []
+
+
+def test_the_execution_coordinator_checks_the_etoro_symbols_again_for_a_tagged_order() -> None:
+    from app.broker.etoro_live_room import paper_only_held_reasons
+
+    state = _State(_etoro())
+    mirror = SimpleNamespace(state=state)
+
+    def order(symbol, tagged=True):
+        return SimpleNamespace(symbol=symbol, metadata=dict(TAGS) if tagged else {})
+
+    assert paper_only_held_reasons(mirror, order("UBER")) == ["paper_only_etoro_live_symbol_held"]
+    assert paper_only_held_reasons(mirror, order("adp")) == ["paper_only_etoro_live_symbol_held"]
+    assert paper_only_held_reasons(mirror, order("V")) == []
+    assert paper_only_held_reasons(mirror, order("UBER", tagged=False)) == []  # untagged: never
+    assert paper_only_held_reasons(None, order("UBER")) == []  # no mirror: nothing is copied
+    state[SCORECARD_KEY] = "[]"
+    assert paper_only_held_reasons(mirror, order("V")) == ["paper_only_etoro_live_state_unreadable"]
 
 
 # --- guard: headroom for eToro-eligible entries ------------------------------------------------
@@ -387,19 +596,29 @@ def test_a_paper_only_entry_leaves_one_of_its_groups_daily_entries(tmp_path) -> 
     assert _blockers(off, _candidate("AAPL", "momentum_breakout")) == []
 
 
-def test_the_days_counts_are_read_once_and_again_after_each_proposal(tmp_path) -> None:
+def test_the_days_and_books_reads_are_once_a_pass_and_again_after_each_proposal(tmp_path) -> None:
     executions = _Executions(["X"] * 12)
-    auto, _ = _auto(tmp_path, executions=executions)
+    broker = _Broker()
+    auto, _ = _auto(tmp_path, executions=executions, broker=broker, **BOOK)
     paper_pass = PaperOnlyPass(auto)
     assert _blockers(auto, _candidate("UBER", "momentum_breakout"), paper_pass) == []
     assert _blockers(auto, _candidate("V", "momentum_breakout"), paper_pass) == []
-    assert len(executions.counts) == 1
-    executions.rows.append(executions.rows[0])  # the pass's entry was placed
-    paper_pass.created()
+    assert (executions.day_reads, broker.calls) == (1, 1)
+    executions.rows.append(_row("X"))  # the pass's entry was placed
+    paper_pass.created(_candidate("ADP", "inside_bar_narrow_range_breakout"))
     assert _blockers(auto, _candidate("V", "momentum_breakout"), paper_pass) == [
         "paper_only_headroom_trades_per_day"
     ]
-    assert len(executions.counts) == 2
+    assert executions.day_reads == 2
+    paper_pass = PaperOnlyPass(auto)
+    executions.rows.pop()
+    assert _blockers(auto, _candidate("V", "momentum_breakout"), paper_pass) == []
+    broker.symbols = ["V"]  # its entry filled
+    paper_pass.created(_candidate("ADP", "inside_bar_narrow_range_breakout"))
+    assert _blockers(auto, _candidate("V", "momentum_breakout"), paper_pass) == [
+        "paper_only_paper_symbol_held"
+    ]
+    assert broker.calls == 3
 
 
 def test_unreadable_counts_refuse(tmp_path) -> None:
@@ -408,6 +627,115 @@ def test_unreadable_counts_refuse(tmp_path) -> None:
         "paper_only_paper_day_unreadable"
     ]
     assert _blockers(auto, _candidate("UBER", "inside_bar_narrow_range_breakout")) == []
+
+
+# --- guard: paper's open positions and heat ----------------------------------------------------
+
+HELD = ["AAPL", "MSFT", "NVDA", "JPM", "XOM", "CVX", "KO", "PEP", "WMT", "HD", "LLY", "UNH"]
+
+
+def _held(count, rows=()):
+    """Paper holds the first ``count`` of HELD, each an eToro-eligible entry from last week."""
+
+    old = [_row(s, created_at=NOW - timedelta(days=7)) for s in HELD[:count]]
+    return {"broker": _Broker(HELD[:count]), "executions": _Executions(rows=[*rows, *old])}
+
+
+def test_a_paper_only_entry_leaves_room_for_two_more_positions(tmp_path) -> None:
+    candidate = _candidate("UBER", "momentum_breakout")
+    nine, _ = _auto(tmp_path / "9", **_held(9), **BOOK)
+    assert _blockers(nine, candidate) == []  # 9 + 1 + 2 = 12
+    ten, _ = _auto(tmp_path / "10", **_held(10), **BOOK)
+    assert _blockers(ten, candidate) == ["paper_only_headroom_open_positions"]
+    assert _blockers(ten, _candidate("UBER", "inside_bar_narrow_range_breakout")) == []
+    # An entry placed today but not filled yet counts too (paper's own check does not).
+    unfilled = _held(9, rows=[_row("ADP", status="submitted")])
+    pending, _ = _auto(tmp_path / "p", **unfilled, **BOOK)
+    assert _blockers(pending, candidate) == ["paper_only_headroom_open_positions"]
+    yesterday = _held(9, rows=[_row("ADP", status="submitted", created_at=NOW - timedelta(days=1))])
+    stale, _ = _auto(tmp_path / "y", **yesterday, **BOOK)
+    assert _blockers(stale, candidate) == []  # not today's: not an unfilled entry
+
+
+def test_a_paper_only_entry_leaves_room_for_two_more_positions_in_portfolio_heat(tmp_path) -> None:
+    candidate = _candidate("UBER", "momentum_breakout")
+    roomy = {**BOOK, "max_open_positions": 20}  # heat binds: 6% / 0.5% = 12 positions
+    nine, _ = _auto(tmp_path / "9", **_held(9), **roomy)
+    assert _blockers(nine, candidate) == []
+    ten, _ = _auto(tmp_path / "10", **_held(10), **roomy)
+    assert _blockers(ten, candidate) == ["paper_only_headroom_portfolio_heat"]
+    whole = {**roomy, "institutional_portfolio_controls_enabled": False}  # 1% a trade: 6 positions
+    three, _ = _auto(tmp_path / "3", **_held(3), **whole)
+    assert _blockers(three, candidate) == []
+    four, _ = _auto(tmp_path / "4", **_held(4), **whole)
+    assert _blockers(four, candidate) == ["paper_only_headroom_portfolio_heat"]
+    no_cap, _ = _auto(tmp_path / "0", **_held(10), **{**roomy, "portfolio_max_heat_pct": 0.0})
+    assert _blockers(no_cap, candidate) == []  # no heat cap: paper checks none
+
+
+def test_at_most_four_paper_only_positions_and_never_where_paper_holds(tmp_path) -> None:
+    assert MAX_OPEN_PAPER_ONLY == 4
+    candidate = _candidate("UBER", "momentum_breakout")
+
+    def book(rows, held):
+        auto, _ = _auto(
+            tmp_path / str(len(rows)) / "-".join(held),
+            broker=_Broker(held),
+            executions=_Executions(rows=rows),
+            **BOOK,
+        )
+        return _blockers(auto, candidate)
+
+    old = NOW - timedelta(days=5)
+    three = [_row(s, tagged=True, created_at=old) for s in ("AAPL", "MSFT", "JPM")]
+    assert book(three, ["AAPL", "MSFT", "JPM"]) == []
+    fourth = [_row("ADP", status="submitted", tagged=True), *three]  # placed, not filled yet
+    assert book(fourth, ["AAPL", "MSFT", "JPM"]) == ["paper_only_positions_cap"]
+    closed = [_row("KO", tagged=True, created_at=old), *three]  # KO no longer held: closed
+    assert book(closed, ["AAPL", "MSFT", "JPM"]) == []
+    newer = [_row("JPM", created_at=NOW), *three]  # JPM's newest entry is eToro-eligible
+    assert book([*newer, _row("KO", tagged=True)], ["AAPL", "MSFT", "JPM", "KO"]) == []
+    unknown = book(three, ["AAPL", "MSFT", "JPM", "XOM"])  # XOM's entry is not in the rows
+    assert unknown == ["paper_only_positions_cap"]
+    assert book([], ["UBER"]) == ["paper_only_paper_symbol_held"]
+    assert book([_row("UBER", status="accepted")], []) == ["paper_only_paper_symbol_held"]
+
+
+def test_an_unreadable_book_refuses_paper_only_entries_only(tmp_path) -> None:
+    auto, _ = _auto(tmp_path, broker=_Broker(fail=True), **BOOK)
+    assert _blockers(auto, _candidate("UBER", "momentum_breakout")) == [
+        "paper_only_paper_book_unreadable"
+    ]
+    assert _blockers(auto, _candidate("UBER", "inside_bar_narrow_range_breakout")) == []
+
+
+def test_paper_s_per_symbol_limit_keeps_untagged_entries_out_of_a_held_paper_only_symbol(
+    tmp_path,
+) -> None:
+    from app.models.trade import TradeOrder
+    from app.risk.context import build_risk_context
+    from app.risk.guardrails import RiskManager
+
+    settings = make_settings(tmp_path, **BOOK)
+    order = TradeOrder(
+        symbol="NVDA",
+        amount_usd=1_000,
+        proposed_price=100.0,
+        stop_loss=99.5,
+        take_profit=110.0,
+        strategy_name="inside_bar_narrow_range_breakout",
+    )
+    limit = "Per-symbol position limit reached"
+    filled = build_risk_context(
+        settings, _Broker(["NVDA"]), _Executions(rows=[_row("NVDA", tagged=True)])
+    )
+    assert limit in RiskManager(settings).validate_order(order, filled).reasons
+    # Placed but not filled: the broker shows no position, so paper's check cannot see it
+    # (the seconds-long window the module docstring states).
+    unfilled = build_risk_context(
+        settings, _Broker(), _Executions(rows=[_row("NVDA", status="submitted", tagged=True)])
+    )
+    assert limit not in RiskManager(settings).validate_order(order, unfilled).reasons
 
 
 # --- the swing scan --------------------------------------------------------------------------
@@ -764,3 +1092,42 @@ def test_the_runs_own_entries_are_proposed_and_executed_before_the_paper_only_sc
         for r in proposals.created
     ]
     assert tags == [{}, TAGS]
+
+
+def test_the_queue_refuses_a_tagged_order_once_the_etoro_account_holds_its_symbol(
+    tmp_path,
+) -> None:
+    from app.models.execution_queue import ExecutionQueueStatus
+    from tests.test_execution_coordinator_gates import approved_queue
+
+    for tagged, held in ((True, True), (True, False), (False, True)):
+        app, _data, proposal, queued = approved_queue(tmp_path / f"{tagged}{held}")
+        stored = app.state.proposal_service.proposals.get(proposal.id)
+        if tagged:  # as the auto-propose pass tags it
+            stored.order.metadata.update(TAGS)
+            app.state.proposal_service.proposals.update(stored)
+        state = _State(_etoro(open_symbols=("NVDA",) if held else (), cards={}))
+        coordinator = app.state.execution_coordinator
+        coordinator.etoro_live_mirror = SimpleNamespace(  # bought while it waited for approval
+            state=state, settings=SimpleNamespace(etoro_live_room_authority_enabled=False)
+        )
+        result = coordinator.process_queue_item(queued.id)
+        refused = "paper_only_etoro_live_symbol_held" in str(result.validation_reason)
+        assert refused is (tagged and held), (tagged, held, result.validation_reason)
+        assert (result.status == ExecutionQueueStatus.BLOCKED) is refused
+        assert bool(state.many) is tagged  # an untagged order reads nothing more
+
+
+def test_a_crypto_position_is_told_apart_however_its_symbol_is_spelled(tmp_path) -> None:
+    old = NOW - timedelta(days=5)
+    rows = [
+        _row("BTC/USD", created_at=old),  # the order's spelling; the broker's is BTCUSD
+        *(_row(s, tagged=True, created_at=old) for s in ("AAPL", "MSFT", "JPM")),
+    ]
+    auto, _ = _auto(
+        tmp_path,
+        broker=_Broker(["BTCUSD", "AAPL", "MSFT", "JPM"]),
+        executions=_Executions(rows=rows),
+        **BOOK,
+    )
+    assert _blockers(auto, _candidate("UBER", "momentum_breakout")) == []  # 3 paper-only, not 4

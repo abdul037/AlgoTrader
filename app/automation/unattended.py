@@ -266,10 +266,14 @@ class PaperAutoTradingService:
             },
         )
         self._announce_auto_trading_started(processed)
+        from app.performance.paper_only import is_paper_only
+
+        paper_only = is_paper_only(getattr(getattr(approved, "order", None), "metadata", None))
         self.notifier.send_text(
             "\n".join(
                 [
                     "Paper auto execution",
+                    *(["Paper-only (not copied to eToro)"] if paper_only else []),
                     f"Symbol: {processed.symbol}",
                     f"Proposal: {approved.id}",
                     f"Queue: {processed.id}",

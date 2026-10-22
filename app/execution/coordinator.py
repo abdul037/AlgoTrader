@@ -13,7 +13,7 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 
 from app.broker import crypto as crypto_symbols
-from app.broker.etoro_live_room import room_verdict
+from app.broker.etoro_live_room import paper_only_held_reasons, room_verdict
 from app.broker.router import BrokerRouter, NoBrokerForAssetClass
 from app.models.approval import ApprovalStatus
 from app.models.execution import ExecutionRecord, ExecutionStatus
@@ -189,6 +189,9 @@ class ExecutionCoordinator:
                 logs=self.logs,
             ),
         ]
+        # Option B: a paper-only order never opens where the real eToro account holds or has
+        # in flight its symbol; re-read here, as an approval can come long after the proposal.
+        validation_reasons.extend(paper_only_held_reasons(getattr(self, "etoro_live_mirror", None), proposal.order))
         start_of_day = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
         if self.executions.count_since(start_of_day) >= int(getattr(self.settings, "max_trades_per_day", 999999)):
             validation_reasons.append("max_trades_per_day_reached")

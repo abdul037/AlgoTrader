@@ -42,6 +42,8 @@ import json
 import time
 from typing import Any
 
+from app.workflow.paper_only import PROPOSAL_SECONDS
+
 SYMBOL_CURSOR_KEY = "workflow:symbol_offset:{task}"
 PAPER_ONLY_CURSOR_KEY = "workflow:symbol_offset:swing_scan:paper_only"
 FOCUS_RUNS_KEY = "workflow:swing_focus:runs"
@@ -96,7 +98,9 @@ def focused_spec_batch(service: Any, *, task: str, timeframes: list[str]) -> dic
 
 
 PAPER_ONLY_TOP_K = 3  # candidates the paper-only scan keeps (not screener_top_k)
-PAPER_ONLY_PASS_SECONDS = 30.0  # the scan's stop overshoot (<= 10 s) + one paper-only proposal
+# The scan's stop overshoot (<= 10 s, cadence_budget) and the one paper-only proposal a pass may
+# make: the paper-only scan stops this long before the tick's scan stop.
+PAPER_ONLY_PASS_SECONDS = 10.0 + PROPOSAL_SECONDS
 
 
 def paper_only_scan(
