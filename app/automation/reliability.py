@@ -171,7 +171,11 @@ def auto_approval_tier_blockers(
         if minimum and lifecycles is None:
             blockers.append("paper_lifecycle_evidence_unavailable")
         if minimum and lifecycles is not None:
-            clean_count = sum(1 for item in lifecycles if lifecycle_complete(item))
+            clean_count = sum(  # paper-only entries never unlock auto-approval (option B)
+                1
+                for item in lifecycles
+                if lifecycle_complete(item) and not _paper_only_lifecycle(item)
+            )
             if clean_count < minimum:
                 blockers.append("insufficient_clean_supervised_lifecycles")
     # The lifecycle-failure circuit-breaker is a hard safety stop; it always runs. Without
@@ -264,9 +268,9 @@ def _strategy_evidence_blockers(*, settings: Any, candidate: Any, lifecycles: li
 
 def _paper_only_lifecycle(lifecycle: Any) -> bool:
     """A paper-only entry (option B, 2026-10-21; the eToro mirror refuses it): it must not
-    qualify the strategy NAME for tier 3, which auto-approves its eToro-copyable entries."""
+    qualify the strategy NAME for tier 3, which auto-approves its eToro-copyable entries, nor
+    count toward the clean-lifecycle bootstrap that unlocks auto-approval."""
 
-    from app.performance.paper_only import request_is_paper_only
+    from app.performance.paper_only import lifecycle_is_paper_only
 
-    payload = getattr(getattr(lifecycle, "execution", None), "payload", None)
-    return isinstance(payload, dict) and request_is_paper_only(payload.get("request"))
+    return lifecycle_is_paper_only(lifecycle)

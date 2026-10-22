@@ -148,7 +148,10 @@ def weekly_target_readiness(request: Request):
     paper_equity = max(float(getattr(settings, "paper_account_balance_usd", 100000.0) or 100000.0), 1.0)
     window_start = datetime.now(timezone.utc) - timedelta(weeks=window_weeks)
 
+    from app.performance.paper_only import lifecycle_is_paper_only
+
     lifecycles = request.app.state.paper_trading_service.lifecycles(limit=1000, autonomous_only=True)
+    lifecycles = [item for item in lifecycles if not lifecycle_is_paper_only(item)]  # option B
     closed = [item for item in lifecycles if item.flags.entry_filled and item.flags.exit_filled_or_position_flat]
     window_closed = [item for item in closed if _timestamp(item.updated_at or item.created_at) >= window_start]
     clean_window = [item for item in window_closed if _is_clean_lifecycle(item)]

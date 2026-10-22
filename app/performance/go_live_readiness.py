@@ -24,6 +24,17 @@ its marked P&L while open (the paper ledger's ``paper_positions``), so a reading
 one is open is netted with that position's mark at the refresh (30 minutes apart), and a fill
 the ledger has not synced yet is netted from the refresh after it is.
 ``paper_only_pnl_netted_usd`` is the paper-only P&L taken out of the latest reading.
+
+The netting is an approximation, stated: a position's P&L as of the refresh (its booked P&L,
+or its mark while open) is taken out of every reading from its open time on, not its P&L at
+each reading, so a drawdown inside a paper-only position's life is read with that later
+figure. It only moves the drawdown bar, and the drawdown bar is read only by the Phase 4 live
+lock (``AutomationService`` refuses live trading until ``ready``), i.e. only in live mode;
+paper trading, its gates and the eToro mirror never read it. Only broker-ledger positions
+(``ledger_source`` ``alpaca_paper``) are netted: the readings are Alpaca's equity, which a
+self-simulated paper position never reaches. Rows read: open, or closed since the Phase 3 start
+(or with no close time); one closed before it is left out (it shifts every reading by the same
+amount).
 """
 
 from __future__ import annotations
@@ -35,7 +46,13 @@ from datetime import UTC, datetime, timedelta
 from itertools import accumulate
 from typing import Any
 
-from app.performance.paper_only import PAPER_ONLY_FIELD, is_paper_only, request_is_paper_only
+from app.performance.paper_only import (
+    PAPER_ONLY_FIELD,
+    TAGGED_PAYLOAD_PATTERN,
+    TAGGED_PAYLOAD_SQL,
+    is_paper_only,
+    request_is_paper_only,
+)
 from app.utils.time import utc_now
 
 READINESS_KEY = "go_live:readiness"
@@ -113,23 +130,26 @@ def _when(value: Any) -> datetime:
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
-def _paper_only_marks(connection: Any) -> tuple[list[datetime], list[float]]:
-    """(open times, running P&L) of the paper-only positions, oldest first: entry i of the
-    running P&L sums every paper-only position opened at or before open time i (booked P&L
-    once closed, marked P&L while open)."""
+def _paper_only_marks(connection: Any, since: str) -> tuple[list[datetime], list[float]]:
+    """(open times, running P&L) of the broker-ledger paper-only positions open or closed since
+    ``since``, oldest first: entry i of the running P&L sums every such position opened at or
+    before open time i (booked P&L once closed, marked P&L while open)."""
+
+    from app.paper.broker_ledger import LEDGER_SOURCE
 
     rows = connection.execute(
         "SELECT opened_at, status, realized_pnl_usd, unrealized_pnl_usd, payload_json "
-        "FROM paper_positions WHERE payload_json LIKE ?",
-        (f"%{PAPER_ONLY_FIELD}%",),
+        f"FROM paper_positions WHERE {TAGGED_PAYLOAD_SQL} "
+        "AND (status = 'open' OR closed_at IS NULL OR closed_at >= ?)",
+        (TAGGED_PAYLOAD_PATTERN, since),
     ).fetchall()
     marks: list[tuple[datetime, float]] = []
     for row in rows:
         try:
             payload = json.loads(row["payload_json"] or "{}")
-        except (TypeError, ValueError):
-            payload = {PAPER_ONLY_FIELD: True}  # it matched the tag; unreadable: net it anyway
-        if not is_paper_only(payload):
+        except (TypeError, ValueError):  # it holds the exact tag; unreadable: net it anyway
+            payload = {PAPER_ONLY_FIELD: True, "ledger_source": LEDGER_SOURCE}
+        if not is_paper_only(payload) or payload.get("ledger_source") != LEDGER_SOURCE:
             continue
         is_open = str(row["status"] or "").lower() == "open"
         pnl = float((row["unrealized_pnl_usd"] if is_open else row["realized_pnl_usd"]) or 0.0)
@@ -146,7 +166,7 @@ def _update_drawdown(connection: Any, runtime_state: Any, since: str) -> tuple[f
         state = json.loads(runtime_state.get(EQUITY_STATE_KEY) or "{}")
     except (TypeError, ValueError):
         state = {}
-    opened, running = _paper_only_marks(connection)
+    opened, running = _paper_only_marks(connection, since)
     if state.get("since") != since:
         state = {"since": since, "last_ts": "", "peak": 0.0, "max_dd_pct": 0.0}
     if state.get("basis") != DRAWDOWN_BASIS:

@@ -17,18 +17,32 @@ but feed none of the decisions keyed or judged by what eToro-copyable entries ea
   and its drawdown is read net of their P&L, so the Phase 4 live lock reading it is unmoved;
   and the Stage 3 real-capital record and gates (app/performance/stage3.py).
 
-``paper_only_report`` shows them on their own in ``GET /performance/live-scorecard``.
+They are also left out of the auto-approval clean-lifecycle bootstrap (``reliability``: it
+unlocks auto-approval of eToro-copyable entries) and ``GET /performance/weekly-target-readiness``.
+
+``paper_only_report`` shows them on their own in ``GET /performance/live-scorecard`` (open
+positions, and those opened in the last ``REPORT_WINDOW_DAYS`` days).
+
+The paper ledger stores a position's payload with ``json.dumps``, so a tagged one holds exactly
+``"paper_only": true``; ``TAGGED_PAYLOAD_SQL`` matches that fragment (``_`` escaped) as a
+prefilter, and every reader parses the payload before it counts a row.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from datetime import timedelta
 from typing import Any
+
+from app.utils.time import utc_now
 
 PAPER_ONLY_FIELD = "paper_only"
 PAPER_ONLY_REASON_FIELD = "paper_only_reason"
 OOS_ONLY = "oos_only"  # admitted on the pooled OOS evidence alone; the holdout failed
+TAGGED_PAYLOAD_SQL = "payload_json LIKE ? ESCAPE '!'"  # with TAGGED_PAYLOAD_PATTERN
+TAGGED_PAYLOAD_PATTERN = '%"paper!_only": true%'  # the tag as json.dumps writes it
+REPORT_WINDOW_DAYS = 90
 
 
 def is_paper_only(metadata: Any) -> bool:
@@ -41,6 +55,13 @@ def request_is_paper_only(request: Any) -> bool:
     """``is_paper_only`` for an execution's request payload (the order dump with ``metadata``)."""
 
     return isinstance(request, dict) and is_paper_only(request.get("metadata"))
+
+
+def lifecycle_is_paper_only(lifecycle: Any) -> bool:
+    """``is_paper_only`` for a paper trade lifecycle (its execution's request payload)."""
+
+    payload = getattr(getattr(lifecycle, "execution", None), "payload", None)
+    return isinstance(payload, dict) and request_is_paper_only(payload.get("request"))
 
 
 def without_paper_only(trades: Iterable[Any]) -> list[Any]:
@@ -58,15 +79,18 @@ def paper_only_tags(metadata: Any) -> dict[str, Any]:
     return {PAPER_ONLY_FIELD: True, PAPER_ONLY_REASON_FIELD: metadata.get(PAPER_ONLY_REASON_FIELD)}
 
 
-def paper_only_report(db: Any) -> dict[str, Any]:
-    """Paper-only positions from the paper ledger: entries, open, closed and the closed ones'
-    mean R per ``strategy:timeframe`` (R = the move from entry over the entry-to-stop risk)."""
+def paper_only_report(db: Any, *, now: Any = None) -> dict[str, Any]:
+    """Paper-only positions from the paper ledger, open or opened in the last
+    ``REPORT_WINDOW_DAYS`` days: entries, open, closed and the closed ones' mean R per
+    ``strategy:timeframe`` (R = the move from entry over the entry-to-stop risk)."""
 
+    since = ((now or utc_now()) - timedelta(days=REPORT_WINDOW_DAYS)).isoformat()
     with db.connect() as connection:
         rows = connection.execute(
             "SELECT strategy_name, timeframe, side, status, entry_price, current_price, stop_loss, "
-            "payload_json FROM paper_positions WHERE payload_json LIKE ?",
-            (f"%{PAPER_ONLY_FIELD}%",),
+            f"payload_json FROM paper_positions WHERE {TAGGED_PAYLOAD_SQL} "
+            "AND (status = 'open' OR opened_at >= ?)",
+            (TAGGED_PAYLOAD_PATTERN, since),
         ).fetchall()
     cards: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -93,6 +117,7 @@ def paper_only_report(db: Any) -> dict[str, Any]:
         rs = card.pop("r")
         card["mean_r"] = round(sum(rs) / len(rs), 3) if rs else None
     return {
+        "window_days": REPORT_WINDOW_DAYS,
         "entries": sum(card["entries"] for card in cards.values()),
         "open": sum(card["open"] for card in cards.values()),
         "closed": sum(card["closed"] for card in cards.values()),

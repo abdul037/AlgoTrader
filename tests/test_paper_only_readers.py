@@ -6,7 +6,12 @@
   dashboard rows that show it), the tier-3 qualification, the Stage 3 capital record and the
   go-live readiness (its count, profit factor, R scorecard and drawdown: the Phase 4 lock reads
   it); each has an untagged control;
-* they stay in the paper ledger, which copies the tag, and the live scorecard lists them.
+* they stay in the paper ledger, which copies the tag, and the live scorecard lists them (open
+  and recent ones);
+* review fixes 2026-10-22: the mirror refuses a tagged order before reading anything else
+  (untagged orders keep every check); the auto-approval bootstrap and the weekly-target
+  readiness leave them out; the drawdown nets only tagged broker-ledger rows open or closed in
+  Phase 3, matched on the exact tag, and nets a reading taken at a position's open time.
 
 No wall clock: readiness runs on a fixed ``now`` and the freshness check on a patched clock.
 """
@@ -443,10 +448,13 @@ def test_both_paper_ledgers_copy_the_tag_into_the_position_and_its_closed_trade(
 # --- reporting -------------------------------------------------------------------------------
 
 
-def test_the_live_scorecard_lists_paper_only_entries_on_their_own(tmp_path) -> None:
+def test_the_live_scorecard_lists_paper_only_entries_on_their_own(tmp_path, monkeypatch) -> None:
     from fastapi.testclient import TestClient
 
+    import app.performance.paper_only as paper_only_module
     from app.main import create_app
+
+    monkeypatch.setattr(paper_only_module, "utc_now", lambda: NOW)  # the report's window
 
     app = create_app(settings=make_settings(tmp_path), enable_background_jobs=False)
     db = app.state.db
@@ -455,6 +463,7 @@ def test_the_live_scorecard_lists_paper_only_entries_on_their_own(tmp_path) -> N
     _position(db, "c", START, pnl=0.0, status="open")
     _position(db, "d", START, pnl=500.0, paper_only=False, exit_price=150.0)  # eToro-copyable
     expected = {
+        "window_days": 90,
         "entries": 3,
         "open": 1,
         "closed": 2,
@@ -464,3 +473,175 @@ def test_the_live_scorecard_lists_paper_only_entries_on_their_own(tmp_path) -> N
     }
     assert paper_only_report(db) == expected
     assert TestClient(app).get("/performance/live-scorecard").json()["paper_only"] == expected
+
+
+# --- review fixes (2026-10-22) ---------------------------------------------------------------
+
+
+def test_a_tagged_order_is_refused_before_any_other_mirror_check_and_untagged_ones_unchanged(
+    tmp_path,
+) -> None:
+    mirror, logs = _live(tmp_path)
+    reads: list[str] = []
+    get = mirror.state.get
+    mirror.state.get = lambda key, *a: reads.append(key) or get(key, *a)
+
+    def blockers(order, broker="alpaca"):
+        return mirror.blockers(SimpleNamespace(id=None, order=order, signal=None), broker)
+
+    tagged = _order("JPM", side="sell", stop=None)  # would fail several other checks too
+    tagged.metadata.update(TAGS)
+    assert blockers(tagged, broker="etoro") == [PAPER_ONLY_REASON]
+    assert reads == []  # nothing else is read for it
+    assert room_verdict(mirror, tagged) is None  # paper's own room rules decide it
+    # An untagged order (or one tagged False) gets every check exactly as before.
+    plain, marked = _order("AAPL", side="sell", stop=None), _order("AAPL", side="sell", stop=None)
+    marked.metadata["paper_only"] = False
+    assert blockers(plain, broker="etoro") == blockers(marked, broker="etoro")
+    assert "mirror_long_only" in blockers(plain) and PAPER_ONLY_REASON not in blockers(plain)
+    proposal = _proposal("JPM")
+    proposal.order.metadata.update(TAGS)
+    assert _run(mirror, proposal) is None
+    assert [p["reasons"] for e, p in logs.events if e == "etoro_live_mirror_blocked"] == [
+        [PAPER_ONLY_REASON]
+    ]
+
+
+def _lifecycle(paper_only):
+    flags = SimpleNamespace(
+        entry_submitted=True,
+        entry_filled=True,
+        bracket_legs_verified=True,
+        exit_filled_or_position_flat=True,
+        reconciled=True,
+        review_created=True,
+        duplicate_order_absent=True,
+    )
+    request = {"metadata": dict(TAGS) if paper_only else {}}
+    return SimpleNamespace(
+        strategy_name="x",
+        autonomous=True,
+        flags=flags,
+        realized_pnl_usd=20.0,
+        execution=SimpleNamespace(payload={"request": request}),
+    )
+
+
+def test_paper_only_lifecycles_never_unlock_auto_approval(tmp_path) -> None:
+    from app.automation.reliability import auto_approval_tier_blockers
+
+    settings = make_settings(
+        tmp_path,
+        paper_auto_approval_tier="tier2_strict_valid",
+        paper_auto_min_clean_supervised_lifecycles=10,
+    )
+    candidate = SimpleNamespace(strategy_name="x", metadata={})
+
+    def bootstrap(lifecycles):
+        blockers = auto_approval_tier_blockers(
+            settings=settings, candidate=candidate, lifecycles=lifecycles
+        )
+        return "insufficient_clean_supervised_lifecycles" in blockers
+
+    assert bootstrap([_lifecycle(True) for _ in range(10)]) is True
+    assert bootstrap([_lifecycle(False) for _ in range(10)]) is False  # the control
+    assert bootstrap([_lifecycle(False) for _ in range(9)] + [_lifecycle(True)]) is True
+
+
+def test_the_weekly_target_readiness_leaves_paper_only_lifecycles_out(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from tests.conftest import MockBroker
+    from tests.test_performance_target import FakePaperService
+    from tests.test_performance_target import _lifecycle as target_lifecycle
+
+    def clean_count(paper_only):
+        app = create_app(
+            make_settings(
+                tmp_path / str(paper_only),
+                control_api_token="secret",
+                weekly_target_min_closed_autonomous_trades=1,
+                weekly_target_min_clean_sessions=1,
+            ),
+            broker=MockBroker(),
+            enable_background_jobs=False,
+        )
+        lifecycle = target_lifecycle()
+        if paper_only:
+            lifecycle.execution.payload = {"request": {"metadata": dict(TAGS)}}
+        app.state.paper_trading_service = FakePaperService([lifecycle])
+        response = TestClient(app).get(
+            "/performance/weekly-target-readiness", headers={"X-Control-Token": "secret"}
+        )
+        return response.json()["evidence"]["clean_window_closed_trade_count"]
+
+    assert (clean_count(False), clean_count(True)) == (1, 0)
+
+
+def test_a_reading_at_a_paper_only_positions_open_time_is_netted(tmp_path) -> None:
+    db = _db(tmp_path)
+    opened = START + timedelta(days=1, hours=15)
+    for when, equity in ((START + timedelta(hours=15), 100_000), (opened, 101_000)):
+        _reading(db, when, equity)
+    _reading(db, START + timedelta(days=2, hours=15), 98_000)
+    _position(db, "p", opened, pnl=1_000.0)  # opened at the second reading's very time
+    report = compute_readiness(db, PHASE3, RuntimeStateRepository(db), now=NOW)
+    # bisect_right: that reading is netted (100k), so the peak stays 100k and the dip is 3.00%;
+    # read without it the peak would be 101k and the dip 3.96%.
+    assert report["max_drawdown_pct"] == 3.0
+
+
+def test_only_tagged_broker_ledger_rows_open_or_closed_in_phase3_are_netted(tmp_path) -> None:
+    from app.performance.go_live_readiness import _paper_only_marks
+
+    db = _db(tmp_path)
+    since = START.isoformat()
+    before, during = START - timedelta(days=3), START + timedelta(days=1)
+
+    def row(ident, payload_json, *, opened, status="closed", closed=None, pnl=10.0):
+        with db.connect() as c:
+            c.execute(
+                "INSERT INTO paper_positions (id, symbol, strategy_name, timeframe, side, status, "
+                "quantity, entry_price, current_price, opened_at, updated_at, closed_at, "
+                "realized_pnl_usd, unrealized_pnl_usd, payload_json) "
+                "VALUES (?, 'UBER', 'x', '1d', 'buy', ?, 1, 100, 100, ?, ?, ?, ?, ?, ?)",
+                (
+                    ident,
+                    status,
+                    opened.isoformat(),
+                    opened.isoformat(),
+                    closed.isoformat() if closed else None,
+                    pnl,
+                    pnl,
+                    payload_json,
+                ),
+            )
+
+    ledger = {"ledger_source": "alpaca_paper", **TAGS}
+    row("a", json.dumps(ledger), opened=during, closed=during, pnl=1.0)
+    row("b", json.dumps(ledger), opened=before, status="open", pnl=2.0)  # opened before, open
+    row("c", json.dumps(ledger), opened=before, closed=during, pnl=4.0)  # closed in Phase 3
+    row("d", json.dumps(ledger), opened=before, closed=before, pnl=8.0)  # closed before it
+    row("e", json.dumps(TAGS), opened=during, pnl=16.0)  # self-simulated: not Alpaca's equity
+    row("f", 'broken {"paper_only": true', opened=during, pnl=32.0)  # the exact tag: netted
+    row("g", 'broken "paper_only": false', opened=during, pnl=64.0)  # no tag: not read
+    row("h", 'broken {"paperXonly": true', opened=during, pnl=128.0)  # "_" is not a wildcard
+    with db.connect() as connection:
+        _opened, running = _paper_only_marks(connection, since)
+    assert running[-1] == 1.0 + 2.0 + 4.0 + 32.0
+
+
+def test_the_live_scorecard_reads_open_and_recent_paper_only_positions(tmp_path) -> None:
+    db = _db(tmp_path)
+    now = START + timedelta(days=100)
+    _position(db, "old_closed", START, pnl=100.0, exit_price=110.0)  # 100 days ago: left out
+    _position(db, "old_open", START, pnl=0.0, status="open")  # still open: in
+    _position(db, "recent", now - timedelta(days=5), pnl=-50.0, exit_price=95.0)
+    report = paper_only_report(db, now=now)
+    assert (report["window_days"], report["entries"], report["open"], report["closed"]) == (
+        90,
+        2,
+        1,
+        1,
+    )

@@ -308,6 +308,13 @@ class EtoroLiveMirrorService:
         settings = self.settings
         if not bool(getattr(settings, "etoro_live_mirror_enabled", False)):
             return ["etoro_live_mirror_disabled"]
+        from app.performance.paper_only import is_paper_only
+
+        # Option B (2026-10-21): an entry admitted on paper's OOS bar alone is never copied,
+        # whatever the other checks would say, so they are not read. Not a room reason:
+        # room_verdict is None for it and paper's own room rules decide it.
+        if is_paper_only(getattr(proposal.order, "metadata", None)):
+            return [PAPER_ONLY_REASON]
         reasons: list[str] = []
         problem = client_problem(self.client)
         if problem:
@@ -327,12 +334,6 @@ class EtoroLiveMirrorService:
         order = proposal.order
         if str(getattr(order.side, "value", order.side)).lower() != "buy":
             reasons.append("mirror_long_only")
-        from app.performance.paper_only import is_paper_only
-
-        # Option B (2026-10-21): an entry admitted on paper's OOS bar alone is never copied,
-        # whatever the other checks say. Not a room reason: paper's own room rules decide it.
-        if is_paper_only(getattr(order, "metadata", None)):
-            reasons.append(PAPER_ONLY_REASON)
         from app.broker import crypto as crypto_symbols
 
         bare = str(order.symbol or "").strip().upper()  # eToro names crypto "BTC", "ETH"

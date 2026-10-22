@@ -54,7 +54,8 @@ pass) gives a paper-only entry these rules:
    has none). Unreadable inputs refuse.
 6. Tag: its proposal and order carry ``paper_only: true`` and ``paper_only_reason: "oos_only"``
    (``tags``), which make the mirror refuse it (``etoro_live_paper_only``) and keep it out of
-   the strategy-name switches and the go-live readiness (app/performance/paper_only.py).
+   the strategy-name switches, the auto-approval bootstrap and the go-live and weekly-target
+   readiness (app/performance/paper_only.py); its notices say it is not copied (``notice``).
 
 With ``paper_oos_bar_enabled`` or ``require_strategy_oos_evidence`` off (or outside the main
 paper account) nothing is paper-only and the pass reads nothing: the gate reads the runtime
