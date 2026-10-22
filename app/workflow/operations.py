@@ -105,6 +105,7 @@ def run_scan_task(
     alerts_sent = service._send_scan_alerts(task=task, response=response, notify=notify)
     service._track_candidates(response, origin=origin)
     proposals_created = auto_propose_candidates(service, response, origin=origin, notify=notify)
+    service.runtime_state.set(state_key, utc_now().isoformat())  # the cadence: not option B's scan
     # Option B: paper-only specs are scanned only after the run's own entries were proposed.
     proposals_created += paper_only_scan(
         service, kwargs, response, spec_batch, started, origin=origin, notify=notify
@@ -122,7 +123,6 @@ def run_scan_task(
                 }
             )
         _record_scan_coverage(service, task=task, coverage=response.coverage)
-    service.runtime_state.set(state_key, utc_now().isoformat())
     service.run_logs.log(
         f"workflow_{task}_completed",
         {
@@ -852,7 +852,9 @@ def _account_equity_usd(service: Any) -> float:
     return float(getattr(service.settings, "paper_account_balance_usd", 100_000.0) or 100_000.0)
 
 
-def auto_propose_candidates(service: Any, response: Any, *, origin: str, notify: bool) -> int:
+def auto_propose_candidates(
+    service: Any, response: Any, *, origin: str, notify: bool, paper_only: Any = None
+) -> int:
     """Auto-create (and, when unattended, approve/execute) proposals from scan candidates.
 
     Emits a per-scan `auto_propose_funnel` run-log attributing where each candidate
@@ -879,7 +881,7 @@ def auto_propose_candidates(service: Any, response: Any, *, origin: str, notify:
     shadow_event_risk: list[tuple[Any, Any]] = []  # (proposal id, candidate): logged after the loop
     from app.workflow.paper_only import PaperOnlyPass  # option B (2026-10-21)
 
-    paper_only = PaperOnlyPass(service.auto_trading)  # one verdicts read; paper-only ranked last
+    paper_only = paper_only or PaperOnlyPass(service.auto_trading)  # paper-only ranked last
     candidates = paper_only.order(list(getattr(response, "candidates", []) or []))
     funnel: Counter[str] = Counter()
     funnel["entered"] = len(candidates)
@@ -962,7 +964,7 @@ def auto_propose_candidates(service: Any, response: Any, *, origin: str, notify:
             },
         )
         if service.auto_trading is not None:
-            service.auto_trading.approve_enqueue_execute(proposal, candidate, funnel=funnel)
+            paper_only.execute(service, proposal, candidate, funnel)  # paper-only: placed or rejected
         if notify:
             service.notifier.send_text(
                 "\n".join(

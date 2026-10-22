@@ -249,9 +249,11 @@ class PaperAutoTradingService:
             return None
         if funnel is not None:
             funnel["executed"] += 1
+        from app.performance.paper_only import AUTO_REVIEWER  # "paper_auto"
+
         approved = self.proposals.approve_proposal(
             proposal.id,
-            ApprovalDecisionRequest(reviewer="paper_auto", notes="Paper-only auto-approved by safety policy"),
+            ApprovalDecisionRequest(reviewer=AUTO_REVIEWER, notes="Paper-only auto-approved by safety policy"),
         )
         queued = self.execution.enqueue_approved_proposal(approved.id)
         processed = self.execution.process_queue_item(queued.id)

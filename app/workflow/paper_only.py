@@ -14,13 +14,13 @@ pass) gives a paper-only entry these rules:
 2. Bounded work: at most ``MAX_PER_PASS`` paper-only proposal a pass, and none once a cadence
    tick is within ``PROPOSAL_SECONDS`` of its scan stop (the tick's post-scan reserve stays for
    the work it was reserved for).
-3. Never a symbol the real eToro account holds or has in flight: reconcile's open list, the
-   scorecard's open and pending-fill trades and the test order, read as the mirror's room
-   check reads them (``etoro_live_room.held_symbols``), once a pass, and again by the
-   execution coordinator for a tagged order just before it is placed
-   (``paper_only_held_reasons``: a proposal may wait for an approval). The exit copy follows
-   paper BY SYMBOL (``copy_paper_exits``), so a paper-only position there would hold a real
-   position open or close it at market. An unreadable record refuses.
+3. Never a symbol the real eToro account holds or has in flight: reconcile's open list (its
+   raw instrument ids mapped back to symbols through the scorecard and the test order) and the
+   scorecard's open and pending-fill trades, read as the mirror's room check reads them
+   (``etoro_live_room.held_symbols``), once a pass, and again by the execution coordinator for
+   a tagged order just before it is placed (``paper_only_held_reasons``). The exit copy
+   follows paper BY SYMBOL (``copy_paper_exits``), so a paper-only position there would hold a
+   real position open or close it at market. An unreadable record refuses.
 4. Day headroom: it must leave 2 of the day's paper trades (``LEAVE_FOR_ETORO`` of
    ``max_trades_per_day``) and 1 of its correlation group's daily entries (``LEAVE_IN_GROUP``
    of ``max_daily_entries_per_correlation_bucket``; unclassified symbols have no group cap),
@@ -35,31 +35,45 @@ pass) gives a paper-only entry these rules:
    24 universe symbols, all grouped (operator decision, 2026-10-22).
 5. Book headroom, from paper's own proposal-time risk context (``build_risk_context``: the
    broker's open positions) and today's entries not yet filled (execution rows still
-   ``submitted``, ``accepted`` ...; paper's own open-position check does not count those), so
-   positions held for days cannot crowd out eToro-eligible entries:
+   ``submitted``, ``accepted`` ...; paper's own open-position check does not count those):
    - not a symbol paper already holds or has such an unfilled entry in;
-   - fewer than ``MAX_OPEN_PAPER_ONLY`` (4) paper-only positions open or unfilled (a held
+   - fewer than ``MAX_OPEN_PAPER_ONLY`` paper-only positions open or unfilled (a held
      position whose entry is not among the newest ``BOOK_ROWS`` execution rows counts as one:
      it cannot be told apart);
    - open + unfilled + 1 + ``LEAVE_FOR_ETORO`` <= capacity, capacity = the lower of
      ``max_open_positions`` and ``floor(portfolio_max_heat_pct / per-trade risk cap)``.
      The heat check counts every open position at the per-trade risk cap, which bounds this
      entry's own risk too, and it still applies when eToro's room authority replaces paper's
-     open-count check, so heat is what such positions would use up.
-   Two matches eToro's daily copy cap (leaving every free eToro slot would bar paper-only
-   entries altogether); the operator-accepted residual is that, with paper full but for two,
-   a third eToro-eligible entry that day waits for a position to close.
-   Steps 4 and 5 are read once a pass and again after each proposal the pass creates;
-   proposals still waiting for a person's approval are not counted (the unattended account
-   has none). Unreadable inputs refuse.
-6. Tag: its proposal and order carry ``paper_only: true`` and ``paper_only_reason: "oos_only"``
+     open-count check, so heat is what such positions use up.
+   So a paper-only entry never takes one of the last two places in paper's open room or heat
+   (two is eToro's daily copy cap; leaving every free eToro slot would bar paper-only entries
+   altogether). The residual, stated: while paper's open room or heat is full, every
+   eToro-eligible entry waits for a position to close, on any day; paper-only positions can
+   hold up to ``MAX_OPEN_PAPER_ONLY`` of paper's slots for as long as they are open, so with
+   other paper positions eToro would not copy, fewer than eToro's own nine slots may be usable.
+   Steps 4 and 5 come from one read of paper's state a pass (one risk context and one list of
+   the newest execution rows), read again after each proposal the pass creates. Unreadable
+   inputs refuse.
+6. Automatic only: a paper-only proposal is made only when the unattended path would approve
+   and execute it at once (``candidate_blockers`` is empty, checked last; so none with paper
+   auto-approval off or outside the unattended mode, and none for a strategy the auto-approval
+   tier refuses); one whose order was
+   not placed in its own pass (refused, its queue item blocked, or an error) is rejected at
+   once (``execute``), and a person cannot approve one (``ProposalService.approve_proposal``
+   refuses: paper-only entries are automatic only). So none waits: a waiting one would hold
+   its symbol against eToro-eligible entries (open proposals block a symbol) and its later
+   approval would skip steps 4 and 5. Other proposals still waiting for a person's approval
+   are not counted in steps 4 and 5. A paper-only proposal left open by a crash in its own
+   pass holds its symbol until it expires (``proposal_expiry_minutes``).
+7. Tag: its proposal and order carry ``paper_only: true`` and ``paper_only_reason: "oos_only"``
    (``tags``), which make the mirror refuse it (``etoro_live_paper_only``) and keep it out of
    the strategy-name switches, the auto-approval bootstrap and the go-live and weekly-target
    readiness (app/performance/paper_only.py); its notices say it is not copied (``notice``).
 
 With ``paper_oos_bar_enabled`` or ``require_strategy_oos_evidence`` off (or outside the main
 paper account) nothing is paper-only and the pass reads nothing: the gate reads the runtime
-state itself, exactly as before option B.
+state itself, exactly as before option B. The swing scan's second, paper-only pass
+(``only=True``) considers only the candidates that are paper-only by its own verdicts read.
 
 Not changed (residuals, stated): paper-only losses count toward paper's daily and weekly loss
 limits, the consecutive-loss cooldown and the drawdown governor like any paper trade, so they
@@ -68,7 +82,10 @@ symbol's one paper slot (and its re-entry cooldown after a loss). Paper's per-sy
 (``positions_by_symbol``, the broker's positions) keeps an untagged entry out of a symbol with
 an open paper-only position; for the seconds between a paper-only order's submission and its
 fill the broker shows no position, so only the pass's own proposals and the open proposals
-guard that symbol then.
+guard that symbol then. Paper-only outcomes also feed the learning meta-model's training data,
+which can only lower a candidate's score or block it (``LearningService.apply_to_snapshot``),
+never make one eligible: at most it changes which eligible candidate ranks first, never the
+eToro caps.
 """
 
 from __future__ import annotations
@@ -76,6 +93,7 @@ from __future__ import annotations
 import json
 import math
 import time
+from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any
 
@@ -83,9 +101,11 @@ from app.utils.time import utc_now
 
 LEAVE_FOR_ETORO = 2  # paper trades a day, and open-position room, a paper-only entry must leave
 LEAVE_IN_GROUP = 1  # entries in its correlation group that day a paper-only entry must leave
-MAX_OPEN_PAPER_ONLY = 4  # paper-only positions open or unfilled at once
+# Paper-only positions open or unfilled at once: the one place to change it (every rule, test
+# and notice reads this name).
+MAX_OPEN_PAPER_ONLY = 4
 MAX_PER_PASS = 1  # paper-only proposals an auto-propose pass may create
-PROPOSAL_SECONDS = 20.0  # one paper-only proposal, its execution and the copy check
+PROPOSAL_SECONDS = 35.0  # the pass's reads and one paper-only proposal (measured 20-35 s)
 BOOK_ROWS = 500  # newest execution rows read to tell paper-only positions apart
 PREFIX = "paper_only_"  # its proposal blockers
 _UNREADABLE = object()  # a read that failed: the pass's paper-only entries stand aside
@@ -98,12 +118,14 @@ class PaperOnlyPass:
     """One auto-propose pass's paper-only decisions; ``auto_trading`` is the
     ``PaperAutoTradingService`` (None: no gate, so nothing is paper-only)."""
 
-    def __init__(self, auto_trading: Any):
+    def __init__(self, auto_trading: Any, *, only: bool = False):
         self.auto = auto_trading
+        self.only = only  # the swing scan's paper-only pass: nothing else is considered
+        self.created_count = 0  # every proposal the pass created (even if it then raised)
         self._reads: dict[str, Any] = {}
         self._paper_only_created = 0
 
-    def _enabled(self) -> bool:
+    def enabled(self) -> bool:
         """Settings alone: whether anything can be paper-only on this account."""
 
         settings = getattr(self.auto, "settings", None)
@@ -124,7 +146,7 @@ class PaperOnlyPass:
         from app.performance.strategy_evidence import VERDICTS_KEY
 
         runtime_state = getattr(self.auto, "runtime_state", None)
-        if not self._enabled():
+        if not self.enabled():
             return runtime_state
         if "verdicts" not in self._reads:  # a failed read raises, as the gate's own read did
             self._reads["verdicts"] = runtime_state.get(VERDICTS_KEY)
@@ -137,7 +159,7 @@ class PaperOnlyPass:
         from app.performance.strategy_evidence import VERDICTS_KEY, paper_oos_only
 
         symbol = str(getattr(candidate, "symbol", "") or "").upper()
-        if not self._enabled() or crypto_symbols.is_crypto_symbol(symbol):
+        if not self.enabled() or crypto_symbols.is_crypto_symbol(symbol):
             return False
         if "parsed" not in self._reads:
             try:
@@ -151,8 +173,11 @@ class PaperOnlyPass:
         return paper_oos_only(self.auto.settings, verdict, timeframe)
 
     def order(self, candidates: list[Any]) -> list[Any]:
-        """The pass's candidates, every paper-only one after all the others, ranks kept."""
+        """The pass's candidates, every paper-only one after all the others, ranks kept; in a
+        paper-only pass, its paper-only candidates alone (by this pass's verdicts read)."""
 
+        if self.only:
+            return [candidate for candidate in candidates if self.is_paper_only(candidate)]
         return sorted(candidates, key=self.is_paper_only)
 
     def blockers(self, candidate: Any) -> list[str]:
@@ -173,17 +198,42 @@ class PaperOnlyPass:
             return [PREFIX + "etoro_live_state_unreadable"]
         if symbol in held:
             return [PREFIX + "etoro_live_symbol_held"]
-        day = self._read("day", self._paper_day)
-        if day is _UNREADABLE:
-            return [PREFIX + "paper_day_unreadable"]
-        reason = _headroom(self.auto.settings, day, symbol)
-        if reason:
-            return [PREFIX + reason]
-        book = self._read("book", self._paper_book)
+        book = self._read("paper", self._paper_book)
         if book is _UNREADABLE:
             return [PREFIX + "paper_book_unreadable"]
-        reason = _book_headroom(self.auto.settings, book, _bare(symbol))
-        return [PREFIX + reason] if reason else []
+        reason = _headroom(self.auto.settings, (book.trades, book.by_bucket), symbol)
+        reason = reason or _book_headroom(self.auto.settings, book, _bare(symbol))
+        if reason:
+            return [PREFIX + reason]
+        return self._automatic(candidate)
+
+    def _automatic(self, candidate: Any) -> list[str]:
+        """Rule 6: [] when the unattended path would approve and execute it at once."""
+
+        try:
+            reasons = list(self.auto.candidate_blockers(candidate))
+        except Exception:  # noqa: BLE001 - unknown is refused
+            reasons = ["candidate_blockers_unreadable"]
+        if not reasons:
+            return []
+        return [PREFIX + "not_automatic", *(f"{PREFIX}auto_{reason}" for reason in reasons)]
+
+    def execute(self, service: Any, proposal: Any, candidate: Any, funnel: Any) -> Any:
+        """``approve_enqueue_execute`` for a proposal the pass created; a paper-only one whose
+        order was not placed in this pass is rejected at once (rule 6)."""
+
+        from app.models.execution_queue import ExecutionQueueStatus
+
+        auto = service.auto_trading
+        if not self.is_paper_only(candidate):
+            return auto.approve_enqueue_execute(proposal, candidate, funnel=funnel)
+        processed = None
+        try:
+            processed = auto.approve_enqueue_execute(proposal, candidate, funnel=funnel)
+        finally:
+            if str(getattr(processed, "status", "") or "") != ExecutionQueueStatus.EXECUTED:
+                _withdraw(service, proposal, processed)
+        return processed
 
     def tags(self, candidate: Any) -> dict[str, Any]:
         """The proposal/order metadata of a paper-only candidate, else {}."""
@@ -197,7 +247,9 @@ class PaperOnlyPass:
     def notice(self, candidate: Any) -> list[str]:
         """The proposal notice's extra line for a paper-only candidate, else []."""
 
-        return ["Paper-only (not copied to eToro)"] if self.is_paper_only(candidate) else []
+        if not self.is_paper_only(candidate):
+            return []
+        return ["Paper-only (not copied to eToro)", "Automatic only: /approve is refused for it"]
 
     def log_blocked(self, candidate: Any, blockers: list[str]) -> bool:
         """Whether the loop logs this safety block: always for an entry that is not paper-only,
@@ -225,10 +277,10 @@ class PaperOnlyPass:
         """The pass created a proposal: the next paper-only candidate reads paper's day and
         book again (by then the entry, if it was placed, is one of today's execution rows)."""
 
+        self.created_count += 1
         if self.is_paper_only(candidate):
             self._paper_only_created += 1
-        self._reads.pop("day", None)
-        self._reads.pop("book", None)
+        self._reads.pop("paper", None)
 
     def _read(self, name: str, read: Any) -> Any:
         if name not in self._reads:
@@ -247,30 +299,24 @@ class PaperOnlyPass:
         mirror = getattr(getattr(self.auto, "execution", None), "etoro_live_mirror", None)
         return held_symbols(getattr(mirror, "state", None) or self.auto.runtime_state)
 
-    def _paper_day(self) -> tuple[int, dict[str, int]]:
-        """Today's paper trades and entries per correlation group, as ``build_risk_context``
-        counts them for paper's own trades-a-day and group checks."""
-
-        from app.risk.context import entries_today_by_bucket
-
-        executions = self.auto.executions
-        start_of_day = _start_of_day()
-        return int(executions.count_since(start_of_day)), entries_today_by_bucket(
-            executions, start_of_day
-        )
-
     def _paper_book(self) -> SimpleNamespace:
-        """Paper's open positions as its proposal-time risk check reads them, today's entries
-        not yet filled and how many of both are paper-only."""
+        """One read of paper's state for the pass: its proposal-time risk context (open
+        positions; today's trades as paper's trades-a-day check counts them) and one list of
+        the newest execution rows, which gives today's entries per correlation group (as
+        ``entries_today_by_bucket`` counts them for paper's group check), today's entries not
+        yet filled and which of those and the open positions are paper-only."""
 
         from app.performance.paper_only import request_is_paper_only
-        from app.risk.context import build_risk_context
+        from app.risk.context import build_risk_context, entries_today_by_bucket
 
         broker = getattr(getattr(self.auto, "proposals", None), "broker", None)
         context = build_risk_context(self.auto.settings, broker, self.auto.executions)
+        rows = list(self.auto.executions.list(limit=BOOK_ROWS))  # newest first
+        newest = SimpleNamespace(list=lambda limit=200: rows[:limit])  # paper's own 200 rows
+        by_bucket = entries_today_by_bucket(newest, _start_of_day())
         held = {_bare(symbol) for symbol, count in context.positions_by_symbol.items() if count}
         latest: dict[str, Any] = {}  # each symbol's newest entry row
-        for execution in self.auto.executions.list(limit=BOOK_ROWS):  # newest first
+        for execution in rows:
             symbol = _bare((execution.request_payload or {}).get("symbol"))
             if symbol and str(execution.status or "").lower() in _ENTRY_STATUSES:
                 latest.setdefault(symbol, execution)
@@ -288,7 +334,12 @@ class PaperOnlyPass:
             if symbol not in latest or request_is_paper_only(latest[symbol].request_payload)
         }
         return SimpleNamespace(
-            open=int(context.open_positions), held=held, unfilled=unfilled, paper_only=paper_only
+            trades=int(context.trades_today),
+            by_bucket=by_bucket,
+            open=int(context.open_positions),
+            held=held,
+            unfilled=unfilled,
+            paper_only=paper_only,
         )
 
 
@@ -321,6 +372,51 @@ def _book_headroom(settings: Any, book: SimpleNamespace, symbol: str) -> str | N
     if heat_pct > 0 and per_trade_pct > 0 and after > math.floor(heat_pct / per_trade_pct + 1e-9):
         return "headroom_portfolio_heat"
     return None
+
+
+def scan_wanted(service: Any) -> bool:
+    """Whether a focused swing run scans paper-only specs at all: something can be paper-only
+    on this account (``PaperOnlyPass.enabled``) and its proposals would be made and executed
+    automatically (rule 6): paper auto-approval on, which also turns auto-propose on
+    (``auto_propose_candidates``), and the unattended mode."""
+
+    settings = getattr(service, "settings", None)
+    return (
+        PaperOnlyPass(getattr(service, "auto_trading", None)).enabled()
+        and bool(getattr(settings, "paper_auto_approve_proposals", False))
+        and str(getattr(settings, "paper_auto_operation_mode", "shadow")) == "unattended"
+    )
+
+
+def _withdraw(service: Any, proposal: Any, processed: Any) -> None:
+    """Reject a paper-only proposal whose order was not placed in its pass (never raises)."""
+
+    from app.models.approval import ApprovalDecisionRequest
+    from app.performance.paper_only import AUTO_REVIEWER
+
+    reason = str(getattr(processed, "validation_reason", "") or "not_executed")
+    try:
+        service.proposal_service.reject_proposal(
+            proposal.id,
+            ApprovalDecisionRequest(
+                reviewer=AUTO_REVIEWER,
+                notes=f"Paper-only entries are automatic only; not placed in its pass: {reason}",
+            ),
+        )
+        rejected = True
+    except Exception:  # noqa: BLE001 - not open any more (expired, executed): nothing holds
+        rejected = False
+    with suppress(Exception):  # a log line never fails the pass
+        service.run_logs.log(
+            "paper_only_proposal_withdrawn",
+            {
+                "proposal_id": proposal.id,
+                "symbol": str(getattr(proposal.order, "symbol", "") or ""),
+                "queue_status": str(getattr(processed, "status", "") or "") or None,
+                "reason": reason,
+                "rejected": rejected,
+            },
+        )
 
 
 def _budget_spent() -> bool:

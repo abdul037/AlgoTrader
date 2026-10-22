@@ -7,8 +7,13 @@ order carry ``PAPER_ONLY_FIELD`` and ``PAPER_ONLY_REASON_FIELD`` (app/workflow/p
 the order's metadata rides into the execution's request payload, and the paper ledger copies
 the tags into its position and closed trade (``paper_only_tags``).
 
-Paper-only results stay in paper's trades and positions and in the learning/outcome tables,
-but feed none of the decisions keyed or judged by what eToro-copyable entries earn:
+Paper-only entries are automatic only: a person cannot approve one (``AUTOMATIC_ONLY``,
+refused by ``ProposalService.approve_proposal`` for any reviewer but ``AUTO_REVIEWER``).
+
+Paper-only results stay in paper's trades and positions and in the learning/outcome tables
+(the learning meta-model trains on them; it can only lower a candidate's score or block it,
+never make one eligible), but feed none of the decisions keyed or judged by what
+eToro-copyable entries earn:
 
 * the strategy-health deactivation and the Phase 3 auto-demotion, both keyed by strategy NAME
   across timeframes (paper-only losses on X:1d must not switch off X's eToro-copyable entries,
@@ -43,6 +48,8 @@ OOS_ONLY = "oos_only"  # admitted on the pooled OOS evidence alone; the holdout 
 TAGGED_PAYLOAD_SQL = "payload_json LIKE ? ESCAPE '!'"  # with TAGGED_PAYLOAD_PATTERN
 TAGGED_PAYLOAD_PATTERN = '%"paper!_only": true%'  # the tag as json.dumps writes it
 REPORT_WINDOW_DAYS = 90
+AUTO_REVIEWER = "paper_auto"  # the unattended path's approvals (app/automation/unattended.py)
+AUTOMATIC_ONLY = "Paper-only entries are automatic only: they cannot be approved by hand."
 
 
 def is_paper_only(metadata: Any) -> bool:

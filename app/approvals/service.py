@@ -91,6 +91,12 @@ class ProposalService:
         proposal = self.get_proposal(proposal_id)
         if proposal.status != ApprovalStatus.PENDING:
             raise ValueError("Only pending proposals can be approved")
+        from app.performance.paper_only import AUTO_REVIEWER, AUTOMATIC_ONLY, is_paper_only
+
+        # Option B: a paper-only entry is approved by the unattended path in its own pass or
+        # not at all (app/workflow/paper_only.py, rule 6).
+        if is_paper_only(proposal.order.metadata) and decision.reviewer != AUTO_REVIEWER:
+            raise ValueError(AUTOMATIC_ONLY)
         proposal.status = ApprovalStatus.APPROVED
         proposal.approved_by = decision.reviewer
         proposal.decision_notes = decision.notes

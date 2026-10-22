@@ -30,7 +30,12 @@ deadline counted from the first scan's start and the cadence tick's scan stop le
 make, which is refused within ``paper_only.PROPOSAL_SECONDS`` of that stop), so the paper-only
 work is planned to end by the stop and leave the tick's post-scan reserve alone (a proposal
 slower than that allowance would run into it). Its top ``PAPER_ONLY_TOP_K`` candidates are
-tracked (no scan alert of their own) and given a second auto-propose pass. ``coverage.
+tracked (no scan alert of their own) and given a second auto-propose pass, which considers only
+the candidates that are paper-only by its own verdicts read. Its specs are 1h/1d/1w keys not in
+the first scan (``PAPER_ONLY_TIMEFRAMES``), so no key is in both scans; its pass logs under the
+origin ``swing_scan:paper_only``. A run lists no paper-only spec unless one could be proposed and
+executed at once (``paper_only.scan_wanted``: the main paper account with the switch and the
+evidence gate on, auto-propose, paper auto-approval and unattended mode). ``coverage.
 paper_only_scan`` says when and why it was skipped; those specs still come up in the rotation
 runs. The paper-only scan sweeps the symbols from its own cursor and asks for cached bars
 (``force_refresh`` off); whether the first scan's bars are reused is the data engine's choice
@@ -44,7 +49,7 @@ import json
 import time
 from typing import Any
 
-from app.workflow.paper_only import PROPOSAL_SECONDS
+from app.workflow.paper_only import PROPOSAL_SECONDS, scan_wanted
 
 SYMBOL_CURSOR_KEY = "workflow:symbol_offset:{task}"
 PAPER_ONLY_CURSOR_KEY = "workflow:symbol_offset:swing_scan:paper_only"
@@ -85,7 +90,16 @@ def focused_spec_batch(service: Any, *, task: str, timeframes: list[str]) -> dic
         return None
     from app.workflow.operations import _timeframes_for_spec_keys
 
-    later = [key for key in keys if key in paper_only]  # scanned later: paper_only_scan
+    # Scanned later (paper_only_scan): 1h/1d/1w keys only (such a key passing the full check is
+    # never paper-only), and never a first-scan key in any case.
+    later = [
+        key
+        for key in keys
+        if key in paper_only
+        and key not in selected
+        and key.rsplit(":", 1)[-1].lower() in PAPER_ONLY_TIMEFRAMES
+    ]
+    later = later if later and scan_wanted(service) else []  # nothing to propose: no scan
     return {
         "mode": "evidence_focus",
         "rotation_key": FOCUS_RUNS_KEY,
@@ -100,6 +114,7 @@ def focused_spec_batch(service: Any, *, task: str, timeframes: list[str]) -> dic
 
 
 PAPER_ONLY_TOP_K = 3  # candidates the paper-only scan keeps (not screener_top_k)
+PAPER_ONLY_TIMEFRAMES = frozenset({"1h", "1d", "1w"})  # its specs: never a minute-bar key
 # The scan's stop overshoot (<= 10 s, cadence_budget) and the one paper-only proposal a pass may
 # make: the paper-only scan stops this long before the tick's scan stop.
 PAPER_ONLY_PASS_SECONDS = 10.0 + PROPOSAL_SECONDS
@@ -123,18 +138,25 @@ def paper_only_scan(
     keys = list((spec_batch or {}).get("paper_only_spec_keys") or [])
     if not keys or not kwargs.get("symbols"):
         return 0
-    created = 0
+    outcome: dict[str, Any] = {}
+    second = None  # its auto-propose pass, paper-only candidates alone
     try:
         timeframes = (spec_batch or {})["paper_only_timeframes"]
         outcome, extra = _paper_only_scan(service, kwargs, response, keys, timeframes, started)
         if extra is not None:
             from app.workflow.operations import auto_propose_candidates
+            from app.workflow.paper_only import PaperOnlyPass
 
             service._track_candidates(extra, origin=origin)
-            created = auto_propose_candidates(service, extra, origin=origin, notify=notify)
-            outcome["proposals_created"] = created
+            second = PaperOnlyPass(getattr(service, "auto_trading", None), only=True)
+            auto_propose_candidates(  # its own origin: the run's funnel is not counted twice
+                service, extra, origin=f"{origin}:paper_only", notify=notify, paper_only=second
+            )
     except Exception as exc:  # noqa: BLE001 - the run's own candidates are already handled
-        outcome = {"error": str(exc)[:300]}
+        outcome = {**outcome, "error": str(exc)[:300]}
+    created = second.created_count if second is not None else 0  # also when the pass raised
+    if second is not None:
+        outcome["proposals_created"] = created
     coverage = getattr(response, "coverage", None)
     if isinstance(coverage, dict):  # counts only: the spec keys are in the verdicts
         coverage["paper_only_scan"] = {"specs": len(keys), **outcome}
