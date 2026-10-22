@@ -26,8 +26,10 @@ B: its scan, alerts, tracking and auto-propose pass, whose entries are proposed,
 copied to eToro as before. Only then (``paper_only_scan``), and only when that scan reached every
 symbol, the paper-only specs get a second scan bounded by what is left of the same run: the batch
 deadline counted from the first scan's start and the cadence tick's scan stop less
-``PAPER_ONLY_PASS_SECONDS`` (time for the one paper-only proposal a pass may make), so the
-tick's post-scan reserve is never spent on it. Its top ``PAPER_ONLY_TOP_K`` candidates are
+``PAPER_ONLY_PASS_SECONDS`` (the scan's overshoot and the one paper-only proposal a pass may
+make, which is refused within ``paper_only.PROPOSAL_SECONDS`` of that stop), so the paper-only
+work is planned to end by the stop and leave the tick's post-scan reserve alone (a proposal
+slower than that allowance would run into it). Its top ``PAPER_ONLY_TOP_K`` candidates are
 tracked (no scan alert of their own) and given a second auto-propose pass. ``coverage.
 paper_only_scan`` says when and why it was skipped; those specs still come up in the rotation
 runs. The paper-only scan sweeps the symbols from its own cursor and asks for cached bars
