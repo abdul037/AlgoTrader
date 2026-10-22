@@ -18,14 +18,21 @@ While the gate is enforced this module makes the swing scan:
 No gate is loosened: the proposal path still checks evidence, risk and caps as before.
 
 Paper-only specs (operator option B, 2026-10-21): a 1d/1h/1w spec the main paper gate admits on
-its pooled OOS evidence alone (``strategy_evidence.paper_oos_only``) is scanned in a focused
-run only AFTER the run's eToro-passing specs reached every symbol, in a second scan bounded by
-what is left of the same run's deadline (``scan_run``), never in the same scan: a scan works
-symbol by symbol, so extra specs would slow every symbol (fewer symbols before the deadline for
-the eToro-passing specs) and their candidates could take the run's top-k. A run whose
-eToro-passing specs did not finish scans no paper-only spec (``coverage.paper_only_scan`` says
-why); those specs still come up in the rotation runs. The paper-only scan sweeps the symbols
-from its own cursor and reads the bars the run's first scan just fetched.
+its pooled OOS evidence alone (``strategy_evidence.paper_oos_only``) is never scanned in the same
+scan as the run's eToro-passing specs: a scan works symbol by symbol, so extra specs would slow
+every symbol (fewer symbols before the deadline for the eToro-passing specs) and their
+candidates could take the run's top-k. A focused run first does everything it did before option
+B: its scan, alerts, tracking and auto-propose pass, whose entries are proposed, executed and
+copied to eToro as before. Only then (``paper_only_scan``), and only when that scan reached every
+symbol, the paper-only specs get a second scan bounded by what is left of the same run: the batch
+deadline counted from the first scan's start and the cadence tick's scan stop less
+``PAPER_ONLY_PASS_SECONDS`` (time for the one paper-only proposal a pass may make), so the
+tick's post-scan reserve is never spent on it. Its top ``PAPER_ONLY_TOP_K`` candidates are
+tracked (no scan alert of their own) and given a second auto-propose pass. ``coverage.
+paper_only_scan`` says when and why it was skipped; those specs still come up in the rotation
+runs. The paper-only scan sweeps the symbols from its own cursor and asks for cached bars
+(``force_refresh`` off); whether the first scan's bars are reused is the data engine's choice
+(with ``require_verified_market_data_for_alerts`` it may fetch them again).
 """
 
 from __future__ import annotations
@@ -74,7 +81,7 @@ def focused_spec_batch(service: Any, *, task: str, timeframes: list[str]) -> dic
         return None
     from app.workflow.operations import _timeframes_for_spec_keys
 
-    later = [key for key in keys if key in paper_only]  # scanned after them (scan_run)
+    later = [key for key in keys if key in paper_only]  # scanned later: paper_only_scan
     return {
         "mode": "evidence_focus",
         "rotation_key": FOCUS_RUNS_KEY,
@@ -88,22 +95,44 @@ def focused_spec_batch(service: Any, *, task: str, timeframes: list[str]) -> dic
     }
 
 
-def scan_run(service: Any, kwargs: dict[str, Any], spec_batch: dict[str, Any] | None) -> Any:
-    """One scan run: ``scan_universe(**kwargs)``; then, in a focused run whose eToro-passing
-    specs reached every symbol in time, the paper-only specs with the run's deadline left."""
+PAPER_ONLY_TOP_K = 3  # candidates the paper-only scan keeps (not screener_top_k)
+PAPER_ONLY_PASS_SECONDS = 30.0  # the scan's stop overshoot (<= 10 s) + one paper-only proposal
 
-    started = time.monotonic()
-    response = service.market_screener.scan_universe(**kwargs)
-    batch = spec_batch or {}
-    keys = list(batch.get("paper_only_spec_keys") or [])
-    if keys and kwargs.get("symbols"):
-        try:
-            timeframes = batch["paper_only_timeframes"]
-            outcome = _paper_only_scan(service, kwargs, response, keys, timeframes, started)
-        except Exception as exc:  # noqa: BLE001 - never costs the run its eToro-passing candidates
-            outcome = {"error": str(exc)[:300]}
-        response.coverage["paper_only_scan"] = {"spec_keys": keys, **outcome}
-    return response
+
+def paper_only_scan(
+    service: Any,
+    kwargs: dict[str, Any],
+    response: Any,
+    spec_batch: dict[str, Any] | None,
+    started: float,
+    *,
+    origin: str,
+    notify: bool,
+) -> int:
+    """After the run's own alerts, tracking and auto-propose pass: in a focused run whose
+    eToro-passing specs reached every symbol, the paper-only specs with the run's time left,
+    then a second auto-propose pass on their candidates. Returns the proposals it created;
+    never raises (the run's own candidates were handled already)."""
+
+    keys = list((spec_batch or {}).get("paper_only_spec_keys") or [])
+    if not keys or not kwargs.get("symbols"):
+        return 0
+    created = 0
+    try:
+        timeframes = (spec_batch or {})["paper_only_timeframes"]
+        outcome, extra = _paper_only_scan(service, kwargs, response, keys, timeframes, started)
+        if extra is not None:
+            from app.workflow.operations import auto_propose_candidates
+
+            service._track_candidates(extra, origin=origin)
+            created = auto_propose_candidates(service, extra, origin=origin, notify=notify)
+            outcome["proposals_created"] = created
+    except Exception as exc:  # noqa: BLE001 - the run's own candidates are already handled
+        outcome = {"error": str(exc)[:300]}
+    coverage = getattr(response, "coverage", None)
+    if isinstance(coverage, dict):  # counts only: the spec keys are in the verdicts
+        coverage["paper_only_scan"] = {"specs": len(keys), **outcome}
+    return created
 
 
 def _paper_only_scan(
@@ -113,23 +142,28 @@ def _paper_only_scan(
     keys: list[str],
     timeframes: list[str],
     started: float,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], Any]:
     from app.workflow.cadence_budget import MIN_USEFUL_SCAN_SECONDS, ScanDeadline
 
     symbols = sorted(kwargs["symbols"])
-    deadline = float(getattr(service.settings, "screener_batch_deadline_seconds", 0.0) or 0.0)
-    stop_at = started + deadline
-    cadence = kwargs.get("cancel_event")
-    if cadence is not None:  # the cadence tick's own scan stop
-        stop_at = min(stop_at, float(cadence.stop_at))
     if _count(response.evaluated_symbols) < len(symbols) or any(
         error in {"scan_deadline_exceeded", "scan_cancelled"} for error in response.errors
     ):
-        return {"skipped": "etoro_passing_specs_unfinished"}
-    if deadline <= 0 or stop_at - time.monotonic() < MIN_USEFUL_SCAN_SECONDS:
-        return {"skipped": "run_deadline_too_close"}
+        return {"skipped": "etoro_passing_specs_unfinished"}, None
+    stops = []
+    deadline = float(getattr(service.settings, "screener_batch_deadline_seconds", 0.0) or 0.0)
+    if deadline > 0:
+        stops.append(started + deadline)
+    cadence = kwargs.get("cancel_event")
+    if cadence is not None:  # the cadence tick's own scan stop, less one paper-only proposal
+        stops.append(float(cadence.stop_at) - PAPER_ONLY_PASS_SECONDS)
+    if not stops:
+        return {"skipped": "no_run_deadline"}, None  # never an unbounded extra scan
+    stop_at = min(stops)
+    if stop_at - time.monotonic() < MIN_USEFUL_SCAN_SECONDS:
+        return {"skipped": "run_deadline_too_close"}, None
     if "cancel_event" not in inspect.signature(service.market_screener.scan_universe).parameters:
-        return {"skipped": "scan_cannot_stop"}
+        return {"skipped": "scan_cannot_stop"}, None
     offset = _int(service.runtime_state.get(PAPER_ONLY_CURSOR_KEY)) % len(symbols)
     extra = service.market_screener.scan_universe(
         **{
@@ -137,7 +171,8 @@ def _paper_only_scan(
             "symbols": symbols[offset:] + symbols[:offset],
             "timeframes": timeframes,
             "strategy_spec_keys": keys,
-            "force_refresh": False,  # the bars the run's first scan just fetched
+            "limit": PAPER_ONLY_TOP_K,
+            "force_refresh": False,  # cached bars where the data engine has them
             "cancel_event": ScanDeadline(stop_at),
         }
     )
@@ -145,12 +180,12 @@ def _paper_only_scan(
     service.runtime_state.set(
         PAPER_ONLY_CURSOR_KEY, str((offset + max(evaluated, 1)) % len(symbols))
     )
-    response.candidates = [*response.candidates, *extra.candidates]  # eToro-passing ones first
-    return {
+    outcome = {
         "symbols_evaluated": evaluated,
         "candidates": len(extra.candidates),
         "errors": list(extra.errors)[:5],
     }
+    return outcome, extra
 
 
 def rotate_symbols(service: Any, *, task: str, symbols: list[str]) -> list[str]:

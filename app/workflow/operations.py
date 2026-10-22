@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import time
 from collections import Counter
 from contextlib import suppress
 from typing import Any
@@ -33,8 +34,8 @@ def run_scan_task(
     from app.workflow.swing_focus import (
         advance_symbols,
         focused_spec_batch,
+        paper_only_scan,
         rotate_symbols,
-        scan_run,
     )
 
     budget = current_budget()  # set only inside a scheduled cadence tick
@@ -76,8 +77,9 @@ def run_scan_task(
         kwargs["scan_task"] = task
     if budget is not None and budget.enforces_scan_stop and "cancel_event" in scan_params:
         kwargs["cancel_event"] = ScanDeadline(budget.scan_stop_at)  # stop in time for the post-scan work
+    started = time.monotonic()  # the run's deadline counts from here (option B's scan too)
     try:
-        response = scan_run(service, kwargs, spec_batch)  # paper-only specs after (option B)
+        response = service.market_screener.scan_universe(**kwargs)
     except Exception as exc:  # noqa: BLE001 - workflow must not block future runs
         error = f"scan_failed:{exc}"
         service.run_logs.log(
@@ -103,6 +105,10 @@ def run_scan_task(
     alerts_sent = service._send_scan_alerts(task=task, response=response, notify=notify)
     service._track_candidates(response, origin=origin)
     proposals_created = auto_propose_candidates(service, response, origin=origin, notify=notify)
+    # Option B: paper-only specs are scanned only after the run's own entries were proposed.
+    proposals_created += paper_only_scan(
+        service, kwargs, response, spec_batch, started, origin=origin, notify=notify
+    )
     if hasattr(response, "coverage"):
         response.coverage["proposals_created"] = proposals_created
         if spec_batch:
