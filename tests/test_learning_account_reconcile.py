@@ -438,3 +438,23 @@ def test_an_unchanged_open_trade_costs_no_book_write(tmp_path) -> None:
     rig.store.writes.clear()
     rig.tick(60)
     assert records.BOOK_KEY not in rig.store.writes
+
+
+def test_an_order_read_without_legs_is_no_proof_of_an_unprotected_position(tmp_path) -> None:
+    rig = _entered(tmp_path)
+    rig.broker.fill_entry("NVDA", 100.0)
+    rig.tick(60)
+    rig.broker.entry("NVDA")["legs"] = []
+    rig.tick(60)
+    assert "flatten_reason" not in _only(rig) and rig.broker.sent("submit_close") == []
+
+
+def test_no_leg_cancel_or_close_while_stopping(tmp_path) -> None:
+    rig = _entered(tmp_path, snapshot("NVDA", "vwap_reclaim", "5m"))
+    rig.broker.fill_entry("NVDA", 100.0)
+    rig.tick(60)
+    rig.clock.value = CLOSE - timedelta(minutes=9)
+    rig.account._stopping.set()
+    rig.tick()
+    assert _only(rig)["flatten_reason"] == "session_flatten"
+    assert rig.broker.sent("cancel") == [] and rig.broker.sent("submit_close") == []

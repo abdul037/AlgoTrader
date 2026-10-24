@@ -378,3 +378,18 @@ def test_the_live_scorecard_route_has_the_section(tmp_path) -> None:
     with TestClient(app) as client:
         assert client.get("/performance/live-scorecard").json()["learning_account"]["status"] == routes.SETTING_OFF
     assert BASE["alpaca_learning_api_key"] not in json.dumps(body)
+
+
+def test_the_keys_and_the_account_number_are_never_logged_or_echoed(tmp_path) -> None:
+    rig = Rig(tmp_path)
+    rig.offer(snapshot("NVDA"))
+    rig.tick()
+    rig.broker.account["account_number"] = "PA-OTHER"
+    rig.offer(snapshot("AMD", "ma_crossover"))
+    rig.tick(5)
+    store = records.Store(rig.db)
+    written = json.dumps([rig.logs.events, rig.notifier.texts, store.read_many(list(records.LEARNING_KEYS))])
+    for secret in ("learn-key", "learn-secret", "PA-LEARN", "PA-OTHER", "main-key", "main-secret", "PA-MAIN"):
+        assert secret not in written, secret
+    report = learning_account_report(SimpleNamespace(get_many=store.read_many), rig.settings, app_state=SimpleNamespace(learning_account=rig.account), now=rig.clock())
+    assert "PA-LEARN" not in json.dumps(report) and "learn-key" not in json.dumps(report)

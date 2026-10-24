@@ -228,8 +228,8 @@ def manage_open(
                 return recovered
         return close_trade(account, book, trade, None, "closed_outside", None, now)
     reason = trade.get("flatten_reason") or flatten_due(account.settings, trade, clock, now)
-    if reason is None and held is not None and all(ended(leg.get("status")) for leg in legs):
-        reason = "unprotected"
+    if reason is None and held is not None and legs and all(ended(leg.get("status")) for leg in legs):
+        reason = "unprotected"  # a bracket whose every leg ended unfilled (an order read without legs is no proof)
     if reason is None:
         return book
     return flatten(account, book, trade, legs, reason, held, clock, now)

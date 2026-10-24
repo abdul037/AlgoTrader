@@ -208,3 +208,10 @@ def test_its_own_unexpired_row_is_taken_back_and_an_unchanged_book_is_not_writte
     book = records.save_book(store, records.load_book(store), {"t": {"trade_id": "t"}})
     writes = len(store.writes)
     assert records.save_book(store, book, {"t": {"trade_id": "t"}}) is book and len(store.writes) == writes
+
+
+def test_nothing_may_act_while_stopping(store) -> None:
+    lease = records.Lease(store, "a", Clock())
+    assert lease.ensure(work=True)
+    assert lease.may_act() and lease.may_act(stopping=False)
+    assert not lease.may_act(stopping=True)
