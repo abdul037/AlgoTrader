@@ -39,10 +39,14 @@ def main() -> None:
     print("Press Ctrl+C to stop.")
 
     # This process runs the cadence in polling mode, so the separate paper learning account's
-    # thread runs here too (app/learning_account); it stops when the bot does.
-    from app.learning_account import run_learning_account_here
+    # thread runs here too (app/learning_account); it stops when the bot does, and never stops it.
+    try:
+        from app.learning_account import run_learning_account_here
 
-    stop_learning_account = run_learning_account_here(app)
+        stop_learning_account = run_learning_account_here(app)
+    except Exception as exc:  # noqa: BLE001 - the bot always runs
+        print(f"Learning account not started: {type(exc).__name__}")
+        stop_learning_account = lambda: None  # noqa: E731
     try:
         app.state.telegram_command_service.run_forever()
     except KeyboardInterrupt:
