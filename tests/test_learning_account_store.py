@@ -10,7 +10,15 @@ import pytest
 
 from app.learning_account import store as records
 from app.learning_account.account import day_counts, ny_day
-from tests.learning_account_fakes import NOW, Clock, CountingStore, Rig, database, settings_for, snapshot
+from tests.learning_account_fakes import (
+    NOW,
+    Clock,
+    CountingStore,
+    Rig,
+    database,
+    settings_for,
+    snapshot,
+)
 
 
 @pytest.fixture

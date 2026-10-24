@@ -8,6 +8,7 @@ import json
 import sys
 import threading
 from datetime import timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -17,7 +18,13 @@ import app.learning_account as learning_package
 from app.learning_account import account as account_module
 from app.learning_account import route as routes
 from app.learning_account import store as records
-from app.learning_account.client import PAPER_URL, TIMEOUT_SECONDS, LearningClient, build_client, order_dict
+from app.learning_account.client import (
+    PAPER_URL,
+    TIMEOUT_SECONDS,
+    LearningClient,
+    build_client,
+    order_dict,
+)
 from app.learning_account.report import STALLED_SECONDS, learning_account_report, status
 from app.live_signal_schema import MarketQuote
 from tests.learning_account_fakes import BASE, NOW, FakeState, Rig, settings_for, snapshot
@@ -200,7 +207,7 @@ def test_polling_mode_runs_it_from_the_bot_process(tmp_path, monkeypatch) -> Non
     stop = learning_package.run_learning_account_here(app)
     assert started == [app.state.learning_account] and stop == app.state.learning_account.stop
     assert learning_package.run_learning_account_here(SimpleNamespace(state=SimpleNamespace(learning_account=None)))() is None
-    script = open("scripts/run_telegram_bot.py").read()
+    script = Path("scripts/run_telegram_bot.py").read_text(encoding="utf-8")
     assert "run_learning_account_here(app)" in script and "stop_learning_account()" in script
 
 
@@ -256,6 +263,8 @@ def test_an_attach_failure_never_stops_the_app(tmp_path, monkeypatch) -> None:
 
 
 def _scan_service(tmp_path, candidates, learning_account):
+    from app.workflow.service import SignalWorkflowService
+    from tests.conftest import make_settings
     from tests.test_workflow_service import (
         FakeAlertHistory,
         FakeLogs,
@@ -265,8 +274,6 @@ def _scan_service(tmp_path, candidates, learning_account):
         FakeState,
         FakeTrackedSignals,
     )
-    from app.workflow.service import SignalWorkflowService
-    from tests.conftest import make_settings
 
     service = SignalWorkflowService(
         settings=make_settings(tmp_path),

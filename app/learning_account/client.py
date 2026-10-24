@@ -17,7 +17,7 @@ TIMEOUT_SECONDS = 10.0
 _ENDED = frozenset({"filled", "canceled", "cancelled", "expired", "rejected", "replaced", "done_for_day"})
 
 
-def build_client(settings: Any) -> "LearningClient":
+def build_client(settings: Any) -> LearningClient:
     """The learning account's trading client, from its own keys (never the main ones)."""
 
     from alpaca.trading.client import TradingClient

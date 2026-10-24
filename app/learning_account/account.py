@@ -22,13 +22,20 @@ import json
 import math
 import threading
 from collections import deque
+from contextlib import suppress
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
 from app.learning_account import route as routes
 from app.learning_account import store as records
-from app.learning_account.verdicts import FEE_BAND, classify, compute_learning_verdicts, rank_key, stale
+from app.learning_account.verdicts import (
+    FEE_BAND,
+    classify,
+    compute_learning_verdicts,
+    rank_key,
+    stale,
+)
 from app.utils.time import utc_now
 
 TICK_SECONDS = 60.0
@@ -299,10 +306,8 @@ class LearningAccount:
                 self._wake.wait(TICK_SECONDS)
                 self._wake.clear()
         finally:
-            try:
+            with suppress(Exception):  # the lease then expires on its own
                 self.lease.release()
-            except Exception:  # noqa: BLE001 - the lease then expires on its own
-                pass
 
     # ---- helpers ---------------------------------------------------------------------------
     def client(self) -> Any:
@@ -311,10 +316,8 @@ class LearningAccount:
         return self._client
 
     def log(self, event: str, payload: dict[str, Any]) -> None:
-        try:
+        with suppress(Exception):  # a log line never fails a pass
             self.logs.log(event, {**payload, "learning_account": True})
-        except Exception:  # noqa: BLE001 - a log line never fails a pass
-            pass
 
     def log_once(self, key: Any, event: str, payload: dict[str, Any]) -> bool:
         day = ny_day(self.now())
@@ -328,10 +331,8 @@ class LearningAccount:
         return True
 
     def notify(self, *lines: str) -> None:
-        try:
+        with suppress(Exception):  # a notice never fails a pass
             self.notifier.send_text("\n".join([TELEGRAM_PREFIX, *lines]))
-        except Exception:  # noqa: BLE001 - a notice never fails a pass
-            pass
 
     def skip(self, reason: str, candidate: Any = None) -> None:
         payload = {"reason": reason}
@@ -352,10 +353,8 @@ class LearningAccount:
         record = {"route": route, "owner": self.owner, "checked_at": self.now().isoformat()}
         if detail:
             record["detail"] = detail
-        try:
+        with suppress(Exception):  # the scorecard then shows the older record
             self.store.put(records.STATUS_KEY, records.dumps(record))
-        except Exception:  # noqa: BLE001 - the scorecard then shows the older record
-            pass
         self.log("learning_account_status", {"route": route, "previous": previous, **({"detail": detail} if detail else {})})
         if route == routes.RUNNING and previous is None:
             self.notify("Account verified: taking fee-band and lane entries.")

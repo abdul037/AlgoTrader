@@ -584,7 +584,8 @@ def test_the_quote_must_be_a_direct_fresh_alpaca_quote(tmp_path) -> None:
     for change, reason in cases:
         rig = Rig(tmp_path / reason)
         quote = MarketQuote(symbol="NVDA", bid=99.99, ask=100.01, last_execution=100.0, source="alpaca", data_age_seconds=1.0)
-        rig.provider.get_quote = lambda symbol, _q=quote.model_copy(update=change): _q
+        changed = quote.model_copy(update=change)
+        rig.provider.get_quote = lambda symbol, _q=changed: _q
         rig.offer(snapshot("NVDA"))
         rig.tick()
         assert rig.book() == {} and reason in rig.skipped(), reason

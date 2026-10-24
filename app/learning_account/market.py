@@ -19,8 +19,9 @@ the shared bar cache (``cache=False``), but they do count against the same data 
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from datetime import timedelta
-from typing import Any, Callable
+from typing import Any
 
 READ_TIMEOUT_SECONDS = 10.0
 MAX_HUNG_READS = 2

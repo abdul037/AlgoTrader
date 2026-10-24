@@ -99,7 +99,13 @@ def compute_learning_verdicts(
 
     from app.backtesting.intraday_plan import is_minute_bar
     from app.backtesting.venue_costs import COST_PROFILES_FIELD
-    from app.performance.strategy_evidence import BACKTEST_RISK_USD, _empty_pool, _judge, _pool, _timeframe
+    from app.performance.strategy_evidence import (
+        BACKTEST_RISK_USD,
+        _empty_pool,
+        _judge,
+        _pool,
+        _timeframe,
+    )
 
     names = sorted({str(name) for name in strategies if str(name)})
     if not names:
