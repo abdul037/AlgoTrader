@@ -69,15 +69,15 @@ def attach(app: Any) -> Any:
         auto_trading=state.auto_trading_service,
         automation=state.automation_service,
     )
-    state.learning_account = account
-    state.workflow_service.learning_account = account
 
     def start_with_the_cadence() -> None:  # after create_app's own startup: no I/O here
         if getattr(state, "scheduler_worker", None) is not None:
             account.start()
 
-    app.add_event_handler("startup", start_with_the_cadence)
-    app.add_event_handler("shutdown", account.stop)
+    app.on_event("shutdown")(account.stop)
+    app.on_event("startup")(start_with_the_cadence)
+    state.learning_account = account  # last: a failure above leaves nothing half-attached
+    state.workflow_service.learning_account = account
     return account
 
 

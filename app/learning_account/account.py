@@ -700,6 +700,9 @@ class LearningAccount:
                 order_status=order.get("status"),
             )
         book = records.save_book(self.store, book, {**book.trades, trade_id: trade})
+        if trade["status"] != "rejected":  # something is live now: reconciled within a minute
+            soon = sent_at + timedelta(seconds=TICK_SECONDS)
+            self.reconcile_at = soon if self.reconcile_at is None else min(self.reconcile_at, soon)
         self.log("learning_account_entry", {key: trade.get(key) for key in (
             "trade_id", "symbol", "strategy_name", "timeframe", "kind", "status", "qty", "quote_price",
             "stop_loss", "take_profit", "client_order_id", "broker_order_id", "reason", "evidence_r",
