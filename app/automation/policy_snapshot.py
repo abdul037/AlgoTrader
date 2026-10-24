@@ -120,4 +120,27 @@ def effective_execution_policy(settings: Any) -> dict[str, Any]:
         "alpaca_expected_account_configured": bool(
             str(_get("alpaca_expected_account_number", "") or "").strip()
         ),
+        **_learning_account_policy(settings),
+    }
+
+
+def _learning_account_policy(settings: Any) -> dict[str, Any]:
+    """The separate paper learning account (app/learning_account): its switch, whether its keys
+    and its expected account are set (booleans, never a value) and the route its settings give."""
+
+    names = ("alpaca_learning_api_key", "alpaca_learning_secret_key")
+    route = "unknown"
+    try:  # the snapshot is never lost to it
+        from app.learning_account.route import settings_route
+
+        route = settings_route(settings)
+    except Exception:  # noqa: BLE001 - observability must not break boot
+        route = "unknown"
+    return {
+        "learning_account_enabled": bool(getattr(settings, "learning_account_enabled", False)),
+        "learning_account_configured": all(str(getattr(settings, name, "") or "").strip() for name in names),
+        "learning_account_expected_account_configured": bool(
+            str(getattr(settings, "alpaca_learning_expected_account_number", "") or "").strip()
+        ),
+        "learning_account_route": route,
     }

@@ -110,6 +110,13 @@ class AppSettings(BaseSettings):
     alpaca_reconciliation_max_attempts: int = 3
     alpaca_reconciliation_retry_backoff_seconds: float = 1.0
     alpaca_require_bracket_orders: bool = True
+    # A separate Alpaca PAPER learning account (operator option A, app/learning_account): fee-band
+    # and lane entries the main gate refuses only for evidence. Inert without the three values
+    # below, which the operator enters in Railway only; they are never logged or echoed.
+    learning_account_enabled: bool = True
+    alpaca_learning_api_key: str = ""
+    alpaca_learning_secret_key: str = ""
+    alpaca_learning_expected_account_number: str = ""
     extended_hours_experiment_enabled: bool = False
     extended_hours_experiment_submit_enabled: bool = False
     extended_hours_whitelist: list[str] = Field(default_factory=lambda: ["SPY", "QQQ"])

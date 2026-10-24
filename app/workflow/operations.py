@@ -137,7 +137,7 @@ def run_scan_task(
             "coverage": getattr(response, "coverage", {}),
         },
     )
-    return WorkflowTaskResponse(
+    result = WorkflowTaskResponse(
         task=task,
         status="ok",
         detail=f"{task.replace('_', ' ').title()} completed.",
@@ -146,6 +146,11 @@ def run_scan_task(
         open_signals=len(service.tracked_signals.list(status="open", limit=500)),
         errors=list(response.errors),
     )
+    with suppress(Exception):  # last, after all main-path work: a copy for the separate paper
+        from app.learning_account import offer  # learning account (no I/O); never fails a scan
+
+        offer(service, response)
+    return result
 
 
 def _rotating_spec_batch(service: Any, *, task: str, timeframes: list[str]) -> dict[str, Any] | None:

@@ -119,6 +119,12 @@ def live_scorecard(request: Request):
         report["paper_only"] = paper_only_report(db)
     except Exception:  # noqa: BLE001 - a report section never takes the scorecard down
         report["paper_only"] = {"error": "paper_only_report_failed"}
+    try:  # the separate Alpaca paper learning account (option A): its own book, never eToro
+        from app.learning_account.report import learning_account_report
+
+        report["learning_account"] = learning_account_report(state, settings, app_state=request.app.state)
+    except Exception:  # noqa: BLE001 - a report section never takes the scorecard down
+        report["learning_account"] = {"error": "learning_account_report_failed"}
     return report
 
 

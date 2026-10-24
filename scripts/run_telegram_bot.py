@@ -38,10 +38,17 @@ def main() -> None:
     print(f"Alert symbols: {settings.telegram_alert_symbols}")
     print("Press Ctrl+C to stop.")
 
+    # This process runs the cadence in polling mode, so the separate paper learning account's
+    # thread runs here too (app/learning_account); it stops when the bot does.
+    from app.learning_account import run_learning_account_here
+
+    stop_learning_account = run_learning_account_here(app)
     try:
         app.state.telegram_command_service.run_forever()
     except KeyboardInterrupt:
         print("\nTelegram polling bot stopped.")
+    finally:
+        stop_learning_account()
 
 
 if __name__ == "__main__":
