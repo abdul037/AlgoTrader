@@ -1,0 +1,2507 @@
+{
+ "alert_history": [],
+ "approvals": [
+  {
+   "approved_by": "paper_auto",
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "decision_notes": "Paper-only auto-approved by safety policy",
+   "executed_at": "2026-10-26T14:00:00+00:00",
+   "execution_id": "exec_000000000006",
+   "expires_at": "2026-10-26T18:00:00+00:00",
+   "id": "prop_000000000002",
+   "notes": "Auto-created from swing_scan; Telegram approval is required before execution.",
+   "order_json": "{\"symbol\":\"NVDA\",\"side\":\"buy\",\"amount_usd\":10000.0,\"leverage\":1,\"proposed_price\":120.0,\"stop_loss\":116.4,\"take_profit\":127.2,\"asset_class\":\"equity\",\"broker_symbol\":\"NVDA\",\"strategy_name\":\"inside_bar_narrow_range_breakout\",\"rationale\":\"inside_bar_narrow_range_breakout setup on 1d\",\"metadata\":{\"alert_eligible\":true,\"backtest_validated\":true,\"signal_classification\":\"strict_valid\",\"timeframe\":\"1d\",\"source\":\"scanner_strategy\",\"planner\":{\"timing_label\":\"immediate\"},\"sizing\":{\"sizing_mode\":\"risk_based\",\"amount_usd\":10000.0,\"uncapped_amount_usd\":32666.67,\"notional_cap_usd\":10000.0,\"capped\":true,\"risk_pct\":0.98,\"risk_budget_usd\":980.0,\"effective_risk_usd\":300.0,\"stop_distance_pct\":3.0,\"equity_usd\":100000.0},\"proposal_quality\":\"strict_valid\",\"proposal_source\":\"scanner_strategy\",\"proposal_origin\":\"swing_scan\",\"auto_approval_tier\":\"tier2_strict_valid\",\"supervised_approval_required\":false}}",
+   "signal_json": null,
+   "status": "executed",
+   "strategy_name": "inside_bar_narrow_range_breakout",
+   "symbol": "NVDA",
+   "updated_at": "2026-10-26T14:00:00+00:00"
+  },
+  {
+   "approved_by": "paper_auto",
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "decision_notes": "Paper-only auto-approved by safety policy",
+   "executed_at": "2026-10-26T14:00:00+00:00",
+   "execution_id": "exec_00000000000d",
+   "expires_at": "2026-10-26T18:00:00+00:00",
+   "id": "prop_000000000009",
+   "notes": "Auto-created from swing_scan; Telegram approval is required before execution.",
+   "order_json": "{\"symbol\":\"JPM\",\"side\":\"buy\",\"amount_usd\":10000.0,\"leverage\":1,\"proposed_price\":200.0,\"stop_loss\":194.0,\"take_profit\":212.0,\"asset_class\":\"equity\",\"broker_symbol\":\"JPM\",\"strategy_name\":\"momentum_breakout\",\"rationale\":\"momentum_breakout setup on 1d\",\"metadata\":{\"alert_eligible\":true,\"backtest_validated\":true,\"signal_classification\":\"strict_valid\",\"timeframe\":\"1d\",\"source\":\"scanner_strategy\",\"planner\":{\"timing_label\":\"immediate\"},\"sizing\":{\"sizing_mode\":\"risk_based\",\"amount_usd\":10000.0,\"uncapped_amount_usd\":32666.67,\"notional_cap_usd\":10000.0,\"capped\":true,\"risk_pct\":0.98,\"risk_budget_usd\":980.0,\"effective_risk_usd\":300.0,\"stop_distance_pct\":3.0,\"equity_usd\":100000.0},\"proposal_quality\":\"strict_valid\",\"proposal_source\":\"scanner_strategy\",\"proposal_origin\":\"swing_scan\",\"auto_approval_tier\":\"tier2_strict_valid\",\"supervised_approval_required\":false,\"paper_only\":true,\"paper_only_reason\":\"oos_only\"}}",
+   "signal_json": null,
+   "status": "executed",
+   "strategy_name": "momentum_breakout",
+   "symbol": "JPM",
+   "updated_at": "2026-10-26T14:00:00+00:00"
+  },
+  {
+   "approved_by": "paper_auto",
+   "created_at": "2026-10-26T14:02:00+00:00",
+   "decision_notes": "Paper-only auto-approved by safety policy",
+   "executed_at": "2026-10-26T14:02:00+00:00",
+   "execution_id": "exec_000000000014",
+   "expires_at": "2026-10-26T18:02:00+00:00",
+   "id": "prop_000000000010",
+   "notes": "Auto-created from intraday_scan; Telegram approval is required before execution.",
+   "order_json": "{\"symbol\":\"UNH\",\"side\":\"buy\",\"amount_usd\":10000.0,\"leverage\":1,\"proposed_price\":300.0,\"stop_loss\":291.0,\"take_profit\":318.0,\"asset_class\":\"equity\",\"broker_symbol\":\"UNH\",\"strategy_name\":\"vwap_reclaim\",\"rationale\":\"vwap_reclaim setup on 5m\",\"metadata\":{\"alert_eligible\":true,\"backtest_validated\":true,\"signal_classification\":\"strict_valid\",\"timeframe\":\"5m\",\"source\":\"scanner_strategy\",\"planner\":{\"timing_label\":\"immediate\"},\"sizing\":{\"sizing_mode\":\"risk_based\",\"amount_usd\":10000.0,\"uncapped_amount_usd\":32666.67,\"notional_cap_usd\":10000.0,\"capped\":true,\"risk_pct\":0.98,\"risk_budget_usd\":980.0,\"effective_risk_usd\":300.0,\"stop_distance_pct\":3.0,\"equity_usd\":100000.0},\"proposal_quality\":\"strict_valid\",\"proposal_source\":\"scanner_strategy\",\"proposal_origin\":\"intraday_scan\",\"auto_approval_tier\":\"tier2_strict_valid\",\"supervised_approval_required\":false,\"paper_only\":true,\"paper_only_reason\":\"oos_only\"}}",
+   "signal_json": null,
+   "status": "executed",
+   "strategy_name": "vwap_reclaim",
+   "symbol": "UNH",
+   "updated_at": "2026-10-26T14:02:00+00:00"
+  },
+  {
+   "approved_by": "paper_auto",
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "decision_notes": "Paper-only auto-approved by safety policy",
+   "executed_at": "2026-10-26T14:05:00+00:00",
+   "execution_id": "exec_00000000001b",
+   "expires_at": "2026-10-26T18:05:00+00:00",
+   "id": "prop_000000000017",
+   "notes": "Auto-created from swing_scan; Telegram approval is required before execution.",
+   "order_json": "{\"symbol\":\"XOM\",\"side\":\"buy\",\"amount_usd\":10000.0,\"leverage\":1,\"proposed_price\":110.0,\"stop_loss\":106.7,\"take_profit\":116.6,\"asset_class\":\"equity\",\"broker_symbol\":\"XOM\",\"strategy_name\":\"ema_trend_stack\",\"rationale\":\"ema_trend_stack setup on 1h\",\"metadata\":{\"alert_eligible\":true,\"backtest_validated\":true,\"signal_classification\":\"strict_valid\",\"timeframe\":\"1h\",\"source\":\"scanner_strategy\",\"planner\":{\"timing_label\":\"immediate\"},\"sizing\":{\"sizing_mode\":\"risk_based\",\"amount_usd\":10000.0,\"uncapped_amount_usd\":32666.67,\"notional_cap_usd\":10000.0,\"capped\":true,\"risk_pct\":0.98,\"risk_budget_usd\":980.0,\"effective_risk_usd\":300.0,\"stop_distance_pct\":3.0,\"equity_usd\":100000.0},\"proposal_quality\":\"strict_valid\",\"proposal_source\":\"scanner_strategy\",\"proposal_origin\":\"swing_scan\",\"auto_approval_tier\":\"tier2_strict_valid\",\"supervised_approval_required\":false,\"paper_only\":true,\"paper_only_reason\":\"oos_only\"}}",
+   "signal_json": null,
+   "status": "executed",
+   "strategy_name": "ema_trend_stack",
+   "symbol": "XOM",
+   "updated_at": "2026-10-26T14:05:00+00:00"
+  }
+ ],
+ "backtests": [
+  {
+   "completed_at": "2026-10-25T14:00:00+00:00",
+   "file_path": "alpaca:1d:SPY:walk_forward_oos",
+   "id": "bt-inside_bar_narrow_range_breakout-1d-SPY",
+   "metrics_json": "{\"number_of_trades\": 30, \"expectancy_usd\": 6.0, \"holdout_trades\": 8, \"holdout_expectancy_usd\": 4.0, \"out_of_sample\": true, \"fold_count\": 9, \"etoro_fees_usd\": 60.0, \"holdout_etoro_fees_usd\": 16.0}",
+   "started_at": "2026-10-25T14:00:00+00:00",
+   "strategy_name": "inside_bar_narrow_range_breakout",
+   "symbol": "SPY",
+   "trades_json": "[]"
+  },
+  {
+   "completed_at": "2026-10-25T14:00:00+00:00",
+   "file_path": "alpaca:1d:SPY:walk_forward_oos",
+   "id": "bt-momentum_breakout-1d-SPY",
+   "metrics_json": "{\"number_of_trades\": 30, \"expectancy_usd\": 5.0, \"holdout_trades\": 8, \"holdout_expectancy_usd\": -3.0, \"out_of_sample\": true, \"fold_count\": 9, \"etoro_fees_usd\": 60.0, \"holdout_etoro_fees_usd\": 16.0}",
+   "started_at": "2026-10-25T14:00:00+00:00",
+   "strategy_name": "momentum_breakout",
+   "symbol": "SPY",
+   "trades_json": "[]"
+  },
+  {
+   "completed_at": "2026-10-25T14:00:00+00:00",
+   "file_path": "alpaca:1d:SPY:walk_forward_oos",
+   "id": "bt-ma_crossover-1d-SPY",
+   "metrics_json": "{\"number_of_trades\": 30, \"expectancy_usd\": -0.5, \"holdout_trades\": 8, \"holdout_expectancy_usd\": -1.0, \"out_of_sample\": true, \"fold_count\": 9, \"etoro_fees_usd\": 60.0, \"holdout_etoro_fees_usd\": 16.0}",
+   "started_at": "2026-10-25T14:00:00+00:00",
+   "strategy_name": "ma_crossover",
+   "symbol": "SPY",
+   "trades_json": "[]"
+  },
+  {
+   "completed_at": "2026-10-25T14:00:00+00:00",
+   "file_path": "alpaca:1d:SPY:walk_forward_oos",
+   "id": "bt-trend_following-1d-SPY",
+   "metrics_json": "{\"number_of_trades\": 30, \"expectancy_usd\": -3.0, \"holdout_trades\": 8, \"holdout_expectancy_usd\": -2.0, \"out_of_sample\": true, \"fold_count\": 9, \"etoro_fees_usd\": 60.0, \"holdout_etoro_fees_usd\": 16.0}",
+   "started_at": "2026-10-25T14:00:00+00:00",
+   "strategy_name": "trend_following",
+   "symbol": "SPY",
+   "trades_json": "[]"
+  },
+  {
+   "completed_at": "2026-10-25T14:00:00+00:00",
+   "file_path": "alpaca:1d:SPY:walk_forward_oos",
+   "id": "bt-mean_reversion-1d-SPY",
+   "metrics_json": "{\"number_of_trades\": 30, \"expectancy_usd\": -9.0, \"holdout_trades\": 8, \"holdout_expectancy_usd\": -5.0, \"out_of_sample\": true, \"fold_count\": 9, \"etoro_fees_usd\": 60.0, \"holdout_etoro_fees_usd\": 16.0}",
+   "started_at": "2026-10-25T14:00:00+00:00",
+   "strategy_name": "mean_reversion",
+   "symbol": "SPY",
+   "trades_json": "[]"
+  },
+  {
+   "completed_at": "2026-10-25T14:00:00+00:00",
+   "file_path": "alpaca:1h:SPY:walk_forward_oos",
+   "id": "bt-ema_trend_stack-1h-SPY",
+   "metrics_json": "{\"number_of_trades\": 30, \"expectancy_usd\": 4.0, \"holdout_trades\": 3, \"holdout_expectancy_usd\": 6.0, \"out_of_sample\": true, \"fold_count\": 9, \"etoro_fees_usd\": 60.0, \"holdout_etoro_fees_usd\": 6.0}",
+   "started_at": "2026-10-25T14:00:00+00:00",
+   "strategy_name": "ema_trend_stack",
+   "symbol": "SPY",
+   "trades_json": "[]"
+  },
+  {
+   "completed_at": "2026-10-25T14:00:00+00:00",
+   "file_path": "alpaca:15m:SPY:walk_forward_oos",
+   "id": "bt-rsi_reversal-15m-SPY",
+   "metrics_json": "{\"number_of_trades\": 30, \"expectancy_usd\": 2.0, \"holdout_trades\": 8, \"holdout_expectancy_usd\": 1.0, \"out_of_sample\": true, \"fold_count\": 9, \"cost_profiles\": {\"alpaca\": {\"number_of_trades\": 30, \"expectancy_usd\": 3.0, \"holdout_trades\": 8, \"holdout_expectancy_usd\": 2.0}, \"stress\": {\"number_of_trades\": 30, \"expectancy_usd\": -1.0, \"holdout_trades\": 8, \"holdout_expectancy_usd\": -1.0}}, \"etoro_fees_usd\": 60.0, \"holdout_etoro_fees_usd\": 16.0}",
+   "started_at": "2026-10-25T14:00:00+00:00",
+   "strategy_name": "rsi_reversal",
+   "symbol": "SPY",
+   "trades_json": "[]"
+  },
+  {
+   "completed_at": "2026-10-25T14:00:00+00:00",
+   "file_path": "alpaca:5m:SPY:walk_forward_oos",
+   "id": "bt-vwap_reclaim-5m-SPY",
+   "metrics_json": "{\"number_of_trades\": 30, \"expectancy_usd\": 3.0, \"holdout_trades\": 8, \"holdout_expectancy_usd\": -1.0, \"out_of_sample\": true, \"fold_count\": 9, \"cost_profiles\": {\"alpaca\": {\"number_of_trades\": 30, \"expectancy_usd\": 4.0, \"holdout_trades\": 8, \"holdout_expectancy_usd\": -0.5}, \"stress\": {\"number_of_trades\": 30, \"expectancy_usd\": 1.0, \"holdout_trades\": 8, \"holdout_expectancy_usd\": -2.0}}, \"etoro_fees_usd\": 60.0, \"holdout_etoro_fees_usd\": 16.0}",
+   "started_at": "2026-10-25T14:00:00+00:00",
+   "strategy_name": "vwap_reclaim",
+   "symbol": "SPY",
+   "trades_json": "[]"
+  },
+  {
+   "completed_at": "2026-10-25T14:00:00+00:00",
+   "file_path": "alpaca:1d:QQQ:walk_forward_oos",
+   "id": "bt-inside_bar_narrow_range_breakout-1d-QQQ",
+   "metrics_json": "{\"number_of_trades\": 30, \"expectancy_usd\": 6.0, \"holdout_trades\": 8, \"holdout_expectancy_usd\": 4.0, \"out_of_sample\": true, \"fold_count\": 9, \"etoro_fees_usd\": 60.0, \"holdout_etoro_fees_usd\": 16.0}",
+   "started_at": "2026-10-25T14:00:00+00:00",
+   "strategy_name": "inside_bar_narrow_range_breakout",
+   "symbol": "QQQ",
+   "trades_json": "[]"
+  },
+  {
+   "completed_at": "2026-10-25T14:00:00+00:00",
+   "file_path": "alpaca:1d:QQQ:walk_forward_oos",
+   "id": "bt-momentum_breakout-1d-QQQ",
+   "metrics_json": "{\"number_of_trades\": 30, \"expectancy_usd\": 5.0, \"holdout_trades\": 8, \"holdout_expectancy_usd\": -3.0, \"out_of_sample\": true, \"fold_count\": 9, \"etoro_fees_usd\": 60.0, \"holdout_etoro_fees_usd\": 16.0}",
+   "started_at": "2026-10-25T14:00:00+00:00",
+   "strategy_name": "momentum_breakout",
+   "symbol": "QQQ",
+   "trades_json": "[]"
+  },
+  {
+   "completed_at": "2026-10-25T14:00:00+00:00",
+   "file_path": "alpaca:1d:QQQ:walk_forward_oos",
+   "id": "bt-ma_crossover-1d-QQQ",
+   "metrics_json": "{\"number_of_trades\": 30, \"expectancy_usd\": -0.5, \"holdout_trades\": 8, \"holdout_expectancy_usd\": -1.0, \"out_of_sample\": true, \"fold_count\": 9, \"etoro_fees_usd\": 60.0, \"holdout_etoro_fees_usd\": 16.0}",
+   "started_at": "2026-10-25T14:00:00+00:00",
+   "strategy_name": "ma_crossover",
+   "symbol": "QQQ",
+   "trades_json": "[]"
+  },
+  {
+   "completed_at": "2026-10-25T14:00:00+00:00",
+   "file_path": "alpaca:1d:QQQ:walk_forward_oos",
+   "id": "bt-trend_following-1d-QQQ",
+   "metrics_json": "{\"number_of_trades\": 30, \"expectancy_usd\": -3.0, \"holdout_trades\": 8, \"holdout_expectancy_usd\": -2.0, \"out_of_sample\": true, \"fold_count\": 9, \"etoro_fees_usd\": 60.0, \"holdout_etoro_fees_usd\": 16.0}",
+   "started_at": "2026-10-25T14:00:00+00:00",
+   "strategy_name": "trend_following",
+   "symbol": "QQQ",
+   "trades_json": "[]"
+  },
+  {
+   "completed_at": "2026-10-25T14:00:00+00:00",
+   "file_path": "alpaca:1d:QQQ:walk_forward_oos",
+   "id": "bt-mean_reversion-1d-QQQ",
+   "metrics_json": "{\"number_of_trades\": 30, \"expectancy_usd\": -9.0, \"holdout_trades\": 8, \"holdout_expectancy_usd\": -5.0, \"out_of_sample\": true, \"fold_count\": 9, \"etoro_fees_usd\": 60.0, \"holdout_etoro_fees_usd\": 16.0}",
+   "started_at": "2026-10-25T14:00:00+00:00",
+   "strategy_name": "mean_reversion",
+   "symbol": "QQQ",
+   "trades_json": "[]"
+  },
+  {
+   "completed_at": "2026-10-25T14:00:00+00:00",
+   "file_path": "alpaca:1h:QQQ:walk_forward_oos",
+   "id": "bt-ema_trend_stack-1h-QQQ",
+   "metrics_json": "{\"number_of_trades\": 30, \"expectancy_usd\": 4.0, \"holdout_trades\": 3, \"holdout_expectancy_usd\": 6.0, \"out_of_sample\": true, \"fold_count\": 9, \"etoro_fees_usd\": 60.0, \"holdout_etoro_fees_usd\": 6.0}",
+   "started_at": "2026-10-25T14:00:00+00:00",
+   "strategy_name": "ema_trend_stack",
+   "symbol": "QQQ",
+   "trades_json": "[]"
+  },
+  {
+   "completed_at": "2026-10-25T14:00:00+00:00",
+   "file_path": "alpaca:15m:QQQ:walk_forward_oos",
+   "id": "bt-rsi_reversal-15m-QQQ",
+   "metrics_json": "{\"number_of_trades\": 30, \"expectancy_usd\": 2.0, \"holdout_trades\": 8, \"holdout_expectancy_usd\": 1.0, \"out_of_sample\": true, \"fold_count\": 9, \"cost_profiles\": {\"alpaca\": {\"number_of_trades\": 30, \"expectancy_usd\": 3.0, \"holdout_trades\": 8, \"holdout_expectancy_usd\": 2.0}, \"stress\": {\"number_of_trades\": 30, \"expectancy_usd\": -1.0, \"holdout_trades\": 8, \"holdout_expectancy_usd\": -1.0}}, \"etoro_fees_usd\": 60.0, \"holdout_etoro_fees_usd\": 16.0}",
+   "started_at": "2026-10-25T14:00:00+00:00",
+   "strategy_name": "rsi_reversal",
+   "symbol": "QQQ",
+   "trades_json": "[]"
+  },
+  {
+   "completed_at": "2026-10-25T14:00:00+00:00",
+   "file_path": "alpaca:5m:QQQ:walk_forward_oos",
+   "id": "bt-vwap_reclaim-5m-QQQ",
+   "metrics_json": "{\"number_of_trades\": 30, \"expectancy_usd\": 3.0, \"holdout_trades\": 8, \"holdout_expectancy_usd\": -1.0, \"out_of_sample\": true, \"fold_count\": 9, \"cost_profiles\": {\"alpaca\": {\"number_of_trades\": 30, \"expectancy_usd\": 4.0, \"holdout_trades\": 8, \"holdout_expectancy_usd\": -0.5}, \"stress\": {\"number_of_trades\": 30, \"expectancy_usd\": 1.0, \"holdout_trades\": 8, \"holdout_expectancy_usd\": -2.0}}, \"etoro_fees_usd\": 60.0, \"holdout_etoro_fees_usd\": 16.0}",
+   "started_at": "2026-10-25T14:00:00+00:00",
+   "strategy_name": "vwap_reclaim",
+   "symbol": "QQQ",
+   "trades_json": "[]"
+  }
+ ],
+ "broker_order_snapshots": [],
+ "broker_position_snapshots": [
+  {
+   "account_number": "PA-MAIN",
+   "active": 1,
+   "average_price": 200.0,
+   "created_at": "2026-10-26T14:36:00+00:00",
+   "market_value": 10000.0,
+   "payload_json": "{\"symbol\": \"JPM\", \"position_id\": null, \"instrument_id\": null, \"is_buy\": true, \"leverage\": 1, \"quantity\": 50.0, \"average_price\": 200.0, \"market_value\": 10000.0, \"unrealized_pnl\": 0.0}",
+   "quantity": 50.0,
+   "symbol": "JPM",
+   "unrealized_pnl": 0.0,
+   "updated_at": "2026-10-26T14:36:00+00:00"
+  },
+  {
+   "account_number": "PA-MAIN",
+   "active": 1,
+   "average_price": 120.0,
+   "created_at": "2026-10-26T14:36:00+00:00",
+   "market_value": 9960.0,
+   "payload_json": "{\"symbol\": \"NVDA\", \"position_id\": null, \"instrument_id\": null, \"is_buy\": true, \"leverage\": 1, \"quantity\": 83.0, \"average_price\": 120.0, \"market_value\": 9960.0, \"unrealized_pnl\": 0.0}",
+   "quantity": 83.0,
+   "symbol": "NVDA",
+   "unrealized_pnl": 0.0,
+   "updated_at": "2026-10-26T14:36:00+00:00"
+  },
+  {
+   "account_number": "PA-MAIN",
+   "active": 1,
+   "average_price": 300.0,
+   "created_at": "2026-10-26T14:36:00+00:00",
+   "market_value": 9900.0,
+   "payload_json": "{\"symbol\": \"UNH\", \"position_id\": null, \"instrument_id\": null, \"is_buy\": true, \"leverage\": 1, \"quantity\": 33.0, \"average_price\": 300.0, \"market_value\": 9900.0, \"unrealized_pnl\": 0.0}",
+   "quantity": 33.0,
+   "symbol": "UNH",
+   "unrealized_pnl": 0.0,
+   "updated_at": "2026-10-26T14:36:00+00:00"
+  },
+  {
+   "account_number": "PA-MAIN",
+   "active": 1,
+   "average_price": 110.0,
+   "created_at": "2026-10-26T14:36:00+00:00",
+   "market_value": 9900.0,
+   "payload_json": "{\"symbol\": \"XOM\", \"position_id\": null, \"instrument_id\": null, \"is_buy\": true, \"leverage\": 1, \"quantity\": 90.0, \"average_price\": 110.0, \"market_value\": 9900.0, \"unrealized_pnl\": 0.0}",
+   "quantity": 90.0,
+   "symbol": "XOM",
+   "unrealized_pnl": 0.0,
+   "updated_at": "2026-10-26T14:36:00+00:00"
+  }
+ ],
+ "execution_queue": [
+  {
+   "approval_required": 1,
+   "client_order_id": "9e46be9107d85602bdf9b76caf4a0261",
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "executed_at": "2026-10-26T14:00:00+00:00",
+   "id": "queue_000000000003",
+   "latest_quote_price": 120.0,
+   "latest_quote_timestamp": "2026-10-26T14:00:00+00:00",
+   "mode": "paper",
+   "payload_json": "{\"order\": {\"symbol\": \"NVDA\", \"side\": \"buy\", \"amount_usd\": 10000.0, \"leverage\": 1, \"proposed_price\": 120.0, \"stop_loss\": 116.4, \"take_profit\": 127.2, \"asset_class\": \"equity\", \"broker_symbol\": \"NVDA\", \"strategy_name\": \"inside_bar_narrow_range_breakout\", \"rationale\": \"inside_bar_narrow_range_breakout setup on 1d\", \"metadata\": {\"alert_eligible\": true, \"backtest_validated\": true, \"signal_classification\": \"strict_valid\", \"timeframe\": \"1d\", \"source\": \"scanner_strategy\", \"planner\": {\"timing_label\": \"immediate\"}, \"sizing\": {\"sizing_mode\": \"risk_based\", \"amount_usd\": 10000.0, \"uncapped_amount_usd\": 32666.67, \"notional_cap_usd\": 10000.0, \"capped\": true, \"risk_pct\": 0.98, \"risk_budget_usd\": 980.0, \"effective_risk_usd\": 300.0, \"stop_distance_pct\": 3.0, \"equity_usd\": 100000.0}, \"proposal_quality\": \"strict_valid\", \"proposal_source\": \"scanner_strategy\", \"proposal_origin\": \"swing_scan\", \"auto_approval_tier\": \"tier2_strict_valid\", \"supervised_approval_required\": false}}, \"signal\": null, \"execution_id\": \"exec_000000000006\"}",
+   "proposal_id": "prop_000000000002",
+   "ready_for_execution": 1,
+   "requested_entry_price": 120.0,
+   "signal_id": null,
+   "status": "executed",
+   "strategy_name": "inside_bar_narrow_range_breakout",
+   "symbol": "NVDA",
+   "timeframe": "1d",
+   "updated_at": "2026-10-26T14:00:00+00:00",
+   "validation_reason": "ready"
+  },
+  {
+   "approval_required": 1,
+   "client_order_id": "c814b225ac4495f36538f4cb04657dd7",
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "executed_at": "2026-10-26T14:00:00+00:00",
+   "id": "queue_00000000000a",
+   "latest_quote_price": 200.0,
+   "latest_quote_timestamp": "2026-10-26T14:00:00+00:00",
+   "mode": "paper",
+   "payload_json": "{\"order\": {\"symbol\": \"JPM\", \"side\": \"buy\", \"amount_usd\": 10000.0, \"leverage\": 1, \"proposed_price\": 200.0, \"stop_loss\": 194.0, \"take_profit\": 212.0, \"asset_class\": \"equity\", \"broker_symbol\": \"JPM\", \"strategy_name\": \"momentum_breakout\", \"rationale\": \"momentum_breakout setup on 1d\", \"metadata\": {\"alert_eligible\": true, \"backtest_validated\": true, \"signal_classification\": \"strict_valid\", \"timeframe\": \"1d\", \"source\": \"scanner_strategy\", \"planner\": {\"timing_label\": \"immediate\"}, \"sizing\": {\"sizing_mode\": \"risk_based\", \"amount_usd\": 10000.0, \"uncapped_amount_usd\": 32666.67, \"notional_cap_usd\": 10000.0, \"capped\": true, \"risk_pct\": 0.98, \"risk_budget_usd\": 980.0, \"effective_risk_usd\": 300.0, \"stop_distance_pct\": 3.0, \"equity_usd\": 100000.0}, \"proposal_quality\": \"strict_valid\", \"proposal_source\": \"scanner_strategy\", \"proposal_origin\": \"swing_scan\", \"auto_approval_tier\": \"tier2_strict_valid\", \"supervised_approval_required\": false, \"paper_only\": true, \"paper_only_reason\": \"oos_only\"}}, \"signal\": null, \"execution_id\": \"exec_00000000000d\"}",
+   "proposal_id": "prop_000000000009",
+   "ready_for_execution": 1,
+   "requested_entry_price": 200.0,
+   "signal_id": null,
+   "status": "executed",
+   "strategy_name": "momentum_breakout",
+   "symbol": "JPM",
+   "timeframe": "1d",
+   "updated_at": "2026-10-26T14:00:00+00:00",
+   "validation_reason": "ready"
+  },
+  {
+   "approval_required": 1,
+   "client_order_id": "725581b07525d08ffdca5ca5a241b558",
+   "created_at": "2026-10-26T14:02:00+00:00",
+   "executed_at": "2026-10-26T14:02:00+00:00",
+   "id": "queue_000000000011",
+   "latest_quote_price": 300.0,
+   "latest_quote_timestamp": "2026-10-26T14:02:00+00:00",
+   "mode": "paper",
+   "payload_json": "{\"order\": {\"symbol\": \"UNH\", \"side\": \"buy\", \"amount_usd\": 10000.0, \"leverage\": 1, \"proposed_price\": 300.0, \"stop_loss\": 291.0, \"take_profit\": 318.0, \"asset_class\": \"equity\", \"broker_symbol\": \"UNH\", \"strategy_name\": \"vwap_reclaim\", \"rationale\": \"vwap_reclaim setup on 5m\", \"metadata\": {\"alert_eligible\": true, \"backtest_validated\": true, \"signal_classification\": \"strict_valid\", \"timeframe\": \"5m\", \"source\": \"scanner_strategy\", \"planner\": {\"timing_label\": \"immediate\"}, \"sizing\": {\"sizing_mode\": \"risk_based\", \"amount_usd\": 10000.0, \"uncapped_amount_usd\": 32666.67, \"notional_cap_usd\": 10000.0, \"capped\": true, \"risk_pct\": 0.98, \"risk_budget_usd\": 980.0, \"effective_risk_usd\": 300.0, \"stop_distance_pct\": 3.0, \"equity_usd\": 100000.0}, \"proposal_quality\": \"strict_valid\", \"proposal_source\": \"scanner_strategy\", \"proposal_origin\": \"intraday_scan\", \"auto_approval_tier\": \"tier2_strict_valid\", \"supervised_approval_required\": false, \"paper_only\": true, \"paper_only_reason\": \"oos_only\"}}, \"signal\": null, \"execution_id\": \"exec_000000000014\"}",
+   "proposal_id": "prop_000000000010",
+   "ready_for_execution": 1,
+   "requested_entry_price": 300.0,
+   "signal_id": null,
+   "status": "executed",
+   "strategy_name": "vwap_reclaim",
+   "symbol": "UNH",
+   "timeframe": "5m",
+   "updated_at": "2026-10-26T14:02:00+00:00",
+   "validation_reason": "ready"
+  },
+  {
+   "approval_required": 1,
+   "client_order_id": "c2eb3e10dfb4f5d224e05f7374ef4ec0",
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "executed_at": "2026-10-26T14:05:00+00:00",
+   "id": "queue_000000000018",
+   "latest_quote_price": 110.0,
+   "latest_quote_timestamp": "2026-10-26T14:05:00+00:00",
+   "mode": "paper",
+   "payload_json": "{\"order\": {\"symbol\": \"XOM\", \"side\": \"buy\", \"amount_usd\": 10000.0, \"leverage\": 1, \"proposed_price\": 110.0, \"stop_loss\": 106.7, \"take_profit\": 116.6, \"asset_class\": \"equity\", \"broker_symbol\": \"XOM\", \"strategy_name\": \"ema_trend_stack\", \"rationale\": \"ema_trend_stack setup on 1h\", \"metadata\": {\"alert_eligible\": true, \"backtest_validated\": true, \"signal_classification\": \"strict_valid\", \"timeframe\": \"1h\", \"source\": \"scanner_strategy\", \"planner\": {\"timing_label\": \"immediate\"}, \"sizing\": {\"sizing_mode\": \"risk_based\", \"amount_usd\": 10000.0, \"uncapped_amount_usd\": 32666.67, \"notional_cap_usd\": 10000.0, \"capped\": true, \"risk_pct\": 0.98, \"risk_budget_usd\": 980.0, \"effective_risk_usd\": 300.0, \"stop_distance_pct\": 3.0, \"equity_usd\": 100000.0}, \"proposal_quality\": \"strict_valid\", \"proposal_source\": \"scanner_strategy\", \"proposal_origin\": \"swing_scan\", \"auto_approval_tier\": \"tier2_strict_valid\", \"supervised_approval_required\": false, \"paper_only\": true, \"paper_only_reason\": \"oos_only\"}}, \"signal\": null, \"execution_id\": \"exec_00000000001b\"}",
+   "proposal_id": "prop_000000000017",
+   "ready_for_execution": 1,
+   "requested_entry_price": 110.0,
+   "signal_id": null,
+   "status": "executed",
+   "strategy_name": "ema_trend_stack",
+   "symbol": "XOM",
+   "timeframe": "1h",
+   "updated_at": "2026-10-26T14:05:00+00:00",
+   "validation_reason": "ready"
+  }
+ ],
+ "executions": [
+  {
+   "broker_order_id": "main-1",
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "error_message": null,
+   "id": "exec_000000000006",
+   "mode": "alpaca_paper",
+   "proposal_id": "prop_000000000002",
+   "realized_pnl_usd": 0.0,
+   "request_json": "{\"symbol\": \"NVDA\", \"side\": \"buy\", \"amount_usd\": 10000.0, \"leverage\": 1, \"proposed_price\": 120.0, \"stop_loss\": 116.4, \"take_profit\": 127.2, \"asset_class\": \"equity\", \"broker_symbol\": \"NVDA\", \"strategy_name\": \"inside_bar_narrow_range_breakout\", \"rationale\": \"inside_bar_narrow_range_breakout setup on 1d\", \"metadata\": {\"alert_eligible\": true, \"backtest_validated\": true, \"signal_classification\": \"strict_valid\", \"timeframe\": \"1d\", \"source\": \"scanner_strategy\", \"planner\": {\"timing_label\": \"immediate\"}, \"sizing\": {\"sizing_mode\": \"risk_based\", \"amount_usd\": 10000.0, \"uncapped_amount_usd\": 32666.67, \"notional_cap_usd\": 10000.0, \"capped\": true, \"risk_pct\": 0.98, \"risk_budget_usd\": 980.0, \"effective_risk_usd\": 300.0, \"stop_distance_pct\": 3.0, \"equity_usd\": 100000.0}, \"proposal_quality\": \"strict_valid\", \"proposal_source\": \"scanner_strategy\", \"proposal_origin\": \"swing_scan\", \"auto_approval_tier\": \"tier2_strict_valid\", \"supervised_approval_required\": false}, \"client_order_id\": \"9e46be9107d85602bdf9b76caf4a0261\", \"broker\": \"alpaca\"}",
+   "response_json": "{\"broker\": \"alpaca\", \"broker_execution\": {\"id\": \"exec_000000000005\", \"proposal_id\": \"alpaca:9e46be9107d85602bdf9b76caf4a0261\", \"status\": \"accepted\", \"mode\": \"alpaca_paper\", \"broker_order_id\": \"main-1\", \"strategy_name\": null, \"request_payload\": {}, \"response_payload\": {\"broker_order_id\": \"main-1\", \"client_order_id\": \"9e46be9107d85602bdf9b76caf4a0261\", \"status\": \"accepted\", \"order_class\": \"bracket\", \"legs\": []}, \"error_message\": null, \"realized_pnl_usd\": 0.0, \"created_at\": \"2026-10-26T14:00:00+00:00\", \"updated_at\": \"2026-10-26T14:00:00+00:00\"}}",
+   "status": "submitted",
+   "strategy_name": "inside_bar_narrow_range_breakout",
+   "updated_at": "2026-10-26T14:00:00+00:00"
+  },
+  {
+   "broker_order_id": "main-2",
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "error_message": null,
+   "id": "exec_00000000000d",
+   "mode": "alpaca_paper",
+   "proposal_id": "prop_000000000009",
+   "realized_pnl_usd": 0.0,
+   "request_json": "{\"symbol\": \"JPM\", \"side\": \"buy\", \"amount_usd\": 10000.0, \"leverage\": 1, \"proposed_price\": 200.0, \"stop_loss\": 194.0, \"take_profit\": 212.0, \"asset_class\": \"equity\", \"broker_symbol\": \"JPM\", \"strategy_name\": \"momentum_breakout\", \"rationale\": \"momentum_breakout setup on 1d\", \"metadata\": {\"alert_eligible\": true, \"backtest_validated\": true, \"signal_classification\": \"strict_valid\", \"timeframe\": \"1d\", \"source\": \"scanner_strategy\", \"planner\": {\"timing_label\": \"immediate\"}, \"sizing\": {\"sizing_mode\": \"risk_based\", \"amount_usd\": 10000.0, \"uncapped_amount_usd\": 32666.67, \"notional_cap_usd\": 10000.0, \"capped\": true, \"risk_pct\": 0.98, \"risk_budget_usd\": 980.0, \"effective_risk_usd\": 300.0, \"stop_distance_pct\": 3.0, \"equity_usd\": 100000.0}, \"proposal_quality\": \"strict_valid\", \"proposal_source\": \"scanner_strategy\", \"proposal_origin\": \"swing_scan\", \"auto_approval_tier\": \"tier2_strict_valid\", \"supervised_approval_required\": false, \"paper_only\": true, \"paper_only_reason\": \"oos_only\"}, \"client_order_id\": \"c814b225ac4495f36538f4cb04657dd7\", \"broker\": \"alpaca\"}",
+   "response_json": "{\"broker\": \"alpaca\", \"broker_execution\": {\"id\": \"exec_00000000000c\", \"proposal_id\": \"alpaca:c814b225ac4495f36538f4cb04657dd7\", \"status\": \"accepted\", \"mode\": \"alpaca_paper\", \"broker_order_id\": \"main-2\", \"strategy_name\": null, \"request_payload\": {}, \"response_payload\": {\"broker_order_id\": \"main-2\", \"client_order_id\": \"c814b225ac4495f36538f4cb04657dd7\", \"status\": \"accepted\", \"order_class\": \"bracket\", \"legs\": []}, \"error_message\": null, \"realized_pnl_usd\": 0.0, \"created_at\": \"2026-10-26T14:00:00+00:00\", \"updated_at\": \"2026-10-26T14:00:00+00:00\"}}",
+   "status": "submitted",
+   "strategy_name": "momentum_breakout",
+   "updated_at": "2026-10-26T14:00:00+00:00"
+  },
+  {
+   "broker_order_id": "main-3",
+   "created_at": "2026-10-26T14:02:00+00:00",
+   "error_message": null,
+   "id": "exec_000000000014",
+   "mode": "alpaca_paper",
+   "proposal_id": "prop_000000000010",
+   "realized_pnl_usd": 0.0,
+   "request_json": "{\"symbol\": \"UNH\", \"side\": \"buy\", \"amount_usd\": 10000.0, \"leverage\": 1, \"proposed_price\": 300.0, \"stop_loss\": 291.0, \"take_profit\": 318.0, \"asset_class\": \"equity\", \"broker_symbol\": \"UNH\", \"strategy_name\": \"vwap_reclaim\", \"rationale\": \"vwap_reclaim setup on 5m\", \"metadata\": {\"alert_eligible\": true, \"backtest_validated\": true, \"signal_classification\": \"strict_valid\", \"timeframe\": \"5m\", \"source\": \"scanner_strategy\", \"planner\": {\"timing_label\": \"immediate\"}, \"sizing\": {\"sizing_mode\": \"risk_based\", \"amount_usd\": 10000.0, \"uncapped_amount_usd\": 32666.67, \"notional_cap_usd\": 10000.0, \"capped\": true, \"risk_pct\": 0.98, \"risk_budget_usd\": 980.0, \"effective_risk_usd\": 300.0, \"stop_distance_pct\": 3.0, \"equity_usd\": 100000.0}, \"proposal_quality\": \"strict_valid\", \"proposal_source\": \"scanner_strategy\", \"proposal_origin\": \"intraday_scan\", \"auto_approval_tier\": \"tier2_strict_valid\", \"supervised_approval_required\": false, \"paper_only\": true, \"paper_only_reason\": \"oos_only\"}, \"client_order_id\": \"725581b07525d08ffdca5ca5a241b558\", \"broker\": \"alpaca\"}",
+   "response_json": "{\"broker\": \"alpaca\", \"broker_execution\": {\"id\": \"exec_000000000013\", \"proposal_id\": \"alpaca:725581b07525d08ffdca5ca5a241b558\", \"status\": \"accepted\", \"mode\": \"alpaca_paper\", \"broker_order_id\": \"main-3\", \"strategy_name\": null, \"request_payload\": {}, \"response_payload\": {\"broker_order_id\": \"main-3\", \"client_order_id\": \"725581b07525d08ffdca5ca5a241b558\", \"status\": \"accepted\", \"order_class\": \"bracket\", \"legs\": []}, \"error_message\": null, \"realized_pnl_usd\": 0.0, \"created_at\": \"2026-10-26T14:02:00+00:00\", \"updated_at\": \"2026-10-26T14:02:00+00:00\"}}",
+   "status": "submitted",
+   "strategy_name": "vwap_reclaim",
+   "updated_at": "2026-10-26T14:02:00+00:00"
+  },
+  {
+   "broker_order_id": "main-4",
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "error_message": null,
+   "id": "exec_00000000001b",
+   "mode": "alpaca_paper",
+   "proposal_id": "prop_000000000017",
+   "realized_pnl_usd": 0.0,
+   "request_json": "{\"symbol\": \"XOM\", \"side\": \"buy\", \"amount_usd\": 10000.0, \"leverage\": 1, \"proposed_price\": 110.0, \"stop_loss\": 106.7, \"take_profit\": 116.6, \"asset_class\": \"equity\", \"broker_symbol\": \"XOM\", \"strategy_name\": \"ema_trend_stack\", \"rationale\": \"ema_trend_stack setup on 1h\", \"metadata\": {\"alert_eligible\": true, \"backtest_validated\": true, \"signal_classification\": \"strict_valid\", \"timeframe\": \"1h\", \"source\": \"scanner_strategy\", \"planner\": {\"timing_label\": \"immediate\"}, \"sizing\": {\"sizing_mode\": \"risk_based\", \"amount_usd\": 10000.0, \"uncapped_amount_usd\": 32666.67, \"notional_cap_usd\": 10000.0, \"capped\": true, \"risk_pct\": 0.98, \"risk_budget_usd\": 980.0, \"effective_risk_usd\": 300.0, \"stop_distance_pct\": 3.0, \"equity_usd\": 100000.0}, \"proposal_quality\": \"strict_valid\", \"proposal_source\": \"scanner_strategy\", \"proposal_origin\": \"swing_scan\", \"auto_approval_tier\": \"tier2_strict_valid\", \"supervised_approval_required\": false, \"paper_only\": true, \"paper_only_reason\": \"oos_only\"}, \"client_order_id\": \"c2eb3e10dfb4f5d224e05f7374ef4ec0\", \"broker\": \"alpaca\"}",
+   "response_json": "{\"broker\": \"alpaca\", \"broker_execution\": {\"id\": \"exec_00000000001a\", \"proposal_id\": \"alpaca:c2eb3e10dfb4f5d224e05f7374ef4ec0\", \"status\": \"accepted\", \"mode\": \"alpaca_paper\", \"broker_order_id\": \"main-4\", \"strategy_name\": null, \"request_payload\": {}, \"response_payload\": {\"broker_order_id\": \"main-4\", \"client_order_id\": \"c2eb3e10dfb4f5d224e05f7374ef4ec0\", \"status\": \"accepted\", \"order_class\": \"bracket\", \"legs\": []}, \"error_message\": null, \"realized_pnl_usd\": 0.0, \"created_at\": \"2026-10-26T14:05:00+00:00\", \"updated_at\": \"2026-10-26T14:05:00+00:00\"}}",
+   "status": "submitted",
+   "strategy_name": "ema_trend_stack",
+   "updated_at": "2026-10-26T14:05:00+00:00"
+  }
+ ],
+ "instrument_blacklist": [],
+ "learning_decision_snapshots": [
+  {
+   "accepted": 1,
+   "adjusted_score": 0.0,
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "decision_json": "{\"proposal_id\": \"prop_000000000002\", \"request\": {\"amount_usd\": 10000.0, \"asset_class\": \"equity\", \"broker\": \"alpaca\", \"broker_symbol\": \"NVDA\", \"client_order_id\": \"9e46be9107d85602bdf9b76caf4a0261\", \"leverage\": 1, \"metadata\": {\"alert_eligible\": true, \"auto_approval_tier\": \"tier2_strict_valid\", \"backtest_validated\": true, \"planner\": {\"timing_label\": \"immediate\"}, \"proposal_origin\": \"swing_scan\", \"proposal_quality\": \"strict_valid\", \"proposal_source\": \"scanner_strategy\", \"signal_classification\": \"strict_valid\", \"sizing\": {\"amount_usd\": 10000.0, \"capped\": true, \"effective_risk_usd\": 300.0, \"equity_usd\": 100000.0, \"notional_cap_usd\": 10000.0, \"risk_budget_usd\": 980.0, \"risk_pct\": 0.98, \"sizing_mode\": \"risk_based\", \"stop_distance_pct\": 3.0, \"uncapped_amount_usd\": 32666.67}, \"source\": \"scanner_strategy\", \"supervised_approval_required\": false, \"timeframe\": \"1d\"}, \"proposed_price\": 120.0, \"rationale\": \"inside_bar_narrow_range_breakout setup on 1d\", \"side\": \"buy\", \"stop_loss\": 116.4, \"strategy_name\": \"inside_bar_narrow_range_breakout\", \"symbol\": \"NVDA\", \"take_profit\": 127.2}}",
+   "decision_key": "execution:exec_000000000006",
+   "deterministic_eligible": 1,
+   "deterministic_score": 0.0,
+   "execution_id": "exec_000000000006",
+   "features_json": "{\"alert_eligible\": 1.0, \"amount_usd\": 10000.0, \"backtest_validated\": 1.0, \"leverage\": 1.0, \"proposed_price\": 120.0, \"stop_loss\": 116.4, \"supervised_approval_required\": 0.0, \"take_profit\": 127.2}",
+   "id": "decision_000000000008",
+   "model_version_id": null,
+   "signal_id": null,
+   "stage": "execution",
+   "strategy_name": "inside_bar_narrow_range_breakout",
+   "symbol": "NVDA",
+   "timeframe": "1d"
+  },
+  {
+   "accepted": 1,
+   "adjusted_score": 0.0,
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "decision_json": "{\"proposal_id\": \"prop_000000000009\", \"request\": {\"amount_usd\": 10000.0, \"asset_class\": \"equity\", \"broker\": \"alpaca\", \"broker_symbol\": \"JPM\", \"client_order_id\": \"c814b225ac4495f36538f4cb04657dd7\", \"leverage\": 1, \"metadata\": {\"alert_eligible\": true, \"auto_approval_tier\": \"tier2_strict_valid\", \"backtest_validated\": true, \"paper_only\": true, \"paper_only_reason\": \"oos_only\", \"planner\": {\"timing_label\": \"immediate\"}, \"proposal_origin\": \"swing_scan\", \"proposal_quality\": \"strict_valid\", \"proposal_source\": \"scanner_strategy\", \"signal_classification\": \"strict_valid\", \"sizing\": {\"amount_usd\": 10000.0, \"capped\": true, \"effective_risk_usd\": 300.0, \"equity_usd\": 100000.0, \"notional_cap_usd\": 10000.0, \"risk_budget_usd\": 980.0, \"risk_pct\": 0.98, \"sizing_mode\": \"risk_based\", \"stop_distance_pct\": 3.0, \"uncapped_amount_usd\": 32666.67}, \"source\": \"scanner_strategy\", \"supervised_approval_required\": false, \"timeframe\": \"1d\"}, \"proposed_price\": 200.0, \"rationale\": \"momentum_breakout setup on 1d\", \"side\": \"buy\", \"stop_loss\": 194.0, \"strategy_name\": \"momentum_breakout\", \"symbol\": \"JPM\", \"take_profit\": 212.0}}",
+   "decision_key": "execution:exec_00000000000d",
+   "deterministic_eligible": 1,
+   "deterministic_score": 0.0,
+   "execution_id": "exec_00000000000d",
+   "features_json": "{\"alert_eligible\": 1.0, \"amount_usd\": 10000.0, \"backtest_validated\": 1.0, \"leverage\": 1.0, \"paper_only\": 1.0, \"proposed_price\": 200.0, \"stop_loss\": 194.0, \"supervised_approval_required\": 0.0, \"take_profit\": 212.0}",
+   "id": "decision_00000000000f",
+   "model_version_id": null,
+   "signal_id": null,
+   "stage": "execution",
+   "strategy_name": "momentum_breakout",
+   "symbol": "JPM",
+   "timeframe": "1d"
+  },
+  {
+   "accepted": 1,
+   "adjusted_score": 0.0,
+   "created_at": "2026-10-26T14:02:00+00:00",
+   "decision_json": "{\"proposal_id\": \"prop_000000000010\", \"request\": {\"amount_usd\": 10000.0, \"asset_class\": \"equity\", \"broker\": \"alpaca\", \"broker_symbol\": \"UNH\", \"client_order_id\": \"725581b07525d08ffdca5ca5a241b558\", \"leverage\": 1, \"metadata\": {\"alert_eligible\": true, \"auto_approval_tier\": \"tier2_strict_valid\", \"backtest_validated\": true, \"paper_only\": true, \"paper_only_reason\": \"oos_only\", \"planner\": {\"timing_label\": \"immediate\"}, \"proposal_origin\": \"intraday_scan\", \"proposal_quality\": \"strict_valid\", \"proposal_source\": \"scanner_strategy\", \"signal_classification\": \"strict_valid\", \"sizing\": {\"amount_usd\": 10000.0, \"capped\": true, \"effective_risk_usd\": 300.0, \"equity_usd\": 100000.0, \"notional_cap_usd\": 10000.0, \"risk_budget_usd\": 980.0, \"risk_pct\": 0.98, \"sizing_mode\": \"risk_based\", \"stop_distance_pct\": 3.0, \"uncapped_amount_usd\": 32666.67}, \"source\": \"scanner_strategy\", \"supervised_approval_required\": false, \"timeframe\": \"5m\"}, \"proposed_price\": 300.0, \"rationale\": \"vwap_reclaim setup on 5m\", \"side\": \"buy\", \"stop_loss\": 291.0, \"strategy_name\": \"vwap_reclaim\", \"symbol\": \"UNH\", \"take_profit\": 318.0}}",
+   "decision_key": "execution:exec_000000000014",
+   "deterministic_eligible": 1,
+   "deterministic_score": 0.0,
+   "execution_id": "exec_000000000014",
+   "features_json": "{\"alert_eligible\": 1.0, \"amount_usd\": 10000.0, \"backtest_validated\": 1.0, \"leverage\": 1.0, \"paper_only\": 1.0, \"proposed_price\": 300.0, \"stop_loss\": 291.0, \"supervised_approval_required\": 0.0, \"take_profit\": 318.0}",
+   "id": "decision_000000000016",
+   "model_version_id": null,
+   "signal_id": null,
+   "stage": "execution",
+   "strategy_name": "vwap_reclaim",
+   "symbol": "UNH",
+   "timeframe": "5m"
+  },
+  {
+   "accepted": 1,
+   "adjusted_score": 0.0,
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "decision_json": "{\"proposal_id\": \"prop_000000000017\", \"request\": {\"amount_usd\": 10000.0, \"asset_class\": \"equity\", \"broker\": \"alpaca\", \"broker_symbol\": \"XOM\", \"client_order_id\": \"c2eb3e10dfb4f5d224e05f7374ef4ec0\", \"leverage\": 1, \"metadata\": {\"alert_eligible\": true, \"auto_approval_tier\": \"tier2_strict_valid\", \"backtest_validated\": true, \"paper_only\": true, \"paper_only_reason\": \"oos_only\", \"planner\": {\"timing_label\": \"immediate\"}, \"proposal_origin\": \"swing_scan\", \"proposal_quality\": \"strict_valid\", \"proposal_source\": \"scanner_strategy\", \"signal_classification\": \"strict_valid\", \"sizing\": {\"amount_usd\": 10000.0, \"capped\": true, \"effective_risk_usd\": 300.0, \"equity_usd\": 100000.0, \"notional_cap_usd\": 10000.0, \"risk_budget_usd\": 980.0, \"risk_pct\": 0.98, \"sizing_mode\": \"risk_based\", \"stop_distance_pct\": 3.0, \"uncapped_amount_usd\": 32666.67}, \"source\": \"scanner_strategy\", \"supervised_approval_required\": false, \"timeframe\": \"1h\"}, \"proposed_price\": 110.0, \"rationale\": \"ema_trend_stack setup on 1h\", \"side\": \"buy\", \"stop_loss\": 106.7, \"strategy_name\": \"ema_trend_stack\", \"symbol\": \"XOM\", \"take_profit\": 116.6}}",
+   "decision_key": "execution:exec_00000000001b",
+   "deterministic_eligible": 1,
+   "deterministic_score": 0.0,
+   "execution_id": "exec_00000000001b",
+   "features_json": "{\"alert_eligible\": 1.0, \"amount_usd\": 10000.0, \"backtest_validated\": 1.0, \"leverage\": 1.0, \"paper_only\": 1.0, \"proposed_price\": 110.0, \"stop_loss\": 106.7, \"supervised_approval_required\": 0.0, \"take_profit\": 116.6}",
+   "id": "decision_00000000001d",
+   "model_version_id": null,
+   "signal_id": null,
+   "stage": "execution",
+   "strategy_name": "ema_trend_stack",
+   "symbol": "XOM",
+   "timeframe": "1h"
+  }
+ ],
+ "learning_lifecycle_events": [
+  {
+   "broker_order_id": null,
+   "event_key": "proposal:prop_000000000002:pre_submit_validation:94e32a2bf47bc4d8",
+   "event_type": "pre_submit_validation",
+   "execution_id": null,
+   "id": "lifecycle_000000000004",
+   "occurred_at": "2026-10-26T14:00:00+00:00",
+   "payload_json": "{\"broker\": \"alpaca\", \"quote_price\": 120.0, \"request\": {\"amount_usd\": 10000.0, \"asset_class\": \"equity\", \"broker\": \"alpaca\", \"broker_symbol\": \"NVDA\", \"client_order_id\": \"9e46be9107d85602bdf9b76caf4a0261\", \"leverage\": 1, \"metadata\": {\"alert_eligible\": true, \"auto_approval_tier\": \"tier2_strict_valid\", \"backtest_validated\": true, \"planner\": {\"timing_label\": \"immediate\"}, \"proposal_origin\": \"swing_scan\", \"proposal_quality\": \"strict_valid\", \"proposal_source\": \"scanner_strategy\", \"signal_classification\": \"strict_valid\", \"sizing\": {\"amount_usd\": 10000.0, \"capped\": true, \"effective_risk_usd\": 300.0, \"equity_usd\": 100000.0, \"notional_cap_usd\": 10000.0, \"risk_budget_usd\": 980.0, \"risk_pct\": 0.98, \"sizing_mode\": \"risk_based\", \"stop_distance_pct\": 3.0, \"uncapped_amount_usd\": 32666.67}, \"source\": \"scanner_strategy\", \"supervised_approval_required\": false, \"timeframe\": \"1d\"}, \"proposed_price\": 120.0, \"rationale\": \"inside_bar_narrow_range_breakout setup on 1d\", \"side\": \"buy\", \"stop_loss\": 116.4, \"strategy_name\": \"inside_bar_narrow_range_breakout\", \"symbol\": \"NVDA\", \"take_profit\": 127.2}, \"risk_rechecked\": true}",
+   "proposal_id": "prop_000000000002"
+  },
+  {
+   "broker_order_id": "main-1",
+   "event_key": "execution:exec_000000000006:submitted:2cc47146d8a2daba",
+   "event_type": "submitted",
+   "execution_id": "exec_000000000006",
+   "id": "lifecycle_000000000007",
+   "occurred_at": "2026-10-26T14:00:00+00:00",
+   "payload_json": "{\"realized_pnl_usd\": 0.0, \"request\": {\"amount_usd\": 10000.0, \"asset_class\": \"equity\", \"broker\": \"alpaca\", \"broker_symbol\": \"NVDA\", \"client_order_id\": \"9e46be9107d85602bdf9b76caf4a0261\", \"leverage\": 1, \"metadata\": {\"alert_eligible\": true, \"auto_approval_tier\": \"tier2_strict_valid\", \"backtest_validated\": true, \"planner\": {\"timing_label\": \"immediate\"}, \"proposal_origin\": \"swing_scan\", \"proposal_quality\": \"strict_valid\", \"proposal_source\": \"scanner_strategy\", \"signal_classification\": \"strict_valid\", \"sizing\": {\"amount_usd\": 10000.0, \"capped\": true, \"effective_risk_usd\": 300.0, \"equity_usd\": 100000.0, \"notional_cap_usd\": 10000.0, \"risk_budget_usd\": 980.0, \"risk_pct\": 0.98, \"sizing_mode\": \"risk_based\", \"stop_distance_pct\": 3.0, \"uncapped_amount_usd\": 32666.67}, \"source\": \"scanner_strategy\", \"supervised_approval_required\": false, \"timeframe\": \"1d\"}, \"proposed_price\": 120.0, \"rationale\": \"inside_bar_narrow_range_breakout setup on 1d\", \"side\": \"buy\", \"stop_loss\": 116.4, \"strategy_name\": \"inside_bar_narrow_range_breakout\", \"symbol\": \"NVDA\", \"take_profit\": 127.2}, \"response\": {\"broker\": \"alpaca\", \"broker_execution\": {\"broker_order_id\": \"main-1\", \"created_at\": \"2026-10-26T14:00:00+00:00\", \"error_message\": null, \"id\": \"exec_000000000005\", \"mode\": \"alpaca_paper\", \"proposal_id\": \"alpaca:9e46be9107d85602bdf9b76caf4a0261\", \"realized_pnl_usd\": 0.0, \"request_payload\": {}, \"response_payload\": {\"broker_order_id\": \"main-1\", \"client_order_id\": \"9e46be9107d85602bdf9b76caf4a0261\", \"legs\": [], \"order_class\": \"bracket\", \"status\": \"accepted\"}, \"status\": \"accepted\", \"strategy_name\": null, \"updated_at\": \"2026-10-26T14:00:00+00:00\"}}, \"status\": \"submitted\"}",
+   "proposal_id": "prop_000000000002"
+  },
+  {
+   "broker_order_id": null,
+   "event_key": "proposal:prop_000000000009:pre_submit_validation:80451314ef8722dc",
+   "event_type": "pre_submit_validation",
+   "execution_id": null,
+   "id": "lifecycle_00000000000b",
+   "occurred_at": "2026-10-26T14:00:00+00:00",
+   "payload_json": "{\"broker\": \"alpaca\", \"quote_price\": 200.0, \"request\": {\"amount_usd\": 10000.0, \"asset_class\": \"equity\", \"broker\": \"alpaca\", \"broker_symbol\": \"JPM\", \"client_order_id\": \"c814b225ac4495f36538f4cb04657dd7\", \"leverage\": 1, \"metadata\": {\"alert_eligible\": true, \"auto_approval_tier\": \"tier2_strict_valid\", \"backtest_validated\": true, \"paper_only\": true, \"paper_only_reason\": \"oos_only\", \"planner\": {\"timing_label\": \"immediate\"}, \"proposal_origin\": \"swing_scan\", \"proposal_quality\": \"strict_valid\", \"proposal_source\": \"scanner_strategy\", \"signal_classification\": \"strict_valid\", \"sizing\": {\"amount_usd\": 10000.0, \"capped\": true, \"effective_risk_usd\": 300.0, \"equity_usd\": 100000.0, \"notional_cap_usd\": 10000.0, \"risk_budget_usd\": 980.0, \"risk_pct\": 0.98, \"sizing_mode\": \"risk_based\", \"stop_distance_pct\": 3.0, \"uncapped_amount_usd\": 32666.67}, \"source\": \"scanner_strategy\", \"supervised_approval_required\": false, \"timeframe\": \"1d\"}, \"proposed_price\": 200.0, \"rationale\": \"momentum_breakout setup on 1d\", \"side\": \"buy\", \"stop_loss\": 194.0, \"strategy_name\": \"momentum_breakout\", \"symbol\": \"JPM\", \"take_profit\": 212.0}, \"risk_rechecked\": true}",
+   "proposal_id": "prop_000000000009"
+  },
+  {
+   "broker_order_id": "main-2",
+   "event_key": "execution:exec_00000000000d:submitted:2ec0f787bf587871",
+   "event_type": "submitted",
+   "execution_id": "exec_00000000000d",
+   "id": "lifecycle_00000000000e",
+   "occurred_at": "2026-10-26T14:00:00+00:00",
+   "payload_json": "{\"realized_pnl_usd\": 0.0, \"request\": {\"amount_usd\": 10000.0, \"asset_class\": \"equity\", \"broker\": \"alpaca\", \"broker_symbol\": \"JPM\", \"client_order_id\": \"c814b225ac4495f36538f4cb04657dd7\", \"leverage\": 1, \"metadata\": {\"alert_eligible\": true, \"auto_approval_tier\": \"tier2_strict_valid\", \"backtest_validated\": true, \"paper_only\": true, \"paper_only_reason\": \"oos_only\", \"planner\": {\"timing_label\": \"immediate\"}, \"proposal_origin\": \"swing_scan\", \"proposal_quality\": \"strict_valid\", \"proposal_source\": \"scanner_strategy\", \"signal_classification\": \"strict_valid\", \"sizing\": {\"amount_usd\": 10000.0, \"capped\": true, \"effective_risk_usd\": 300.0, \"equity_usd\": 100000.0, \"notional_cap_usd\": 10000.0, \"risk_budget_usd\": 980.0, \"risk_pct\": 0.98, \"sizing_mode\": \"risk_based\", \"stop_distance_pct\": 3.0, \"uncapped_amount_usd\": 32666.67}, \"source\": \"scanner_strategy\", \"supervised_approval_required\": false, \"timeframe\": \"1d\"}, \"proposed_price\": 200.0, \"rationale\": \"momentum_breakout setup on 1d\", \"side\": \"buy\", \"stop_loss\": 194.0, \"strategy_name\": \"momentum_breakout\", \"symbol\": \"JPM\", \"take_profit\": 212.0}, \"response\": {\"broker\": \"alpaca\", \"broker_execution\": {\"broker_order_id\": \"main-2\", \"created_at\": \"2026-10-26T14:00:00+00:00\", \"error_message\": null, \"id\": \"exec_00000000000c\", \"mode\": \"alpaca_paper\", \"proposal_id\": \"alpaca:c814b225ac4495f36538f4cb04657dd7\", \"realized_pnl_usd\": 0.0, \"request_payload\": {}, \"response_payload\": {\"broker_order_id\": \"main-2\", \"client_order_id\": \"c814b225ac4495f36538f4cb04657dd7\", \"legs\": [], \"order_class\": \"bracket\", \"status\": \"accepted\"}, \"status\": \"accepted\", \"strategy_name\": null, \"updated_at\": \"2026-10-26T14:00:00+00:00\"}}, \"status\": \"submitted\"}",
+   "proposal_id": "prop_000000000009"
+  },
+  {
+   "broker_order_id": null,
+   "event_key": "proposal:prop_000000000010:pre_submit_validation:eaccdcb30d139734",
+   "event_type": "pre_submit_validation",
+   "execution_id": null,
+   "id": "lifecycle_000000000012",
+   "occurred_at": "2026-10-26T14:02:00+00:00",
+   "payload_json": "{\"broker\": \"alpaca\", \"quote_price\": 300.0, \"request\": {\"amount_usd\": 10000.0, \"asset_class\": \"equity\", \"broker\": \"alpaca\", \"broker_symbol\": \"UNH\", \"client_order_id\": \"725581b07525d08ffdca5ca5a241b558\", \"leverage\": 1, \"metadata\": {\"alert_eligible\": true, \"auto_approval_tier\": \"tier2_strict_valid\", \"backtest_validated\": true, \"paper_only\": true, \"paper_only_reason\": \"oos_only\", \"planner\": {\"timing_label\": \"immediate\"}, \"proposal_origin\": \"intraday_scan\", \"proposal_quality\": \"strict_valid\", \"proposal_source\": \"scanner_strategy\", \"signal_classification\": \"strict_valid\", \"sizing\": {\"amount_usd\": 10000.0, \"capped\": true, \"effective_risk_usd\": 300.0, \"equity_usd\": 100000.0, \"notional_cap_usd\": 10000.0, \"risk_budget_usd\": 980.0, \"risk_pct\": 0.98, \"sizing_mode\": \"risk_based\", \"stop_distance_pct\": 3.0, \"uncapped_amount_usd\": 32666.67}, \"source\": \"scanner_strategy\", \"supervised_approval_required\": false, \"timeframe\": \"5m\"}, \"proposed_price\": 300.0, \"rationale\": \"vwap_reclaim setup on 5m\", \"side\": \"buy\", \"stop_loss\": 291.0, \"strategy_name\": \"vwap_reclaim\", \"symbol\": \"UNH\", \"take_profit\": 318.0}, \"risk_rechecked\": true}",
+   "proposal_id": "prop_000000000010"
+  },
+  {
+   "broker_order_id": "main-3",
+   "event_key": "execution:exec_000000000014:submitted:c804e18a5f20d052",
+   "event_type": "submitted",
+   "execution_id": "exec_000000000014",
+   "id": "lifecycle_000000000015",
+   "occurred_at": "2026-10-26T14:02:00+00:00",
+   "payload_json": "{\"realized_pnl_usd\": 0.0, \"request\": {\"amount_usd\": 10000.0, \"asset_class\": \"equity\", \"broker\": \"alpaca\", \"broker_symbol\": \"UNH\", \"client_order_id\": \"725581b07525d08ffdca5ca5a241b558\", \"leverage\": 1, \"metadata\": {\"alert_eligible\": true, \"auto_approval_tier\": \"tier2_strict_valid\", \"backtest_validated\": true, \"paper_only\": true, \"paper_only_reason\": \"oos_only\", \"planner\": {\"timing_label\": \"immediate\"}, \"proposal_origin\": \"intraday_scan\", \"proposal_quality\": \"strict_valid\", \"proposal_source\": \"scanner_strategy\", \"signal_classification\": \"strict_valid\", \"sizing\": {\"amount_usd\": 10000.0, \"capped\": true, \"effective_risk_usd\": 300.0, \"equity_usd\": 100000.0, \"notional_cap_usd\": 10000.0, \"risk_budget_usd\": 980.0, \"risk_pct\": 0.98, \"sizing_mode\": \"risk_based\", \"stop_distance_pct\": 3.0, \"uncapped_amount_usd\": 32666.67}, \"source\": \"scanner_strategy\", \"supervised_approval_required\": false, \"timeframe\": \"5m\"}, \"proposed_price\": 300.0, \"rationale\": \"vwap_reclaim setup on 5m\", \"side\": \"buy\", \"stop_loss\": 291.0, \"strategy_name\": \"vwap_reclaim\", \"symbol\": \"UNH\", \"take_profit\": 318.0}, \"response\": {\"broker\": \"alpaca\", \"broker_execution\": {\"broker_order_id\": \"main-3\", \"created_at\": \"2026-10-26T14:02:00+00:00\", \"error_message\": null, \"id\": \"exec_000000000013\", \"mode\": \"alpaca_paper\", \"proposal_id\": \"alpaca:725581b07525d08ffdca5ca5a241b558\", \"realized_pnl_usd\": 0.0, \"request_payload\": {}, \"response_payload\": {\"broker_order_id\": \"main-3\", \"client_order_id\": \"725581b07525d08ffdca5ca5a241b558\", \"legs\": [], \"order_class\": \"bracket\", \"status\": \"accepted\"}, \"status\": \"accepted\", \"strategy_name\": null, \"updated_at\": \"2026-10-26T14:02:00+00:00\"}}, \"status\": \"submitted\"}",
+   "proposal_id": "prop_000000000010"
+  },
+  {
+   "broker_order_id": null,
+   "event_key": "proposal:prop_000000000017:pre_submit_validation:b89f246060637cc8",
+   "event_type": "pre_submit_validation",
+   "execution_id": null,
+   "id": "lifecycle_000000000019",
+   "occurred_at": "2026-10-26T14:05:00+00:00",
+   "payload_json": "{\"broker\": \"alpaca\", \"quote_price\": 110.0, \"request\": {\"amount_usd\": 10000.0, \"asset_class\": \"equity\", \"broker\": \"alpaca\", \"broker_symbol\": \"XOM\", \"client_order_id\": \"c2eb3e10dfb4f5d224e05f7374ef4ec0\", \"leverage\": 1, \"metadata\": {\"alert_eligible\": true, \"auto_approval_tier\": \"tier2_strict_valid\", \"backtest_validated\": true, \"paper_only\": true, \"paper_only_reason\": \"oos_only\", \"planner\": {\"timing_label\": \"immediate\"}, \"proposal_origin\": \"swing_scan\", \"proposal_quality\": \"strict_valid\", \"proposal_source\": \"scanner_strategy\", \"signal_classification\": \"strict_valid\", \"sizing\": {\"amount_usd\": 10000.0, \"capped\": true, \"effective_risk_usd\": 300.0, \"equity_usd\": 100000.0, \"notional_cap_usd\": 10000.0, \"risk_budget_usd\": 980.0, \"risk_pct\": 0.98, \"sizing_mode\": \"risk_based\", \"stop_distance_pct\": 3.0, \"uncapped_amount_usd\": 32666.67}, \"source\": \"scanner_strategy\", \"supervised_approval_required\": false, \"timeframe\": \"1h\"}, \"proposed_price\": 110.0, \"rationale\": \"ema_trend_stack setup on 1h\", \"side\": \"buy\", \"stop_loss\": 106.7, \"strategy_name\": \"ema_trend_stack\", \"symbol\": \"XOM\", \"take_profit\": 116.6}, \"risk_rechecked\": true}",
+   "proposal_id": "prop_000000000017"
+  },
+  {
+   "broker_order_id": "main-4",
+   "event_key": "execution:exec_00000000001b:submitted:89bd875543059153",
+   "event_type": "submitted",
+   "execution_id": "exec_00000000001b",
+   "id": "lifecycle_00000000001c",
+   "occurred_at": "2026-10-26T14:05:00+00:00",
+   "payload_json": "{\"realized_pnl_usd\": 0.0, \"request\": {\"amount_usd\": 10000.0, \"asset_class\": \"equity\", \"broker\": \"alpaca\", \"broker_symbol\": \"XOM\", \"client_order_id\": \"c2eb3e10dfb4f5d224e05f7374ef4ec0\", \"leverage\": 1, \"metadata\": {\"alert_eligible\": true, \"auto_approval_tier\": \"tier2_strict_valid\", \"backtest_validated\": true, \"paper_only\": true, \"paper_only_reason\": \"oos_only\", \"planner\": {\"timing_label\": \"immediate\"}, \"proposal_origin\": \"swing_scan\", \"proposal_quality\": \"strict_valid\", \"proposal_source\": \"scanner_strategy\", \"signal_classification\": \"strict_valid\", \"sizing\": {\"amount_usd\": 10000.0, \"capped\": true, \"effective_risk_usd\": 300.0, \"equity_usd\": 100000.0, \"notional_cap_usd\": 10000.0, \"risk_budget_usd\": 980.0, \"risk_pct\": 0.98, \"sizing_mode\": \"risk_based\", \"stop_distance_pct\": 3.0, \"uncapped_amount_usd\": 32666.67}, \"source\": \"scanner_strategy\", \"supervised_approval_required\": false, \"timeframe\": \"1h\"}, \"proposed_price\": 110.0, \"rationale\": \"ema_trend_stack setup on 1h\", \"side\": \"buy\", \"stop_loss\": 106.7, \"strategy_name\": \"ema_trend_stack\", \"symbol\": \"XOM\", \"take_profit\": 116.6}, \"response\": {\"broker\": \"alpaca\", \"broker_execution\": {\"broker_order_id\": \"main-4\", \"created_at\": \"2026-10-26T14:05:00+00:00\", \"error_message\": null, \"id\": \"exec_00000000001a\", \"mode\": \"alpaca_paper\", \"proposal_id\": \"alpaca:c2eb3e10dfb4f5d224e05f7374ef4ec0\", \"realized_pnl_usd\": 0.0, \"request_payload\": {}, \"response_payload\": {\"broker_order_id\": \"main-4\", \"client_order_id\": \"c2eb3e10dfb4f5d224e05f7374ef4ec0\", \"legs\": [], \"order_class\": \"bracket\", \"status\": \"accepted\"}, \"status\": \"accepted\", \"strategy_name\": null, \"updated_at\": \"2026-10-26T14:05:00+00:00\"}}, \"status\": \"submitted\"}",
+   "proposal_id": "prop_000000000017"
+  }
+ ],
+ "learning_outcome_labels": [],
+ "main_calls": [
+  [
+   "get_portfolio"
+  ],
+  [
+   "is_regular_market_open"
+  ],
+  [
+   "is_supported_equity",
+   "NVDA"
+  ],
+  [
+   "get_quote",
+   "NVDA"
+  ],
+  [
+   "get_account_identity"
+  ],
+  [
+   "is_supported_equity",
+   "NVDA"
+  ],
+  [
+   "get_portfolio"
+  ],
+  [
+   "submit_bracket_order",
+   {
+    "client_order_id": "9e46be9107d85602bdf9b76caf4a0261",
+    "qty": 83,
+    "side": "buy",
+    "stop_loss_price": 116.4,
+    "symbol": "NVDA",
+    "take_profit_price": 127.2,
+    "time_in_force": "gtc"
+   }
+  ],
+  [
+   "get_portfolio"
+  ],
+  [
+   "is_regular_market_open"
+  ],
+  [
+   "is_supported_equity",
+   "JPM"
+  ],
+  [
+   "get_portfolio"
+  ],
+  [
+   "is_regular_market_open"
+  ],
+  [
+   "is_supported_equity",
+   "JPM"
+  ],
+  [
+   "get_quote",
+   "JPM"
+  ],
+  [
+   "get_account_identity"
+  ],
+  [
+   "is_supported_equity",
+   "JPM"
+  ],
+  [
+   "get_portfolio"
+  ],
+  [
+   "submit_bracket_order",
+   {
+    "client_order_id": "c814b225ac4495f36538f4cb04657dd7",
+    "qty": 50,
+    "side": "buy",
+    "stop_loss_price": 194.0,
+    "symbol": "JPM",
+    "take_profit_price": 212.0,
+    "time_in_force": "gtc"
+   }
+  ],
+  [
+   "get_portfolio"
+  ],
+  [
+   "is_regular_market_open"
+  ],
+  [
+   "is_supported_equity",
+   "UNH"
+  ],
+  [
+   "get_portfolio"
+  ],
+  [
+   "is_regular_market_open"
+  ],
+  [
+   "is_supported_equity",
+   "UNH"
+  ],
+  [
+   "get_quote",
+   "UNH"
+  ],
+  [
+   "get_account_identity"
+  ],
+  [
+   "is_supported_equity",
+   "UNH"
+  ],
+  [
+   "get_portfolio"
+  ],
+  [
+   "submit_bracket_order",
+   {
+    "client_order_id": "725581b07525d08ffdca5ca5a241b558",
+    "qty": 33,
+    "side": "buy",
+    "stop_loss_price": 291.0,
+    "symbol": "UNH",
+    "take_profit_price": 318.0,
+    "time_in_force": "gtc"
+   }
+  ],
+  [
+   "get_portfolio"
+  ],
+  [
+   "get_portfolio"
+  ],
+  [
+   "is_regular_market_open"
+  ],
+  [
+   "is_supported_equity",
+   "XOM"
+  ],
+  [
+   "get_portfolio"
+  ],
+  [
+   "is_regular_market_open"
+  ],
+  [
+   "is_supported_equity",
+   "XOM"
+  ],
+  [
+   "get_quote",
+   "XOM"
+  ],
+  [
+   "get_account_identity"
+  ],
+  [
+   "is_supported_equity",
+   "XOM"
+  ],
+  [
+   "get_portfolio"
+  ],
+  [
+   "submit_bracket_order",
+   {
+    "client_order_id": "c2eb3e10dfb4f5d224e05f7374ef4ec0",
+    "qty": 90,
+    "side": "buy",
+    "stop_loss_price": 106.7,
+    "symbol": "XOM",
+    "take_profit_price": 116.6,
+    "time_in_force": "gtc"
+   }
+  ],
+  [
+   "get_portfolio"
+  ],
+  [
+   "get_account_identity"
+  ],
+  [
+   "get_capabilities"
+  ],
+  [
+   "get_all_orders"
+  ],
+  [
+   "get_portfolio"
+  ],
+  [
+   "cancel_all_orders"
+  ],
+  [
+   "close_all_positions"
+  ]
+ ],
+ "main_orders": [
+  {
+   "client_order_id": "9e46be9107d85602bdf9b76caf4a0261",
+   "qty": 83,
+   "side": "buy",
+   "stop_loss_price": 116.4,
+   "symbol": "NVDA",
+   "take_profit_price": 127.2,
+   "time_in_force": "gtc"
+  },
+  {
+   "client_order_id": "c814b225ac4495f36538f4cb04657dd7",
+   "qty": 50,
+   "side": "buy",
+   "stop_loss_price": 194.0,
+   "symbol": "JPM",
+   "take_profit_price": 212.0,
+   "time_in_force": "gtc"
+  },
+  {
+   "client_order_id": "725581b07525d08ffdca5ca5a241b558",
+   "qty": 33,
+   "side": "buy",
+   "stop_loss_price": 291.0,
+   "symbol": "UNH",
+   "take_profit_price": 318.0,
+   "time_in_force": "gtc"
+  },
+  {
+   "client_order_id": "c2eb3e10dfb4f5d224e05f7374ef4ec0",
+   "qty": 90,
+   "side": "buy",
+   "stop_loss_price": 106.7,
+   "symbol": "XOM",
+   "take_profit_price": 116.6,
+   "time_in_force": "gtc"
+  }
+ ],
+ "notices": [
+  "\ud83d\udfe2 Unattended auto-trading is now ACTIVE\nThe bot just placed its first automatic order on Alpaca paper.\nSymbol: NVDA\nQueue: queue_000000000003\nStatus: executed",
+  "Paper auto execution\nSymbol: NVDA\nProposal: prop_000000000002\nQueue: queue_000000000003\nStatus: executed\nReason: ready",
+  "Paper auto execution\nPaper-only (not copied to eToro)\nSymbol: JPM\nProposal: prop_000000000009\nQueue: queue_00000000000a\nStatus: executed\nReason: ready",
+  "Paper auto execution\nPaper-only (not copied to eToro)\nSymbol: UNH\nProposal: prop_000000000010\nQueue: queue_000000000011\nStatus: executed\nReason: ready",
+  "Paper auto execution\nPaper-only (not copied to eToro)\nSymbol: XOM\nProposal: prop_000000000017\nQueue: queue_000000000018\nStatus: executed\nReason: ready",
+  "Paper automation safety alert\nReconciliation failure tripped safety controls.\nIssues: missing_bracket_protection:JPM, missing_bracket_protection:NVDA, missing_bracket_protection:UNH, missing_bracket_protection:XOM, unknown_position:JPM, unknown_position:NVDA, unknown_position:UNH, unknown_position:XOM\nConsecutive failures: 1\nEmergency stop: yes"
+ ],
+ "paper_positions": [],
+ "paper_trades": [],
+ "reconciliation_runs": [
+  {
+   "account_json": "{\"id\": \"main\", \"account_number\": \"PA-MAIN\", \"status\": \"ACTIVE\", \"trading_blocked\": false, \"equity\": 100000.0, \"last_equity\": 100000.0, \"cash\": 100000.0}",
+   "account_number": "PA-MAIN",
+   "created_at": "2026-10-26T14:36:00+00:00",
+   "id": 1,
+   "issues_json": "[\"missing_bracket_protection:JPM\", \"missing_bracket_protection:NVDA\", \"missing_bracket_protection:UNH\", \"missing_bracket_protection:XOM\", \"unknown_position:JPM\", \"unknown_position:NVDA\", \"unknown_position:UNH\", \"unknown_position:XOM\"]",
+   "orders_seen": 0,
+   "positions_seen": 4,
+   "status": "error"
+  }
+ ],
+ "results": [
+  {
+   "alerts_sent": 0,
+   "candidates": 7,
+   "closed_signals": 0,
+   "detail": "Swing Scan completed.",
+   "errors": [],
+   "open_signals": 7,
+   "skipped": false,
+   "status": "ok",
+   "task": "swing_scan"
+  },
+  {
+   "alerts_sent": 0,
+   "candidates": 3,
+   "closed_signals": 0,
+   "detail": "Intraday Scan completed.",
+   "errors": [],
+   "open_signals": 10,
+   "skipped": false,
+   "status": "ok",
+   "task": "intraday_scan"
+  },
+  {
+   "alerts_sent": 0,
+   "candidates": 7,
+   "closed_signals": 0,
+   "detail": "Swing Scan completed.",
+   "errors": [],
+   "open_signals": 10,
+   "skipped": false,
+   "status": "ok",
+   "task": "swing_scan"
+  },
+  {
+   "alerts_sent": 0,
+   "candidates": 3,
+   "closed_signals": 0,
+   "detail": "Intraday Scan completed.",
+   "errors": [],
+   "open_signals": 10,
+   "skipped": false,
+   "status": "ok",
+   "task": "intraday_scan"
+  },
+  {
+   "alerts_sent": 0,
+   "candidates": 7,
+   "closed_signals": 0,
+   "detail": "Swing Scan completed.",
+   "errors": [],
+   "open_signals": 10,
+   "skipped": false,
+   "status": "ok",
+   "task": "swing_scan"
+  }
+ ],
+ "run_logs": [
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "strategy_evidence_refreshed",
+   "payload": {
+    "enforced": true,
+    "evaluated": 8,
+    "passed": [
+     "inside_bar_narrow_range_breakout:1d",
+     "rsi_reversal:15m"
+    ]
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "workflow_swing_scan_started",
+   "payload": {
+    "started_at": "2026-10-26T14:00:00+00:00"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "proposal_created",
+   "payload": {
+    "proposal_id": "prop_000000000002",
+    "risk_amount_usd": 300.0,
+    "risk_pct_of_balance": 0.3,
+    "room_authority": "paper",
+    "symbol": "NVDA"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "auto_proposal_created",
+   "payload": {
+    "origin": "swing_scan",
+    "proposal_id": "prop_000000000002",
+    "proposal_quality": "strict_valid",
+    "symbol": "NVDA"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "proposal_approved",
+   "payload": {
+    "notes": "Paper-only auto-approved by safety policy",
+    "proposal_id": "prop_000000000002",
+    "reviewer": "paper_auto"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "execution_queue_enqueued",
+   "payload": {
+    "proposal_id": "prop_000000000002",
+    "queue_id": "queue_000000000003",
+    "symbol": "NVDA"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "proposal_executed",
+   "payload": {
+    "execution_id": "exec_000000000006",
+    "proposal_id": "prop_000000000002"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "order_submitted",
+   "payload": {
+    "broker": "alpaca",
+    "broker_order_id": "main-1",
+    "execution_id": "exec_000000000006",
+    "proposal_id": "prop_000000000002",
+    "status": "submitted"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "execution_queue_executed",
+   "payload": {
+    "execution_id": "exec_000000000006",
+    "proposal_id": "prop_000000000002",
+    "queue_id": "queue_000000000003",
+    "symbol": "NVDA"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "paper_auto_execution_processed",
+   "payload": {
+    "proposal_id": "prop_000000000002",
+    "queue_id": "queue_000000000003",
+    "reason": "ready",
+    "status": "executed",
+    "symbol": "NVDA"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "paper_auto_trading_started",
+   "payload": {
+    "queue_id": "queue_000000000003",
+    "symbol": "NVDA"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "auto_proposal_safety_blocked",
+   "payload": {
+    "blockers": [
+     "strategy_lacks_oos_evidence"
+    ],
+    "origin": "swing_scan",
+    "symbol": "META"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "auto_proposal_safety_blocked",
+   "payload": {
+    "blockers": [
+     "strategy_lacks_oos_evidence"
+    ],
+    "origin": "swing_scan",
+    "symbol": "MSFT"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "auto_proposal_safety_blocked",
+   "payload": {
+    "blockers": [
+     "strategy_lacks_oos_evidence"
+    ],
+    "origin": "swing_scan",
+    "symbol": "TSLA"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "auto_proposal_safety_blocked",
+   "payload": {
+    "blockers": [
+     "paper_only_etoro_live_symbol_held"
+    ],
+    "origin": "swing_scan",
+    "symbol": "AMD"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "proposal_created",
+   "payload": {
+    "proposal_id": "prop_000000000009",
+    "risk_amount_usd": 300.0,
+    "risk_pct_of_balance": 0.3,
+    "room_authority": "paper",
+    "symbol": "JPM"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "auto_proposal_created",
+   "payload": {
+    "origin": "swing_scan",
+    "proposal_id": "prop_000000000009",
+    "proposal_quality": "strict_valid",
+    "symbol": "JPM"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "proposal_approved",
+   "payload": {
+    "notes": "Paper-only auto-approved by safety policy",
+    "proposal_id": "prop_000000000009",
+    "reviewer": "paper_auto"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "execution_queue_enqueued",
+   "payload": {
+    "proposal_id": "prop_000000000009",
+    "queue_id": "queue_00000000000a",
+    "symbol": "JPM"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "proposal_executed",
+   "payload": {
+    "execution_id": "exec_00000000000d",
+    "proposal_id": "prop_000000000009"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "order_submitted",
+   "payload": {
+    "broker": "alpaca",
+    "broker_order_id": "main-2",
+    "execution_id": "exec_00000000000d",
+    "proposal_id": "prop_000000000009",
+    "status": "submitted"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "execution_queue_executed",
+   "payload": {
+    "execution_id": "exec_00000000000d",
+    "proposal_id": "prop_000000000009",
+    "queue_id": "queue_00000000000a",
+    "symbol": "JPM"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "paper_auto_execution_processed",
+   "payload": {
+    "proposal_id": "prop_000000000009",
+    "queue_id": "queue_00000000000a",
+    "reason": "ready",
+    "status": "executed",
+    "symbol": "JPM"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "auto_proposal_safety_blocked",
+   "payload": {
+    "blockers": [
+     "paper_only_pass_limit"
+    ],
+    "origin": "swing_scan",
+    "symbol": "XOM"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "auto_propose_funnel",
+   "payload": {
+    "created": 2,
+    "entered": 7,
+    "executed": 2,
+    "origin": "swing_scan",
+    "proposals_created": 2,
+    "safety_blocked": 5,
+    "safety_blocked:paper_only_etoro_live_symbol_held": 1,
+    "safety_blocked:paper_only_pass_limit": 1,
+    "safety_blocked:strategy_lacks_oos_evidence": 3
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "event_type": "workflow_swing_scan_completed",
+   "payload": {
+    "alerts_sent": 0,
+    "candidates": 7,
+    "coverage": {
+     "proposals_created": 2
+    },
+    "errors": [],
+    "proposals_created": 2,
+    "started_at": "2026-10-26T14:00:00+00:00",
+    "symbols_passed": [
+     "NVDA",
+     "AMD",
+     "JPM",
+     "META",
+     "MSFT",
+     "TSLA",
+     "XOM"
+    ],
+    "symbols_scanned": 10,
+    "timeframes": [
+     "1h",
+     "1d"
+    ]
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:02:00+00:00",
+   "event_type": "workflow_intraday_scan_started",
+   "payload": {
+    "started_at": "2026-10-26T14:02:00+00:00"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:02:00+00:00",
+   "event_type": "auto_proposal_safety_blocked",
+   "payload": {
+    "blockers": [
+     "strategy_lacks_oos_evidence"
+    ],
+    "origin": "intraday_scan",
+    "symbol": "ORCL"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:02:00+00:00",
+   "event_type": "auto_proposal_safety_blocked",
+   "payload": {
+    "blockers": [
+     "strategy_lacks_oos_evidence"
+    ],
+    "origin": "intraday_scan",
+    "symbol": "AVGO"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:02:00+00:00",
+   "event_type": "proposal_created",
+   "payload": {
+    "proposal_id": "prop_000000000010",
+    "risk_amount_usd": 300.0,
+    "risk_pct_of_balance": 0.3,
+    "room_authority": "paper",
+    "symbol": "UNH"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:02:00+00:00",
+   "event_type": "auto_proposal_created",
+   "payload": {
+    "origin": "intraday_scan",
+    "proposal_id": "prop_000000000010",
+    "proposal_quality": "strict_valid",
+    "symbol": "UNH"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:02:00+00:00",
+   "event_type": "proposal_approved",
+   "payload": {
+    "notes": "Paper-only auto-approved by safety policy",
+    "proposal_id": "prop_000000000010",
+    "reviewer": "paper_auto"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:02:00+00:00",
+   "event_type": "execution_queue_enqueued",
+   "payload": {
+    "proposal_id": "prop_000000000010",
+    "queue_id": "queue_000000000011",
+    "symbol": "UNH"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:02:00+00:00",
+   "event_type": "proposal_executed",
+   "payload": {
+    "execution_id": "exec_000000000014",
+    "proposal_id": "prop_000000000010"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:02:00+00:00",
+   "event_type": "order_submitted",
+   "payload": {
+    "broker": "alpaca",
+    "broker_order_id": "main-3",
+    "execution_id": "exec_000000000014",
+    "proposal_id": "prop_000000000010",
+    "status": "submitted"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:02:00+00:00",
+   "event_type": "execution_queue_executed",
+   "payload": {
+    "execution_id": "exec_000000000014",
+    "proposal_id": "prop_000000000010",
+    "queue_id": "queue_000000000011",
+    "symbol": "UNH"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:02:00+00:00",
+   "event_type": "paper_auto_execution_processed",
+   "payload": {
+    "proposal_id": "prop_000000000010",
+    "queue_id": "queue_000000000011",
+    "reason": "ready",
+    "status": "executed",
+    "symbol": "UNH"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:02:00+00:00",
+   "event_type": "auto_propose_funnel",
+   "payload": {
+    "created": 1,
+    "entered": 3,
+    "executed": 1,
+    "origin": "intraday_scan",
+    "proposals_created": 1,
+    "safety_blocked": 2,
+    "safety_blocked:strategy_lacks_oos_evidence": 2
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:02:00+00:00",
+   "event_type": "workflow_intraday_scan_completed",
+   "payload": {
+    "alerts_sent": 0,
+    "candidates": 3,
+    "coverage": {
+     "proposals_created": 1
+    },
+    "errors": [],
+    "proposals_created": 1,
+    "started_at": "2026-10-26T14:02:00+00:00",
+    "symbols_passed": [
+     "UNH",
+     "ORCL",
+     "AVGO"
+    ],
+    "symbols_scanned": 6,
+    "timeframes": [
+     "5m",
+     "15m",
+     "1h",
+     "1d"
+    ]
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "event_type": "workflow_swing_scan_started",
+   "payload": {
+    "started_at": "2026-10-26T14:05:00+00:00"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "event_type": "auto_proposal_failed",
+   "payload": {
+    "error": "Per-symbol position limit reached",
+    "origin": "swing_scan",
+    "symbol": "NVDA"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "event_type": "auto_proposal_safety_blocked",
+   "payload": {
+    "blockers": [
+     "strategy_lacks_oos_evidence"
+    ],
+    "origin": "swing_scan",
+    "symbol": "META"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "event_type": "auto_proposal_safety_blocked",
+   "payload": {
+    "blockers": [
+     "strategy_lacks_oos_evidence"
+    ],
+    "origin": "swing_scan",
+    "symbol": "MSFT"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "event_type": "auto_proposal_safety_blocked",
+   "payload": {
+    "blockers": [
+     "strategy_lacks_oos_evidence"
+    ],
+    "origin": "swing_scan",
+    "symbol": "TSLA"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "event_type": "auto_proposal_safety_blocked",
+   "payload": {
+    "blockers": [
+     "paper_only_headroom_correlation_bucket"
+    ],
+    "origin": "swing_scan",
+    "symbol": "JPM"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "event_type": "proposal_created",
+   "payload": {
+    "proposal_id": "prop_000000000017",
+    "risk_amount_usd": 300.0,
+    "risk_pct_of_balance": 0.3,
+    "room_authority": "paper",
+    "symbol": "XOM"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "event_type": "auto_proposal_created",
+   "payload": {
+    "origin": "swing_scan",
+    "proposal_id": "prop_000000000017",
+    "proposal_quality": "strict_valid",
+    "symbol": "XOM"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "event_type": "proposal_approved",
+   "payload": {
+    "notes": "Paper-only auto-approved by safety policy",
+    "proposal_id": "prop_000000000017",
+    "reviewer": "paper_auto"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "event_type": "execution_queue_enqueued",
+   "payload": {
+    "proposal_id": "prop_000000000017",
+    "queue_id": "queue_000000000018",
+    "symbol": "XOM"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "event_type": "proposal_executed",
+   "payload": {
+    "execution_id": "exec_00000000001b",
+    "proposal_id": "prop_000000000017"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "event_type": "order_submitted",
+   "payload": {
+    "broker": "alpaca",
+    "broker_order_id": "main-4",
+    "execution_id": "exec_00000000001b",
+    "proposal_id": "prop_000000000017",
+    "status": "submitted"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "event_type": "execution_queue_executed",
+   "payload": {
+    "execution_id": "exec_00000000001b",
+    "proposal_id": "prop_000000000017",
+    "queue_id": "queue_000000000018",
+    "symbol": "XOM"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "event_type": "paper_auto_execution_processed",
+   "payload": {
+    "proposal_id": "prop_000000000017",
+    "queue_id": "queue_000000000018",
+    "reason": "ready",
+    "status": "executed",
+    "symbol": "XOM"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "event_type": "auto_propose_funnel",
+   "payload": {
+    "created": 1,
+    "entered": 7,
+    "executed": 1,
+    "origin": "swing_scan",
+    "proposal_failed": 1,
+    "proposals_created": 1,
+    "safety_blocked": 5,
+    "safety_blocked:paper_only_etoro_live_symbol_held": 1,
+    "safety_blocked:paper_only_headroom_correlation_bucket": 1,
+    "safety_blocked:strategy_lacks_oos_evidence": 3
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "event_type": "workflow_swing_scan_completed",
+   "payload": {
+    "alerts_sent": 0,
+    "candidates": 7,
+    "coverage": {
+     "proposals_created": 1
+    },
+    "errors": [],
+    "proposals_created": 1,
+    "started_at": "2026-10-26T14:05:00+00:00",
+    "symbols_passed": [
+     "NVDA",
+     "AMD",
+     "JPM",
+     "META",
+     "MSFT",
+     "TSLA",
+     "XOM"
+    ],
+    "symbols_scanned": 10,
+    "timeframes": [
+     "1h",
+     "1d"
+    ]
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:35:00+00:00",
+   "event_type": "workflow_intraday_scan_started",
+   "payload": {
+    "started_at": "2026-10-26T14:35:00+00:00"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:35:00+00:00",
+   "event_type": "auto_proposal_safety_blocked",
+   "payload": {
+    "blockers": [
+     "strategy_lacks_oos_evidence"
+    ],
+    "origin": "intraday_scan",
+    "symbol": "ORCL"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:35:00+00:00",
+   "event_type": "auto_proposal_safety_blocked",
+   "payload": {
+    "blockers": [
+     "strategy_lacks_oos_evidence"
+    ],
+    "origin": "intraday_scan",
+    "symbol": "AVGO"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:35:00+00:00",
+   "event_type": "auto_proposal_safety_blocked",
+   "payload": {
+    "blockers": [
+     "paper_only_headroom_correlation_bucket"
+    ],
+    "origin": "intraday_scan",
+    "symbol": "UNH"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:35:00+00:00",
+   "event_type": "auto_propose_funnel",
+   "payload": {
+    "created": 0,
+    "entered": 3,
+    "origin": "intraday_scan",
+    "safety_blocked": 3,
+    "safety_blocked:paper_only_headroom_correlation_bucket": 1,
+    "safety_blocked:strategy_lacks_oos_evidence": 2
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:35:00+00:00",
+   "event_type": "workflow_intraday_scan_completed",
+   "payload": {
+    "alerts_sent": 0,
+    "candidates": 3,
+    "coverage": {
+     "proposals_created": 0
+    },
+    "errors": [],
+    "proposals_created": 0,
+    "started_at": "2026-10-26T14:35:00+00:00",
+    "symbols_passed": [
+     "UNH",
+     "ORCL",
+     "AVGO"
+    ],
+    "symbols_scanned": 7,
+    "timeframes": [
+     "5m",
+     "15m",
+     "1h",
+     "1d"
+    ]
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:36:00+00:00",
+   "event_type": "alpaca_reconciliation_failed",
+   "payload": {
+    "consecutive_failures": 1,
+    "issues": [
+     "missing_bracket_protection:JPM",
+     "missing_bracket_protection:NVDA",
+     "missing_bracket_protection:UNH",
+     "missing_bracket_protection:XOM",
+     "unknown_position:JPM",
+     "unknown_position:NVDA",
+     "unknown_position:UNH",
+     "unknown_position:XOM"
+    ]
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:36:00+00:00",
+   "event_type": "automation_state_changed",
+   "payload": {
+    "kill_switch": true,
+    "paused": true,
+    "reason": "circuit breaker: missing_bracket_protection:JPM;missing_bracket_protection:NVDA;missing_bracket_protection:UNH;missing_bracket_protection:XOM;unknown_position:JPM;unknown_position:NVDA;unknown_position:UNH;unknown_position:XOM",
+    "updated_at": "2026-10-26T14:36:00+00:00"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:36:00+00:00",
+   "event_type": "kill_switch_emergency_stop",
+   "payload": {
+    "clients": [
+     {
+      "client": "MainAlpaca",
+      "errors": [],
+      "orders_cancelled": 0,
+      "positions_closed": 0
+     },
+     {
+      "client": "MockBroker",
+      "errors": [],
+      "orders_cancelled": 0,
+      "positions_closed": 0
+     }
+    ],
+    "close_positions_allowed": true,
+    "orders_cancelled": 0,
+    "positions_closed": 0,
+    "reason": "circuit breaker: missing_bracket_protection:JPM;missing_bracket_protection:NVDA;missing_bracket_protection:UNH;missing_bracket_protection:XOM;unknown_position:JPM;unknown_position:NVDA;unknown_position:UNH;unknown_position:XOM"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:37:00+00:00",
+   "event_type": "workflow_swing_scan_started",
+   "payload": {
+    "started_at": "2026-10-26T14:37:00+00:00"
+   }
+  },
+  {
+   "created_at": "2026-10-26T14:37:00+00:00",
+   "event_type": "workflow_swing_scan_completed",
+   "payload": {
+    "alerts_sent": 0,
+    "candidates": 7,
+    "coverage": {
+     "proposals_created": 0
+    },
+    "errors": [],
+    "proposals_created": 0,
+    "started_at": "2026-10-26T14:37:00+00:00",
+    "symbols_passed": [
+     "NVDA",
+     "AMD",
+     "JPM",
+     "META",
+     "MSFT",
+     "TSLA",
+     "XOM"
+    ],
+    "symbols_scanned": 10,
+    "timeframes": [
+     "1h",
+     "1d"
+    ]
+   }
+  }
+ ],
+ "runtime_state": [
+  {
+   "state_key": "automation:account_verified",
+   "state_value": "true",
+   "updated_at": "2026-10-26T14:36:00+00:00"
+  },
+  {
+   "state_key": "automation:circuit_breaker_reason",
+   "state_value": "missing_bracket_protection:JPM;missing_bracket_protection:NVDA;missing_bracket_protection:UNH;missing_bracket_protection:XOM;unknown_position:JPM;unknown_position:NVDA;unknown_position:UNH;unknown_position:XOM",
+   "updated_at": "2026-10-26T14:36:00+00:00"
+  },
+  {
+   "state_key": "automation:kill_switch",
+   "state_value": "true",
+   "updated_at": "2026-10-26T14:36:00+00:00"
+  },
+  {
+   "state_key": "automation:paused",
+   "state_value": "true",
+   "updated_at": "2026-10-26T14:36:00+00:00"
+  },
+  {
+   "state_key": "automation:reason",
+   "state_value": "circuit breaker: missing_bracket_protection:JPM;missing_bracket_protection:NVDA;missing_bracket_protection:UNH;missing_bracket_protection:XOM;unknown_position:JPM;unknown_position:NVDA;unknown_position:UNH;unknown_position:XOM",
+   "updated_at": "2026-10-26T14:36:00+00:00"
+  },
+  {
+   "state_key": "automation:updated_at",
+   "state_value": "2026-10-26T14:36:00+00:00",
+   "updated_at": "2026-10-26T14:36:00+00:00"
+  },
+  {
+   "state_key": "etoro_live:state",
+   "state_value": "{\"open_symbols\": [\"AMD\"]}",
+   "updated_at": "2026-10-26T14:00:00+00:00"
+  },
+  {
+   "state_key": "paper_auto:auto_trading_started_at",
+   "state_value": "2026-10-26T14:00:00+00:00",
+   "updated_at": "2026-10-26T14:00:00+00:00"
+  },
+  {
+   "state_key": "paper_safety_flatten",
+   "state_value": "{\"all_at\": \"2026-10-26T14:36:00+00:00\", \"last_reason\": \"emergency_stop:circuit breaker: missing_bracket_protection:JPM;missing_bracket_protection:NVDA;missing_bracket_protection:UNH;missing_bracket_protection:XOM;unknown_position:JPM;unknown_position:NVDA;unknown_position:UNH;unknown_position:XOM\"}",
+   "updated_at": "2026-10-26T14:36:00+00:00"
+  },
+  {
+   "state_key": "reconciliation:consecutive_failures",
+   "state_value": "1",
+   "updated_at": "2026-10-26T14:36:00+00:00"
+  },
+  {
+   "state_key": "reconciliation:last_alert_signature",
+   "state_value": "missing_bracket_protection:JPM|missing_bracket_protection:NVDA|missing_bracket_protection:UNH|missing_bracket_protection:XOM|unknown_position:JPM|unknown_position:NVDA|unknown_position:UNH|unknown_position:XOM",
+   "updated_at": "2026-10-26T14:36:00+00:00"
+  },
+  {
+   "state_key": "reconciliation:last_issues",
+   "state_value": "missing_bracket_protection:JPM,missing_bracket_protection:NVDA,missing_bracket_protection:UNH,missing_bracket_protection:XOM,unknown_position:JPM,unknown_position:NVDA,unknown_position:UNH,unknown_position:XOM",
+   "updated_at": "2026-10-26T14:36:00+00:00"
+  },
+  {
+   "state_key": "reconciliation:last_run_at",
+   "state_value": "2026-10-26T14:36:00+00:00",
+   "updated_at": "2026-10-26T14:36:00+00:00"
+  },
+  {
+   "state_key": "reconciliation:last_status",
+   "state_value": "error",
+   "updated_at": "2026-10-26T14:36:00+00:00"
+  },
+  {
+   "state_key": "strategy_evidence:verdicts",
+   "state_value": "{\"computed_at\": \"2026-10-26T14:00:00+00:00\", \"verdicts\": {\"ema_trend_stack:1h\": {\"passed\": false, \"reasons\": [\"too_few_holdout_trades\"], \"symbols\": 2, \"oos_trades\": 60, \"oos_expectancy_usd\": 4.0, \"oos_expectancy_r\": 0.04, \"holdout_trades\": 6, \"holdout_expectancy_usd\": 6.0, \"paper_oos_passed\": true}, \"inside_bar_narrow_range_breakout:1d\": {\"passed\": true, \"reasons\": [], \"symbols\": 2, \"oos_trades\": 60, \"oos_expectancy_usd\": 6.0, \"oos_expectancy_r\": 0.06, \"holdout_trades\": 16, \"holdout_expectancy_usd\": 4.0, \"paper_oos_passed\": true}, \"ma_crossover:1d\": {\"passed\": false, \"reasons\": [\"oos_expectancy_not_positive\", \"holdout_expectancy_not_positive\"], \"symbols\": 2, \"oos_trades\": 60, \"oos_expectancy_usd\": -0.5, \"oos_expectancy_r\": -0.005, \"holdout_trades\": 16, \"holdout_expectancy_usd\": -1.0, \"paper_oos_passed\": false}, \"mean_reversion:1d\": {\"passed\": false, \"reasons\": [\"oos_expectancy_not_positive\", \"holdout_expectancy_not_positive\"], \"symbols\": 2, \"oos_trades\": 60, \"oos_expectancy_usd\": -9.0, \"oos_expectancy_r\": -0.09, \"holdout_trades\": 16, \"holdout_expectancy_usd\": -5.0, \"paper_oos_passed\": false}, \"momentum_breakout:1d\": {\"passed\": false, \"reasons\": [\"holdout_expectancy_not_positive\"], \"symbols\": 2, \"oos_trades\": 60, \"oos_expectancy_usd\": 5.0, \"oos_expectancy_r\": 0.05, \"holdout_trades\": 16, \"holdout_expectancy_usd\": -3.0, \"paper_oos_passed\": true}, \"rsi_reversal:15m\": {\"passed\": true, \"reasons\": [], \"symbols\": 2, \"oos_trades\": 60, \"oos_expectancy_usd\": 2.0, \"oos_expectancy_r\": 0.02, \"holdout_trades\": 16, \"holdout_expectancy_usd\": 1.0, \"paper_oos_passed\": false, \"paper_passed\": false, \"paper_reasons\": [\"stress:oos_expectancy_not_positive\", \"stress:holdout_expectancy_not_positive\"], \"cost_profiles\": {\"alpaca\": {\"symbols\": 2, \"oos_trades\": 60, \"oos_expectancy_usd\": 3.0, \"holdout_trades\": 16, \"holdout_expectancy_usd\": 2.0}, \"stress\": {\"symbols\": 2, \"oos_trades\": 60, \"oos_expectancy_usd\": -1.0, \"holdout_trades\": 16, \"holdout_expectancy_usd\": -1.0}}}, \"trend_following:1d\": {\"passed\": false, \"reasons\": [\"oos_expectancy_not_positive\", \"holdout_expectancy_not_positive\"], \"symbols\": 2, \"oos_trades\": 60, \"oos_expectancy_usd\": -3.0, \"oos_expectancy_r\": -0.03, \"holdout_trades\": 16, \"holdout_expectancy_usd\": -2.0, \"paper_oos_passed\": false}, \"vwap_reclaim:5m\": {\"passed\": false, \"reasons\": [\"holdout_expectancy_not_positive\"], \"symbols\": 2, \"oos_trades\": 60, \"oos_expectancy_usd\": 3.0, \"oos_expectancy_r\": 0.03, \"holdout_trades\": 16, \"holdout_expectancy_usd\": -1.0, \"paper_oos_passed\": true, \"paper_passed\": false, \"paper_reasons\": [\"alpaca:holdout_expectancy_not_positive\", \"stress:holdout_expectancy_not_positive\"], \"cost_profiles\": {\"alpaca\": {\"symbols\": 2, \"oos_trades\": 60, \"oos_expectancy_usd\": 4.0, \"holdout_trades\": 16, \"holdout_expectancy_usd\": -0.5}, \"stress\": {\"symbols\": 2, \"oos_trades\": 60, \"oos_expectancy_usd\": 1.0, \"holdout_trades\": 16, \"holdout_expectancy_usd\": -2.0}}}}, \"passing_since\": {\"inside_bar_narrow_range_breakout:1d\": \"2026-10-26T14:00:00+00:00\", \"rsi_reversal:15m\": \"2026-10-26T14:00:00+00:00\"}}",
+   "updated_at": "2026-10-26T14:00:00+00:00"
+  },
+  {
+   "state_key": "workflow:bucket:intraday_rotation:last_error",
+   "state_value": "",
+   "updated_at": "2026-10-26T14:35:00+00:00"
+  },
+  {
+   "state_key": "workflow:bucket:intraday_rotation:last_run_at",
+   "state_value": "2026-10-26T14:35:00+00:00",
+   "updated_at": "2026-10-26T14:35:00+00:00"
+  },
+  {
+   "state_key": "workflow:bucket:intraday_rotation:last_status",
+   "state_value": "ok",
+   "updated_at": "2026-10-26T14:35:00+00:00"
+  },
+  {
+   "state_key": "workflow:bucket:intraday_rotation:last_success_at",
+   "state_value": "2026-10-26T14:35:00+00:00",
+   "updated_at": "2026-10-26T14:35:00+00:00"
+  },
+  {
+   "state_key": "workflow:bucket:swing_hourly:last_error",
+   "state_value": "",
+   "updated_at": "2026-10-26T14:37:00+00:00"
+  },
+  {
+   "state_key": "workflow:bucket:swing_hourly:last_run_at",
+   "state_value": "2026-10-26T14:37:00+00:00",
+   "updated_at": "2026-10-26T14:37:00+00:00"
+  },
+  {
+   "state_key": "workflow:bucket:swing_hourly:last_status",
+   "state_value": "ok",
+   "updated_at": "2026-10-26T14:37:00+00:00"
+  },
+  {
+   "state_key": "workflow:bucket:swing_hourly:last_success_at",
+   "state_value": "2026-10-26T14:37:00+00:00",
+   "updated_at": "2026-10-26T14:37:00+00:00"
+  },
+  {
+   "state_key": "workflow:intraday_scan:last_scan_coverage",
+   "state_value": "{\"recorded_at\": \"2026-10-26T14:35:00+00:00\", \"proposals_created\": 0}",
+   "updated_at": "2026-10-26T14:35:00+00:00"
+  },
+  {
+   "state_key": "workflow:intraday_scan_offset",
+   "state_value": "2",
+   "updated_at": "2026-10-26T14:35:00+00:00"
+  },
+  {
+   "state_key": "workflow:last_intraday_scan_at",
+   "state_value": "2026-10-26T14:35:00+00:00",
+   "updated_at": "2026-10-26T14:35:00+00:00"
+  },
+  {
+   "state_key": "workflow:last_swing_scan_at",
+   "state_value": "2026-10-26T14:37:00+00:00",
+   "updated_at": "2026-10-26T14:37:00+00:00"
+  },
+  {
+   "state_key": "workflow:lock:intraday_scan",
+   "state_value": "",
+   "updated_at": "2026-10-26T14:35:00+00:00"
+  },
+  {
+   "state_key": "workflow:lock:swing_scan",
+   "state_value": "",
+   "updated_at": "2026-10-26T14:37:00+00:00"
+  },
+  {
+   "state_key": "workflow:swing_scan:last_scan_coverage",
+   "state_value": "{\"recorded_at\": \"2026-10-26T14:37:00+00:00\", \"proposals_created\": 0}",
+   "updated_at": "2026-10-26T14:37:00+00:00"
+  },
+  {
+   "state_key": "workflow:symbol_offset:swing_scan",
+   "state_value": "0",
+   "updated_at": "2026-10-26T14:37:00+00:00"
+  }
+ ],
+ "scan_decisions": [
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "final_score": 92.0,
+   "freshness": "fresh",
+   "id": 1,
+   "payload_json": "{\"rank\": 1}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "inside_bar_narrow_range_breakout",
+   "symbol": "NVDA",
+   "timeframe": "1d"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "final_score": 90.0,
+   "freshness": "fresh",
+   "id": 2,
+   "payload_json": "{\"rank\": 2}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "momentum_breakout",
+   "symbol": "AMD",
+   "timeframe": "1d"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "final_score": 89.0,
+   "freshness": "fresh",
+   "id": 3,
+   "payload_json": "{\"rank\": 3}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "momentum_breakout",
+   "symbol": "JPM",
+   "timeframe": "1d"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "final_score": 88.0,
+   "freshness": "fresh",
+   "id": 4,
+   "payload_json": "{\"rank\": 4}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "ma_crossover",
+   "symbol": "META",
+   "timeframe": "1d"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "final_score": 87.0,
+   "freshness": "fresh",
+   "id": 5,
+   "payload_json": "{\"rank\": 5}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "trend_following",
+   "symbol": "MSFT",
+   "timeframe": "1d"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "final_score": 86.0,
+   "freshness": "fresh",
+   "id": 6,
+   "payload_json": "{\"rank\": 6}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "mean_reversion",
+   "symbol": "TSLA",
+   "timeframe": "1d"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:00:00+00:00",
+   "final_score": 85.0,
+   "freshness": "fresh",
+   "id": 7,
+   "payload_json": "{\"rank\": 7}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "ema_trend_stack",
+   "symbol": "XOM",
+   "timeframe": "1h"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:02:00+00:00",
+   "final_score": 91.0,
+   "freshness": "fresh",
+   "id": 8,
+   "payload_json": "{\"rank\": 1}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "vwap_reclaim",
+   "symbol": "UNH",
+   "timeframe": "5m"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:02:00+00:00",
+   "final_score": 90.0,
+   "freshness": "fresh",
+   "id": 9,
+   "payload_json": "{\"rank\": 2}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "rsi_reversal",
+   "symbol": "ORCL",
+   "timeframe": "15m"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:02:00+00:00",
+   "final_score": 70.0,
+   "freshness": "fresh",
+   "id": 10,
+   "payload_json": "{\"rank\": 3}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "ma_crossover",
+   "symbol": "AVGO",
+   "timeframe": "1d"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "final_score": 92.0,
+   "freshness": "fresh",
+   "id": 11,
+   "payload_json": "{\"rank\": 1}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "inside_bar_narrow_range_breakout",
+   "symbol": "NVDA",
+   "timeframe": "1d"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "final_score": 90.0,
+   "freshness": "fresh",
+   "id": 12,
+   "payload_json": "{\"rank\": 2}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "momentum_breakout",
+   "symbol": "AMD",
+   "timeframe": "1d"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "final_score": 89.0,
+   "freshness": "fresh",
+   "id": 13,
+   "payload_json": "{\"rank\": 3}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "momentum_breakout",
+   "symbol": "JPM",
+   "timeframe": "1d"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "final_score": 88.0,
+   "freshness": "fresh",
+   "id": 14,
+   "payload_json": "{\"rank\": 4}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "ma_crossover",
+   "symbol": "META",
+   "timeframe": "1d"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "final_score": 87.0,
+   "freshness": "fresh",
+   "id": 15,
+   "payload_json": "{\"rank\": 5}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "trend_following",
+   "symbol": "MSFT",
+   "timeframe": "1d"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "final_score": 86.0,
+   "freshness": "fresh",
+   "id": 16,
+   "payload_json": "{\"rank\": 6}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "mean_reversion",
+   "symbol": "TSLA",
+   "timeframe": "1d"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:05:00+00:00",
+   "final_score": 85.0,
+   "freshness": "fresh",
+   "id": 17,
+   "payload_json": "{\"rank\": 7}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "ema_trend_stack",
+   "symbol": "XOM",
+   "timeframe": "1h"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:35:00+00:00",
+   "final_score": 91.0,
+   "freshness": "fresh",
+   "id": 18,
+   "payload_json": "{\"rank\": 1}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "vwap_reclaim",
+   "symbol": "UNH",
+   "timeframe": "5m"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:35:00+00:00",
+   "final_score": 90.0,
+   "freshness": "fresh",
+   "id": 19,
+   "payload_json": "{\"rank\": 2}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "rsi_reversal",
+   "symbol": "ORCL",
+   "timeframe": "15m"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:35:00+00:00",
+   "final_score": 70.0,
+   "freshness": "fresh",
+   "id": 20,
+   "payload_json": "{\"rank\": 3}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "ma_crossover",
+   "symbol": "AVGO",
+   "timeframe": "1d"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:37:00+00:00",
+   "final_score": 92.0,
+   "freshness": "fresh",
+   "id": 21,
+   "payload_json": "{\"rank\": 1}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "inside_bar_narrow_range_breakout",
+   "symbol": "NVDA",
+   "timeframe": "1d"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:37:00+00:00",
+   "final_score": 90.0,
+   "freshness": "fresh",
+   "id": 22,
+   "payload_json": "{\"rank\": 2}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "momentum_breakout",
+   "symbol": "AMD",
+   "timeframe": "1d"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:37:00+00:00",
+   "final_score": 89.0,
+   "freshness": "fresh",
+   "id": 23,
+   "payload_json": "{\"rank\": 3}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "momentum_breakout",
+   "symbol": "JPM",
+   "timeframe": "1d"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:37:00+00:00",
+   "final_score": 88.0,
+   "freshness": "fresh",
+   "id": 24,
+   "payload_json": "{\"rank\": 4}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "ma_crossover",
+   "symbol": "META",
+   "timeframe": "1d"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:37:00+00:00",
+   "final_score": 87.0,
+   "freshness": "fresh",
+   "id": 25,
+   "payload_json": "{\"rank\": 5}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "trend_following",
+   "symbol": "MSFT",
+   "timeframe": "1d"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:37:00+00:00",
+   "final_score": 86.0,
+   "freshness": "fresh",
+   "id": 26,
+   "payload_json": "{\"rank\": 6}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "mean_reversion",
+   "symbol": "TSLA",
+   "timeframe": "1d"
+  },
+  {
+   "alert_eligible": 1,
+   "created_at": "2026-10-26T14:37:00+00:00",
+   "final_score": 85.0,
+   "freshness": "fresh",
+   "id": 27,
+   "payload_json": "{\"rank\": 7}",
+   "reason_codes_json": "[]",
+   "rejection_reasons_json": "[]",
+   "scan_task": "scan",
+   "status": "passed",
+   "strategy_name": "ema_trend_stack",
+   "symbol": "XOM",
+   "timeframe": "1h"
+  }
+ ],
+ "screener_calls": [
+  {
+   "scan_task": null,
+   "spec_keys": null,
+   "symbols": [
+    "NVDA",
+    "AMD",
+    "JPM",
+    "META",
+    "MSFT",
+    "TSLA",
+    "XOM",
+    "UNH",
+    "ORCL",
+    "AVGO"
+   ],
+   "timeframes": [
+    "1h",
+    "1d"
+   ]
+  },
+  {
+   "scan_task": null,
+   "spec_keys": null,
+   "symbols": [
+    "NVDA",
+    "AMD",
+    "JPM",
+    "META",
+    "MSFT",
+    "TSLA"
+   ],
+   "timeframes": [
+    "5m",
+    "15m",
+    "1h",
+    "1d"
+   ]
+  },
+  {
+   "scan_task": null,
+   "spec_keys": null,
+   "symbols": [
+    "NVDA",
+    "AMD",
+    "JPM",
+    "META",
+    "MSFT",
+    "TSLA",
+    "XOM",
+    "UNH",
+    "ORCL",
+    "AVGO"
+   ],
+   "timeframes": [
+    "1h",
+    "1d"
+   ]
+  },
+  {
+   "scan_task": null,
+   "spec_keys": null,
+   "symbols": [
+    "NVDA",
+    "AMD",
+    "JPM",
+    "XOM",
+    "UNH",
+    "ORCL",
+    "AVGO"
+   ],
+   "timeframes": [
+    "5m",
+    "15m",
+    "1h",
+    "1d"
+   ]
+  },
+  {
+   "scan_task": null,
+   "spec_keys": null,
+   "symbols": [
+    "NVDA",
+    "AMD",
+    "JPM",
+    "META",
+    "MSFT",
+    "TSLA",
+    "XOM",
+    "UNH",
+    "ORCL",
+    "AVGO"
+   ],
+   "timeframes": [
+    "1h",
+    "1d"
+   ]
+  }
+ ],
+ "signals": [],
+ "strategy_health": [],
+ "tracked_signals": [
+  {
+   "closed_at": null,
+   "entry_price": 120.0,
+   "id": 1,
+   "last_price": 120.0,
+   "opened_at": "2026-10-26T14:00:00+00:00",
+   "origin": "swing_scan",
+   "payload_json": "{\"symbol\":\"NVDA\",\"strategy_name\":\"inside_bar_narrow_range_breakout\",\"state\":\"buy\",\"timeframe\":\"1d\",\"generated_at\":\"2026-10-26T14:00:00+00:00\",\"signal_generated_at\":\"2026-10-26T14:00:00+00:00\",\"candle_timestamp\":\"2026-10-26T14:00:00+00:00\",\"rate_timestamp\":null,\"current_price\":120.0,\"current_bid\":119.99,\"current_ask\":120.01,\"entry_price\":120.0,\"exit_price\":null,\"stop_loss\":116.4,\"take_profit\":127.2,\"targets\":[127.2],\"risk_reward_ratio\":2.0,\"signal_role\":\"entry_long\",\"direction_label\":\"long\",\"confidence_label\":\"high\",\"freshness\":\"fresh\",\"rank\":1,\"rationale\":\"inside_bar_narrow_range_breakout setup on 1d\",\"score\":92.0,\"score_breakdown\":{},\"confidence\":0.7,\"tradable\":true,\"execution_ready\":true,\"supported\":true,\"asset_class\":\"equity\",\"pass_reasons\":[\"trend_aligned\",\"volume_confirmed\"],\"reject_reasons\":[],\"indicators\":{\"rsi_14\":58.0,\"atr_14\":1.44,\"relative_volume\":1.6},\"metadata\":{\"alert_eligible\":true,\"backtest_validated\":true,\"signal_classification\":\"strict_valid\",\"timeframe\":\"1d\",\"source\":\"scanner_strategy\",\"planner\":{\"timing_label\":\"immediate\"}},\"backtest_snapshot\":{\"oos_trades\":60,\"expectancy_r\":0.01}}",
+   "status": "open",
+   "stop_loss": 116.4,
+   "strategy_name": "inside_bar_narrow_range_breakout",
+   "symbol": "NVDA",
+   "take_profit": 127.2,
+   "timeframe": "1d",
+   "updated_at": "2026-10-26T14:37:00+00:00"
+  },
+  {
+   "closed_at": null,
+   "entry_price": 150.0,
+   "id": 2,
+   "last_price": 150.0,
+   "opened_at": "2026-10-26T14:00:00+00:00",
+   "origin": "swing_scan",
+   "payload_json": "{\"symbol\":\"AMD\",\"strategy_name\":\"momentum_breakout\",\"state\":\"buy\",\"timeframe\":\"1d\",\"generated_at\":\"2026-10-26T14:00:00+00:00\",\"signal_generated_at\":\"2026-10-26T14:00:00+00:00\",\"candle_timestamp\":\"2026-10-26T14:00:00+00:00\",\"rate_timestamp\":null,\"current_price\":150.0,\"current_bid\":149.99,\"current_ask\":150.01,\"entry_price\":150.0,\"exit_price\":null,\"stop_loss\":145.5,\"take_profit\":159.0,\"targets\":[159.0],\"risk_reward_ratio\":2.0,\"signal_role\":\"entry_long\",\"direction_label\":\"long\",\"confidence_label\":\"high\",\"freshness\":\"fresh\",\"rank\":2,\"rationale\":\"momentum_breakout setup on 1d\",\"score\":90.0,\"score_breakdown\":{},\"confidence\":0.7,\"tradable\":true,\"execution_ready\":true,\"supported\":true,\"asset_class\":\"equity\",\"pass_reasons\":[\"trend_aligned\",\"volume_confirmed\"],\"reject_reasons\":[],\"indicators\":{\"rsi_14\":58.0,\"atr_14\":1.8,\"relative_volume\":1.6},\"metadata\":{\"alert_eligible\":true,\"backtest_validated\":true,\"signal_classification\":\"strict_valid\",\"timeframe\":\"1d\",\"source\":\"scanner_strategy\",\"planner\":{\"timing_label\":\"immediate\"}},\"backtest_snapshot\":{\"oos_trades\":60,\"expectancy_r\":0.01}}",
+   "status": "open",
+   "stop_loss": 145.5,
+   "strategy_name": "momentum_breakout",
+   "symbol": "AMD",
+   "take_profit": 159.0,
+   "timeframe": "1d",
+   "updated_at": "2026-10-26T14:37:00+00:00"
+  },
+  {
+   "closed_at": null,
+   "entry_price": 200.0,
+   "id": 3,
+   "last_price": 200.0,
+   "opened_at": "2026-10-26T14:00:00+00:00",
+   "origin": "swing_scan",
+   "payload_json": "{\"symbol\":\"JPM\",\"strategy_name\":\"momentum_breakout\",\"state\":\"buy\",\"timeframe\":\"1d\",\"generated_at\":\"2026-10-26T14:00:00+00:00\",\"signal_generated_at\":\"2026-10-26T14:00:00+00:00\",\"candle_timestamp\":\"2026-10-26T14:00:00+00:00\",\"rate_timestamp\":null,\"current_price\":200.0,\"current_bid\":199.99,\"current_ask\":200.01,\"entry_price\":200.0,\"exit_price\":null,\"stop_loss\":194.0,\"take_profit\":212.0,\"targets\":[212.0],\"risk_reward_ratio\":2.0,\"signal_role\":\"entry_long\",\"direction_label\":\"long\",\"confidence_label\":\"high\",\"freshness\":\"fresh\",\"rank\":3,\"rationale\":\"momentum_breakout setup on 1d\",\"score\":89.0,\"score_breakdown\":{},\"confidence\":0.7,\"tradable\":true,\"execution_ready\":true,\"supported\":true,\"asset_class\":\"equity\",\"pass_reasons\":[\"trend_aligned\",\"volume_confirmed\"],\"reject_reasons\":[],\"indicators\":{\"rsi_14\":58.0,\"atr_14\":2.4,\"relative_volume\":1.6},\"metadata\":{\"alert_eligible\":true,\"backtest_validated\":true,\"signal_classification\":\"strict_valid\",\"timeframe\":\"1d\",\"source\":\"scanner_strategy\",\"planner\":{\"timing_label\":\"immediate\"}},\"backtest_snapshot\":{\"oos_trades\":60,\"expectancy_r\":0.01}}",
+   "status": "open",
+   "stop_loss": 194.0,
+   "strategy_name": "momentum_breakout",
+   "symbol": "JPM",
+   "take_profit": 212.0,
+   "timeframe": "1d",
+   "updated_at": "2026-10-26T14:37:00+00:00"
+  },
+  {
+   "closed_at": null,
+   "entry_price": 500.0,
+   "id": 4,
+   "last_price": 500.0,
+   "opened_at": "2026-10-26T14:00:00+00:00",
+   "origin": "swing_scan",
+   "payload_json": "{\"symbol\":\"META\",\"strategy_name\":\"ma_crossover\",\"state\":\"buy\",\"timeframe\":\"1d\",\"generated_at\":\"2026-10-26T14:00:00+00:00\",\"signal_generated_at\":\"2026-10-26T14:00:00+00:00\",\"candle_timestamp\":\"2026-10-26T14:00:00+00:00\",\"rate_timestamp\":null,\"current_price\":500.0,\"current_bid\":499.99,\"current_ask\":500.01,\"entry_price\":500.0,\"exit_price\":null,\"stop_loss\":485.0,\"take_profit\":530.0,\"targets\":[530.0],\"risk_reward_ratio\":2.0,\"signal_role\":\"entry_long\",\"direction_label\":\"long\",\"confidence_label\":\"high\",\"freshness\":\"fresh\",\"rank\":4,\"rationale\":\"ma_crossover setup on 1d\",\"score\":88.0,\"score_breakdown\":{},\"confidence\":0.7,\"tradable\":true,\"execution_ready\":true,\"supported\":true,\"asset_class\":\"equity\",\"pass_reasons\":[\"trend_aligned\",\"volume_confirmed\"],\"reject_reasons\":[],\"indicators\":{\"rsi_14\":58.0,\"atr_14\":6.0,\"relative_volume\":1.6},\"metadata\":{\"alert_eligible\":true,\"backtest_validated\":true,\"signal_classification\":\"strict_valid\",\"timeframe\":\"1d\",\"source\":\"scanner_strategy\",\"planner\":{\"timing_label\":\"immediate\"}},\"backtest_snapshot\":{\"oos_trades\":60,\"expectancy_r\":0.01}}",
+   "status": "open",
+   "stop_loss": 485.0,
+   "strategy_name": "ma_crossover",
+   "symbol": "META",
+   "take_profit": 530.0,
+   "timeframe": "1d",
+   "updated_at": "2026-10-26T14:37:00+00:00"
+  },
+  {
+   "closed_at": null,
+   "entry_price": 400.0,
+   "id": 5,
+   "last_price": 400.0,
+   "opened_at": "2026-10-26T14:00:00+00:00",
+   "origin": "swing_scan",
+   "payload_json": "{\"symbol\":\"MSFT\",\"strategy_name\":\"trend_following\",\"state\":\"buy\",\"timeframe\":\"1d\",\"generated_at\":\"2026-10-26T14:00:00+00:00\",\"signal_generated_at\":\"2026-10-26T14:00:00+00:00\",\"candle_timestamp\":\"2026-10-26T14:00:00+00:00\",\"rate_timestamp\":null,\"current_price\":400.0,\"current_bid\":399.99,\"current_ask\":400.01,\"entry_price\":400.0,\"exit_price\":null,\"stop_loss\":388.0,\"take_profit\":424.0,\"targets\":[424.0],\"risk_reward_ratio\":2.0,\"signal_role\":\"entry_long\",\"direction_label\":\"long\",\"confidence_label\":\"high\",\"freshness\":\"fresh\",\"rank\":5,\"rationale\":\"trend_following setup on 1d\",\"score\":87.0,\"score_breakdown\":{},\"confidence\":0.7,\"tradable\":true,\"execution_ready\":true,\"supported\":true,\"asset_class\":\"equity\",\"pass_reasons\":[\"trend_aligned\",\"volume_confirmed\"],\"reject_reasons\":[],\"indicators\":{\"rsi_14\":58.0,\"atr_14\":4.8,\"relative_volume\":1.6},\"metadata\":{\"alert_eligible\":true,\"backtest_validated\":true,\"signal_classification\":\"strict_valid\",\"timeframe\":\"1d\",\"source\":\"scanner_strategy\",\"planner\":{\"timing_label\":\"immediate\"}},\"backtest_snapshot\":{\"oos_trades\":60,\"expectancy_r\":0.01}}",
+   "status": "open",
+   "stop_loss": 388.0,
+   "strategy_name": "trend_following",
+   "symbol": "MSFT",
+   "take_profit": 424.0,
+   "timeframe": "1d",
+   "updated_at": "2026-10-26T14:37:00+00:00"
+  },
+  {
+   "closed_at": null,
+   "entry_price": 250.0,
+   "id": 6,
+   "last_price": 250.0,
+   "opened_at": "2026-10-26T14:00:00+00:00",
+   "origin": "swing_scan",
+   "payload_json": "{\"symbol\":\"TSLA\",\"strategy_name\":\"mean_reversion\",\"state\":\"buy\",\"timeframe\":\"1d\",\"generated_at\":\"2026-10-26T14:00:00+00:00\",\"signal_generated_at\":\"2026-10-26T14:00:00+00:00\",\"candle_timestamp\":\"2026-10-26T14:00:00+00:00\",\"rate_timestamp\":null,\"current_price\":250.0,\"current_bid\":249.99,\"current_ask\":250.01,\"entry_price\":250.0,\"exit_price\":null,\"stop_loss\":242.5,\"take_profit\":265.0,\"targets\":[265.0],\"risk_reward_ratio\":2.0,\"signal_role\":\"entry_long\",\"direction_label\":\"long\",\"confidence_label\":\"high\",\"freshness\":\"fresh\",\"rank\":6,\"rationale\":\"mean_reversion setup on 1d\",\"score\":86.0,\"score_breakdown\":{},\"confidence\":0.7,\"tradable\":true,\"execution_ready\":true,\"supported\":true,\"asset_class\":\"equity\",\"pass_reasons\":[\"trend_aligned\",\"volume_confirmed\"],\"reject_reasons\":[],\"indicators\":{\"rsi_14\":58.0,\"atr_14\":3.0,\"relative_volume\":1.6},\"metadata\":{\"alert_eligible\":true,\"backtest_validated\":true,\"signal_classification\":\"strict_valid\",\"timeframe\":\"1d\",\"source\":\"scanner_strategy\",\"planner\":{\"timing_label\":\"immediate\"}},\"backtest_snapshot\":{\"oos_trades\":60,\"expectancy_r\":0.01}}",
+   "status": "open",
+   "stop_loss": 242.5,
+   "strategy_name": "mean_reversion",
+   "symbol": "TSLA",
+   "take_profit": 265.0,
+   "timeframe": "1d",
+   "updated_at": "2026-10-26T14:37:00+00:00"
+  },
+  {
+   "closed_at": null,
+   "entry_price": 110.0,
+   "id": 7,
+   "last_price": 110.0,
+   "opened_at": "2026-10-26T14:00:00+00:00",
+   "origin": "swing_scan",
+   "payload_json": "{\"symbol\":\"XOM\",\"strategy_name\":\"ema_trend_stack\",\"state\":\"buy\",\"timeframe\":\"1h\",\"generated_at\":\"2026-10-26T14:00:00+00:00\",\"signal_generated_at\":\"2026-10-26T14:00:00+00:00\",\"candle_timestamp\":\"2026-10-26T14:00:00+00:00\",\"rate_timestamp\":null,\"current_price\":110.0,\"current_bid\":109.99,\"current_ask\":110.01,\"entry_price\":110.0,\"exit_price\":null,\"stop_loss\":106.7,\"take_profit\":116.6,\"targets\":[116.6],\"risk_reward_ratio\":2.0,\"signal_role\":\"entry_long\",\"direction_label\":\"long\",\"confidence_label\":\"high\",\"freshness\":\"fresh\",\"rank\":7,\"rationale\":\"ema_trend_stack setup on 1h\",\"score\":85.0,\"score_breakdown\":{},\"confidence\":0.7,\"tradable\":true,\"execution_ready\":true,\"supported\":true,\"asset_class\":\"equity\",\"pass_reasons\":[\"trend_aligned\",\"volume_confirmed\"],\"reject_reasons\":[],\"indicators\":{\"rsi_14\":58.0,\"atr_14\":1.32,\"relative_volume\":1.6},\"metadata\":{\"alert_eligible\":true,\"backtest_validated\":true,\"signal_classification\":\"strict_valid\",\"timeframe\":\"1h\",\"source\":\"scanner_strategy\",\"planner\":{\"timing_label\":\"immediate\"}},\"backtest_snapshot\":{\"oos_trades\":60,\"expectancy_r\":0.01}}",
+   "status": "open",
+   "stop_loss": 106.7,
+   "strategy_name": "ema_trend_stack",
+   "symbol": "XOM",
+   "take_profit": 116.6,
+   "timeframe": "1h",
+   "updated_at": "2026-10-26T14:37:00+00:00"
+  },
+  {
+   "closed_at": null,
+   "entry_price": 300.0,
+   "id": 8,
+   "last_price": 300.0,
+   "opened_at": "2026-10-26T14:02:00+00:00",
+   "origin": "intraday_scan",
+   "payload_json": "{\"symbol\":\"UNH\",\"strategy_name\":\"vwap_reclaim\",\"state\":\"buy\",\"timeframe\":\"5m\",\"generated_at\":\"2026-10-26T14:35:00+00:00\",\"signal_generated_at\":\"2026-10-26T14:35:00+00:00\",\"candle_timestamp\":\"2026-10-26T14:35:00+00:00\",\"rate_timestamp\":null,\"current_price\":300.0,\"current_bid\":299.99,\"current_ask\":300.01,\"entry_price\":300.0,\"exit_price\":null,\"stop_loss\":291.0,\"take_profit\":318.0,\"targets\":[318.0],\"risk_reward_ratio\":2.0,\"signal_role\":\"entry_long\",\"direction_label\":\"long\",\"confidence_label\":\"high\",\"freshness\":\"fresh\",\"rank\":1,\"rationale\":\"vwap_reclaim setup on 5m\",\"score\":91.0,\"score_breakdown\":{},\"confidence\":0.7,\"tradable\":true,\"execution_ready\":true,\"supported\":true,\"asset_class\":\"equity\",\"pass_reasons\":[\"trend_aligned\",\"volume_confirmed\"],\"reject_reasons\":[],\"indicators\":{\"rsi_14\":58.0,\"atr_14\":3.6,\"relative_volume\":1.6},\"metadata\":{\"alert_eligible\":true,\"backtest_validated\":true,\"signal_classification\":\"strict_valid\",\"timeframe\":\"5m\",\"source\":\"scanner_strategy\",\"planner\":{\"timing_label\":\"immediate\"}},\"backtest_snapshot\":{\"oos_trades\":60,\"expectancy_r\":0.01}}",
+   "status": "open",
+   "stop_loss": 291.0,
+   "strategy_name": "vwap_reclaim",
+   "symbol": "UNH",
+   "take_profit": 318.0,
+   "timeframe": "5m",
+   "updated_at": "2026-10-26T14:35:00+00:00"
+  },
+  {
+   "closed_at": null,
+   "entry_price": 180.0,
+   "id": 9,
+   "last_price": 180.0,
+   "opened_at": "2026-10-26T14:02:00+00:00",
+   "origin": "intraday_scan",
+   "payload_json": "{\"symbol\":\"ORCL\",\"strategy_name\":\"rsi_reversal\",\"state\":\"buy\",\"timeframe\":\"15m\",\"generated_at\":\"2026-10-26T14:35:00+00:00\",\"signal_generated_at\":\"2026-10-26T14:35:00+00:00\",\"candle_timestamp\":\"2026-10-26T14:35:00+00:00\",\"rate_timestamp\":null,\"current_price\":180.0,\"current_bid\":179.99,\"current_ask\":180.01,\"entry_price\":180.0,\"exit_price\":null,\"stop_loss\":174.6,\"take_profit\":190.8,\"targets\":[190.8],\"risk_reward_ratio\":2.0,\"signal_role\":\"entry_long\",\"direction_label\":\"long\",\"confidence_label\":\"high\",\"freshness\":\"fresh\",\"rank\":2,\"rationale\":\"rsi_reversal setup on 15m\",\"score\":90.0,\"score_breakdown\":{},\"confidence\":0.7,\"tradable\":true,\"execution_ready\":true,\"supported\":true,\"asset_class\":\"equity\",\"pass_reasons\":[\"trend_aligned\",\"volume_confirmed\"],\"reject_reasons\":[],\"indicators\":{\"rsi_14\":58.0,\"atr_14\":2.16,\"relative_volume\":1.6},\"metadata\":{\"alert_eligible\":true,\"backtest_validated\":true,\"signal_classification\":\"strict_valid\",\"timeframe\":\"15m\",\"source\":\"scanner_strategy\",\"planner\":{\"timing_label\":\"immediate\"}},\"backtest_snapshot\":{\"oos_trades\":60,\"expectancy_r\":0.01}}",
+   "status": "open",
+   "stop_loss": 174.6,
+   "strategy_name": "rsi_reversal",
+   "symbol": "ORCL",
+   "take_profit": 190.8,
+   "timeframe": "15m",
+   "updated_at": "2026-10-26T14:35:00+00:00"
+  },
+  {
+   "closed_at": null,
+   "entry_price": 170.0,
+   "id": 10,
+   "last_price": 170.0,
+   "opened_at": "2026-10-26T14:02:00+00:00",
+   "origin": "intraday_scan",
+   "payload_json": "{\"symbol\":\"AVGO\",\"strategy_name\":\"ma_crossover\",\"state\":\"buy\",\"timeframe\":\"1d\",\"generated_at\":\"2026-10-26T14:35:00+00:00\",\"signal_generated_at\":\"2026-10-26T14:35:00+00:00\",\"candle_timestamp\":\"2026-10-26T14:35:00+00:00\",\"rate_timestamp\":null,\"current_price\":170.0,\"current_bid\":169.99,\"current_ask\":170.01,\"entry_price\":170.0,\"exit_price\":null,\"stop_loss\":164.9,\"take_profit\":180.2,\"targets\":[180.2],\"risk_reward_ratio\":2.0,\"signal_role\":\"entry_long\",\"direction_label\":\"long\",\"confidence_label\":\"high\",\"freshness\":\"fresh\",\"rank\":3,\"rationale\":\"ma_crossover setup on 1d\",\"score\":70.0,\"score_breakdown\":{},\"confidence\":0.7,\"tradable\":true,\"execution_ready\":true,\"supported\":true,\"asset_class\":\"equity\",\"pass_reasons\":[\"trend_aligned\",\"volume_confirmed\"],\"reject_reasons\":[],\"indicators\":{\"rsi_14\":58.0,\"atr_14\":2.04,\"relative_volume\":1.6},\"metadata\":{\"alert_eligible\":true,\"backtest_validated\":true,\"signal_classification\":\"strict_valid\",\"timeframe\":\"1d\",\"source\":\"scanner_strategy\",\"planner\":{\"timing_label\":\"immediate\"}},\"backtest_snapshot\":{\"oos_trades\":60,\"expectancy_r\":0.01}}",
+   "status": "open",
+   "stop_loss": 164.9,
+   "strategy_name": "ma_crossover",
+   "symbol": "AVGO",
+   "take_profit": 180.2,
+   "timeframe": "1d",
+   "updated_at": "2026-10-26T14:35:00+00:00"
+  }
+ ]
+}
