@@ -9,10 +9,11 @@
   where paper holds or has an unfilled entry, and at most MAX_OPEN_PAPER_ONLY (3) are open at once;
 * it is tagged; nothing else is, and with the switch off nothing changes and nothing is read;
 * its safety blocks are logged once a day; its notices say it is not copied;
-* the swing scan scans paper-only specs only after a run's own entries were proposed, in a
-  second scan inside the same run's deadline.
+* a focused swing run's own scan takes its paper-only specs along (its own swing timeframes
+  only), and its one pass proposes and executes its eToro-eligible entries first; paper-only
+  candidates are tracked, never alerted.
 
-No wall clock: the pass's clock and the scan's monotonic clock are patched.
+No wall clock: the pass's clocks are patched.
 """
 
 from __future__ import annotations
@@ -23,9 +24,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import app.workflow.operations as operations
 import app.workflow.paper_only as paper_only_module
-import app.workflow.swing_focus as swing_focus
 from app.automation.unattended import PaperAutoTradingService
 from app.broker.etoro_live_mirror import STATE_KEY
 from app.broker.etoro_live_scorecard import SCORECARD_KEY
@@ -45,12 +44,6 @@ from app.workflow.paper_only import (
     PaperOnlyPass,
 )
 from app.workflow.service import SignalWorkflowService
-from app.workflow.swing_focus import (
-    PAPER_ONLY_CURSOR_KEY,
-    PAPER_ONLY_PASS_SECONDS,
-    PAPER_ONLY_TOP_K,
-    paper_only_scan,
-)
 from tests.conftest import make_settings
 from tests.test_workflow_service import (
     FakeAlertHistory,
@@ -768,31 +761,11 @@ def test_paper_s_per_symbol_limit_keeps_untagged_entries_out_of_a_held_paper_onl
 # --- the swing scan --------------------------------------------------------------------------
 
 
-class _Clock:
-    def __init__(self):
-        self.now = 1_000.0
-
-    def __call__(self):
-        return self.now
-
-
 class _Screener:
-    """scan_universe with a cancel hook; each call takes ``took`` seconds of the fake clock."""
+    """scan_universe as a focused run calls it: one candidate per spec key, the paper-only
+    keys' after the others (as the screener's own cut orders them, app/screener/scan_ranking)."""
 
-    def __init__(
-        self,
-        clock,
-        *,
-        evaluated=None,
-        took=(20.0, 20.0),
-        errors=(),
-        fail_second=False,
-        second_evaluated=None,
-        events=None,
-    ):
-        self.clock, self.evaluated, self.took = clock, evaluated, list(took)
-        self.second_evaluated = second_evaluated
-        self.errors, self.fail_second = list(errors), fail_second
+    def __init__(self, events=None):
         self.events = events if events is not None else []
         self.calls: list[dict] = []
 
@@ -808,35 +781,22 @@ class _Screener:
         scan_task="manual_scan",
         strategy_spec_keys=None,
         cancel_event=None,
+        paper_only_spec_keys=None,
     ):
-        self.calls.append(
-            {
-                "symbols": list(symbols),
-                "timeframes": list(timeframes),
-                "keys": list(strategy_spec_keys or []),
-                "limit": limit,
-                "force_refresh": force_refresh,
-                "cancel_event": cancel_event,
-            }
-        )
-        self.events.append(("scan", list(strategy_spec_keys or [])))
-        self.clock.now += self.took[len(self.calls) - 1]
-        if len(self.calls) == 2 and self.fail_second:
-            raise RuntimeError("provider down")
-        first = len(self.calls) == 1
-        count = self.evaluated if first else self.second_evaluated
-        count = len(symbols) if count is None else count
-        candidate = _scan_candidate(
-            symbols[0], (strategy_spec_keys or ["x:1d"])[0].split(":")[0], 50.0
-        )
+        keys, riding = list(strategy_spec_keys or []), list(paper_only_spec_keys or [])
+        self.calls.append({"keys": keys, "paper_only": riding, "timeframes": list(timeframes)})
+        self.events.append(("scan", keys, riding))
+        candidates = [  # NVDA for the run's own spec, AAPL for its paper-only one
+            _scan_candidate(symbols[index % len(symbols)], key.split(":")[0], 50.0)
+            for index, key in enumerate([*keys, *riding])
+        ]
         return ScreenerRunResponse(
             generated_at=NOW.isoformat(),
             universe_name="t",
             timeframes=list(timeframes),
-            evaluated_symbols=count,
-            evaluated_strategy_runs=count,
-            candidates=[candidate],
-            errors=self.errors if first else [],
+            evaluated_symbols=len(symbols),
+            evaluated_strategy_runs=len(symbols),
+            candidates=candidates,
         )
 
     def strategy_spec_keys_for_timeframes(self, timeframes):
@@ -850,203 +810,13 @@ class _Screener:
 
 
 SYMBOLS = ["NVDA", "AAPL", "UBER", "ADP"]
-BATCH = {"paper_only_spec_keys": ["momentum_breakout:1d"], "paper_only_timeframes": ["1d"]}
-
-
-def _scan(
-    tmp_path,
-    monkeypatch,
-    screener,
-    *,
-    batch=BATCH,
-    cancel_event=None,
-    first=None,
-    state=None,
-    fail_after_create=False,
-    **settings,
-):
-    """The run's own scan, then ``paper_only_scan`` (its auto-propose pass is recorded)."""
-
-    monkeypatch.setattr(swing_focus.time, "monotonic", screener.clock)
-    passes, tracked, origins = [], [], []
-
-    def propose(_service, extra, *, origin, notify, paper_only):
-        passes.append(extra)
-        origins.append(origin)
-        assert paper_only.only  # the second pass: paper-only candidates alone
-        for candidate in extra.candidates:
-            paper_only.created(candidate)
-            if fail_after_create:
-                raise RuntimeError("broker down mid-pass")
-        return len(extra.candidates)
-
-    monkeypatch.setattr(operations, "auto_propose_candidates", propose)
-    service = SimpleNamespace(
-        market_screener=screener,
-        runtime_state=state if state is not None else FakeState(),
-        settings=make_settings(tmp_path, **settings),
-        _track_candidates=lambda extra, *, origin: tracked.append(extra),
-    )
-    kwargs = {
-        "symbols": list(SYMBOLS),
-        "timeframes": ["1d"],
-        "limit": 10,
-        "force_refresh": True,
-        "strategy_spec_keys": ["inside_bar_narrow_range_breakout:1d"],
-    }
-    if cancel_event is not None:
-        kwargs["cancel_event"] = cancel_event
-    started = screener.clock()
-    response = screener.scan_universe(**kwargs) if first is None else first
-    created = paper_only_scan(
-        service, kwargs, response, batch, started, origin="swing_scan", notify=False
-    )
-    return SimpleNamespace(
-        response=response,
-        service=service,
-        created=created,
-        passes=passes,
-        tracked=tracked,
-        origins=origins,
-    )
-
-
-def test_paper_only_specs_scan_after_the_runs_own_pass_with_its_time_left(
-    tmp_path, monkeypatch
-) -> None:
-    screener = _Screener(_Clock())
-    batch = {
-        "paper_only_spec_keys": ["momentum_breakout:1d"],
-        "paper_only_timeframes": ["1h", "1d"],
-    }
-    run = _scan(tmp_path, monkeypatch, screener, batch=batch, screener_batch_deadline_seconds=120.0)
-    first, second = screener.calls
-    assert first["keys"] == ["inside_bar_narrow_range_breakout:1d"] and first["limit"] == 10
-    assert second["keys"] == ["momentum_breakout:1d"] and second["force_refresh"] is False
-    assert second["limit"] == PAPER_ONLY_TOP_K == 3  # not the run's top-k
-    assert first["timeframes"] == ["1d"] and second["timeframes"] == ["1h", "1d"]
-    assert second["symbols"] == sorted(SYMBOLS)
-    assert second["cancel_event"].stop_at == 1_000.0 + 120.0  # what is left of the same deadline
-    # The run's own candidates stay as they were; the paper-only ones get their own pass.
-    assert [c.strategy_name for c in run.response.candidates] == [
-        "inside_bar_narrow_range_breakout"
-    ]
-    (extra,) = run.passes
-    assert run.tracked == [extra] and [c.strategy_name for c in extra.candidates] == [
-        "momentum_breakout"
-    ]
-    assert run.created == 1
-    assert run.response.coverage["paper_only_scan"] == {
-        "specs": 1,  # a count: the keys are in the verdicts
-        "symbols_evaluated": 4,
-        "candidates": 1,
-        "errors": [],
-        "proposals_created": 1,
-    }
-    assert run.service.runtime_state.get(PAPER_ONLY_CURSOR_KEY) == "0"  # all 4 of 4: wrapped
-
-
-def test_no_paper_only_scan_when_the_etoro_passing_specs_did_not_finish(
-    tmp_path, monkeypatch
-) -> None:
-    for kwargs, reason in (
-        ({"evaluated": 3}, "etoro_passing_specs_unfinished"),
-        ({"errors": ["scan_deadline_exceeded"]}, "etoro_passing_specs_unfinished"),
-        ({"errors": ["scan_cancelled"]}, "etoro_passing_specs_unfinished"),
-        ({"took": (76.0, 1.0)}, "run_deadline_too_close"),  # 44 s left of 120: under 45 s
-    ):
-        screener = _Screener(_Clock(), **kwargs)
-        run = _scan(tmp_path, monkeypatch, screener, screener_batch_deadline_seconds=120.0)
-        assert len(screener.calls) == 1 and run.passes == [] and run.created == 0, kwargs
-        assert run.response.coverage["paper_only_scan"] == {"specs": 1, "skipped": reason}
-    screener = _Screener(_Clock(), took=(75.0, 1.0))  # exactly 45 s left: it runs
-    _scan(tmp_path, monkeypatch, screener, screener_batch_deadline_seconds=120.0)
-    assert len(screener.calls) == 2
-
-
-def test_the_cadence_ticks_scan_stop_less_one_proposal_bounds_the_paper_only_scan(
-    tmp_path, monkeypatch
-) -> None:
-    from app.workflow.cadence_budget import ScanDeadline
-
-    assert PAPER_ONLY_PASS_SECONDS == 10.0 + PROPOSAL_SECONDS  # overshoot + one proposal
-    tick_stop = 1_020.0 + 60.0 + PAPER_ONLY_PASS_SECONDS  # the first scan ends at 1_020
-    screener = _Screener(_Clock())
-    _scan(
-        tmp_path,
-        monkeypatch,
-        screener,
-        cancel_event=ScanDeadline(tick_stop),
-        screener_batch_deadline_seconds=500.0,
-    )
-    assert screener.calls[1]["cancel_event"].stop_at == 1_080.0  # the tick's stop less it
-    early = _Screener(_Clock())
-    run = _scan(
-        tmp_path,
-        monkeypatch,
-        early,
-        cancel_event=ScanDeadline(1_020.0 + 44.9 + PAPER_ONLY_PASS_SECONDS),
-        screener_batch_deadline_seconds=500.0,
-    )
-    assert len(early.calls) == 1  # 44.9 s left before the stop less it: under 45 s
-    assert run.response.coverage["paper_only_scan"]["skipped"] == "run_deadline_too_close"
-
-
-def test_without_a_batch_deadline_the_cadence_stop_bounds_it_and_without_both_it_skips(
-    tmp_path, monkeypatch
-) -> None:
-    from app.workflow.cadence_budget import ScanDeadline
-
-    screener = _Screener(_Clock())
-    _scan(
-        tmp_path,
-        monkeypatch,
-        screener,
-        cancel_event=ScanDeadline(1_080.0 + PAPER_ONLY_PASS_SECONDS),
-        screener_batch_deadline_seconds=0.0,
-    )
-    assert screener.calls[1]["cancel_event"].stop_at == 1_080.0
-    unbounded = _Screener(_Clock())
-    run = _scan(tmp_path, monkeypatch, unbounded, screener_batch_deadline_seconds=0.0)
-    assert len(unbounded.calls) == 1 and run.passes == []
-    assert run.response.coverage["paper_only_scan"] == {"specs": 1, "skipped": "no_run_deadline"}
-
-
-def test_a_failing_paper_only_scan_keeps_the_runs_own_candidates(tmp_path, monkeypatch) -> None:
-    screener = _Screener(_Clock(), fail_second=True)
-    run = _scan(tmp_path, monkeypatch, screener, screener_batch_deadline_seconds=120.0)
-    assert [c.strategy_name for c in run.response.candidates] == [
-        "inside_bar_narrow_range_breakout"
-    ]
-    assert run.passes == [] and run.created == 0
-    assert run.response.coverage["paper_only_scan"] == {"specs": 1, "error": "provider down"}
-
-
-def test_a_first_response_without_coverage_never_fails_the_run(tmp_path, monkeypatch) -> None:
-    first = SimpleNamespace(evaluated_symbols=4, errors=[], candidates=[])  # no coverage field
-    screener = _Screener(_Clock())
-    run = _scan(tmp_path, monkeypatch, screener, first=first, screener_batch_deadline_seconds=120.0)
-    assert run.created == 1 and not hasattr(first, "coverage")
-
-
-def test_the_paper_only_cursor_sweeps_the_symbols(tmp_path, monkeypatch) -> None:
-    state = FakeState()
-    starts = []
-    for _ in range(2):
-        screener = _Screener(_Clock(), second_evaluated=3)  # the deadline stops it after 3
-        _scan(tmp_path, monkeypatch, screener, state=state, screener_batch_deadline_seconds=120.0)
-        starts.append(screener.calls[1]["symbols"])
-    assert starts == [["AAPL", "ADP", "NVDA", "UBER"], ["UBER", "AAPL", "ADP", "NVDA"]]
-    assert state.get(PAPER_ONLY_CURSOR_KEY) == "2"  # (0 + 3 + 3) % 4
-
-
 AUTOMATIC = dict(paper_auto_approve_proposals=True, paper_auto_operation_mode="unattended")
 
 
-def _swing_workflow(tmp_path, screener, state, *, auto=None, **settings):
+def _swing_workflow(tmp_path, screener, state, *, auto=None, proposals=None, **settings):
     values = dict(
         require_strategy_oos_evidence=True,
-        screener_spec_coverage_mode="scheduled_all",
+        screener_spec_coverage_mode="scheduled_all",  # its swing run asks for 1h and 1d
         market_universe_symbols=SYMBOLS,
         allowed_instruments=SYMBOLS,
     )
@@ -1057,51 +827,52 @@ def _swing_workflow(tmp_path, screener, state, *, auto=None, **settings):
     return SignalWorkflowService(
         settings=workflow_settings,
         market_screener=screener,
-        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="NVDA", last_execution=1.0)),
+        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="NVDA", last_execution=101.0)),
         notifier=FakeNotifier(),
         tracked_signals=FakeTrackedSignals(),
         alert_history=FakeAlertHistory(),
         runtime_state=state,
         run_logs=FakeLogs(),
+        proposal_service=proposals,
         auto_trading_service=auto,
     )
 
 
-def test_the_focused_swing_run_lists_the_paper_only_specs_after_the_etoro_passing_ones(
-    tmp_path, monkeypatch
-) -> None:
-    clock = _Clock()
-    monkeypatch.setattr(swing_focus.time, "monotonic", clock)
-
+def test_a_focused_swing_run_takes_its_paper_only_specs_along_in_its_own_scan(tmp_path) -> None:
     def run(with_auto=True, **settings):
-        screener = _Screener(clock, took=(1.0, 1.0))
+        screener = _Screener()
         auto, state = _auto(tmp_path / "auto")
         auto.runtime_state = state
         workflow = _swing_workflow(
             tmp_path, screener, state, auto=auto if with_auto else None, **settings
         )
         workflow.run_swing_scan(notify=False)
-        return [call["keys"] for call in screener.calls]
+        return [(call["keys"], call["paper_only"]) for call in screener.calls]
 
-    assert run(**AUTOMATIC) == [["inside_bar_narrow_range_breakout:1d"], ["momentum_breakout:1d"]]
-    # No paper-only scan unless a paper-only entry could be proposed and executed at once.
-    first_only = [["inside_bar_narrow_range_breakout:1d"]]
-    assert run(**AUTOMATIC, paper_oos_bar_enabled=False) == first_only
-    # Without the gate there is no focus at all: one scan, the normal rotation.
-    assert len(run(**AUTOMATIC, require_strategy_oos_evidence=False)) == 1
+    etoro = ["inside_bar_narrow_range_breakout:1d"]
+    assert run(**AUTOMATIC) == [(etoro, ["momentum_breakout:1d"])]  # one scan, both kinds
+    # The default coverage mode's swing run (1d and 1w) is focused the same way.
+    default = run(**AUTOMATIC, screener_spec_coverage_mode="default")
+    assert default == [(etoro, ["momentum_breakout:1d"])]
+    # No paper-only spec unless a paper-only entry could be proposed and executed at once.
+    alone = [(etoro, [])]
+    assert run(**AUTOMATIC, paper_oos_bar_enabled=False) == alone
     assert (
         run(
             auto_propose_enabled=True,
             paper_auto_approve_proposals=False,
             paper_auto_operation_mode="unattended",
         )
-        == first_only
+        == alone
     )  # proposals would wait for a person: paper-only entries are automatic only
-    assert run(paper_auto_approve_proposals=True, paper_auto_operation_mode="shadow") == first_only
-    assert run(with_auto=False, **AUTOMATIC) == first_only
+    assert run(paper_auto_approve_proposals=True, paper_auto_operation_mode="shadow") == alone
+    assert run(with_auto=False, **AUTOMATIC) == alone
+    # Without the gate there is no focus: the normal rotation, every spec under one cut.
+    ((keys, riding),) = run(**AUTOMATIC, require_strategy_oos_evidence=False)
+    assert riding == [] and "momentum_breakout:1d" in keys
 
 
-def test_the_paper_only_specs_are_swing_keys_never_in_the_first_scan(tmp_path) -> None:
+def test_paper_only_specs_ride_only_on_the_runs_own_swing_timeframes(tmp_path) -> None:
     from app.workflow.swing_focus import focused_spec_batch
 
     minute_oos_only = {  # passes eToro's full check, fails paper's minute-bar costs
@@ -1110,33 +881,44 @@ def test_the_paper_only_specs_are_swing_keys_never_in_the_first_scan(tmp_path) -
         "paper_oos_passed": True,
         "oos_expectancy_r": 0.05,
     }
-    verdicts = {
+    every = {
         **VERDICTS,
         "rsi_reversal:15m": minute_oos_only,
         "vwap_reversion:5m": {"passed": False, "paper_oos_passed": True},
+        "vwap_reversion:15m": {"passed": False, "paper_oos_passed": True},  # 15m bars fetched
         "momentum_breakout:1w": OOS_ONLY,
+        "momentum_breakout:1h": OOS_ONLY,
     }
-    auto, state = _auto(tmp_path, verdicts=verdicts, **AUTOMATIC)
-    keys = [*verdicts]
-    service = SimpleNamespace(
-        settings=auto.settings,
-        runtime_state=state,
-        auto_trading=auto,
-        market_screener=SimpleNamespace(strategy_spec_keys_for_timeframes=lambda _tf: keys),
-    )
-    batch = focused_spec_batch(service, task="swing_scan", timeframes=["1d", "1w", "15m", "5m"])
-    assert "rsi_reversal:15m" in batch["strategy_spec_keys"]  # eToro-passing: the first scan
-    assert batch["paper_only_spec_keys"] == ["momentum_breakout:1d", "momentum_breakout:1w"]
+
+    def batch(verdicts):
+        keys = [*verdicts]
+        auto, state = _auto(tmp_path, verdicts=verdicts, **AUTOMATIC)
+        service = SimpleNamespace(
+            settings=auto.settings,
+            runtime_state=state,
+            auto_trading=auto,
+            market_screener=SimpleNamespace(strategy_spec_keys_for_timeframes=lambda _tf: keys),
+        )
+        return focused_spec_batch(service, task="swing_scan", timeframes=["1d", "1w", "15m", "5m"])
+
+    focused = batch(every)
+    assert focused["strategy_spec_keys"] == [
+        "inside_bar_narrow_range_breakout:1d",
+        "rsi_reversal:15m",  # eToro-passing: the run's own key, never riding along
+    ]
+    assert focused["timeframes"] == ["1d", "15m"]  # the run's own bars, unchanged by its riders
+    # Never a minute key, nor a 1w or 1h key while the run fetches no 1w or 1h bars.
+    assert focused["paper_only_spec_keys"] == ["momentum_breakout:1d"]
+    both = batch({**every, "trend_following:1h": FULL})  # now the run fetches 1h bars
+    assert both["timeframes"] == ["1d", "15m", "1h"]
+    assert both["paper_only_spec_keys"] == ["momentum_breakout:1d", "momentum_breakout:1h"]
 
 
-def test_the_runs_own_entries_are_proposed_and_executed_before_the_paper_only_scan_starts(
-    tmp_path, monkeypatch
-) -> None:
-    clock = _Clock()
-    monkeypatch.setattr(swing_focus.time, "monotonic", clock)
+def test_the_runs_etoro_eligible_entries_go_first_in_its_one_pass(tmp_path) -> None:
     events: list[tuple] = []
-    screener = _Screener(clock, took=(1.0, 1.0), events=events)
+    screener = _Screener(events=events)
     auto, state = _auto(tmp_path / "auto")
+    auto.runtime_state = state
     auto.approve_enqueue_execute = (
         lambda proposal, candidate, **_k: events.append(
             ("execute", candidate.symbol, candidate.strategy_name)
@@ -1151,43 +933,49 @@ def test_the_runs_own_entries_are_proposed_and_executed_before_the_paper_only_sc
         return create(request)
 
     proposals.create_proposal = create_proposal
-    workflow = SignalWorkflowService(
-        settings=make_settings(
-            tmp_path,
-            require_strategy_oos_evidence=True,
-            auto_propose_enabled=True,
-            **AUTOMATIC,
-            screener_spec_coverage_mode="scheduled_all",
-            market_universe_symbols=SYMBOLS,
-            allowed_instruments=SYMBOLS,
-        ),
-        market_screener=screener,
-        market_data_engine=FakeMarketDataEngine(MarketQuote(symbol="NVDA", last_execution=101.0)),
-        notifier=FakeNotifier(),
-        tracked_signals=FakeTrackedSignals(),
-        alert_history=FakeAlertHistory(),
-        runtime_state=state,
-        run_logs=FakeLogs(),
-        proposal_service=proposals,
-        auto_trading_service=auto,
+    workflow = _swing_workflow(
+        tmp_path, screener, state, auto=auto, proposals=proposals, auto_propose_enabled=True,
+        **AUTOMATIC,
     )
     result = workflow.run_swing_scan(notify=False)
     assert result.status == "ok"
     assert events == [
-        ("scan", ["inside_bar_narrow_range_breakout:1d"]),
+        ("scan", ["inside_bar_narrow_range_breakout:1d"], ["momentum_breakout:1d"]),
         ("propose", "NVDA", "inside_bar_narrow_range_breakout"),
         ("execute", "NVDA", "inside_bar_narrow_range_breakout"),
-        ("scan", ["momentum_breakout:1d"]),  # only now
         ("propose", "AAPL", "momentum_breakout"),
         ("execute", "AAPL", "momentum_breakout"),
     ]
-    # Bounded by the run's deadline counted from its first scan's start (120 s by default).
-    assert screener.calls[1]["cancel_event"].stop_at == 1_000.0 + 120.0
     tags = [
         {k: v for k, v in r.metadata.items() if k.startswith("paper_only")}
         for r in proposals.created
     ]
     assert tags == [{}, TAGS]
+    (completed,) = [p for e, p in workflow.run_logs.items if e == "workflow_swing_scan_completed"]
+    assert completed["proposals_created"] == 2
+    assert state["workflow:last_swing_scan_at"]  # the swing due time, stamped by the run
+
+
+def test_paper_only_candidates_are_tracked_but_get_no_scan_alert(tmp_path) -> None:
+    from app.workflow.swing_focus import alerted
+
+    screener = _Screener()
+    auto, state = _auto(tmp_path / "auto")
+    auto.runtime_state = state
+    workflow = _swing_workflow(tmp_path, screener, state, auto=auto, **AUTOMATIC)
+    workflow.run_swing_scan(notify=True)
+    (digest,) = workflow.alert_history.items
+    assert [c["strategy_name"] for c in digest["payload"]["candidates"]] == [
+        "inside_bar_narrow_range_breakout"
+    ]
+    assert sorted(item.strategy_name for item in workflow.tracked_signals.items) == [
+        "inside_bar_narrow_range_breakout",
+        "momentum_breakout",
+    ]
+    response = _response(_scan_candidate("NVDA", "momentum_breakout", 50.0))
+    assert alerted(response, None) is response  # no spec batch, nothing riding: as it was
+    assert alerted(response, {"paper_only_spec_keys": ["trend_following:1d"]}) is response
+    assert alerted(response, {"paper_only_spec_keys": ["momentum_breakout:1d"]}).candidates == []
 
 
 def test_the_queue_refuses_a_tagged_order_once_the_etoro_account_holds_its_symbol(
@@ -1452,56 +1240,6 @@ def test_a_person_cannot_approve_a_paper_only_proposal(tmp_path) -> None:
         ).status
         == ApprovalStatus.APPROVED
     )  # the unattended path in its own pass
-
-
-def test_the_second_pass_considers_only_candidates_paper_only_by_its_own_read(tmp_path) -> None:
-    auto, state = _auto(tmp_path)
-    candidates = [
-        _candidate("A", "momentum_breakout"),
-        _candidate("B", "inside_bar_narrow_range_breakout"),
-        _candidate("C", "trend_following"),
-    ]
-    assert [c.symbol for c in PaperOnlyPass(auto, only=True).order(candidates)] == ["A"]
-    flipped = {**VERDICTS, "momentum_breakout:1d": FULL}  # it passed the full check since
-    state[VERDICTS_KEY] = json.dumps({"verdicts": flipped})
-    assert PaperOnlyPass(auto, only=True).order(candidates) == []
-    assert [c.symbol for c in PaperOnlyPass(auto).order(candidates)] == ["A", "B", "C"]
-
-
-def test_the_second_pass_counts_what_it_created_even_when_it_raises(tmp_path, monkeypatch) -> None:
-    screener = _Screener(_Clock())
-    run = _scan(
-        tmp_path,
-        monkeypatch,
-        screener,
-        fail_after_create=True,
-        screener_batch_deadline_seconds=120.0,
-    )
-    assert run.created == 1
-    coverage = run.response.coverage["paper_only_scan"]
-    assert (coverage["proposals_created"], coverage["error"]) == (1, "broker down mid-pass")
-    assert coverage["symbols_evaluated"] == 4  # the scan's own counts are kept
-    assert run.origins == ["swing_scan:paper_only"]  # its own funnel and log origin
-
-
-def test_the_cadence_is_stamped_before_the_paper_only_scan(tmp_path, monkeypatch) -> None:
-    from app.workflow.schedule import is_due
-
-    clock = _Clock()
-    monkeypatch.setattr(swing_focus.time, "monotonic", clock)
-    monkeypatch.setattr(operations, "utc_now", lambda: NOW + timedelta(seconds=clock.now - 1_000))
-    screener = _Screener(clock, took=(1.0, 300.0))  # a very long paper-only scan
-    auto, state = _auto(tmp_path / "auto")
-    auto.runtime_state = state
-    workflow = _swing_workflow(tmp_path, screener, state, auto=auto, **AUTOMATIC)
-    workflow.run_swing_scan(notify=False)
-    assert len(screener.calls) == 2
-    stamped = datetime.fromisoformat(state["workflow:last_swing_scan_at"])
-    assert stamped == NOW + timedelta(seconds=1)  # after the run's own pass, not 301 s
-    import app.workflow.schedule as schedule
-
-    monkeypatch.setattr(schedule, "utc_now", lambda: NOW + timedelta(minutes=10, seconds=1))
-    assert is_due(workflow, "workflow:last_swing_scan_at", 10)  # 10 min after its own pass
 
 
 def test_a_tagged_order_is_never_mirrored_to_the_etoro_demo_comparison(tmp_path) -> None:

@@ -137,6 +137,7 @@ class MarketScreenerService:
         scan_task: str = "manual_scan",
         strategy_spec_keys: list[str] | None = None,
         cancel_event: Any | None = None,
+        paper_only_spec_keys: list[str] | None = None,
     ) -> ScreenerRunResponse:
         # The scan's no_signal decisions are queued for this scan's thread and written
         # once per symbol and as the scan ends (raising in the scan if that fails).
@@ -152,6 +153,7 @@ class MarketScreenerService:
                 scan_task=scan_task,
                 strategy_spec_keys=strategy_spec_keys,
                 cancel_event=cancel_event,
+                paper_only_spec_keys=paper_only_spec_keys,
             )
 
     def _deferred_scan_decisions(self) -> AbstractContextManager[Any]:
