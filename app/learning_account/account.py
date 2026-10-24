@@ -426,11 +426,10 @@ class LearningAccount:
         running = self.route == routes.RUNNING
         # Verified earlier in this process: an unreadable identity still lets reconcile run.
         reconcile_only = self.route == routes.VERIFICATION_FAILED and self._verified_once
-        offered = self.drain()
+        drained = self.drain()  # emptied every pass: what a pass cannot use is dropped
         if not running and not reconcile_only:
             return
-        if not running:
-            offered = []
+        offered = drained if running else []  # a reconcile-only pass enters nothing
         reconcile_due = self.reconcile_at is None or now >= self.reconcile_at
         sweep_due = self.sweep_at is None or now >= self.sweep_at
         if not self.lease.ensure(work=bool(offered) or reconcile_due or sweep_due):
@@ -447,7 +446,7 @@ class LearningAccount:
                 book = reconcile(self, book, now)
             if sweep_due:
                 sweep_untracked(self, book, now)
-            if offered and running and not self.stopping:
+            if offered and not self.stopping:
                 self.entries(book, offered, now)
         except records.BookConflict:
             self.log_once("book_conflict", "learning_account_status", {"route": self.route, "error": "book_changed"})

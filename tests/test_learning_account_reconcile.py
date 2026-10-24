@@ -107,6 +107,7 @@ def test_intraday_positions_are_flattened_before_the_close_legs_first(tmp_path) 
     rig.tick(60)
     ((symbol, qty, client_id),) = rig.broker.sent("submit_close")
     assert (symbol, qty) == ("NVDA", 49.0)
+    assert [leg["status"] for leg in _only(rig)["legs"]] == ["canceled", "canceled"]  # the book follows the legs
     assert client_id == close_client_order_id(trade["trade_id"], 0)
     (flatten,) = rig.logs.named("learning_account_flatten")
     assert flatten["reason"] == "session_flatten" and flatten["learning_account"] is True
@@ -458,3 +459,44 @@ def test_no_leg_cancel_or_close_while_stopping(tmp_path) -> None:
     rig.tick()
     assert _only(rig)["flatten_reason"] == "session_flatten"
     assert rig.broker.sent("cancel") == [] and rig.broker.sent("submit_close") == []
+
+
+def test_the_flatten_window_is_the_setting_or_ten_minutes(tmp_path) -> None:
+    from app.learning_account.reconcile import flatten_minutes
+
+    assert flatten_minutes(Rig(tmp_path / "a", intraday_flatten_minutes_before_close=15.0).settings) == 15.0
+    assert flatten_minutes(Rig(tmp_path / "b", intraday_flatten_minutes_before_close=0.0).settings) == 10.0
+
+
+def test_no_close_without_thirty_seconds_of_lease_even_with_every_leg_ended(tmp_path) -> None:
+    rig = _entered(tmp_path)
+    rig.broker.fill_entry("NVDA", 100.0)
+    rig.tick(60)
+    for leg in rig.broker.entry("NVDA")["legs"]:
+        leg["status"] = "expired"
+    lease = rig.account.lease
+    original = lease.ensure
+
+    def short(work):
+        held = original(work=work)
+        lease.expires_at = rig.clock() + timedelta(seconds=29)
+        return held
+
+    lease.ensure = short
+    rig.tick(60)
+    assert _only(rig)["flatten_reason"] == "unprotected" and rig.broker.sent("submit_close") == []
+
+
+def test_a_fill_seen_after_the_positions_read_is_not_mistaken_for_a_hand_close(tmp_path) -> None:
+    rig = _entered(tmp_path)
+    original = rig.broker.positions
+
+    def before_the_fill():
+        held = original()
+        rig.broker.fill_entry("NVDA", 100.0)  # it fills between the positions read and the order read
+        return held
+
+    rig.broker.positions = before_the_fill
+    rig.tick(60)
+    trade = _only(rig)
+    assert trade["status"] == "open" and trade["entry_fill"] == 100.0

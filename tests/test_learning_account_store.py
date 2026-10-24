@@ -215,3 +215,11 @@ def test_nothing_may_act_while_stopping(store) -> None:
     assert lease.ensure(work=True)
     assert lease.may_act() and lease.may_act(stopping=False)
     assert not lease.may_act(stopping=True)
+
+
+def test_the_status_is_written_only_when_the_route_changes(tmp_path) -> None:
+    rig = Rig(tmp_path)
+    for index in range(40):  # 40 idle minutes: the identity is read again every 15 min
+        rig.tick(60 if index else 0)
+    assert rig.store.writes.count(records.STATUS_KEY) == 1
+    assert len(rig.broker.sent("identity")) == 3

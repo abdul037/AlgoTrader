@@ -321,7 +321,9 @@ def test_the_scorecard_status_follows_the_current_settings(tmp_path) -> None:
     running = {"route": "running", "owner": "me"}
     lease = {"owner": "me", "heartbeat_at": NOW.isoformat()}
     assert status(settings, running, lease, now=NOW, owner="me") == "running"
-    assert status(settings, running, lease, now=NOW + timedelta(seconds=STALLED_SECONDS + 1), owner="me") == "stalled"
+    assert STALLED_SECONDS == 420.0  # 7 min
+    assert status(settings, running, lease, now=NOW + timedelta(seconds=420), owner="me") == "running"
+    assert status(settings, running, lease, now=NOW + timedelta(seconds=421), owner="me") == "stalled"
     assert status(settings, running, {**lease, "released": True}, now=NOW, owner="me") == "stalled"
     assert status(settings, running, {**lease, "owner": "else"}, now=NOW, owner="me") == "stalled"
     assert status(settings, running, lease, now=NOW, owner="a-new-deploy") == routes.PENDING  # an older record

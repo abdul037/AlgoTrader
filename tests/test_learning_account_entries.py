@@ -394,6 +394,7 @@ def test_stop_is_checked_before_each_candidate(tmp_path) -> None:
     rig.offer(snapshot("NVDA"), snapshot("AMD", "ma_crossover"))
     rig.tick()
     assert [args[0] for args in rig.broker.sent("submit_bracket")] == ["NVDA"]
+    assert [t["symbol"] for t in rig.book().values()] == ["NVDA"]  # AMD was never even written
 
 
 def test_a_trade_recorded_but_not_sent_is_rejected_and_frees_its_slot(tmp_path) -> None:
@@ -595,3 +596,36 @@ def test_no_main_data_provider_refuses_with_no_fallback(tmp_path) -> None:
     rig.offer(snapshot("NVDA"))
     rig.tick()
     assert rig.book() == {} and "quote_unavailable" in rig.skipped()
+
+
+def test_full_caps_stop_the_pass_before_any_verdict_or_main_path_read(tmp_path, monkeypatch) -> None:
+    calls: list = []
+    monkeypatch.setattr(account_module, "compute_learning_verdicts", lambda *a, **k: calls.append("verdicts") or LEARNING)
+    rig = Rig(tmp_path, learning=False)
+    day = account_module.ny_day(NOW)
+    full = {f"c{i}": {"trade_id": f"c{i}", "symbol": f"C{i}", "status": "closed", "day": day} for i in range(3)}
+    records.Store(rig.db).put(records.BOOK_KEY, records.dumps({"trades": full}))
+    rig.auto.candidate_proposal_blockers = lambda *a, **k: calls.append("main") or []
+    rig.offer(snapshot("NVDA"))
+    rig.tick()
+    assert calls == [] and rig.skipped() == ["daily_entry_cap"]
+    assert ("clock", None) in rig.broker.calls  # the reconcile's; no entry clock read was needed
+
+
+def test_an_intraday_entry_needs_a_known_close(tmp_path) -> None:
+    rig = Rig(tmp_path)
+    rig.broker.clock_value["next_close"] = None
+    rig.offer(snapshot("NVDA", "vwap_reclaim", "5m"), snapshot("AMD"))
+    rig.tick()
+    assert "too_close_to_the_close" in rig.skipped()
+    assert [t["symbol"] for t in rig.book().values()] == ["AMD"]
+
+
+def test_no_provider_is_a_refusal_never_a_fallback() -> None:
+    from app.learning_account.market import MarketDataUnavailable
+
+    reads = MarketReads(FakeEngine(None), None, now=lambda: NOW, reads=BoundedReads(spawn=lambda t: t()))
+    with pytest.raises(MarketDataUnavailable):
+        reads.quote("NVDA")
+    with pytest.raises(MarketDataUnavailable):
+        reads.get_history("SPY")
