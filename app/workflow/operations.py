@@ -30,12 +30,8 @@ def run_scan_task(
     force_refresh: bool,
     symbols: list[str] | None = None,
 ) -> WorkflowTaskResponse:
-    from app.workflow.swing_focus import (
-        advance_symbols,
-        alerted,
-        focused_spec_batch,
-        rotate_symbols,
-    )
+    from app.workflow.paper_only_riders import kept_bars, ride_along
+    from app.workflow.swing_focus import advance_symbols, focused_spec_batch, rotate_symbols
 
     budget = current_budget()  # set only inside a scheduled cadence tick
     if budget is not None and not budget.scan_fits():
@@ -74,10 +70,9 @@ def run_scan_task(
     scan_params = inspect.signature(service.market_screener.scan_universe).parameters
     if "scan_task" in scan_params:
         kwargs["scan_task"] = task
-    if (spec_batch or {}).get("paper_only_spec_keys") and "paper_only_spec_keys" in scan_params:
-        kwargs["paper_only_spec_keys"] = spec_batch["paper_only_spec_keys"]  # option B: ride along
     if budget is not None and budget.enforces_scan_stop and "cancel_event" in scan_params:
         kwargs["cancel_event"] = ScanDeadline(budget.scan_stop_at)  # stop in time for the post-scan work
+    kwargs.update(kept_bars(service, spec_batch, scan_params))  # option B: riders keep its bars
     try:
         response = service.market_screener.scan_universe(**kwargs)
     except Exception as exc:  # noqa: BLE001 - workflow must not block future runs
@@ -102,9 +97,12 @@ def run_scan_task(
     evaluated = getattr(response, "evaluated_symbols", 0) or 0  # a count (or a list)
     evaluated = len(evaluated) if isinstance(evaluated, (list, tuple)) else int(evaluated)
     advance_symbols(service, task=task, total=len(kwargs["symbols"]), evaluated=evaluated)
-    alerts_sent = service._send_scan_alerts(task=task, response=alerted(response, spec_batch), notify=notify)
+    alerts_sent = service._send_scan_alerts(task=task, response=response, notify=notify)
     service._track_candidates(response, origin=origin)
     proposals_created = auto_propose_candidates(service, response, origin=origin, notify=notify)
+    service.runtime_state.set(state_key, utc_now().isoformat())  # the cadence: not the riders'
+    # Option B: the paper-only riders' step, only after the run's own entries were proposed.
+    proposals_created += ride_along(service, kwargs, response, spec_batch, origin=origin, notify=notify)
     if hasattr(response, "coverage"):
         response.coverage["proposals_created"] = proposals_created
         if spec_batch:
@@ -118,7 +116,6 @@ def run_scan_task(
                 }
             )
         _record_scan_coverage(service, task=task, coverage=response.coverage)
-    service.runtime_state.set(state_key, utc_now().isoformat())
     service.run_logs.log(
         f"workflow_{task}_completed",
         {
@@ -848,7 +845,9 @@ def _account_equity_usd(service: Any) -> float:
     return float(getattr(service.settings, "paper_account_balance_usd", 100_000.0) or 100_000.0)
 
 
-def auto_propose_candidates(service: Any, response: Any, *, origin: str, notify: bool) -> int:
+def auto_propose_candidates(
+    service: Any, response: Any, *, origin: str, notify: bool, paper_only: Any = None
+) -> int:
     """Auto-create (and, when unattended, approve/execute) proposals from scan candidates.
 
     Emits a per-scan `auto_propose_funnel` run-log attributing where each candidate
@@ -875,7 +874,7 @@ def auto_propose_candidates(service: Any, response: Any, *, origin: str, notify:
     shadow_event_risk: list[tuple[Any, Any]] = []  # (proposal id, candidate): logged after the loop
     from app.workflow.paper_only import PaperOnlyPass  # option B (2026-10-21)
 
-    paper_only = PaperOnlyPass(service.auto_trading)  # paper-only candidates go last
+    paper_only = paper_only or PaperOnlyPass(service.auto_trading)  # paper-only ranked last
     candidates = paper_only.order(list(getattr(response, "candidates", []) or []))
     funnel: Counter[str] = Counter()
     funnel["entered"] = len(candidates)

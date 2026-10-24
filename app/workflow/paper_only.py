@@ -73,9 +73,11 @@ pass) gives a paper-only entry these rules:
 
 With ``paper_oos_bar_enabled`` or ``require_strategy_oos_evidence`` off (or outside the main
 paper account) nothing is paper-only and the pass reads nothing: the gate reads the runtime
-state itself, exactly as before option B. A focused swing run's paper-only specs ride along in
-its own scan (app/workflow/swing_focus.py, ``scan_wanted``), so the run's one pass sees both
-kinds and proposes, executes and copies its eToro-eligible entries first (rule 1).
+state itself, exactly as before option B. A focused swing run's paper-only specs ride on its
+scan (app/workflow/paper_only_riders.py): their candidates get a second pass of their own after
+the run's pass, which (``only=True``) considers only the candidates that are paper-only by its
+own verdicts read (a key whose verdict changed since the run listed it is left out), and whose
+``room`` the riders' step reads before it spends anything on candidate checks.
 
 Not changed (residuals, stated): paper-only losses count toward paper's daily and weekly loss
 limits, the consecutive-loss cooldown and the drawdown governor like any paper trade, so they
@@ -120,8 +122,10 @@ class PaperOnlyPass:
     """One auto-propose pass's paper-only decisions; ``auto_trading`` is the
     ``PaperAutoTradingService`` (None: no gate, so nothing is paper-only)."""
 
-    def __init__(self, auto_trading: Any):
+    def __init__(self, auto_trading: Any, *, only: bool = False):
         self.auto = auto_trading
+        self.only = only  # the riders' pass: nothing but paper-only candidates is considered
+        self.created_count = 0  # every proposal the pass created (even if it then raised)
         self._reads: dict[str, Any] = {}
         self._paper_only_created = 0
 
@@ -173,8 +177,11 @@ class PaperOnlyPass:
         return paper_oos_only(self.auto.settings, verdict, timeframe)
 
     def order(self, candidates: list[Any]) -> list[Any]:
-        """The pass's candidates, every paper-only one after all the others, ranks kept."""
+        """The pass's candidates, every paper-only one after all the others, ranks kept; in a
+        paper-only pass, its paper-only candidates alone (by this pass's verdicts read)."""
 
+        if self.only:
+            return [candidate for candidate in candidates if self.is_paper_only(candidate)]
         return sorted(candidates, key=self.is_paper_only)
 
     def blockers(self, candidate: Any) -> list[str]:
@@ -203,6 +210,23 @@ class PaperOnlyPass:
         if reason:
             return [PREFIX + reason]
         return self._automatic(candidate)
+
+    def room(self) -> str | None:
+        """The blocker every paper-only candidate of this pass would meet whatever its symbol
+        (the pass limit, the cadence budget, paper's day and book headroom, from the same one
+        read of paper ``blockers`` uses), else None: the riders' step checks it before it spends
+        anything on candidate checks."""
+
+        if self._paper_only_created >= MAX_PER_PASS:
+            return PREFIX + "pass_limit"
+        if _budget_spent():
+            return PREFIX + "cadence_budget_spent"
+        book = self._read("paper", self._paper_book)
+        if book is _UNREADABLE:
+            return PREFIX + "paper_book_unreadable"
+        reason = _headroom(self.auto.settings, (book.trades, {}), "")  # no symbol: no group
+        reason = reason or _book_headroom(self.auto.settings, book, "")  # nor a held symbol
+        return PREFIX + reason if reason else None
 
     def _automatic(self, candidate: Any) -> list[str]:
         """Rule 6: [] when the unattended path would approve and execute it at once."""
@@ -275,6 +299,7 @@ class PaperOnlyPass:
         """The pass created a proposal: the next paper-only candidate reads paper's day and
         book again (by then the entry, if it was placed, is one of today's execution rows)."""
 
+        self.created_count += 1
         if self.is_paper_only(candidate):
             self._paper_only_created += 1
         self._reads.pop("paper", None)
@@ -372,9 +397,9 @@ def _book_headroom(settings: Any, book: SimpleNamespace, symbol: str) -> str | N
 
 
 def scan_wanted(service: Any) -> bool:
-    """Whether a focused swing run's scan takes its paper-only specs along: something can be
-    paper-only on this account (``PaperOnlyPass.enabled``) and its proposals would be made and
-    executed automatically (rule 6): paper auto-approval on, which also turns auto-propose on
+    """Whether a focused swing run takes paper-only riders at all: something can be paper-only
+    on this account (``PaperOnlyPass.enabled``) and its proposals would be made and executed
+    automatically (rule 6): paper auto-approval on, which also turns auto-propose on
     (``auto_propose_candidates``), and the unattended mode."""
 
     settings = getattr(service, "settings", None)

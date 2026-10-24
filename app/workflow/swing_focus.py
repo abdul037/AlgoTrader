@@ -18,26 +18,17 @@ While the gate is enforced this module makes the swing scan:
 No gate is loosened: the proposal path still checks evidence, risk and caps as before.
 
 Paper-only specs (operator option B, 2026-10-21): a spec the main paper gate admits on its
-pooled OOS evidence alone (``strategy_evidence.paper_oos_only``) rides along in a focused run's
-own scan (``paper_only_spec_keys``), on the run's own swing timeframes only: those of
-``PAPER_ONLY_TIMEFRAMES`` its eToro-passing specs already fetch (in practice 1d), so the scan
-fetches no extra bars or quotes. On each symbol and timeframe the screener evaluates the
-paper-only specs after the eToro-passing ones, on the same bars, and cuts their candidates apart
-(app/screener/scan_ranking.py): the run's top-k keeps exactly the eToro-passing specs'
-candidates it would keep without them, and the paper-only specs keep their own top three
-(``scan_ranking.PAPER_ONLY_TOP_K``) after those. What the eToro-passing specs pay is that
-evaluation on every symbol: about 55-70 ms a symbol for four 1d specs on in-memory bars
-(1.4-1.7 s a 25-symbol scan; measured 2026-10-24), and about 50 ms more for each paper-only
-signal that fires (its candidate checks). The run's one auto-propose pass then considers every
-other candidate before a paper-only one and makes at most one paper-only proposal
-(app/workflow/paper_only.py), so its eToro-eligible entries are proposed, executed and copied
-first. Paper-only candidates are tracked like the others but get no scan alert (``alerted``);
-``coverage.paper_only`` counts their specs and candidates. A run takes no paper-only spec along
-unless one could be proposed and executed at once (``paper_only.scan_wanted``: the main paper
-account with the switch and the evidence gate on, paper auto-approval and the unattended mode).
-The rotation runs scan every spec under one cut, as before. (Until 2026-10-23 the paper-only
-specs had a second scan after the run's own pass, in what was left of its deadline; in
-production it never had the 45 s it needed.)
+pooled OOS evidence alone (``strategy_evidence.paper_oos_only``) rides on a focused run
+(``paper_only_spec_keys``), on the run's own swing timeframes only: those of
+``PAPER_ONLY_TIMEFRAMES`` its eToro-passing specs already fetch (in practice 1d). It never
+enters the run's scan, which runs exactly as without it; it reads the bars that scan fetched,
+after the run's own alerts, tracking, auto-propose pass and due-time stamp, in what is left of
+the run (app/workflow/paper_only_riders.py). A run lists no paper-only spec unless one could be
+proposed and executed at once (``paper_only.scan_wanted``: the main paper account with the switch
+and the evidence gate on, paper auto-approval and the unattended mode). The rotation runs scan
+every spec under one cut, as before. (Until 2026-10-23 they had a second scan of their own,
+which read every bar again, checked each fired signal inline and needed 45 s of the run's
+deadline; in production it never had them.)
 """
 
 from __future__ import annotations
@@ -87,8 +78,8 @@ def focused_spec_batch(service: Any, *, task: str, timeframes: list[str]) -> dic
     from app.workflow.operations import _timeframes_for_spec_keys
 
     run_timeframes = _timeframes_for_spec_keys(selected, fallback=timeframes)
-    # Riding along: paper-only keys on the run's own swing timeframes (no extra bars), never one
-    # of the run's own keys.
+    # Riders: paper-only keys on the run's own swing timeframes (they read the bars its scan
+    # fetched), never one of the run's own keys.
     riding = PAPER_ONLY_TIMEFRAMES.intersection(run_timeframes)
     paper_only = [
         key
@@ -105,19 +96,6 @@ def focused_spec_batch(service: Any, *, task: str, timeframes: list[str]) -> dic
         "timeframes": run_timeframes,
         "paper_only_spec_keys": paper_only if paper_only and scan_wanted(service) else [],
     }
-
-
-def alerted(response: Any, spec_batch: dict[str, Any] | None) -> Any:
-    """The run's response as its scan alerts read it: without the paper-only specs' candidates,
-    which are tracked and may be proposed but get no scan alert."""
-
-    from app.screener.scan_ranking import candidate_key
-
-    keys = set((spec_batch or {}).get("paper_only_spec_keys") or [])
-    kept = [item for item in response.candidates if candidate_key(item) not in keys]
-    if len(kept) == len(response.candidates):
-        return response
-    return response.model_copy(update={"candidates": kept})
 
 
 def rotate_symbols(service: Any, *, task: str, symbols: list[str]) -> list[str]:

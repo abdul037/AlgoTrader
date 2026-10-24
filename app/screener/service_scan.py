@@ -17,11 +17,11 @@ from app.screener.scan_promotion import (
     _maybe_promote_supervised_weak_valid,
     _weak_valid_daily_count,
 )
-from app.screener.scan_ranking import scan_spec_keys, top_candidates
 from app.screener.scan_support import (
     ScanTimeoutError,
     _bounded_call,
     _build_for_run,
+    _normalize_spec_keys,
     _spec_key,
     _strategy_specs_for_timeframe,
 )
@@ -42,7 +42,7 @@ def scan_universe(
     scan_task: str = "manual_scan",
     strategy_spec_keys: list[str] | None = None,
     cancel_event: Any | None = None,
-    paper_only_spec_keys: list[str] | None = None,  # option B: after the others (scan_ranking)
+    kept_bars: Any | None = None,  # option B riders' KeptBars: passes through, keeps (scan_riders)
 ) -> ScreenerRunResponse:
     universe = [symbol.upper() for symbol in (symbols or resolve_universe(service.settings))]
     scan_timeframes = [timeframe.lower() for timeframe in (timeframes or service.settings.screener_default_timeframes)]
@@ -64,7 +64,7 @@ def scan_universe(
             service._scan_cursors = cursors
         scan_offset = int(cursors.get(scan_task, 0)) % len(universe)
         universe = universe[scan_offset:] + universe[:scan_offset]
-    requested_spec_keys, paper_only_keys = scan_spec_keys(strategy_spec_keys, paper_only_spec_keys)
+    requested_spec_keys = _normalize_spec_keys(strategy_spec_keys)
     candidates: list[Any] = []
     errors: list[str] = []
     rejection_summary: dict[str, int] = {}
@@ -82,7 +82,7 @@ def scan_universe(
     started_at = time.monotonic()
     deadline_seconds = float(getattr(service.settings, "screener_batch_deadline_seconds", 180.0) or 0.0)
     market_data_timeout = float(getattr(service.settings, "screener_market_data_timeout_seconds", 20.0) or 0.0)
-    intelligence_timeout = float(getattr(service.settings, "screener_intelligence_timeout_seconds", 20.0) or 0.0)
+    intelligence_timeout = float(getattr(kept_bars, "intelligence_timeout", None) or getattr(service.settings, "screener_intelligence_timeout_seconds", 20.0) or 0.0)
     service.logs.log(
         "market_universe_scan_started",
         {
@@ -119,7 +119,7 @@ def scan_universe(
                 history = _bounded_call(
                     f"{symbol}_{timeframe}_history",
                     market_data_timeout,
-                    service.market_data.get_history,
+                    (kept_bars or service.market_data).get_history,
                     symbol,
                     timeframe=timeframe,
                     bars=service._bars_for_timeframe(timeframe),
@@ -130,7 +130,7 @@ def scan_universe(
                     quote = _bounded_call(
                         f"{symbol}_{timeframe}_quote",
                         market_data_timeout,
-                        service.market_data.get_quote,
+                        (kept_bars or service.market_data).get_quote,
                         symbol,
                         timeframe=timeframe,
                         force_refresh=force_refresh,
@@ -176,7 +176,7 @@ def scan_universe(
                 )
                 continue
 
-            specs = _strategy_specs_for_timeframe(service, timeframe, requested_spec_keys, paper_only_keys)
+            specs = _strategy_specs_for_timeframe(service, timeframe, requested_spec_keys)
             specs_by_timeframe.setdefault(timeframe, len(specs))
             for spec in specs:
                 # Enforce the wall-clock deadline INSIDE the per-symbol strategy
@@ -916,9 +916,18 @@ def scan_universe(
             if abort_scan:
                 break
 
-    kept, paper_only_coverage = top_candidates(  # the top-k; paper-only candidates cut apart
-        service, candidates, limit=limit, paper_only_keys=paper_only_keys, evaluated_spec_keys=evaluated_spec_keys
-    )
+    ranked = sorted(candidates, key=service._ranking_key, reverse=True)
+    # Cross-sectional momentum overlay: concentrate in the universe's leaders by
+    # dropping all but the top-momentum slice before truncation. No-op unless
+    # cross_sectional_momentum_enabled.
+    if bool(getattr(service.settings, "cross_sectional_momentum_enabled", False)) and ranked:
+        from app.screener.cross_sectional_momentum import filter_top_momentum
+
+        ranked = filter_top_momentum(
+            ranked, top_pct=float(getattr(service.settings, "cross_sectional_momentum_top_pct", 30.0) or 30.0)
+        )
+    top_k = min(limit or service.settings.screener_top_k, len(ranked)) if ranked else 0
+    top_candidates = [item.model_copy(update={"rank": index + 1}) for index, item in enumerate(ranked[:top_k])]
     # Advance the rotating cursor so the next scan of this task begins on the
     # symbols this one did not reach, sweeping the whole universe over time.
     if rotate_universe:
@@ -938,7 +947,7 @@ def scan_universe(
         timeframes=scan_timeframes,
         evaluated_symbols=evaluated_symbols,
         evaluated_strategy_runs=evaluated_strategy_runs,
-        candidates=kept,
+        candidates=top_candidates,
         suppressed=suppressed,
         alerts_sent=0,
         errors=errors,
@@ -961,7 +970,6 @@ def scan_universe(
             "deadline_exceeded": deadline_exceeded,
             "candidates_found": len(candidates),
             "proposals_created": 0,
-            **paper_only_coverage,
         },
     )
     if notify and service.notifier is not None and hasattr(service.notifier, "send_text"):
@@ -976,7 +984,7 @@ def scan_universe(
             "symbols_scanned": universe[:evaluated_symbols],
             "timeframes": scan_timeframes,
             "evaluated_strategy_runs": evaluated_strategy_runs,
-            "symbols_passed": [item.symbol for item in kept],
+            "symbols_passed": [item.symbol for item in top_candidates],
             "candidates": len(candidates),
             "suppressed": suppressed,
             "alerts_sent": response.alerts_sent,

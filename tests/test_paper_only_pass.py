@@ -9,9 +9,9 @@
   where paper holds or has an unfilled entry, and at most MAX_OPEN_PAPER_ONLY (3) are open at once;
 * it is tagged; nothing else is, and with the switch off nothing changes and nothing is read;
 * its safety blocks are logged once a day; its notices say it is not copied;
-* a focused swing run's own scan takes its paper-only specs along (its own swing timeframes
-  only), and its one pass proposes and executes its eToro-eligible entries first; paper-only
-  candidates are tracked, never alerted.
+* a focused swing run takes paper-only riders only when one could be placed at once, on its own
+  swing timeframes, after its own pass (tests/test_paper_only_riders.py: end to end); the
+  riders' pass considers only candidates paper-only by its own verdicts read.
 
 No wall clock: the pass's clocks are patched.
 """
@@ -758,15 +758,15 @@ def test_paper_s_per_symbol_limit_keeps_untagged_entries_out_of_a_held_paper_onl
     assert limit not in RiskManager(settings).validate_order(order, unfilled).reasons
 
 
-# --- the swing scan --------------------------------------------------------------------------
+# --- the swing scan's riders (end to end, with a real screener: tests/test_paper_only_riders.py)
 
 
 class _Screener:
-    """scan_universe as a focused run calls it: one candidate per spec key, the paper-only
-    keys' after the others (as the screener's own cut orders them, app/screener/scan_ranking)."""
+    """scan_universe as a focused run calls it; records whether it was asked to keep its bars."""
 
-    def __init__(self, events=None):
-        self.events = events if events is not None else []
+    market_data = object()  # what KeptBars passes its reads through to
+
+    def __init__(self):
         self.calls: list[dict] = []
 
     def scan_universe(
@@ -781,22 +781,16 @@ class _Screener:
         scan_task="manual_scan",
         strategy_spec_keys=None,
         cancel_event=None,
-        paper_only_spec_keys=None,
+        kept_bars=None,
     ):
-        keys, riding = list(strategy_spec_keys or []), list(paper_only_spec_keys or [])
-        self.calls.append({"keys": keys, "paper_only": riding, "timeframes": list(timeframes)})
-        self.events.append(("scan", keys, riding))
-        candidates = [  # NVDA for the run's own spec, AAPL for its paper-only one
-            _scan_candidate(symbols[index % len(symbols)], key.split(":")[0], 50.0)
-            for index, key in enumerate([*keys, *riding])
-        ]
+        self.calls.append({"keys": list(strategy_spec_keys or []), "kept": kept_bars is not None})
         return ScreenerRunResponse(
             generated_at=NOW.isoformat(),
             universe_name="t",
             timeframes=list(timeframes),
             evaluated_symbols=len(symbols),
             evaluated_strategy_runs=len(symbols),
-            candidates=candidates,
+            candidates=[],
         )
 
     def strategy_spec_keys_for_timeframes(self, timeframes):
@@ -813,7 +807,7 @@ SYMBOLS = ["NVDA", "AAPL", "UBER", "ADP"]
 AUTOMATIC = dict(paper_auto_approve_proposals=True, paper_auto_operation_mode="unattended")
 
 
-def _swing_workflow(tmp_path, screener, state, *, auto=None, proposals=None, **settings):
+def _swing_workflow(tmp_path, screener, state, *, auto=None, **settings):
     values = dict(
         require_strategy_oos_evidence=True,
         screener_spec_coverage_mode="scheduled_all",  # its swing run asks for 1h and 1d
@@ -833,12 +827,11 @@ def _swing_workflow(tmp_path, screener, state, *, auto=None, proposals=None, **s
         alert_history=FakeAlertHistory(),
         runtime_state=state,
         run_logs=FakeLogs(),
-        proposal_service=proposals,
         auto_trading_service=auto,
     )
 
 
-def test_a_focused_swing_run_takes_its_paper_only_specs_along_in_its_own_scan(tmp_path) -> None:
+def test_a_focused_run_takes_riders_only_when_a_paper_only_entry_could_be_placed(tmp_path) -> None:
     def run(with_auto=True, **settings):
         screener = _Screener()
         auto, state = _auto(tmp_path / "auto")
@@ -847,15 +840,12 @@ def test_a_focused_swing_run_takes_its_paper_only_specs_along_in_its_own_scan(tm
             tmp_path, screener, state, auto=auto if with_auto else None, **settings
         )
         workflow.run_swing_scan(notify=False)
-        return [(call["keys"], call["paper_only"]) for call in screener.calls]
+        return [(call["keys"], call["kept"]) for call in screener.calls]
 
     etoro = ["inside_bar_narrow_range_breakout:1d"]
-    assert run(**AUTOMATIC) == [(etoro, ["momentum_breakout:1d"])]  # one scan, both kinds
-    # The default coverage mode's swing run (1d and 1w) is focused the same way.
-    default = run(**AUTOMATIC, screener_spec_coverage_mode="default")
-    assert default == [(etoro, ["momentum_breakout:1d"])]
-    # No paper-only spec unless a paper-only entry could be proposed and executed at once.
-    alone = [(etoro, [])]
+    assert run(**AUTOMATIC) == [(etoro, True)]  # one scan, its own keys alone, its bars kept
+    assert run(**AUTOMATIC, screener_spec_coverage_mode="default") == [(etoro, True)]  # 1d+1w
+    alone = [(etoro, False)]
     assert run(**AUTOMATIC, paper_oos_bar_enabled=False) == alone
     assert (
         run(
@@ -868,8 +858,8 @@ def test_a_focused_swing_run_takes_its_paper_only_specs_along_in_its_own_scan(tm
     assert run(paper_auto_approve_proposals=True, paper_auto_operation_mode="shadow") == alone
     assert run(with_auto=False, **AUTOMATIC) == alone
     # Without the gate there is no focus: the normal rotation, every spec under one cut.
-    ((keys, riding),) = run(**AUTOMATIC, require_strategy_oos_evidence=False)
-    assert riding == [] and "momentum_breakout:1d" in keys
+    ((keys, kept),) = run(**AUTOMATIC, require_strategy_oos_evidence=False)
+    assert not kept and "momentum_breakout:1d" in keys
 
 
 def test_paper_only_specs_ride_only_on_the_runs_own_swing_timeframes(tmp_path) -> None:
@@ -914,68 +904,71 @@ def test_paper_only_specs_ride_only_on_the_runs_own_swing_timeframes(tmp_path) -
     assert both["paper_only_spec_keys"] == ["momentum_breakout:1d", "momentum_breakout:1h"]
 
 
-def test_the_runs_etoro_eligible_entries_go_first_in_its_one_pass(tmp_path) -> None:
-    events: list[tuple] = []
-    screener = _Screener(events=events)
+def test_the_riders_pass_considers_only_candidates_paper_only_by_its_own_read(tmp_path) -> None:
+    auto, state = _auto(tmp_path)
+    candidates = [
+        _candidate("A", "momentum_breakout"),
+        _candidate("B", "inside_bar_narrow_range_breakout"),
+        _candidate("C", "trend_following"),
+    ]
+    assert [c.symbol for c in PaperOnlyPass(auto, only=True).order(candidates)] == ["A"]
+    flipped = {**VERDICTS, "momentum_breakout:1d": FULL}  # it passed the full check since
+    state[VERDICTS_KEY] = json.dumps({"verdicts": flipped})
+    assert PaperOnlyPass(auto, only=True).order(candidates) == []
+    assert [c.symbol for c in PaperOnlyPass(auto).order(candidates)] == ["A", "B", "C"]
+
+
+def test_room_is_what_every_paper_only_candidate_of_the_pass_would_meet(
+    tmp_path, monkeypatch
+) -> None:
+    from app.workflow.cadence_budget import CadenceBudget, tick_budget
+
+    auto, _state = _auto(tmp_path, **_held(9), **BOOK)
+    assert PaperOnlyPass(auto).room() is None  # 9 held + 1 + 2 = 12: room for one
+    paper_pass = PaperOnlyPass(auto)
+    paper_pass.created(_candidate("UBER", "momentum_breakout"))
+    assert paper_pass.room() == "paper_only_pass_limit"
+    full, _ = _auto(tmp_path / "full", **_held(10), **BOOK)
+    assert PaperOnlyPass(full).room() == "paper_only_headroom_open_positions"
+    day, _ = _auto(tmp_path / "day", executions=_Executions(["X"] * 13))
+    assert PaperOnlyPass(day).room() == "paper_only_headroom_trades_per_day"
+    broken, _ = _auto(tmp_path / "broken", executions=_Executions(fail=True))
+    assert PaperOnlyPass(broken).room() == "paper_only_paper_book_unreadable"
+    clock = SimpleNamespace(now=1_180.0 - PROPOSAL_SECONDS)
+    monkeypatch.setattr(paper_only_module.time, "monotonic", lambda: clock.now)
+    with tick_budget(CadenceBudget(started_at=1_000.0, job_timeout=240.0)):  # scan stop 1_180
+        assert PaperOnlyPass(auto).room() == "paper_only_cadence_budget_spent"
+    # The same one read of paper serves the pass's own candidates afterwards.
+    fresh, _ = _auto(tmp_path / "fresh", **_held(9), **BOOK)
+    paper_pass = PaperOnlyPass(fresh)
+    assert paper_pass.room() is None and fresh.executions.paper_reads == (1, 1)
+    assert _blockers(fresh, _candidate("UBER", "momentum_breakout"), paper_pass) == []
+    assert fresh.executions.paper_reads == (1, 1)
+
+
+def test_the_cadence_is_stamped_before_the_riders_step(tmp_path, monkeypatch) -> None:
+    import app.workflow.operations as operations
+    import app.workflow.paper_only_riders as paper_only_riders
+    from app.workflow.schedule import is_due
+
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(operations, "utc_now", lambda: NOW + timedelta(seconds=clock.now))
+
+    def slow_riders(*_args, **_kwargs):  # a very long riders' step
+        clock.now += 300.0
+        return 0
+
+    monkeypatch.setattr(paper_only_riders, "ride_along", slow_riders)
     auto, state = _auto(tmp_path / "auto")
     auto.runtime_state = state
-    auto.approve_enqueue_execute = (
-        lambda proposal, candidate, **_k: events.append(
-            ("execute", candidate.symbol, candidate.strategy_name)
-        )
-        or EXECUTED
-    )
-    proposals = FakeProposalService()
-    create = proposals.create_proposal
+    workflow = _swing_workflow(tmp_path, _Screener(), state, auto=auto, **AUTOMATIC)
+    workflow.run_swing_scan(notify=False)
+    assert clock.now == 300.0  # the step ran
+    assert datetime.fromisoformat(state["workflow:last_swing_scan_at"]) == NOW  # before it
+    import app.workflow.schedule as schedule
 
-    def create_proposal(request):
-        events.append(("propose", request.symbol, request.strategy_name))
-        return create(request)
-
-    proposals.create_proposal = create_proposal
-    workflow = _swing_workflow(
-        tmp_path, screener, state, auto=auto, proposals=proposals, auto_propose_enabled=True,
-        **AUTOMATIC,
-    )
-    result = workflow.run_swing_scan(notify=False)
-    assert result.status == "ok"
-    assert events == [
-        ("scan", ["inside_bar_narrow_range_breakout:1d"], ["momentum_breakout:1d"]),
-        ("propose", "NVDA", "inside_bar_narrow_range_breakout"),
-        ("execute", "NVDA", "inside_bar_narrow_range_breakout"),
-        ("propose", "AAPL", "momentum_breakout"),
-        ("execute", "AAPL", "momentum_breakout"),
-    ]
-    tags = [
-        {k: v for k, v in r.metadata.items() if k.startswith("paper_only")}
-        for r in proposals.created
-    ]
-    assert tags == [{}, TAGS]
-    (completed,) = [p for e, p in workflow.run_logs.items if e == "workflow_swing_scan_completed"]
-    assert completed["proposals_created"] == 2
-    assert state["workflow:last_swing_scan_at"]  # the swing due time, stamped by the run
-
-
-def test_paper_only_candidates_are_tracked_but_get_no_scan_alert(tmp_path) -> None:
-    from app.workflow.swing_focus import alerted
-
-    screener = _Screener()
-    auto, state = _auto(tmp_path / "auto")
-    auto.runtime_state = state
-    workflow = _swing_workflow(tmp_path, screener, state, auto=auto, **AUTOMATIC)
-    workflow.run_swing_scan(notify=True)
-    (digest,) = workflow.alert_history.items
-    assert [c["strategy_name"] for c in digest["payload"]["candidates"]] == [
-        "inside_bar_narrow_range_breakout"
-    ]
-    assert sorted(item.strategy_name for item in workflow.tracked_signals.items) == [
-        "inside_bar_narrow_range_breakout",
-        "momentum_breakout",
-    ]
-    response = _response(_scan_candidate("NVDA", "momentum_breakout", 50.0))
-    assert alerted(response, None) is response  # no spec batch, nothing riding: as it was
-    assert alerted(response, {"paper_only_spec_keys": ["trend_following:1d"]}) is response
-    assert alerted(response, {"paper_only_spec_keys": ["momentum_breakout:1d"]}).candidates == []
+    monkeypatch.setattr(schedule, "utc_now", lambda: NOW + timedelta(minutes=10, seconds=1))
+    assert is_due(workflow, "workflow:last_swing_scan_at", 10)  # 10 min after its own pass
 
 
 def test_the_queue_refuses_a_tagged_order_once_the_etoro_account_holds_its_symbol(

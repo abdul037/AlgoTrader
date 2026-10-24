@@ -54,17 +54,12 @@ def _spec_key(spec: Any) -> str:
     return f"{str(getattr(spec, 'name', '')).strip().lower()}:{str(getattr(spec, 'timeframe', '')).strip().lower()}"
 
 
-def _strategy_specs_for_timeframe(
-    service: Any, timeframe: str, requested_spec_keys: set[str], last: set[str] | None = None
-) -> list[Any]:
-    """The scan's specs for ``timeframe``; those whose key is in ``last`` (paper-only specs,
-    scan_ranking) after all the others, each kind in its own order."""
-
+def _strategy_specs_for_timeframe(service: Any, timeframe: str, requested_spec_keys: set[str]) -> list[Any]:
     try:
-        specs = list(service._strategy_specs_for_timeframe(timeframe, strategy_spec_keys=requested_spec_keys or None))
+        return list(service._strategy_specs_for_timeframe(timeframe, strategy_spec_keys=requested_spec_keys or None))
     except TypeError:
         specs = list(service._strategy_specs_for_timeframe(timeframe))
         if requested_spec_keys:
             specs = [spec for spec in specs if _spec_key(spec) in requested_spec_keys]
-    return sorted(specs, key=lambda spec: _spec_key(spec) in last) if last else specs
+        return specs
 
