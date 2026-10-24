@@ -26,8 +26,8 @@ paper-only specs after the eToro-passing ones, on the same bars, and cuts their 
 (app/screener/scan_ranking.py): the run's top-k keeps exactly the eToro-passing specs'
 candidates it would keep without them, and the paper-only specs keep their own top three
 (``scan_ranking.PAPER_ONLY_TOP_K``) after those. What the eToro-passing specs pay is that
-evaluation on every symbol: about 60-70 ms a symbol for four 1d specs on in-memory bars
-(1.5-1.7 s a 25-symbol scan; measured 2026-10-24), and about 50 ms more for each paper-only
+evaluation on every symbol: about 55-70 ms a symbol for four 1d specs on in-memory bars
+(1.4-1.7 s a 25-symbol scan; measured 2026-10-24), and about 50 ms more for each paper-only
 signal that fires (its candidate checks). The run's one auto-propose pass then considers every
 other candidate before a paper-only one and makes at most one paper-only proposal
 (app/workflow/paper_only.py), so its eToro-eligible entries are proposed, executed and copied
