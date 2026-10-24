@@ -352,3 +352,89 @@ def test_only_the_learning_broker_is_called(tmp_path) -> None:
     assert rig.provider.calls == [("get_quote", "NVDA")]
     assert json.loads(json.dumps(rig.closed()))[0]["symbol"] == "NVDA"
     assert Clock  # noqa: B018 - the fakes' clock is the only clock
+
+
+def test_r_needs_an_entry_above_its_stop() -> None:
+    assert r_multiple(95.0, 100.0, 95.0) is None and r_multiple(94.0, 100.0, 95.0) is None
+    assert r_multiple(None, 100.0, 95.0) is None
+    assert r_multiple(100.0, 97.5, 95.0) == -0.5
+
+
+def test_no_leg_cancel_or_close_without_thirty_seconds_of_lease(tmp_path) -> None:
+    rig = _entered(tmp_path, snapshot("NVDA", "vwap_reclaim", "5m"))
+    rig.broker.fill_entry("NVDA", 100.0)
+    rig.tick(60)
+    rig.clock.value = CLOSE - timedelta(minutes=9)
+    lease = rig.account.lease
+    original = lease.ensure
+
+    def short(work):
+        held = original(work=work)
+        lease.expires_at = rig.clock() + timedelta(seconds=29)
+        return held
+
+    lease.ensure = short
+    rig.tick()
+    assert _only(rig)["flatten_reason"] == "session_flatten"  # recorded, nothing sent
+    assert rig.broker.sent("cancel") == [] and rig.broker.sent("submit_close") == []
+
+
+def test_a_pending_flatten_waits_for_the_session_and_closes_only_what_is_held(tmp_path) -> None:
+    rig = _entered(tmp_path, snapshot("NVDA", "vwap_reclaim", "5m"))
+    rig.broker.fill_entry("NVDA", 100.0)
+    rig.tick(60)
+    rig.clock.value = CLOSE - timedelta(minutes=9)
+    rig.tick()  # legs cancelled
+    rig.broker.clock_value = {"is_open": False, "next_open": NEXT_OPEN, "next_close": CLOSE + timedelta(days=1)}
+    rig.broker.held["NVDA"] = 30.0  # part of it went another way
+    rig.tick(60)
+    assert rig.broker.sent("submit_close") == []  # not while the market is closed
+    assert rig.account.reconcile_at == rig.clock() + timedelta(seconds=60)  # a flatten is pending
+    rig.broker.clock_value = {"is_open": True, "next_open": NEXT_OPEN + timedelta(days=1), "next_close": CLOSE + timedelta(days=1)}
+    rig.clock.value = NEXT_OPEN + timedelta(minutes=1)
+    rig.tick()
+    assert [args[:2] for args in rig.broker.sent("submit_close")] == [("NVDA", 30.0)]
+
+
+def test_a_close_the_broker_refuses_is_sent_again_with_the_next_id(tmp_path) -> None:
+    from tests.learning_account_fakes import APIError
+
+    rig = _entered(tmp_path)
+    rig.broker.fill_entry("NVDA", 100.0)
+    rig.tick(60)
+    for leg in rig.broker.entry("NVDA")["legs"]:
+        leg["status"] = "expired"
+    rig.broker.close_error = APIError("insufficient qty", status_code=403)
+    rig.tick(60)
+    assert _only(rig)["close_attempt"] == 1
+    rig.broker.close_error = TimeoutError("timeout")  # unknown: looked up next pass, same attempt
+    rig.tick(60)
+    assert _only(rig)["close_attempt"] == 1 and "close_order_id" not in _only(rig)
+
+
+def test_unreadable_positions_never_mean_closed(tmp_path) -> None:
+    rig = _entered(tmp_path)
+    rig.broker.fill_entry("NVDA", 100.0)
+    rig.tick(60)
+    rig.broker.held.pop("NVDA")
+    rig.broker.positions_error = RuntimeError("down")
+    rig.tick(60)
+    assert _only(rig)["status"] == "open"
+    assert rig.logs.named("learning_account_untracked_position") == []
+
+
+def test_tracked_positions_are_not_untracked(tmp_path) -> None:
+    rig = _entered(tmp_path)
+    rig.broker.fill_entry("NVDA", 100.0)
+    rig.tick(15 * 60)
+    assert rig.logs.named("learning_account_untracked_position") == []
+    assert rig.account.positions_seen[0] == rig.clock()
+
+
+def test_an_unchanged_open_trade_costs_no_book_write(tmp_path) -> None:
+    rig = _entered(tmp_path)
+    rig.broker.fill_entry("NVDA", 100.0)
+    rig.tick(60)
+    rig.store.writes.clear()
+    rig.tick(60)
+    assert records.BOOK_KEY not in rig.store.writes

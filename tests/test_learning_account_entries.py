@@ -529,3 +529,69 @@ def test_skips_are_logged_once_per_reason_per_day(tmp_path) -> None:
     rig.tick()
     assert rig.skipped() == ["score_below_auto_floor"] * 2
     assert all(p["learning_account"] is True for _, p in rig.logs.events)
+
+
+def test_a_trade_being_sent_counts_as_an_entry_and_an_order() -> None:
+    day = account_module.ny_day(NOW)
+    sending = {"s": {"trade_id": "s", "status": "submitting", "day": day}}
+    assert account_module.day_counts(sending, day) == {"entries": 1, "orders": 1, "open": 1}
+    other_day = {"s": {"trade_id": "s", "status": "closed", "day": "2026-10-23", "submitted_at": "x"}}
+    assert account_module.day_counts(other_day, day) == {"entries": 0, "orders": 0, "open": 0}
+
+
+def test_nothing_is_offered_after_stop_and_the_constants(tmp_path) -> None:
+    rig = Rig(tmp_path)
+    rig.account.stop()
+    assert rig.offer(snapshot("NVDA")) == 0 and len(rig.account._queue) == 0
+    assert (account_module.TICK_SECONDS, account_module.FIRST_PASS_DELAY_SECONDS, account_module.QUEUE_LIMIT) == (60.0, 30.0, 200)
+    assert (account_module.INTRADAY_FRESH_SECONDS, account_module.SWING_FRESH_SECONDS) == (300.0, 1800.0)
+    assert (account_module.VERDICTS_EVERY_SECONDS, account_module.VERDICTS_BACKOFF_SECONDS) == (1800.0, 600.0)
+    assert (account_module.REVERIFY_SECONDS, account_module.ENTRY_CLOSE_BUFFER_MINUTES) == (900.0, 5.0)
+
+
+def test_settings_that_refuse_stop_every_pass(tmp_path) -> None:
+    rig = Rig(tmp_path)
+    rig.account.settings = rig.settings.model_copy(update={"learning_account_enabled": False})
+    rig.offer(snapshot("NVDA"))
+    rig.tick()
+    assert rig.account.route == "disabled:setting_off" and rig.broker.calls == []
+    assert rig.store.reads == [] and rig.store.writes == [records.STATUS_KEY]
+    assert len(rig.account._queue) == 0
+
+
+def test_an_unknown_market_clock_refuses_entries(tmp_path) -> None:
+    rig = Rig(tmp_path)
+
+    def broken():
+        raise TimeoutError("clock")
+
+    rig.broker.clock = broken
+    rig.offer(snapshot("NVDA"))
+    rig.tick()
+    assert rig.book() == {} and "market_clock_unavailable" in rig.skipped()
+
+
+def test_the_quote_must_be_a_direct_fresh_alpaca_quote(tmp_path) -> None:
+    from app.live_signal_schema import MarketQuote
+
+    cases = (
+        ({"source": "yfinance"}, "quote_provider_not_alpaca"),
+        ({"quote_derived_from_history": True}, "quote_not_direct"),
+        ({"data_age_seconds": 121.0}, "quote_too_old"),
+        ({"last_execution": None, "ask": None, "bid": None}, "quote_missing"),
+    )
+    for change, reason in cases:
+        rig = Rig(tmp_path / reason)
+        quote = MarketQuote(symbol="NVDA", bid=99.99, ask=100.01, last_execution=100.0, source="alpaca", data_age_seconds=1.0)
+        rig.provider.get_quote = lambda symbol, _q=quote.model_copy(update=change): _q
+        rig.offer(snapshot("NVDA"))
+        rig.tick()
+        assert rig.book() == {} and reason in rig.skipped(), reason
+
+
+def test_no_main_data_provider_refuses_with_no_fallback(tmp_path) -> None:
+    rig = Rig(tmp_path)
+    rig.account.market = MarketReads(FakeEngine(None), rig.settings, now=rig.clock, reads=BoundedReads(spawn=lambda t: t()))
+    rig.offer(snapshot("NVDA"))
+    rig.tick()
+    assert rig.book() == {} and "quote_unavailable" in rig.skipped()

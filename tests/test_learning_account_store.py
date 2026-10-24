@@ -179,3 +179,32 @@ def test_a_book_race_between_two_holders_loses_no_trade_and_sends_no_extra_order
     a.offer(snapshot("NVDA"))
     a.tick(5)  # the next pass reads the book again and enters
     assert sorted(t["symbol"] for t in a.book().values()) == ["MU", "NVDA"]
+
+
+def test_the_record_constants() -> None:
+    assert (records.LEASE_SECONDS, records.RENEW_BELOW_SECONDS, records.ACT_MIN_SECONDS) == (300.0, 120.0, 30.0)
+    assert records.CLOSED_LIMIT == 500
+    assert records.LEARNING_KEYS == (
+        "learning_account:book", "learning_account:closed", "learning_account:status", "learning_account:lease",
+        "strategy_evidence:learning_verdicts",
+    )
+
+
+def test_an_empty_read_never_reaches_the_database() -> None:
+    class NoDatabase:
+        def connect(self):
+            raise AssertionError("Postgres rejects IN ()")
+
+    assert records.Store(NoDatabase()).read_many([]) == {}
+
+
+def test_its_own_unexpired_row_is_taken_back_and_an_unchanged_book_is_not_written(store) -> None:
+    clock = Clock()
+    store.put(records.LEASE_KEY, records.dumps({"owner": "a", "expires_at": (clock() + timedelta(minutes=4)).isoformat()}))
+    lease = records.Lease(store, "a", clock)
+    assert lease.ensure(work=True) and lease.held
+    other = records.Lease(store, "b", clock)
+    assert not other.ensure(work=True)
+    book = records.save_book(store, records.load_book(store), {"t": {"trade_id": "t"}})
+    writes = len(store.writes)
+    assert records.save_book(store, book, {"t": {"trade_id": "t"}}) is book and len(store.writes) == writes

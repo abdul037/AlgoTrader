@@ -148,39 +148,39 @@ def fresh_reason(candidate: Any, scanned_at: datetime, now: datetime) -> str | N
 
 class MainPathOnly:
     """Stands in for option B's ``PaperOnlyPass`` when the learning thread asks the main path's
-    own ``candidate_proposal_blockers`` what it would do. It reads the verdicts exactly as the
-    gate does (once a pass) and answers ``paper_only_admitted`` for a key the gate admits only
-    through option B's OOS bar, so B's guard reads (eToro records, the paper book, the main
-    broker's clock and assets) never run from the learning thread."""
+    own ``candidate_proposal_blockers`` what it would do. It is a ``PaperOnlyPass`` for the
+    verdicts (``state`` and ``is_paper_only`` read them exactly as the gate does, once a pass
+    while option B's bar is on) and answers ``paper_only_admitted`` for a key the gate admits
+    only through that bar, instead of running B's guard reads (eToro records, the paper book,
+    the main broker's clock and assets), which never run from the learning thread."""
 
     def __init__(self, auto_trading: Any):
-        from app.performance.strategy_evidence import VERDICTS_KEY
         from app.workflow.paper_only import PaperOnlyPass
 
-        self.settings = getattr(auto_trading, "settings", None)
-        self._bar = PaperOnlyPass(auto_trading).enabled()  # settings alone
-        runtime_state = getattr(auto_trading, "runtime_state", None)
-        self.text = None if runtime_state is None else runtime_state.get(VERDICTS_KEY)
-        self.state = None if runtime_state is None else SimpleNamespace(get={VERDICTS_KEY: self.text}.get)
-        try:
-            parsed = json.loads(self.text or "{}").get("verdicts")
-        except (TypeError, ValueError, AttributeError):
-            parsed = None
-        self.verdicts = parsed if isinstance(parsed, dict) else {}
+        self._pass = PaperOnlyPass(auto_trading)
+        self._verdicts: dict[str, Any] | None = None
+
+    @property
+    def state(self) -> Any:
+        return self._pass.state
 
     def verdict(self, candidate: Any) -> Any:
+        """The gate's verdict for the candidate's key (the verdicts parsed once a pass)."""
+
+        from app.performance.strategy_evidence import VERDICTS_KEY
+
+        if self._verdicts is None:
+            state = self.state
+            try:
+                parsed = json.loads((state.get(VERDICTS_KEY) if state is not None else None) or "{}").get("verdicts")
+            except (TypeError, ValueError, AttributeError):
+                parsed = None
+            self._verdicts = parsed if isinstance(parsed, dict) else {}
         timeframe = str(getattr(candidate, "timeframe", "") or "").lower()
-        return self.verdicts.get(f"{getattr(candidate, 'strategy_name', '') or ''}:{timeframe}")
+        return self._verdicts.get(f"{getattr(candidate, 'strategy_name', '') or ''}:{timeframe}")
 
     def blockers(self, candidate: Any) -> list[str]:
-        from app.broker import crypto as crypto_symbols
-        from app.performance.strategy_evidence import paper_oos_only
-
-        symbol = str(getattr(candidate, "symbol", "") or "").upper()
-        if not self._bar or crypto_symbols.is_crypto_symbol(symbol):
-            return []
-        timeframe = str(getattr(candidate, "timeframe", "") or "").lower()
-        return ["paper_only_admitted"] if paper_oos_only(self.settings, self.verdict(candidate), timeframe) else []
+        return ["paper_only_admitted"] if self._pass.is_paper_only(candidate) else []
 
 
 def main_path_reason(blockers: list[str]) -> str | None:
