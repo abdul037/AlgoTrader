@@ -288,10 +288,12 @@ def test_reconcile_only_after_an_identity_read_fails_later(tmp_path) -> None:
     rig.clock.advance(15 * 60)  # the periodic identity read fails
     rig.broker.fill_entry("NVDA", 100.0)
     rig.offer(snapshot("AMD"))
+    reads = len(rig.auto.runtime_state.reads)
     rig.tick()
     assert rig.account.route == "verification_failed"
     assert _only(rig)["status"] == "open"  # reconciled
     assert len(rig.broker.sent("submit_bracket")) == 1  # no entry
+    assert len(rig.auto.runtime_state.reads) == reads  # nor any entry work at all
     fresh = Rig(tmp_path / "never", broker=None)
     fresh.broker.identity_error = TimeoutError("down")
     fresh.tick()
@@ -500,3 +502,25 @@ def test_a_fill_seen_after_the_positions_read_is_not_mistaken_for_a_hand_close(t
     rig.tick(60)
     trade = _only(rig)
     assert trade["status"] == "open" and trade["entry_fill"] == 100.0
+    # The same for an entry whose send timed out (known only by its client id).
+    rig = Rig(tmp_path / "unknown")
+    real_submit = rig.broker.submit_bracket
+
+    def times_out(**order):
+        real_submit(**order)
+        raise TimeoutError("read timed out")
+
+    rig.broker.submit_bracket = times_out
+    rig.offer(snapshot("NVDA"))
+    rig.tick()
+    assert _only(rig)["status"] == "unknown"
+    original = rig.broker.positions
+
+    def filled_meanwhile():
+        held = original()
+        rig.broker.fill_entry("NVDA", 100.0)
+        return held
+
+    rig.broker.positions = filled_meanwhile
+    rig.tick(60)
+    assert _only(rig)["status"] == "open"
