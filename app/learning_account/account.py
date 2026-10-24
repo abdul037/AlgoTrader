@@ -194,7 +194,7 @@ def main_path_reason(blockers: list[str]) -> str | None:
         return "passes_the_paper_oos_bar"
     if any(str(blocker).startswith("paper_only_") for blocker in blockers):
         return "main_path_paper_only"
-    return f"main_path_blocked:{sorted(blockers)[0]}"
+    return f"main_path_blocked:{[blocker for blocker in blockers if blocker != EVIDENCE][0]}"
 
 
 class LearningAccount:
