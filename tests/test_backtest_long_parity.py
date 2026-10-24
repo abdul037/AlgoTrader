@@ -29,8 +29,9 @@ and the hold_overnight / stop_floor variants.
 
 The 15m case runs with the 2026-10-20 options off (``walk_forward_intraday_entry_delay_bars``
 0), and its rows' additive ``cost_profiles`` (the Alpaca / stress re-runs, which bc82efd never
-wrote) are left out of the comparison: everything else, the replayed variants included, must
-still match bc82efd exactly.
+wrote) are left out of the comparison, as are every row's additive ``etoro_fees_usd`` and
+``holdout_etoro_fees_usd`` (2026-10-24; pinned below): everything else, the replayed variants
+included, must still match bc82efd exactly.
 
 Re-baseline only after a deliberate long change, from a known-good commit: copy its
 ``app/backtesting/<name>.py`` over ``tests/long_parity_reference/<name>.py.txt``, update
@@ -58,6 +59,7 @@ from app.backtesting import batch as batch_module
 from app.backtesting import cost_model as cost_module
 from app.backtesting import engine as engine_module
 from app.backtesting import walk_forward as walk_forward_module
+from app.backtesting.cost_model import ETORO_FEES_FIELD, HOLDOUT_ETORO_FEES_FIELD
 from app.backtesting.venue_costs import COST_PROFILES_FIELD
 from tests.conftest import make_settings
 
@@ -71,6 +73,9 @@ SELL_EMITTERS = (
 )
 INTRADAY_SPECS = ("vwap_reclaim", "ema_trend_stack")
 COST_LEGS = ("spread_usd", "financing_usd", "fx_usd", "commission_usd", "slippage_usd", "regulatory_usd")
+# Row keys bc82efd never wrote, all additive: the Alpaca / stress re-runs (2026-10-20) and what
+# eToro's own fees cost a row's OOS and holdout trades (2026-10-24, the learning account's fee band).
+ADDITIVE_FIELDS = (COST_PROFILES_FIELD, ETORO_FEES_FIELD, HOLDOUT_ETORO_FEES_FIELD)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REFERENCE_DIR = Path(__file__).with_name("long_parity_reference")
@@ -196,7 +201,7 @@ def _record(case, summary, rows, events) -> list[tuple[str, str]]:
     """What a run leaves behind, as (label, exact text) pairs."""
 
     def etoro_priced(metrics: dict) -> dict:  # key order kept
-        return {key: value for key, value in metrics.items() if key != COST_PROFILES_FIELD}
+        return {key: value for key, value in metrics.items() if key not in ADDITIVE_FIELDS}
 
     out = []
     for row in rows:  # exactly what BacktestRepository.create persists, minus id and stamps
@@ -428,3 +433,38 @@ def test_etoro_fees_cost_the_evidence_about_two_hundredths_of_r(computed) -> Non
     fee_trades, fee_r = pooled(computed["fee_rows"])
     assert fee_trades == trades >= 150
     assert -0.0205 < fee_r - fee_free_r < -0.0195, fee_r - fee_free_r
+
+
+def test_rows_record_what_etoro_fees_cost_their_trades(computed) -> None:
+    """Each OOS row records eToro's fees on its OOS trades and on its holdout's ($2 a US stock
+    trade; nothing in the fee-free run), and adding them back to the fee-inclusive pool gives
+    the fee-free run's pooled expectancy, give or take the later trades' smaller sizes."""
+
+    from app.performance.strategy_evidence import BACKTEST_RISK_USD
+
+    fee = cost_module.ETORO_STOCK_FEE_USD_PER_LEG
+    checked = holdouts = 0
+    for rows, per_leg in ((computed["fee_rows"], fee), (computed["fee_free_rows"], 0.0)):
+        for _, row in rows:
+            if not row["file_path"].endswith(":walk_forward_oos"):
+                assert ETORO_FEES_FIELD not in row["metrics"]  # in-sample rows are unchanged
+                continue
+            metrics = row["metrics"]
+            assert metrics[ETORO_FEES_FIELD] == pytest.approx(2 * per_leg * len(row["trades"]), abs=1e-9)
+            assert list(metrics)[-1] == ETORO_FEES_FIELD  # added last: every other key keeps its place
+            if metrics.get("holdout_evaluated"):
+                holdouts += 1
+                expected = 2 * per_leg * int(metrics["holdout_trades"])
+                assert metrics[HOLDOUT_ETORO_FEES_FIELD] == pytest.approx(expected, abs=1e-9)
+            checked += 1
+    assert checked >= 40 and holdouts >= 20
+
+    def pooled(rows, *, add_fees):
+        oos = [row["metrics"] for _, row in rows if row["file_path"].endswith(":walk_forward_oos")]
+        trades = sum(int(m["number_of_trades"]) for m in oos)
+        pnl = sum(float(m["expectancy_usd"]) * int(m["number_of_trades"]) for m in oos)
+        pnl += sum(float(m[ETORO_FEES_FIELD]) for m in oos) if add_fees else 0.0
+        return pnl / trades / BACKTEST_RISK_USD
+
+    restored = pooled(computed["fee_rows"], add_fees=True)
+    assert abs(restored - pooled(computed["fee_free_rows"], add_fees=False)) < 0.002

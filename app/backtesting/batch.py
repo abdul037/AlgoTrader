@@ -24,7 +24,12 @@ from typing import Any
 
 import pandas as pd
 
-from app.backtesting.cost_model import with_etoro_trade_fees
+from app.backtesting.cost_model import (
+    ETORO_FEES_FIELD,
+    HOLDOUT_ETORO_FEES_FIELD,
+    leg_fees_usd,
+    with_etoro_trade_fees,
+)
 from app.backtesting.engine import BacktestEngine, EngineConfig
 from app.backtesting.intraday_plan import (
     history_bars_for,
@@ -431,6 +436,10 @@ class BatchBacktestService:
                         {"symbol": symbol.upper(), "strategy_name": row_name or strategy.name,
                          "timeframe": timeframe, "error": f"{type(exc).__name__}: {exc}"[:300]},
                     )
+        # What eToro's own fees cost these trades (added last: every other key, its value and
+        # its order stay as before). Fee-free P&L = expectancy_usd x trades + this; the
+        # separate paper learning account pools it (app/learning_account/verdicts.py).
+        metrics[ETORO_FEES_FIELD] = round(leg_fees_usd(engine.config.cost_model, aggregated["merged_trades"]), 4)
 
         completed_at = utc_now().isoformat()
         if skip:
@@ -554,6 +563,8 @@ class BatchBacktestService:
             "holdout_max_drawdown_pct": round(float(m.get("max_drawdown_pct", 0.0) or 0.0), 4),
             "holdout_trades": int(m.get("number_of_trades", 0) or 0),
             "holdout_expectancy_usd": round(float(m.get("expectancy_usd", 0.0) or 0.0), 4),
+            # eToro's fees on the holdout's trades (see ``ETORO_FEES_FIELD`` in _run_strategy).
+            HOLDOUT_ETORO_FEES_FIELD: round(leg_fees_usd(holdout_engine.config.cost_model, result.trades), 4),
         }
 
     @staticmethod

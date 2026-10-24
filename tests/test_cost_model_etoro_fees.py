@@ -200,3 +200,35 @@ def test_the_batch_charges_stocks_a_dollar_a_leg_and_crypto_one_percent(tmp_path
         assert stock["metrics"]["holdout_trades"] == fee_free["SYNA"]["metrics"]["holdout_trades"] > 0
         holdout_drop = fee_free["SYNA"]["metrics"]["holdout_expectancy_usd"] - stock["metrics"]["holdout_expectancy_usd"]
         assert holdout_drop == pytest.approx(2.0, abs=0.05)
+
+
+def test_a_row_records_what_etoro_fees_cost_its_oos_and_holdout_trades(tmp_path, monkeypatch) -> None:
+    """Additive row fields (2026-10-24, the learning account's fee band): eToro's fees on the
+    row's OOS trades and on its holdout's, so a reader can price the same trades without them."""
+
+    from app.backtesting.cost_model import ETORO_FEES_FIELD, HOLDOUT_ETORO_FEES_FIELD, leg_fees_usd
+
+    monkeypatch.setattr(batch_module, "get_strategy", lambda name, **kwargs: _PatternBuyer())
+    paid = _batch_rows(tmp_path, True)
+    stock, crypto = paid["SYNA"]["metrics"], paid["BTC/USD"]["metrics"]
+    assert stock[ETORO_FEES_FIELD] == pytest.approx(2.0 * stock["number_of_trades"])
+    assert stock["holdout_trades"] > 0
+    assert stock[HOLDOUT_ETORO_FEES_FIELD] == pytest.approx(2.0 * stock["holdout_trades"])
+    legs = sum(t["notional_usd"] + t["quantity"] * t["exit_price"] for t in paid["BTC/USD"]["trades"])
+    assert crypto[ETORO_FEES_FIELD] == pytest.approx(0.01 * legs, abs=1e-3)
+    assert crypto[HOLDOUT_ETORO_FEES_FIELD] > 0
+    # The fee is the commission: adding it back to the pool removes eToro's fees from it.
+    commissions = sum(t["commission_usd"] for t in paid["SYNA"]["trades"])
+    assert stock[ETORO_FEES_FIELD] == pytest.approx(commissions)
+    with monkeypatch.context() as free:
+        free.setattr(cost_module, "ETORO_STOCK_FEE_USD_PER_LEG", 0.0)
+        free.setattr(cost_module, "ETORO_CRYPTO_FEE_PER_LEG", 0.0)
+        fee_free = _batch_rows(tmp_path, True)
+    assert fee_free["SYNA"]["metrics"][ETORO_FEES_FIELD] == 0.0
+    assert fee_free["SYNA"]["metrics"][HOLDOUT_ETORO_FEES_FIELD] == 0.0
+    # The helper prices each leg as the engine does, and nothing without leg fees.
+    trade = {"notional_usd": 2_000.0, "quantity": 20.0, "exit_price": 110.0}
+    assert leg_fees_usd(with_etoro_trade_fees(CostModel(), crypto=False), [trade, trade]) == 4.0
+    assert leg_fees_usd(with_etoro_trade_fees(CostModel(), crypto=True), [trade]) == pytest.approx(42.0)
+    assert leg_fees_usd(CostModel(), [trade]) == 0.0
+    assert leg_fees_usd(with_etoro_trade_fees(CostModel(), crypto=False), [{"notional_usd": 0.0}]) == 0.0

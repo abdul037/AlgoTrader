@@ -359,6 +359,27 @@ def with_etoro_trade_fees(model: CostModel, *, crypto: bool) -> CostModel:
     return replace(model, commission_flat_usd_per_leg=ETORO_STOCK_FEE_USD_PER_LEG)
 
 
+# Row fields of the batch walk-forward (additive, 2026-10-24): what eToro's own fees cost a row's
+# OOS trades and its holdout trades, so a reader can price the same trades without them.
+ETORO_FEES_FIELD = "etoro_fees_usd"
+HOLDOUT_ETORO_FEES_FIELD = "holdout_etoro_fees_usd"
+
+
+def leg_fees_usd(model: CostModel, trades: Iterable[dict]) -> float:
+    """The flat and percentage leg fees (:meth:`CostModel.leg_fee_usd`) ``model`` charged the
+    engine's ``trades``: on each trade's entry notional and its exit notional (quantity times
+    the exit fill), exactly as the engine charges them. In the batch walk-forward the only such
+    fees are eToro's own (:func:`with_etoro_trade_fees`), so adding this back to a row's P&L
+    gives its fee-free P&L (the separate paper learning account's fee band, app/learning_account)."""
+
+    total = 0.0
+    for trade in trades:
+        entry = float(trade.get("notional_usd", 0.0) or 0.0)
+        exit_notional = float(trade.get("quantity", 0.0) or 0.0) * float(trade.get("exit_price", 0.0) or 0.0)
+        total += model.leg_fee_usd(notional_usd=entry) + model.leg_fee_usd(notional_usd=exit_notional)
+    return total
+
+
 def zero_cost_model() -> CostModel:
     """A no-op cost model used only for diagnostic comparisons.
 
