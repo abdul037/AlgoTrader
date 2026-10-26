@@ -475,7 +475,8 @@ class EtoroLiveMirrorService:
                 reasons.append(blocker)
         reasons.extend(extension_blockers(copy_inputs.get(EXTENSION_FIELD), timeframe))
         state = self._state()
-        trades_today = _finite(state.get("trades_today"))
+        count = state.get("trades_today")  # the code writes ints; anything else is unreadable
+        trades_today = None if isinstance(count, (str, bool)) else _finite(count)
         if trades_today is None or trades_today >= HARD_MAX_TRADES_PER_DAY:
             reasons.append("etoro_live_daily_trade_cap")  # an unreadable count is a full day
         from app.broker.etoro_live_room import bucket_blockers, effective_open_symbols

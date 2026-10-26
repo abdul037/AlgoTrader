@@ -657,6 +657,7 @@ def test_the_open_position_cap_counts_the_slots_already_handed_out(
     [
         ({"last_equity": 9_500.0}, {}, ["etoro_live_daily_loss_stop"]),  # 5% down on the day
         ({"last_equity": 9_501.0}, {}, []),
+        ({"day_start_equity": None}, {}, ["etoro_live_day_start_unknown"]),  # mirror refuses
         ({}, {"etoro_live_mirror_enabled": False}, ["etoro_live_mirror_disabled"]),
     ],
 )

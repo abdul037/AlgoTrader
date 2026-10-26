@@ -391,7 +391,9 @@ def _etoro_snapshot(settings: Any, values: dict[str, Any], session_date: str) ->
         hints.append("etoro_live_mirror_halted")
     if equity is None or equity <= 0:
         hints.append("etoro_live_equity_unknown")
-    elif start is not None and start - equity >= start * HARD_DAILY_LOSS_STOP_PCT / 100.0:
+    elif start is None or start <= 0:
+        hints.append("etoro_live_day_start_unknown")  # the mirror refuses: no loss stop check
+    elif start - equity >= start * HARD_DAILY_LOSS_STOP_PCT / 100.0:
         hints.append("etoro_live_daily_loss_stop")
     return {
         "equity": equity,

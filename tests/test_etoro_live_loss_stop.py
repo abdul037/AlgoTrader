@@ -63,7 +63,7 @@ def test_reconcile_keeps_a_good_day_start(tmp_path) -> None:
     assert json.loads(state.get(STATE_KEY))["day_start_equity"] == 10_000.0
 
 
-@pytest.mark.parametrize("count", [float("nan"), "x", float(HARD_MAX_TRADES_PER_DAY)])
+@pytest.mark.parametrize("count", [float("nan"), "x", "2", True, float(HARD_MAX_TRADES_PER_DAY)])
 def test_an_unreadable_or_full_copy_count_refuses(tmp_path, count) -> None:
     client = _Client()
     service, logs = _mirror(tmp_path, client=client, state=_today(trades_today=count))
