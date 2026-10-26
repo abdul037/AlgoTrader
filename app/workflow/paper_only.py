@@ -243,8 +243,10 @@ class PaperOnlyPass:
         return taken
 
     def refresh(self) -> None:
-        """Read paper again before the next candidate (rules 4 and 5 on a fresh read)."""
+        """Read eToro's held symbols and paper again before the next candidate (rules 3 to 5
+        on a fresh read)."""
 
+        self._reads.pop("held", None)
         self._reads.pop("paper", None)
 
     def _automatic(self, candidate: Any) -> list[str]:
