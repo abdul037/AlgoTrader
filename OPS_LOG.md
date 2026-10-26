@@ -33,8 +33,12 @@ without explicit operator sign-off recorded here.
     25% of equity / $2,500; risk per copy still <= 0.5% of equity; stops > 8% still not copied;
     NEW: all eToro positions + in-flight copies + this copy <= 100% of equity (no leverage;
     `etoro_live_exposure_cap` is a room reason, so paper's own room rules decide then;
-    `etoro_live_exposure_unknown` refuses). A stake that does not fit is cut to the room when
-    that is >= $10 and >= half the stake, else refused. At $9,770: 2.0% stop -> $2,442.50,
+    `etoro_live_exposure_unknown` refuses). A stake that does not fit the exposure room or the
+    cash less its $100 reserve is refused, never cut; a NaN/infinite setting, equity or cash
+    never sizes a copy (`etoro_live_unsized` / `_equity_unknown` / `_insufficient_cash`). Under
+    option 3 an exposure-cap refusal also stops paper's eToro-eligible entry (room authority),
+    so paper and eToro keep the same positions; paper-only entries use paper's own room.
+    At $9,770: 2.0% stop -> $2,442.50,
     2.8% -> $1,744.64, 5% -> $977, 7.9% -> $618.35; each risks $48.85.
   - **Three copies a day (approved explicitly):** `HARD_MAX_TRADES_PER_DAY` 2 -> 3 (AAPL
     +$439 on paper was missed by the daily cap).
@@ -55,8 +59,11 @@ without explicit operator sign-off recorded here.
 - **Reviews:** B: round 1 (`06cdd8f`, riders inside the scan) and round 2 (`5bb1e0e`) rejected,
   round 3 (`91c5f9a`) approved (race repro identical to `d2c7faf`; 1000-case propose parity and
   scan parity 0 eToro mismatches); its minor (re-read eToro's held set before the pass) fixed in
-  `76a8268`. eToro sizing: parity against `d2c7faf` on 600 seeded orders (every other rule
-  decides the same), 27/27 mutants killed, real-money review on `0d392af`/`3b3d32d`.
+  `76a8268`. eToro sizing: real-money review of `0d392af`/`3b3d32d` rejected it (a NaN size
+  setting sent the whole room, $9,670 instead of $977; a cut-to-fit rule the operator had not
+  approved); both fixed in `6949613` (non-finite inputs never size; a copy that does not fit is
+  refused). Parity against `d2c7faf` (600 seeded orders) and a 20,000-case fuzz: every other
+  rule decides the same; no copy over 25%, $2,500, 0.5% risk or the exposure room.
 - **Residuals (stated):** bigger copies mean fewer concurrent eToro positions (about 4-5 at
   tight stops) and more weight per stock; an overnight gap through a stop costs more (a 25%
   position gapping 10% loses 2.5% of equity); a bad equity reading is still bounded by $2,500
