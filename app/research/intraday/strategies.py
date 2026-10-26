@@ -20,7 +20,7 @@ one bar late (``entry_delay_bars``), bar opens, costs applied.
   VWAP, out by the 15:50 time stop (the 3R target rarely binds).
 
 ``direction="short"`` evaluates the mirror image (prices negated) and emits bracketed
-``entry_short`` SELLs for the short research engine (``EngineConfig(short_entries=True)``);
+``entry_short`` SELLs, which only the harness's short engine config opens (harness.py);
 the long evidence path only ever opens BUYs. Shorts are a diagnostic: the bot does not short.
 """
 
@@ -123,6 +123,8 @@ class IntradayCandidate(BaseStrategy):
                 "timeframe": self.timeframe,
                 "max_hold_bars": int(hold),
                 "risk_reward_ratio": round(abs(target - entry) / risk, 2) if risk > 0 else None,
+                # A short's feature values are read off the mirrored view (prices negated).
+                "features_mirrored": short,
                 **{key: round(float(value), 6) for key, value in extra.items()},
             },
         )

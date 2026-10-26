@@ -368,6 +368,9 @@ def test_only_the_research_path_names_any_short_research_artefact() -> None:
         "app/backtesting/cost_model.py",  # the short-only cost legs
         "app/performance/strategy_evidence.py",  # the short verdicts
         "app/runtime_settings.py",  # its two settings
+        # Offline intraday research (2026-10-26): its mirrored-short diagnostic runs the short
+        # engine on downloaded bars; no live path imports app/research/intraday.
+        "app/research/intraday/harness.py",
     }
     hits = {}
     for file, text in _sources([APP]):
