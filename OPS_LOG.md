@@ -12,6 +12,63 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-10-26 (Mon) — eToro equal-risk sizing, three copies a day, option B scan fix
+
+- **Option B made no entry on 10-23:** its second, paper-only scan was skipped in all 48 swing
+  runs (`run_deadline_too_close`): each tick spends ~80 s before the swing bucket, so the
+  scan's 45 s minimum never fit before the tick's scan stop. Trading 10-19..23: paper opened
+  CRM and COST (both refused by the mirror: stop > 8%, edge below bar, streak, planner, per-signal
+  backtest; COST also RSI) and closed META -$496.59, AAPL +$439.15, XOM +$509.82; eToro closed
+  META -$110.77 and XOM +$50.69 (equity $9,767.51 on 10-26).
+- **Container loss (10-24):** the cloud container was replaced and every unpushed local branch
+  was lost (the reviewed learning-account build, the held intraday exits and fast path). Since
+  10-24 (operator approval) all work is pushed to `claude/wip-*` backup branches after every
+  commit; Railway deploys only this branch.
+- **Operator decisions (10-26):**
+  - **No separate learning account:** "the paper itself is the learning account". The rebuilt
+    code stays parked on `claude/wip-learning-account`, not deployed.
+  - **eToro equal-risk sizing (approved explicitly):** the 5 copies since 10-05 had paper's R
+    (MSFT +1.3R, COST +1.2R, XOM +2.2R, AMD -1.0R, META -1.0R) but eToro lost -$153 while paper
+    made +$336, because copies were a flat ~$1,000. Per-trade cap 10% / $1,000 ->
+    25% of equity / $2,500; risk per copy still <= 0.5% of equity; stops > 8% still not copied;
+    NEW: all eToro positions + in-flight copies + this copy <= 100% of equity (no leverage;
+    `etoro_live_exposure_cap` is a room reason, so paper's own room rules decide then;
+    `etoro_live_exposure_unknown` refuses). A stake that does not fit is cut to the room when
+    that is >= $10 and >= half the stake, else refused. At $9,770: 2.0% stop -> $2,442.50,
+    2.8% -> $1,744.64, 5% -> $977, 7.9% -> $618.35; each risks $48.85.
+  - **Three copies a day (approved explicitly):** `HARD_MAX_TRADES_PER_DAY` 2 -> 3 (AAPL
+    +$439 on paper was missed by the daily cap).
+  - Unchanged: 0.5% risk cap, 8% stop rule, leverage 1, 5% daily loss stop, 9 open, 4 per group,
+    every copy rule.
+- **Shipped (`d2c7faf..`):**
+  - eToro sizing as above; the boot snapshot shows the effective values
+    (`etoro_live_trade_pct_of_equity` and the five hard caps). If Railway still sets
+    `ETORO_LIVE_TRADE_PCT_OF_EQUITY` (e.g. 10), copies stay at that percentage.
+  - Option B scan redesign: the run's own scan is `d2c7faf`'s again (a pass-through
+    `KeptBars` keeps its bars and quotes, serving nothing until the riders' step); after the
+    run's alerts, tracking, auto-propose pass and due-time stamp, a never-raising step runs the
+    paper-only riders' signals on the kept bars, drops crypto, symbols eToro or paper hold or
+    have in flight, open-proposal symbols and signals checked within the duplicate window,
+    checks at most 2 (one per symbol, 13 s each, intelligence bounded at 5 s, only before
+    min(batch deadline, tick scan stop - 35 s)), then tracks them and runs a second pass
+    (`swing_scan:paper_only`, paper-only candidates only). The separate second scan is removed.
+- **Reviews:** B: round 1 (`06cdd8f`, riders inside the scan) and round 2 (`5bb1e0e`) rejected,
+  round 3 (`91c5f9a`) approved (race repro identical to `d2c7faf`; 1000-case propose parity and
+  scan parity 0 eToro mismatches); its minor (re-read eToro's held set before the pass) fixed in
+  `76a8268`. eToro sizing: parity against `d2c7faf` on 600 seeded orders (every other rule
+  decides the same), 27/27 mutants killed, real-money review on `0d392af`/`3b3d32d`.
+- **Residuals (stated):** bigger copies mean fewer concurrent eToro positions (about 4-5 at
+  tight stops) and more weight per stock; an overnight gap through a stop costs more (a 25%
+  position gapping 10% loses 2.5% of equity); a bad equity reading is still bounded by $2,500
+  (a 7.9% stop then risks $197.50); option B's day headroom still leaves 2 of paper's daily
+  trades (paper has used at most 2 a day), so a 3rd eToro copy is not reserved; the riders'
+  step can defer a later bucket in the same tick by one tick.
+- **Expect:** eToro copies at tight stops about 2.5x larger than before, so a winner like XOM
+  makes ~$100 instead of ~$50 and a loser costs ~0.5% of equity; option B about 1-3
+  paper-only entries a week, none while paper holds more than 9 positions (10 on 10-26).
+- **Rollback:** `PAPER_OOS_BAR_ENABLED=false` switches option B off; the eToro sizing reverts
+  only by code (it is a hard cap).
+
 ## 2026-10-22 (Thu) — option B: paper trades on pooled OOS evidence (paper-only entries)
 
 - **Stage 1 (`822e46e`) was never deployed:** Railway missed the 10-21 push (no GitHub

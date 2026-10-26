@@ -24,8 +24,10 @@ pass) gives a paper-only entry these rules:
 4. Day headroom: it must leave 2 of the day's paper trades (``LEAVE_FOR_ETORO`` of
    ``max_trades_per_day``) and 1 of its correlation group's daily entries (``LEAVE_IN_GROUP``
    of ``max_daily_entries_per_correlation_bucket``; unclassified symbols have no group cap),
-   counted as paper's own checks count them (today's execution rows). Two is the most eToro
-   copies a day (``HARD_MAX_TRADES_PER_DAY``). What it guarantees, exactly: paper-only entries
+   counted as paper's own checks count them (today's execution rows). eToro copies up to 3 a
+   day (``HARD_MAX_TRADES_PER_DAY``, 2 until 2026-10-26); paper's own cap is far above what it
+   uses (at most 2 entries a day so far), so a third copy is not crowded out in practice, but
+   it is not reserved either. What it guarantees, exactly: paper-only entries
    never take the day's last two paper trades. Those two can still go to any untagged entry,
    including one the mirror then refuses under its own rules (its +0.03R bar, the 24 h
    streak, the planner ...), so this bounds the copies paper-only entries cost; it does not
@@ -46,8 +48,7 @@ pass) gives a paper-only entry these rules:
      entry's own risk too, and it still applies when eToro's room authority replaces paper's
      open-count check, so heat is what such positions use up.
    So a paper-only entry never takes one of the last two places in paper's open room or heat
-   (two is eToro's daily copy cap; leaving every free eToro slot would bar paper-only entries
-   altogether). The residual, stated: while paper's open room or heat is full, every
+   (two places; leaving every free eToro slot would bar paper-only entries altogether). The residual, stated: while paper's open room or heat is full, every
    eToro-eligible entry waits for a position to close, on any day; paper-only positions can
    hold up to ``MAX_OPEN_PAPER_ONLY`` (3) of paper's slots for as long as they are open. With
    paper's 12 places, eToro's own nine still fit beside them when every other paper position
