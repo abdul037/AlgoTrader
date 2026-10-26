@@ -6,7 +6,7 @@
   once a pass in one round trip, as the mirror's room check reads it; unreadable refuses);
 * it leaves 2 of the day's paper trades and 1 of its group's daily entries;
 * it leaves room for 2 more positions in paper's open-position and heat capacity, never opens
-  where paper holds or has an unfilled entry, and at most MAX_OPEN_PAPER_ONLY (3) are open at once;
+  where paper holds or has an unfilled entry, and at most MAX_OPEN_PAPER_ONLY (5) are open at once;
 * it is tagged; nothing else is, and with the switch off nothing changes and nothing is read;
 * its safety blocks are logged once a day; its notices say it is not copied;
 * a focused swing run takes paper-only riders only when one could be placed at once, on its own
@@ -693,7 +693,7 @@ def test_a_paper_only_entry_leaves_room_for_two_more_positions_in_portfolio_heat
 
 
 def test_at_most_max_open_paper_only_positions_and_never_where_paper_holds(tmp_path) -> None:
-    assert MAX_OPEN_PAPER_ONLY == 3  # the one place to change it; the rest reads the name
+    assert MAX_OPEN_PAPER_ONLY == 5  # the one place to change it; the rest reads the name
     candidate = _candidate("UBER", "momentum_breakout")
 
     def book(rows, held):

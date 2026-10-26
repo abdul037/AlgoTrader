@@ -82,7 +82,16 @@ without explicit operator sign-off recorded here.
   the 5% daily loss stop off for the day (the day roll copies `last_equity` into it; reconcile
   refilled only a None), and a NaN copy count passed the 3-a-day cap. Now an unknown day start
   refuses the copy (`etoro_live_day_start_unknown`, not a room reason) and reconcile refills
-  it; an unreadable count counts as a full day. Stricter only.
+  it; an unreadable count counts as a full day. Stricter only. Deployed 08:47 UTC (`644d452`).
+- **Intraday research (`claude/wip-intraday-research`, not deployed):** 7 intraday-native
+  candidates on 5m/10m/15m, the live 24 names and 20 high-beta names, plus 2 years of 1h bars,
+  judged by production's own walk-forward: 0 of 55 long cells pass; best stress day-t +0.77
+  (one-in-45 significance needs ~3.0). No intraday edge found; nothing registered.
+- **Operator decision (10-26, mid-session): paper-only cap 3 -> 5** (`MAX_OPEN_PAPER_ONLY`).
+  Every other option-B guard is unchanged (never in a symbol eToro or paper holds, leave 2 of
+  paper's daily trades and 2 open places, 1 a pass, automatic only). Residual accepted: 5
+  paper-only positions leave 7 of paper's 12 places, fewer than eToro's 9, so on a busy
+  stretch an eToro-copyable entry can wait for paper room. Deployed after the 20:00 UTC close.
 
 ## 2026-10-22 (Thu) — option B: paper trades on pooled OOS evidence (paper-only entries)
 

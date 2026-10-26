@@ -50,9 +50,11 @@ pass) gives a paper-only entry these rules:
    So a paper-only entry never takes one of the last two places in paper's open room or heat
    (two places; leaving every free eToro slot would bar paper-only entries altogether). The residual, stated: while paper's open room or heat is full, every
    eToro-eligible entry waits for a position to close, on any day; paper-only positions can
-   hold up to ``MAX_OPEN_PAPER_ONLY`` (3) of paper's slots for as long as they are open. With
-   paper's 12 places, eToro's own nine still fit beside them when every other paper position
-   is copied; other paper positions eToro would not copy leave it fewer.
+   hold up to ``MAX_OPEN_PAPER_ONLY`` (5) of paper's slots for as long as they are open. With
+   paper's 12 places, 5 paper-only positions leave 7 for everything else, fewer than eToro's
+   own nine, so on a busy stretch an eToro-copyable entry can wait for paper room (operator
+   decision 2026-10-26, more paper evidence over every possible copy; it was 3, which kept
+   eToro's nine).
    Steps 4 and 5 come from one read of paper's state a pass (one risk context and one list of
    the newest execution rows), read again after each proposal the pass creates. Unreadable
    inputs refuse.
@@ -109,7 +111,7 @@ LEAVE_FOR_ETORO = 2  # paper trades a day, and open-position room, a paper-only 
 LEAVE_IN_GROUP = 1  # entries in its correlation group that day a paper-only entry must leave
 # Paper-only positions open or unfilled at once: the one place to change it (every rule, test
 # and notice reads this name).
-MAX_OPEN_PAPER_ONLY = 3  # paper's 12 places less eToro's 9 (operator decision, 2026-10-22)
+MAX_OPEN_PAPER_ONLY = 5  # operator 2026-10-26 (was 3 from 10-22: paper's 12 places less eToro's 9)
 MAX_PER_PASS = 1  # paper-only proposals an auto-propose pass may create
 PROPOSAL_SECONDS = 35.0  # the pass's reads and one paper-only proposal (measured 20-35 s)
 BOOK_ROWS = 500  # newest execution rows read to tell paper-only positions apart
