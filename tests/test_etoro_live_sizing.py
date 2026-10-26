@@ -184,6 +184,9 @@ def test_non_finite_setting_equity_or_cash_never_sends_an_order(tmp_path) -> Non
         service, logs = _mirror(tmp_path, client=client, state=state, etoro_live_trade_pct_of_equity=pct)
         assert _run(service, _proposal(stop=95.0)) is None and client.orders == [], pct
         assert "etoro_live_unsized" in _blocked(logs) or pct == inf, (pct, _blocked(logs))
+        order = _proposal(stop=95.0).order
+        order.metadata["timeframe"] = "1d"
+        assert room_verdict(service, order) is None, pct  # no copy: paper's own room decides
     for equity in (nan, inf, -inf):
         client = _Client()
         service, logs = _mirror(tmp_path, client=client, state=_account(equity=equity))
