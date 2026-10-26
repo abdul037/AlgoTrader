@@ -3,7 +3,8 @@
 The five copies since 10-05 had paper's R (MSFT +1.3, COST +1.2, XOM +2.2, AMD -1.0, META -1.0)
 but eToro lost -$153 while paper made +$336: a flat ~$1,000 cap kept tight-stop copies at
 0.2-0.3% risk. The stake is now min(25% of equity, $2,500, 0.5% of equity / stop distance);
-open notional + the copy stays within 100% of equity; three new copies a UTC day.
+open notional + the copy stays within 100% of equity (a copy that does not fit is refused,
+never cut); three new copies a UTC day.
 """
 
 from __future__ import annotations
@@ -125,19 +126,21 @@ def test_the_pct_setting_cannot_raise_the_25_pct_cap(tmp_path) -> None:
 
 
 # -- the exposure cap ----------------------------------------------------------------------------
-def test_fit_to_room_fits_cuts_or_refuses() -> None:
+def test_fit_to_room_is_binary() -> None:
+    # Operator 2026-10-26: a copy that does not fit is refused, never cut to a smaller copy.
     rooms = {"etoro_live_exposure_cap": 3_000.0, "etoro_live_insufficient_cash": 5_000.0}
     assert fit_to_room(2_442.5, rooms) == (2_442.5, [])
-    assert fit_to_room(2_442.5, {**rooms, "etoro_live_exposure_cap": 1_500.019}) == (1_500.01, [])
-    assert fit_to_room(2_442.5, {**rooms, "etoro_live_exposure_cap": 1_221.25}) == (1_221.25, [])
-    assert fit_to_room(2_442.5, {**rooms, "etoro_live_exposure_cap": 1_221.24}) == (
+    assert fit_to_room(2_442.5, {**rooms, "etoro_live_exposure_cap": 2_442.5}) == (2_442.5, [])
+    assert fit_to_room(2_442.5, {**rooms, "etoro_live_exposure_cap": 2_442.49}) == (
         None,
         ["etoro_live_exposure_cap"],
     )
-    both = {"etoro_live_exposure_cap": 400.0, "etoro_live_insufficient_cash": 300.0}
-    assert fit_to_room(2_000.0, both) == (None, list(both))
-    assert fit_to_room(15.0, {"etoro_live_exposure_cap": 9.99}) == (None, ["etoro_live_exposure_cap"])
-    assert fit_to_room(15.0, {"etoro_live_exposure_cap": 10.0}) == (10.0, [])  # eToro's minimum
+    both = {"etoro_live_exposure_cap": 2_000.0, "etoro_live_insufficient_cash": 2_400.0}
+    assert fit_to_room(2_442.5, both) == (None, list(both))  # each room under the stake
+    nan, inf = float("nan"), float("inf")
+    assert fit_to_room(2_442.5, {**rooms, "etoro_live_insufficient_cash": nan})[0] is None
+    for stake in (nan, inf, -1.0, 0.0):
+        assert fit_to_room(stake, rooms)[0] is None, stake
 
 
 def _held(cost, *symbols):
@@ -151,33 +154,51 @@ def test_the_full_stake_fits(tmp_path) -> None:
     assert _run(service, _proposal(stop=98.0))["amount_usd"] == 2_442.5  # 7,170 + 2,442.5 <= 9,770
 
 
-def test_a_stake_that_does_not_fit_is_cut_to_the_room(tmp_path) -> None:
+def test_a_stake_over_the_exposure_room_is_refused_as_a_room_reason(tmp_path) -> None:
     client = _Client()
     state = _account(cash=8_000.0, open_notional=_held(2_500.0, "JPM", "XOM", "COST"))
-    service, _ = _mirror(tmp_path, client=client, state=state)
-    record = _run(service, _proposal(stop=98.0))
-    assert record["amount_usd"] == 2_270.0  # 9,770 - 7,500: exposure binds, cash does not
-    order = _proposal("MSFT", stop=98.0).order
-    order.metadata["timeframe"] = "1d"
-    assert room_verdict(service, order) == ["etoro_live_exposure_cap"]  # it is now full
-
-
-def test_the_cash_room_cuts_the_same_way(tmp_path) -> None:
-    client = _Client()
-    state = _account(cash=1_600.0, open_notional=_held(1_000.0, "JPM"))
-    service, _ = _mirror(tmp_path, client=client, state=state)
-    assert _run(service, _proposal(stop=98.0))["amount_usd"] == 1_500.0  # $1,600 less $100
-
-
-def test_a_stake_whose_room_is_under_half_is_refused_as_a_room_reason(tmp_path) -> None:
-    client = _Client()
-    state = _account(cash=8_000.0, open_notional=_held(2_850.0, "JPM", "XOM", "COST"))
     service, logs = _mirror(tmp_path, client=client, state=state)
-    assert _run(service, _proposal(stop=98.0)) is None and client.orders == []  # 1,220 < 1,221.25
+    assert _run(service, _proposal(stop=98.0)) is None and client.orders == []  # 2,270 < 2,442.5
     assert _blocked(logs) == ["etoro_live_exposure_cap"]
     order = _proposal(stop=98.0).order
     order.metadata["timeframe"] = "1d"
     assert room_verdict(service, order) == ["etoro_live_exposure_cap"]  # eToro's room says no
+    client = _Client()
+    service, _ = _mirror(tmp_path, client=client, state=state)  # a 5% stop's $977 still fits
+    assert _run(service, _proposal("MSFT", stop=95.0))["amount_usd"] == 977.0
+
+
+def test_the_cash_rule_still_refuses_a_stake_it_cannot_pay(tmp_path) -> None:
+    client = _Client()
+    state = _account(cash=1_600.0, open_notional=_held(1_000.0, "JPM"))
+    service, logs = _mirror(tmp_path, client=client, state=state)
+    assert _run(service, _proposal(stop=98.0)) is None and client.orders == []  # 1,500 < 2,442.5
+    assert _blocked(logs) == ["etoro_live_insufficient_cash"]
+
+
+def test_non_finite_setting_equity_or_cash_never_sends_an_order(tmp_path) -> None:
+    nan, inf = float("nan"), float("inf")
+    for pct in (nan, inf, "nan"):
+        client = _Client()
+        state = _account()
+        service, logs = _mirror(tmp_path, client=client, state=state, etoro_live_trade_pct_of_equity=pct)
+        assert _run(service, _proposal(stop=95.0)) is None and client.orders == [], pct
+        assert "etoro_live_unsized" in _blocked(logs) or pct == inf, (pct, _blocked(logs))
+    for equity in (nan, inf, -inf):
+        client = _Client()
+        service, logs = _mirror(tmp_path, client=client, state=_account(equity=equity))
+        assert _run(service, _proposal(stop=95.0)) is None and client.orders == [], equity
+        assert "etoro_live_equity_unknown" in _blocked(logs)
+    for cash in (nan, inf):
+        client = _Client()
+        service, logs = _mirror(tmp_path, client=client, state=_account(cash=cash))
+        assert _run(service, _proposal(stop=95.0)) is None and client.orders == [], cash
+        assert _blocked(logs) == ["etoro_live_insufficient_cash"]
+    from app.automation.policy_snapshot import effective_execution_policy
+    from tests.test_etoro_live_mirror import _settings
+
+    snapshot = effective_execution_policy(_settings(tmp_path, etoro_live_trade_pct_of_equity=nan))
+    assert snapshot["etoro_live_trade_pct_of_equity"] == 0.0
 
 
 def test_in_flight_copies_and_current_value_count(tmp_path) -> None:
@@ -321,15 +342,12 @@ def _model(state: dict, order) -> tuple[float | None, list[str]]:
     stake = round(min(equity * 0.25, 2_500.0, equity * 0.5 / stop_pct), 2)
     if stake < 10.0:
         return None, ["etoro_live_trade_below_minimum"]
-    rooms = {"etoro_live_exposure_cap": equity - sum(r["cost_usd"] for r in state["open_notional"].values())}
+    held = sum(r["cost_usd"] for r in state["open_notional"].values())
+    rooms = {"etoro_live_exposure_cap": equity - held}
     if state.get("last_cash") is not None:
         rooms["etoro_live_insufficient_cash"] = state["last_cash"] - CASH_RESERVE_USD
-    room = min(rooms.values())
-    if stake <= room:
-        return stake, []
-    if int(room * 100) / 100 >= max(10.0, stake / 2):
-        return int(room * 100) / 100, []
-    return None, [k for k, v in rooms.items() if int(v * 100) / 100 < max(10.0, stake / 2)]
+    short = [k for k, v in rooms.items() if v < stake]  # binary: refused, never cut
+    return (None, short) if short else (stake, [])
 
 
 def _case(rng: random.Random):
@@ -372,7 +390,7 @@ def test_parity_with_d2c7faf_on_seeded_orders(tmp_path) -> None:
     assert (old_mirror.HARD_MAX_TRADES_PER_DAY, old_mirror.HARD_MAX_TRADE_USD) == (2, 1_000.0)
     settings = _mirror(tmp_path)[0].settings
     rng = random.Random(20261026)
-    seen = {"copied": 0, "exposure": 0, "third": 0, "same": 0}
+    seen = {"copied": 0, "exposure": 0, "third": 0, "same": 0, "old_refused_new_copies": 0}
     for index in range(600):
         data, proposal, halted = _case(rng)
         state = _state()
@@ -401,6 +419,12 @@ def test_parity_with_d2c7faf_on_seeded_orders(tmp_path) -> None:
         if not early:
             amount, expected = _model(data, proposal.order)
             assert [r for r in after if r in STAKE_REASONS] == expected, (index, after)
+        # No order old refused is copied now, except by the third daily slot -- or, on an
+        # account under $100 (never the real one), a 25% stake that now reaches eToro's $10.
+        if before and not after:
+            assert set(before) <= {"etoro_live_daily_trade_cap", "etoro_live_trade_below_minimum"}
+            assert "etoro_live_trade_below_minimum" not in before or data["last_equity"] < 100
+            seen["old_refused_new_copies"] += 1
         # 4. The room verdict follows: None for any non-room reason, else eToro's room reasons.
         order = proposal.order
         verdict = room_verdict(new, order)
@@ -426,4 +450,4 @@ def test_parity_with_d2c7faf_on_seeded_orders(tmp_path) -> None:
                 proposal.order.take_profit,
             )
             seen["copied"] += 1
-    assert min(seen.values()) >= 10, seen  # every path was exercised
+    assert min(seen.values()) >= 3, seen  # every path was exercised

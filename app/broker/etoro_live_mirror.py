@@ -72,11 +72,11 @@ risk): the stake is min(``HARD_MAX_TRADE_PCT_OF_EQUITY`` (25%) of equity,
 of equity at the stop), so every stop up to 2% risks the full 0.5%. New hard cap: eToro's open
 notional (``etoro_live_room.open_exposure_usd``: open positions and copies in flight, each at
 the larger of cost and current value) plus this copy stays within
-``HARD_MAX_EXPOSURE_PCT_OF_EQUITY`` (100%) of equity: no leverage. ``fit_to_room``: a stake
-that does not fit that room, or the free cash less ``CASH_RESERVE_USD``, is cut to the smaller
-room when that is still eToro's minimum and at least half the stake, else refused
-(``etoro_live_exposure_cap`` / ``etoro_live_insufficient_cash``, both room reasons). An
-unreadable exposure refuses (``etoro_live_exposure_unknown``, not a room reason).
+``HARD_MAX_EXPOSURE_PCT_OF_EQUITY`` (100%) of equity: no leverage. ``fit_to_room`` is binary:
+a stake that does not fit that room, or the free cash less ``CASH_RESERVE_USD``, is refused
+(``etoro_live_exposure_cap`` / ``etoro_live_insufficient_cash``, both room reasons), never
+cut. An unreadable exposure refuses (``etoro_live_exposure_unknown``, not a room reason), and
+so does a non-finite setting, equity or cash reading.
 ``HARD_MAX_TRADES_PER_DAY`` 2 -> 3 the same day.
 
 Overnight adverse-move alert (operator 2026-10-18, after AMD gapped to its stop before the
@@ -108,10 +108,12 @@ HARD_MAX_TRADE_USD = 2_500.0  # absolute backstop against a bad equity reading
 MIN_TRADE_USD = 10.0  # eToro's minimum position size
 HARD_MAX_TRADES_PER_DAY = 3
 # Open notional (open positions + copies in flight) + this copy <= this % of equity: no
-# leverage (operator 2026-10-26). A stake that does not fit is cut (fit_to_room) or refused.
+# leverage (operator 2026-10-26). A stake that does not fit is refused (fit_to_room).
 HARD_MAX_EXPOSURE_PCT_OF_EQUITY = 100.0
 # Operator 2026-10-06: 3 -> 6 "if there is any fund left"; 2026-10-07: 6 -> 9 so the cash can
-# be invested when strategies approve trades (9 x 10% + the $100 reserve fits the account).
+# be invested when strategies approve trades. Since 2026-10-26 a copy is up to 25% of equity,
+# so the exposure cap (HARD_MAX_EXPOSURE_PCT_OF_EQUITY) and the free cash usually bind first:
+# about four tight-stop copies fill the account; nine fit only when stops are wide.
 HARD_MAX_OPEN_POSITIONS = 9
 CASH_RESERVE_USD = 100.0  # free cash kept back for fees; an entry must fit in the rest
 HARD_DAILY_LOSS_STOP_PCT = 5.0
@@ -194,10 +196,21 @@ def account_value_at_cost(raw: dict[str, Any], fallback: float = 0.0) -> float:
 
 
 def effective_trade_pct(settings: Any) -> float:
-    """The setting's share of equity per copy, within 0 and HARD_MAX_TRADE_PCT_OF_EQUITY."""
+    """The setting's share of equity per copy, within 0 and HARD_MAX_TRADE_PCT_OF_EQUITY; a
+    non-finite or unreadable value is 0 (no copy: min/max would pass a NaN through)."""
 
-    pct = float(getattr(settings, "etoro_live_trade_pct_of_equity", 25.0) or 0.0)
-    return min(max(pct, 0.0), HARD_MAX_TRADE_PCT_OF_EQUITY)
+    pct = _finite(getattr(settings, "etoro_live_trade_pct_of_equity", 25.0) or 0.0)
+    return 0.0 if pct is None else min(max(pct, 0.0), HARD_MAX_TRADE_PCT_OF_EQUITY)
+
+
+def _finite(value: Any) -> float | None:
+    """A finite float, or None (a NaN or an infinity never sizes or fits anything)."""
+
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def sizing_policy(settings: Any) -> dict[str, float | int]:
@@ -237,21 +250,14 @@ def open_notional(raw: dict[str, Any], by_position: dict[Any, str]) -> dict[str,
 
 
 def fit_to_room(stake: float, rooms: dict[str, float]) -> tuple[float | None, list[str]]:
-    """The full stake when it fits every room; else the smallest room, rounded down to the
-    cent, when that is still eToro's minimum and at least half the stake (the simplest sound
-    cut: a copy never shrinks below half its equal-risk size, so it keeps at least half the
-    0.5% risk paper's R is measured on); else None with each cap whose room is below that."""
+    """Binary (operator 2026-10-26: refuse what does not fit, never a smaller copy): the full
+    stake when it fits every room, else None with each cap whose room is below the stake, as
+    the cash rule has always refused. A non-finite stake or room refuses with its cap."""
 
-    def cents(value: float) -> float:  # rounded down: a cut copy never exceeds its room
-        return math.floor(round(value * 100.0, 6)) / 100.0
-
-    room = min(rooms.values(), default=math.inf)
-    if stake <= room:
-        return stake, []
-    floor = max(MIN_TRADE_USD, stake / 2.0)
-    if cents(room) >= floor:
-        return cents(room), []
-    return None, [reason for reason, value in rooms.items() if cents(value) < floor]
+    if _finite(stake) is None or stake <= 0:
+        return None, list(rooms) or ["etoro_live_exposure_cap"]
+    short = [r for r, room in rooms.items() if _finite(room) is None or room < stake]
+    return (None, short) if short else (stake, [])
 
 
 def client_problem(client: Any | None) -> str | None:
@@ -486,10 +492,12 @@ class EtoroLiveMirrorService:
             and float(start) - float(last) >= float(start) * HARD_DAILY_LOSS_STOP_PCT / 100.0
         ):
             reasons.append("etoro_live_daily_loss_stop")
-        equity = state.get("last_equity")
-        if equity is None or float(equity) <= 0:
-            reasons.append("etoro_live_equity_unknown")
+        equity = _finite(state.get("last_equity"))
+        if equity is None or equity <= 0:
+            reasons.append("etoro_live_equity_unknown")  # missing, zero, NaN or infinite
         amount = self._trade_amount(state, stop_pct)  # None: an unknown stop is refused above
+        if amount is None and equity is not None and equity > 0 and stop_pct is not None:
+            reasons.append("etoro_live_unsized")  # e.g. a NaN or zero share setting
         if amount is not None and amount < MIN_TRADE_USD:
             reasons.append("etoro_live_trade_below_minimum")
         reasons.extend(self._copy_amount(state, amount)[1])  # exposure and cash room
@@ -503,20 +511,23 @@ class EtoroLiveMirrorService:
         (unchecked while the cash was never read, as before). (amount, room reasons); an
         unsized or sub-minimum stake is refused by the checks above and reads (None, [])."""
 
-        if stake is None or stake < MIN_TRADE_USD:
-            return None, []
+        equity = _finite(state.get("last_equity"))
+        if stake is None or stake < MIN_TRADE_USD or equity is None or equity <= 0:
+            return None, []  # refused above (equity unknown, unsized or below the minimum)
         from app.broker.etoro_live_room import open_exposure_usd
 
         exposure = open_exposure_usd(self.state, state)
-        if exposure is None:  # an unreadable position or record: no copy
+        if exposure is None or _finite(exposure) is None:  # an unreadable position: no copy
             return None, ["etoro_live_exposure_unknown"]
-        equity = float(state["last_equity"])
         rooms = {
             "etoro_live_exposure_cap": equity * HARD_MAX_EXPOSURE_PCT_OF_EQUITY / 100.0 - exposure
         }
         cash = state.get("last_cash")
-        if cash is not None:  # only trade with money left
-            rooms["etoro_live_insufficient_cash"] = float(cash) - CASH_RESERVE_USD
+        if cash is not None:  # only trade with money left; a NaN or infinite cash refuses
+            finite = _finite(cash)
+            rooms["etoro_live_insufficient_cash"] = (
+                math.nan if finite is None else finite - CASH_RESERVE_USD
+            )
         return fit_to_room(stake, rooms)
 
     def _trade_amount(self, state: dict[str, Any], stop_pct: float | None) -> float | None:
@@ -524,12 +535,13 @@ class EtoroLiveMirrorService:
         ``stop_pct`` % below the entry costs at most ``HARD_MAX_RISK_PCT_OF_EQUITY`` of
         equity, capped in code. None when the equity or the stop distance is unknown."""
 
-        equity = state.get("last_equity")
-        if equity is None or float(equity) <= 0 or stop_pct is None or not stop_pct > 0:
+        equity, stop_pct = _finite(state.get("last_equity")), _finite(stop_pct)
+        if equity is None or equity <= 0 or stop_pct is None or not stop_pct > 0:
             return None
         pct = effective_trade_pct(self.settings)
-        at_risk = float(equity) * HARD_MAX_RISK_PCT_OF_EQUITY / stop_pct  # loses 0.5% at stop
-        return round(min(float(equity) * pct / 100.0, HARD_MAX_TRADE_USD, at_risk), 2)
+        at_risk = equity * HARD_MAX_RISK_PCT_OF_EQUITY / stop_pct  # loses 0.5% at stop
+        amount = round(min(equity * pct / 100.0, HARD_MAX_TRADE_USD, at_risk), 2)
+        return amount if math.isfinite(amount) and amount > 0 else None
 
     # -- mirror ----------------------------------------------------------------
     @_serialized
