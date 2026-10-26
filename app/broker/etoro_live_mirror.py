@@ -193,6 +193,27 @@ def account_value_at_cost(raw: dict[str, Any], fallback: float = 0.0) -> float:
     return round(float(portfolio["credit"]) + invested, 2)
 
 
+def effective_trade_pct(settings: Any) -> float:
+    """The setting's share of equity per copy, within 0 and HARD_MAX_TRADE_PCT_OF_EQUITY."""
+
+    pct = float(getattr(settings, "etoro_live_trade_pct_of_equity", 25.0) or 0.0)
+    return min(max(pct, 0.0), HARD_MAX_TRADE_PCT_OF_EQUITY)
+
+
+def sizing_policy(settings: Any) -> dict[str, float | int]:
+    """The effective eToro copy sizing for the boot policy snapshot: caps only, no account
+    values (operator 2026-10-26: check the Railway setting after a deploy)."""
+
+    return {
+        "etoro_live_trade_pct_of_equity": effective_trade_pct(settings),
+        "etoro_live_hard_max_trade_pct": HARD_MAX_TRADE_PCT_OF_EQUITY,
+        "etoro_live_hard_max_trade_usd": HARD_MAX_TRADE_USD,
+        "etoro_live_hard_max_risk_pct": HARD_MAX_RISK_PCT_OF_EQUITY,
+        "etoro_live_hard_max_exposure_pct": HARD_MAX_EXPOSURE_PCT_OF_EQUITY,
+        "etoro_live_hard_max_trades_per_day": HARD_MAX_TRADES_PER_DAY,
+    }
+
+
 def open_notional(raw: dict[str, Any], by_position: dict[Any, str]) -> dict[str, Any]:
     """Per symbol (or raw instrument id, as ``open_symbols``), eToro's notional at cost
     (``amount`` x ``leverage``: ``amount`` is the margin) and units, for the exposure cap. A
@@ -506,8 +527,7 @@ class EtoroLiveMirrorService:
         equity = state.get("last_equity")
         if equity is None or float(equity) <= 0 or stop_pct is None or not stop_pct > 0:
             return None
-        pct = float(getattr(self.settings, "etoro_live_trade_pct_of_equity", 25.0) or 0.0)
-        pct = min(max(pct, 0.0), HARD_MAX_TRADE_PCT_OF_EQUITY)
+        pct = effective_trade_pct(self.settings)
         at_risk = float(equity) * HARD_MAX_RISK_PCT_OF_EQUITY / stop_pct  # loses 0.5% at stop
         return round(min(float(equity) * pct / 100.0, HARD_MAX_TRADE_USD, at_risk), 2)
 

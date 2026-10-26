@@ -198,6 +198,20 @@ def test_in_flight_copies_and_current_value_count(tmp_path) -> None:
     assert open_exposure_usd(state, service._state()) == 8_842.5  # the write-ahead counts it
 
 
+def test_the_write_ahead_counts_a_copy_whose_scorecard_entry_failed(tmp_path, monkeypatch) -> None:
+    import app.broker.etoro_live_scorecard as scorecard
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("scorecard down")
+
+    monkeypatch.setattr(scorecard, "record_entry", broken)  # bookkeeping only: the copy stands
+    client = _Client()
+    service, _ = _mirror(tmp_path, client=client, state=_account(cash=9_770.0))
+    assert _run(service, _proposal("AAPL", stop=98.0))["amount_usd"] == 2_442.5
+    assert open_exposure_usd(service.state, service._state()) == 2_442.5
+    assert _run(service, _proposal("MSFT", stop=98.0))["amount_usd"] == 2_442.5
+
+
 def test_unreadable_positions_fail_closed_with_a_non_room_reason(tmp_path) -> None:
     def check(state, expect_room=True):
         client = _Client()
@@ -214,6 +228,9 @@ def test_unreadable_positions_fail_closed_with_a_non_room_reason(tmp_path) -> No
     held_without_amount.set(STATE_KEY, json.dumps(data))
     check(held_without_amount)
     check(_account(open_notional={"JPM": {"unreadable": 1.0, "units": 3.0}}))
+    card = _account(open_notional={"JPM": {"unreadable": 1.0}})  # a card knows its notional,
+    card.set(SCORECARD_KEY, json.dumps({"e": {"symbol": "JPM", "status": "open", "notional_usd": 9}}))
+    check(card)  # but eToro's own row for it is malformed: still unknown
     broken = _account()
     broken.set(SCORECARD_KEY, "{not json")
     check(broken)
