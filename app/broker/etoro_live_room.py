@@ -21,8 +21,8 @@ room instead of paper's:
   open (reconcile drops orders that have not filled yet).
 
 * the exposure cap (operator 2026-10-26): eToro's open notional plus the copy within 100% of
-  equity (``open_exposure_usd``; the mirror cuts a stake that does not fit, or refuses it as
-  ``etoro_live_exposure_cap``). It is a room reason on purpose: it is the free-cash check
+  equity (``open_exposure_usd``; the mirror refuses a stake that does not fit as
+  ``etoro_live_exposure_cap``, never a smaller copy). It is a room reason on purpose: it is the free-cash check
   counted in notional (with 1x positions at cost the two rooms differ only by the $100
   reserve, and they are refused together), so like the cash, position and group caps it
   keeps eToro's room in charge: the entry is refused on paper too ("eToro live room: ...").
