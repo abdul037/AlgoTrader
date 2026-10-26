@@ -934,6 +934,8 @@ def test_room_is_what_every_paper_only_candidate_of_the_pass_would_meet(
     assert PaperOnlyPass(day).room() == "paper_only_headroom_trades_per_day"
     broken, _ = _auto(tmp_path / "broken", executions=_Executions(fail=True))
     assert PaperOnlyPass(broken).room() == "paper_only_paper_book_unreadable"
+    blind, _ = _auto(tmp_path / "blind", eto={**_etoro(), STATE_KEY: "not json"})
+    assert PaperOnlyPass(blind).room() == "paper_only_etoro_live_state_unreadable"
     clock = SimpleNamespace(now=1_180.0 - PROPOSAL_SECONDS)
     monkeypatch.setattr(paper_only_module.time, "monotonic", lambda: clock.now)
     with tick_budget(CadenceBudget(started_at=1_000.0, job_timeout=240.0)):  # scan stop 1_180
@@ -944,6 +946,19 @@ def test_room_is_what_every_paper_only_candidate_of_the_pass_would_meet(
     assert paper_pass.room() is None and fresh.executions.paper_reads == (1, 1)
     assert _blockers(fresh, _candidate("UBER", "momentum_breakout"), paper_pass) == []
     assert fresh.executions.paper_reads == (1, 1)
+
+
+def test_taken_is_every_symbol_no_paper_only_entry_of_the_pass_may_open(tmp_path) -> None:
+    held = _held(2, rows=[_row("ADP", status="submitted")])  # AAPL, MSFT held; ADP unfilled
+    auto, _ = _auto(tmp_path, eto=_etoro(open_symbols=("UBER",), cards={}), **held, **BOOK)
+    paper_pass = PaperOnlyPass(auto)
+    assert paper_pass.taken() == set()  # nothing read yet
+    assert paper_pass.room() is None
+    assert paper_pass.taken() == {"UBER", "AAPL", "MSFT", "ADP"}
+    reads = auto.executions.paper_reads
+    paper_pass.refresh()  # the pass reads paper again before its next candidate
+    assert _blockers(auto, _candidate("V", "momentum_breakout"), paper_pass) == []
+    assert auto.executions.paper_reads == (reads[0] + 1, reads[1] + 1)
 
 
 def test_the_cadence_is_stamped_before_the_riders_step(tmp_path, monkeypatch) -> None:

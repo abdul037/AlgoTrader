@@ -21,9 +21,9 @@ Paper-only specs (operator option B, 2026-10-21): a spec the main paper gate adm
 pooled OOS evidence alone (``strategy_evidence.paper_oos_only``) rides on a focused run
 (``paper_only_spec_keys``), on the run's own swing timeframes only: those of
 ``PAPER_ONLY_TIMEFRAMES`` its eToro-passing specs already fetch (in practice 1d). It never
-enters the run's scan, which runs exactly as without it; it reads the bars that scan fetched,
-after the run's own alerts, tracking, auto-propose pass and due-time stamp, in what is left of
-the run (app/workflow/paper_only_riders.py). A run lists no paper-only spec unless one could be
+enters the run's scan, which runs exactly as without it; it reads the bars and quotes that scan
+evaluated, after the run's own alerts, tracking, auto-propose pass and due-time stamp, in what is
+left of the run (app/workflow/paper_only_riders.py). A run lists no paper-only spec unless one could be
 proposed and executed at once (``paper_only.scan_wanted``: the main paper account with the switch
 and the evidence gate on, paper auto-approval and the unattended mode). The rotation runs scan
 every spec under one cut, as before. (Until 2026-10-23 they had a second scan of their own,

@@ -76,8 +76,9 @@ paper account) nothing is paper-only and the pass reads nothing: the gate reads 
 state itself, exactly as before option B. A focused swing run's paper-only specs ride on its
 scan (app/workflow/paper_only_riders.py): their candidates get a second pass of their own after
 the run's pass, which (``only=True``) considers only the candidates that are paper-only by its
-own verdicts read (a key whose verdict changed since the run listed it is left out), and whose
-``room`` the riders' step reads before it spends anything on candidate checks.
+own verdicts read (a key whose verdict changed since the run listed it is left out). The riders'
+step reads the pass's ``room`` and ``taken`` before it spends anything on candidate checks, and
+the pass reads paper again (``refresh``) before its candidates.
 
 Not changed (residuals, stated): paper-only losses count toward paper's daily and weekly loss
 limits, the consecutive-loss cooldown and the drawdown governor like any paper trade, so they
@@ -213,20 +214,38 @@ class PaperOnlyPass:
 
     def room(self) -> str | None:
         """The blocker every paper-only candidate of this pass would meet whatever its symbol
-        (the pass limit, the cadence budget, paper's day and book headroom, from the same one
-        read of paper ``blockers`` uses), else None: the riders' step checks it before it spends
-        anything on candidate checks."""
+        (the pass limit, the cadence budget, an unreadable record, paper's day and book
+        headroom, from the same reads ``blockers`` uses), else None: the riders' step checks it
+        before it spends anything on candidate checks."""
 
         if self._paper_only_created >= MAX_PER_PASS:
             return PREFIX + "pass_limit"
         if _budget_spent():
             return PREFIX + "cadence_budget_spent"
+        if self._read("held", self._etoro_held) is _UNREADABLE:
+            return PREFIX + "etoro_live_state_unreadable"
         book = self._read("paper", self._paper_book)
         if book is _UNREADABLE:
             return PREFIX + "paper_book_unreadable"
         reason = _headroom(self.auto.settings, (book.trades, {}), "")  # no symbol: no group
         reason = reason or _book_headroom(self.auto.settings, book, "")  # nor a held symbol
         return PREFIX + reason if reason else None
+
+    def taken(self) -> set[str]:
+        """The symbols no paper-only entry of this pass may open, as ``room`` read them (call it
+        first): the eToro account's held and in flight (rule 3), paper's held and unfilled
+        (rule 5)."""
+
+        held, book = self._reads.get("held"), self._reads.get("paper")
+        taken = {_bare(symbol) for symbol in held} if isinstance(held, set) else set()
+        if isinstance(book, SimpleNamespace):
+            taken |= set(book.held) | set(book.unfilled)
+        return taken
+
+    def refresh(self) -> None:
+        """Read paper again before the next candidate (rules 4 and 5 on a fresh read)."""
+
+        self._reads.pop("paper", None)
 
     def _automatic(self, candidate: Any) -> list[str]:
         """Rule 6: [] when the unattended path would approve and execute it at once."""

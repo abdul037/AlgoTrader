@@ -42,7 +42,7 @@ def scan_universe(
     scan_task: str = "manual_scan",
     strategy_spec_keys: list[str] | None = None,
     cancel_event: Any | None = None,
-    kept_bars: Any | None = None,  # option B riders' KeptBars: passes through, keeps (scan_riders)
+    kept_bars: Any | None = None,  # option B riders' KeptBars (app/screener/scan_riders.py)
 ) -> ScreenerRunResponse:
     universe = [symbol.upper() for symbol in (symbols or resolve_universe(service.settings))]
     scan_timeframes = [timeframe.lower() for timeframe in (timeframes or service.settings.screener_default_timeframes)]
@@ -915,6 +915,8 @@ def scan_universe(
                 )
             if abort_scan:
                 break
+            if kept_bars is not None:  # option B: every spec of the run ran on these (scan_riders)
+                kept_bars.keep(symbol, timeframe, history, quote)
 
     ranked = sorted(candidates, key=service._ranking_key, reverse=True)
     # Cross-sectional momentum overlay: concentrate in the universe's leaders by
