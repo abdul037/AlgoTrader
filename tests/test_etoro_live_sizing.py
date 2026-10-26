@@ -411,10 +411,15 @@ def test_parity_with_d2c7faf_on_seeded_orders(tmp_path) -> None:
         )
         before, after = old.blockers(proposal, "alpaca"), new.blockers(proposal, "alpaca")
         # 1. Every rule but the stake's and the daily cap's decides exactly as at d2c7faf.
-        other = STAKE_REASONS | {"etoro_live_daily_trade_cap"}
+        other = STAKE_REASONS | {"etoro_live_daily_trade_cap", "etoro_live_day_start_unknown"}
+        start = data["day_start_equity"]
+        unknown_start = start is None or start <= 0  # refused since 10-26 (the loss stop)
+        if unknown_start:
+            other |= {"etoro_live_daily_loss_stop"}
         assert [r for r in after if r not in other] == [r for r in before if r not in other], index
-        # 2. Three copies a day: refused at 3 or more, no longer at 2.
         early = after in (["etoro_live_paper_only"], ["etoro_live_mirror_disabled"])
+        assert early or ("etoro_live_day_start_unknown" in after) == unknown_start, index
+        # 2. Three copies a day: refused at 3 or more, no longer at 2.
         daily = "etoro_live_daily_trade_cap" in after
         assert early or daily == (data["trades_today"] >= 3), index
         seen["third"] += data["trades_today"] == 2 and "etoro_live_daily_trade_cap" in before

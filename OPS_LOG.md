@@ -75,6 +75,14 @@ without explicit operator sign-off recorded here.
   paper-only entries a week, none while paper holds more than 9 positions (10 on 10-26).
 - **Rollback:** `PAPER_OOS_BAR_ENABLED=false` switches option B off; the eToro sizing reverts
   only by code (it is a hard cap).
+- **08:09 UTC deploy verified:** Railway SUCCESS on `c407f70`; boot snapshot paper, real
+  trading off, `paper_oos_bar_enabled` true, `etoro_live_trade_pct_of_equity` 25 (so no Railway
+  override at 10), hard caps 25% / $2,500 / 0.5% risk / 100% exposure / 3 a day; CI green.
+- **Follow-up (pre-existing gap from the review):** a NaN or missing day-start equity switched
+  the 5% daily loss stop off for the day (the day roll copies `last_equity` into it; reconcile
+  refilled only a None), and a NaN copy count passed the 3-a-day cap. Now an unknown day start
+  refuses the copy (`etoro_live_day_start_unknown`, not a room reason) and reconcile refills
+  it; an unreadable count counts as a full day. Stricter only.
 
 ## 2026-10-22 (Thu) — option B: paper trades on pooled OOS evidence (paper-only entries)
 

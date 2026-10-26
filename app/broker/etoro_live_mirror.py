@@ -475,8 +475,9 @@ class EtoroLiveMirrorService:
                 reasons.append(blocker)
         reasons.extend(extension_blockers(copy_inputs.get(EXTENSION_FIELD), timeframe))
         state = self._state()
-        if state["trades_today"] >= HARD_MAX_TRADES_PER_DAY:
-            reasons.append("etoro_live_daily_trade_cap")
+        trades_today = _finite(state.get("trades_today"))
+        if trades_today is None or trades_today >= HARD_MAX_TRADES_PER_DAY:
+            reasons.append("etoro_live_daily_trade_cap")  # an unreadable count is a full day
         from app.broker.etoro_live_room import bucket_blockers, effective_open_symbols
 
         held = effective_open_symbols(self.state, state)  # ids mapped, unfilled orders kept
@@ -485,12 +486,10 @@ class EtoroLiveMirrorService:
         if len(held) >= HARD_MAX_OPEN_POSITIONS:
             reasons.append("etoro_live_open_position_cap")
         reasons.extend(bucket_blockers(order.symbol, held))
-        start, last = state.get("day_start_equity"), state.get("last_equity")
-        if (
-            start is not None
-            and last is not None
-            and float(start) - float(last) >= float(start) * HARD_DAILY_LOSS_STOP_PCT / 100.0
-        ):
+        start, last = _finite(state.get("day_start_equity")), _finite(state.get("last_equity"))
+        if start is None or start <= 0:
+            reasons.append("etoro_live_day_start_unknown")  # the loss stop cannot be checked
+        elif last is not None and start - last >= start * HARD_DAILY_LOSS_STOP_PCT / 100.0:
             reasons.append("etoro_live_daily_loss_stop")
         equity = _finite(state.get("last_equity"))
         if equity is None or equity <= 0:
@@ -690,7 +689,8 @@ class EtoroLiveMirrorService:
             return None
         state = self._state()
         equity = account_value_at_cost(raw, fallback=float(portfolio.account.equity or 0.0))
-        if state.get("day_start_equity") is None:
+        start = _finite(state.get("day_start_equity"))
+        if start is None or start <= 0:  # missing, or a NaN carried over at the day roll
             state["day_start_equity"] = equity
         state["last_equity"] = equity
         credit = (raw.get("clientPortfolio", {}) or {}).get("credit")
