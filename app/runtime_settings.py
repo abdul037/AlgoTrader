@@ -617,8 +617,9 @@ class AppSettings(BaseSettings):
     etoro_live_api_key: str = ""
     etoro_live_user_key: str = ""
     etoro_live_acknowledgement: str = ""
-    # Hard-capped at 10% / $1,000 in code, and cut so a stop-out costs <= 0.5% of equity.
-    etoro_live_trade_pct_of_equity: float = 10.0
+    # Hard-capped at 25% / $2,500 in code (operator 2026-10-26; was 10% / $1,000), and cut so
+    # a stop-out costs <= 0.5% of equity and open notional stays within 100% of equity.
+    etoro_live_trade_pct_of_equity: float = 25.0
     etoro_live_guard_interval_seconds: int = 60  # backup stop / test watch cadence (min 10)
     # Overnight adverse-move Telegram alert for live eToro positions (operator 2026-10-18;
     # app/broker/etoro_live_overnight_alert.py). Alert only: no trading change.

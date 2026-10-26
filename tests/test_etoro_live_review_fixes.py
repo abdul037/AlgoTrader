@@ -210,13 +210,23 @@ def test_open_position_cap_is_nine(tmp_path) -> None:
 
     assert HARD_MAX_OPEN_POSITIONS == 9
     state = _state()
-    state.set(STATE_KEY, json.dumps({"last_equity": 10_000.0, "open_symbols": ["A", "B", "C"]}))
+    notional = {s: {"cost_usd": 500.0} for s in "ABCDEFGHI"}  # reconcile's exposure record
+    state.set(
+        STATE_KEY,
+        json.dumps(
+            {"last_equity": 10_000.0, "open_symbols": ["A", "B", "C"], "open_notional": notional}
+        ),
+    )
     service, _ = _mirror(tmp_path, state=state)
     assert _run(service) is not None  # 3 open no longer blocks
     state.set(
         STATE_KEY,
         json.dumps(
-            {"last_equity": 10_000.0, "open_symbols": ["A", "B", "C", "D", "E", "F", "G", "H", "I"]}
+            {
+                "last_equity": 10_000.0,
+                "open_symbols": ["A", "B", "C", "D", "E", "F", "G", "H", "I"],
+                "open_notional": notional,
+            }
         ),
     )
     service, logs = _mirror(tmp_path, state=state)

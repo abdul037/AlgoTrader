@@ -27,6 +27,8 @@ ALLOWED = [*TECH, "TSLA", "JPM", "XOM", "SPY"]
 def _live(tmp_path, open_symbols=("100001", "META", "MSFT"), cash=6_990.1, **overrides):
     state = _state(equity=9_988.0)
     data = {"open_symbols": list(open_symbols), "last_equity": 9_988.0, "last_cash": cash}
+    # What reconcile records since 2026-10-26 for the exposure cap: ~$330 at cost each.
+    data["open_notional"] = {s: {"cost_usd": 330.0} for s in open_symbols}
     state.set(STATE_KEY, json.dumps(data))
     overrides.setdefault("allowed_instruments", ALLOWED)
     overrides.setdefault("paper_broker", "alpaca")  # production; test settings default to sim
@@ -164,8 +166,8 @@ def test_per_trade_checks_still_apply_with_etoro_room(tmp_path) -> None:
 def test_effective_open_set_maps_ids_and_keeps_unfilled_orders(tmp_path) -> None:
     mirror, _ = _live(tmp_path, open_symbols=("100001", "1004"))
     cards = {
-        "e1": {"symbol": "MSFT", "instrument_id": 1004, "status": "open"},
-        "e2": {"symbol": "AAPL", "status": "pending_fill"},
+        "e1": {"symbol": "MSFT", "instrument_id": 1004, "status": "open", "notional_usd": 990.0},
+        "e2": {"symbol": "AAPL", "status": "pending_fill", "notional_usd": 990.0},
         "e3": {"symbol": "TSLA", "status": "closed"},
     }
     mirror.state.set(SCORECARD_KEY, json.dumps(cards))
