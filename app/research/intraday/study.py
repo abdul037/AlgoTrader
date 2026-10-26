@@ -41,9 +41,42 @@ _TRADE_FIELDS = ("entry_time", "exit_time", "pnl_usd", "pnl_pct", "reason", "not
 Unit = tuple[str, str, str, str]  # (variant, timeframe, direction, symbol)
 
 
+# A unit variant "live:<name>" runs that live registry strategy (its spec's default kwargs,
+# long only) through the same harness: a calibration of this data against production's evidence.
+LIVE_PREFIX = "live:"
+
+
+def unit_supported(variant: str, timeframe: str) -> bool:
+    """A candidate runs on every timeframe; a live strategy only where it has a spec."""
+
+    if not variant.startswith(LIVE_PREFIX):
+        return True
+    from app.strategies import get_strategy_specs
+
+    name = variant.removeprefix(LIVE_PREFIX)
+    return any(spec.name == name for spec in get_strategy_specs(timeframe=timeframe))
+
+
+def _strategy_for(variant: str, timeframe: str) -> Any | None:
+    if not variant.startswith(LIVE_PREFIX):
+        return None
+    from app.strategies import get_strategy, get_strategy_specs
+
+    name = variant.removeprefix(LIVE_PREFIX)
+    spec = next(s for s in get_strategy_specs(timeframe=timeframe) if s.name == name)
+    return get_strategy(name, **dict(spec.default_kwargs))
+
+
 def _run_unit(unit: Unit, frame: pd.DataFrame) -> dict[str, Any]:
     variant, timeframe, direction, symbol = unit
-    run = run_symbol(frame, symbol=symbol, variant=variant, timeframe=timeframe, direction=direction)
+    run = run_symbol(
+        frame,
+        symbol=symbol,
+        variant=variant,
+        timeframe=timeframe,
+        direction=direction,
+        strategy=_strategy_for(variant, timeframe),
+    )
     payload = asdict(run)
     payload["trades"] = {
         profile: {

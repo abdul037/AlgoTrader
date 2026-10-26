@@ -287,3 +287,14 @@ def test_harness_runs_the_production_walk_forward_and_verdict():
     assert verdict["oos_expectancy_r"] == pytest.approx(summary["expectancy_usd"] / 100.0, abs=1e-4)
     assert set(verdict["cost_profiles"]) == {"alpaca", "stress"}  # the diagnostic never votes
     assert verdict["paper_gate_full"] == (verdict["passed"] and verdict["paper_passed"])
+
+
+def test_live_calibration_units_use_the_registry_spec_and_skip_missing_timeframes():
+    from app.research.intraday.study import _strategy_for, unit_supported
+
+    assert unit_supported("research_orb30", "10m")
+    assert unit_supported("live:rsi_reversal", "10m")
+    assert not unit_supported("live:opening_range_breakout_retest", "10m")  # no 10m spec
+    strategy = _strategy_for("live:rsi_reversal", "10m")
+    assert strategy.name == "rsi_reversal" and strategy.timeframe == "10m"
+    assert _strategy_for("research_orb30", "5m") is None

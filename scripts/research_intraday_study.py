@@ -26,7 +26,13 @@ import pandas as pd  # noqa: E402
 
 from app.research.intraday import CANDIDATE_VARIANTS  # noqa: E402
 from app.research.intraday.harness import resample_session_bars  # noqa: E402
-from app.research.intraday.study import UNIVERSES, gate_columns, run_grid, summarize  # noqa: E402
+from app.research.intraday.study import (  # noqa: E402
+    UNIVERSES,
+    gate_columns,
+    run_grid,
+    summarize,
+    unit_supported,
+)
 
 TABLE_COLUMNS = (
     "variant", "tf", "dir", "universe", "oos_trades", "win_rate", "gross_r", "etoro_r",
@@ -52,6 +58,7 @@ def _frames(data_dir: Path):
 def run(args: argparse.Namespace) -> None:
     data_dir = Path(args.data_dir)
     symbols = sorted({s for name in args.universes.split(",") for s in UNIVERSES[name]})
+    # "live:<registry name>" variants run a live strategy for calibration (see study.py).
     variants = args.variants.split(",") if args.variants else list(CANDIDATE_VARIANTS)
     units = [
         (variant, timeframe, direction, symbol)
@@ -59,7 +66,8 @@ def run(args: argparse.Namespace) -> None:
         for timeframe in args.timeframes.split(",")
         for direction in args.directions.split(",")
         for symbol in symbols
-        if (data_dir / ("1h" if timeframe == "1h" else "5m") / f"{symbol}.parquet").exists()
+        if unit_supported(variant, timeframe)
+        and (data_dir / ("1h" if timeframe == "1h" else "5m") / f"{symbol}.parquet").exists()
     ]
     out = Path(args.out)
     done = set()

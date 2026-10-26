@@ -129,15 +129,21 @@ def run_symbol(
     timeframe: str,
     direction: str = "long",
     settings: Any | None = None,
+    strategy: Any | None = None,
 ) -> SymbolRun:
-    """One symbol's production walk-forward (folds, holdout, all cost profiles)."""
+    """One symbol's production walk-forward (folds, holdout, all cost profiles).
+
+    ``strategy`` overrides the candidate ``variant`` names (a live registry strategy, say, for
+    calibrating this data against production's own evidence); ``variant`` then only labels it.
+    """
 
     settings = settings or production_defaults()
     config = engine_config_for(timeframe, settings, short=direction == "short")
     profiles = profile_configs(config)
-    strategy = build_candidate(
-        variant, timeframe=timeframe, direction=direction, entry_delay_bars=config.entry_delay_bars
-    )
+    if strategy is None:
+        strategy = build_candidate(
+            variant, timeframe=timeframe, direction=direction, entry_delay_bars=config.entry_delay_bars
+        )
     service = batch_module.BatchBacktestService(
         settings=settings, market_data_engine=None, backtest_repository=None, run_log_repository=None
     )
