@@ -129,3 +129,26 @@ def test_snapshot_shows_the_scheduled_backtest_timeframes_and_minute_bar_delay(t
     snapshot = effective_execution_policy(settings)
     assert snapshot["backtest_scheduler_timeframes"] == ["1d", "15m", "5m", "10m"]
     assert snapshot["walk_forward_intraday_entry_delay_bars"] == 1
+
+
+def test_snapshot_shows_the_effective_etoro_copy_sizing(tmp_path) -> None:
+    # Operator 2026-10-26: equal-risk copies (25% / $2,500, 0.5% risk, 100% exposure, 3 a day).
+    expected = {
+        "etoro_live_trade_pct_of_equity": 25.0,
+        "etoro_live_hard_max_trade_pct": 25.0,
+        "etoro_live_hard_max_trade_usd": 2_500.0,
+        "etoro_live_hard_max_risk_pct": 0.5,
+        "etoro_live_hard_max_exposure_pct": 100.0,
+        "etoro_live_hard_max_trades_per_day": 3,
+    }
+    snapshot = effective_execution_policy(make_settings(tmp_path))
+    assert {k: snapshot[k] for k in expected} == expected
+    # A Railway value left at the old 10 shows as 10; one above the hard cap shows the cap.
+    for value, effective in ((10.0, 10.0), (90.0, 25.0), (-5.0, 0.0)):
+        settings = make_settings(tmp_path, etoro_live_trade_pct_of_equity=value)
+        assert effective_execution_policy(settings)["etoro_live_trade_pct_of_equity"] == effective
+    # Caps only, from the settings and code constants: no account value, key or secret.
+    from app.broker.etoro_live_mirror import sizing_policy
+
+    assert set(sizing_policy(make_settings(tmp_path))) == set(expected)
+    assert not any(m in k for k in expected for m in _SECRET_MARKERS)

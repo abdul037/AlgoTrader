@@ -170,8 +170,12 @@ def _env(
     extension=CALM,
     **overrides,
 ):
+    import app.broker.etoro_live_mirror as live
     import app.screener.extension as ext
 
+    # These tests hand out two eToro slots (the cap until 2026-10-26); the third slot is
+    # test_the_third_daily_copy_takes_a_third_etoro_slot.
+    monkeypatch.setattr(live, "HARD_MAX_TRADES_PER_DAY", 2)
     now = {"t": DEEP_AT}
     for module in (deep, shadow, evidence, mirror):
         monkeypatch.setattr(module, "utc_now", lambda: now["t"])
@@ -1220,3 +1224,13 @@ def test_the_live_scorecard_shows_phase3_next_to_the_live_entries(tmp_path, monk
     assert day["live_only"] == ["COST", "JPM", "MSFT"] and day["mismatches"] == 1
     state.set(RECORD, "not json")  # a bad record is skipped, the page still answers
     assert client.get("/performance/live-scorecard").json()["open_shadow"]["days"] == []
+
+
+def test_the_third_daily_copy_takes_a_third_etoro_slot(tmp_path, monkeypatch) -> None:
+    import app.broker.etoro_live_mirror as live
+
+    env = _env(tmp_path, monkeypatch)
+    monkeypatch.setattr(live, "HARD_MAX_TRADES_PER_DAY", 3)  # operator 2026-10-26: 2 -> 3
+    env.run()
+    record = env.record()
+    assert record["etoro_slots"] == ["DDD", "AAA", "BBB"] and record["paper_only"] == ["CCC"]

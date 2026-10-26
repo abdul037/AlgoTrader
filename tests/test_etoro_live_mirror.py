@@ -274,8 +274,9 @@ def test_daily_trade_cap_and_symbol_dedupe(tmp_path) -> None:
     assert _run(service, _proposal("AAPL")) is None  # already open
     assert "etoro_live_symbol_already_open" in logs.events[-1][1]["reasons"]
     assert _run(service, _proposal("MSFT"))
-    assert len(client.orders) == HARD_MAX_TRADES_PER_DAY
-    assert _run(service, _proposal("NVDA")) is None
+    assert _run(service, _proposal("NVDA"))  # the third copy of the day (operator 2026-10-26)
+    assert len(client.orders) == HARD_MAX_TRADES_PER_DAY == 3
+    assert _run(service, _proposal("TSLA")) is None
     assert "etoro_live_daily_trade_cap" in logs.events[-1][1]["reasons"]
 
 
@@ -313,8 +314,9 @@ def test_the_one_2x_test_cannot_be_re_armed(tmp_path) -> None:
 
 def test_each_copy_is_sized_from_its_stop(tmp_path) -> None:
     # Operator 2026-10-16: a stop-out costs at most 0.5% of equity ($50 of $10,000). Wide
-    # stops get smaller positions; tight stops keep the 10% / $1,000 cap.
-    for stop, amount in ((98.6, 1_000.0), (95.0, 1_000.0), (93.0, 714.29), (92.5, 666.67)):
+    # stops get smaller positions; tight stops keep the 25% / $2,500 cap (10% / $1,000 until
+    # the operator's 2026-10-26 equal-risk change).
+    for stop, amount in ((98.6, 2_500.0), (95.0, 1_000.0), (93.0, 714.29), (92.5, 666.67)):
         client = _Client()
         service, _ = _mirror(tmp_path, client=client)
         record = _run(service, _proposal("AAPL", stop=stop))

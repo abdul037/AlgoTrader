@@ -56,13 +56,28 @@ Hard caps are code constants, not settings: at most
 ``HARD_MAX_TRADE_PCT_OF_EQUITY`` of equity and never more than
 ``HARD_MAX_TRADE_USD`` per position, at most ``HARD_MAX_RISK_PCT_OF_EQUITY`` of equity
 lost at the stop, ``HARD_MAX_TRADES_PER_DAY`` new positions
-per UTC day, ``HARD_MAX_OPEN_POSITIONS`` open, a ``HARD_DAILY_LOSS_STOP_PCT``
+per UTC day, ``HARD_MAX_OPEN_POSITIONS`` open, total open notional at most
+``HARD_MAX_EXPOSURE_PCT_OF_EQUITY`` of equity, a ``HARD_DAILY_LOSS_STOP_PCT``
 equity drop per day, no trade until equity has been read, and leverage 1 (the one
 2x test the operator asked for ran on 2026-10-07; ``LEVERAGE_TEST_ENABLED`` is off so a
 reset state cannot re-arm it). Any eToro error halts the mirror -- it never touches the
 Alpaca paper bot or its circuit breaker -- until the operator clears
 ``etoro_live:halted``. The global ``ENABLE_REAL_TRADING`` stays false: the
 mirror's own client gets a private settings copy with real mode enabled.
+
+Equal-risk sizing (operator 2026-10-26; the five copies since 10-05 had paper's R but lost
+-$153 while paper made +$336, because a flat ~$1,000 cap kept tight-stop copies at 0.2-0.3%
+risk): the stake is min(``HARD_MAX_TRADE_PCT_OF_EQUITY`` (25%) of equity,
+``HARD_MAX_TRADE_USD`` ($2,500), the amount that loses ``HARD_MAX_RISK_PCT_OF_EQUITY`` (0.5%)
+of equity at the stop), so every stop up to 2% risks the full 0.5%. New hard cap: eToro's open
+notional (``etoro_live_room.open_exposure_usd``: open positions and copies in flight, each at
+the larger of cost and current value) plus this copy stays within
+``HARD_MAX_EXPOSURE_PCT_OF_EQUITY`` (100%) of equity: no leverage. ``fit_to_room``: a stake
+that does not fit that room, or the free cash less ``CASH_RESERVE_USD``, is cut to the smaller
+room when that is still eToro's minimum and at least half the stake, else refused
+(``etoro_live_exposure_cap`` / ``etoro_live_insufficient_cash``, both room reasons). An
+unreadable exposure refuses (``etoro_live_exposure_unknown``, not a room reason).
+``HARD_MAX_TRADES_PER_DAY`` 2 -> 3 the same day.
 
 Overnight adverse-move alert (operator 2026-10-18, after AMD gapped to its stop before the
 15 Oct open; alert only, no trading change): ``etoro_live_overnight_alert.py``, run by the
@@ -86,10 +101,15 @@ from typing import Any
 
 from app.utils.time import utc_now
 
-HARD_MAX_TRADE_PCT_OF_EQUITY = 10.0
-HARD_MAX_TRADE_USD = 1_000.0  # absolute backstop against a bad equity reading
+# Operator 2026-10-26 (equal-risk sizing): 10% / $1,000 -> 25% / $2,500, so a stop up to 2%
+# still risks the full HARD_MAX_RISK_PCT_OF_EQUITY; three new copies a day (was 2).
+HARD_MAX_TRADE_PCT_OF_EQUITY = 25.0
+HARD_MAX_TRADE_USD = 2_500.0  # absolute backstop against a bad equity reading
 MIN_TRADE_USD = 10.0  # eToro's minimum position size
-HARD_MAX_TRADES_PER_DAY = 2
+HARD_MAX_TRADES_PER_DAY = 3
+# Open notional (open positions + copies in flight) + this copy <= this % of equity: no
+# leverage (operator 2026-10-26). A stake that does not fit is cut (fit_to_room) or refused.
+HARD_MAX_EXPOSURE_PCT_OF_EQUITY = 100.0
 # Operator 2026-10-06: 3 -> 6 "if there is any fund left"; 2026-10-07: 6 -> 9 so the cash can
 # be invested when strategies approve trades (9 x 10% + the $100 reserve fits the account).
 HARD_MAX_OPEN_POSITIONS = 9
@@ -171,6 +191,67 @@ def account_value_at_cost(raw: dict[str, Any], fallback: float = 0.0) -> float:
         return float(fallback or 0.0)
     invested = sum(float(p.get("amount") or 0.0) for p in portfolio.get("positions", []) or [])
     return round(float(portfolio["credit"]) + invested, 2)
+
+
+def effective_trade_pct(settings: Any) -> float:
+    """The setting's share of equity per copy, within 0 and HARD_MAX_TRADE_PCT_OF_EQUITY."""
+
+    pct = float(getattr(settings, "etoro_live_trade_pct_of_equity", 25.0) or 0.0)
+    return min(max(pct, 0.0), HARD_MAX_TRADE_PCT_OF_EQUITY)
+
+
+def sizing_policy(settings: Any) -> dict[str, float | int]:
+    """The effective eToro copy sizing for the boot policy snapshot: caps only, no account
+    values (operator 2026-10-26: check the Railway setting after a deploy)."""
+
+    return {
+        "etoro_live_trade_pct_of_equity": effective_trade_pct(settings),
+        "etoro_live_hard_max_trade_pct": HARD_MAX_TRADE_PCT_OF_EQUITY,
+        "etoro_live_hard_max_trade_usd": HARD_MAX_TRADE_USD,
+        "etoro_live_hard_max_risk_pct": HARD_MAX_RISK_PCT_OF_EQUITY,
+        "etoro_live_hard_max_exposure_pct": HARD_MAX_EXPOSURE_PCT_OF_EQUITY,
+        "etoro_live_hard_max_trades_per_day": HARD_MAX_TRADES_PER_DAY,
+    }
+
+
+def open_notional(raw: dict[str, Any], by_position: dict[Any, str]) -> dict[str, Any]:
+    """Per symbol (or raw instrument id, as ``open_symbols``), eToro's notional at cost
+    (``amount`` x ``leverage``: ``amount`` is the margin) and units, for the exposure cap. A
+    position without a usable amount gets no ``cost_usd``, so the cap reads it as unknown."""
+
+    out: dict[str, dict[str, float]] = {}
+    for item in (raw.get("clientPortfolio", {}) or {}).get("positions", []) or []:
+        if not isinstance(item, dict):
+            continue
+        key = by_position.get(item.get("positionID")) or str(item.get("instrumentID") or "")
+        row = out.setdefault(key.upper(), {})
+        amount, leverage = _number(item.get("amount")), _number(item.get("leverage") or 1)
+        units = _number(item.get("units"))
+        if amount is None or amount <= 0 or leverage is None or leverage < 1:
+            row["unreadable"] = 1.0
+        else:
+            row["cost_usd"] = round(row.get("cost_usd", 0.0) + amount * leverage, 2)
+        if units is not None and units > 0:
+            row["units"] = row.get("units", 0.0) + units
+    return out
+
+
+def fit_to_room(stake: float, rooms: dict[str, float]) -> tuple[float | None, list[str]]:
+    """The full stake when it fits every room; else the smallest room, rounded down to the
+    cent, when that is still eToro's minimum and at least half the stake (the simplest sound
+    cut: a copy never shrinks below half its equal-risk size, so it keeps at least half the
+    0.5% risk paper's R is measured on); else None with each cap whose room is below that."""
+
+    def cents(value: float) -> float:  # rounded down: a cut copy never exceeds its room
+        return math.floor(round(value * 100.0, 6)) / 100.0
+
+    room = min(rooms.values(), default=math.inf)
+    if stake <= room:
+        return stake, []
+    floor = max(MIN_TRADE_USD, stake / 2.0)
+    if cents(room) >= floor:
+        return cents(room), []
+    return None, [reason for reason, value in rooms.items() if cents(value) < floor]
 
 
 def client_problem(client: Any | None) -> str | None:
@@ -411,10 +492,32 @@ class EtoroLiveMirrorService:
         amount = self._trade_amount(state, stop_pct)  # None: an unknown stop is refused above
         if amount is not None and amount < MIN_TRADE_USD:
             reasons.append("etoro_live_trade_below_minimum")
-        cash = state.get("last_cash")
-        if amount and cash is not None and float(cash) - CASH_RESERVE_USD < amount:
-            reasons.append("etoro_live_insufficient_cash")  # only trade with money left
+        reasons.extend(self._copy_amount(state, amount)[1])  # exposure and cash room
         return reasons
+
+    def _copy_amount(
+        self, state: dict[str, Any], stake: float | None
+    ) -> tuple[float | None, list[str]]:
+        """The stake fitted to eToro's room (operator 2026-10-26): open notional + this copy
+        within HARD_MAX_EXPOSURE_PCT_OF_EQUITY of equity, and the free cash less the reserve
+        (unchecked while the cash was never read, as before). (amount, room reasons); an
+        unsized or sub-minimum stake is refused by the checks above and reads (None, [])."""
+
+        if stake is None or stake < MIN_TRADE_USD:
+            return None, []
+        from app.broker.etoro_live_room import open_exposure_usd
+
+        exposure = open_exposure_usd(self.state, state)
+        if exposure is None:  # an unreadable position or record: no copy
+            return None, ["etoro_live_exposure_unknown"]
+        equity = float(state["last_equity"])
+        rooms = {
+            "etoro_live_exposure_cap": equity * HARD_MAX_EXPOSURE_PCT_OF_EQUITY / 100.0 - exposure
+        }
+        cash = state.get("last_cash")
+        if cash is not None:  # only trade with money left
+            rooms["etoro_live_insufficient_cash"] = float(cash) - CASH_RESERVE_USD
+        return fit_to_room(stake, rooms)
 
     def _trade_amount(self, state: dict[str, Any], stop_pct: float | None) -> float | None:
         """Exposure for one copy: a share of the last equity reading, cut so a stop
@@ -424,8 +527,7 @@ class EtoroLiveMirrorService:
         equity = state.get("last_equity")
         if equity is None or float(equity) <= 0 or stop_pct is None or not stop_pct > 0:
             return None
-        pct = float(getattr(self.settings, "etoro_live_trade_pct_of_equity", 10.0) or 0.0)
-        pct = min(max(pct, 0.0), HARD_MAX_TRADE_PCT_OF_EQUITY)
+        pct = effective_trade_pct(self.settings)
         at_risk = float(equity) * HARD_MAX_RISK_PCT_OF_EQUITY / stop_pct  # loses 0.5% at stop
         return round(min(float(equity) * pct / 100.0, HARD_MAX_TRADE_USD, at_risk), 2)
 
@@ -458,7 +560,8 @@ class EtoroLiveMirrorService:
             else 1
         )
         order = proposal.order
-        amount = self._trade_amount(state, stop_distance_pct(order.proposed_price, order.stop_loss))
+        stake = self._trade_amount(state, stop_distance_pct(order.proposed_price, order.stop_loss))
+        amount, _ = self._copy_amount(state, stake)  # the same room blockers() just checked
         if not amount:  # backstop: blockers() already refuses an order it cannot size
             self.logs.log(
                 "etoro_live_mirror_blocked",
@@ -477,6 +580,10 @@ class EtoroLiveMirrorService:
         before = dict(state)
         state["trades_today"] += 1
         state["open_symbols"] = sorted(set(state["open_symbols"]) | {symbol})
+        notional = state.get("open_notional")  # counted by the exposure cap until reconcile
+        notional = dict(notional) if isinstance(notional, dict) else {}
+        notional[symbol] = {"cost_usd": round(float(amount) * leverage, 2)}
+        state["open_notional"] = notional
         if leverage == 2:
             state["leverage_2x_done"] = True
         if state.get("last_cash") is not None:  # spent until the next reconcile re-reads it
@@ -579,6 +686,7 @@ class EtoroLiveMirrorService:
             state["last_cash"] = round(float(credit), 2)  # free cash, for the funds check
         state["open_symbols"] = sorted({str(p.symbol).upper() for p in portfolio.positions})
         by_position = {p.position_id: str(p.symbol).upper() for p in portfolio.positions}
+        state["open_notional"] = open_notional(raw, by_position)
         closed: list[str] = []
         for item in (raw.get("clientPortfolio", {}) or {}).get("positions", []) or []:
             if item.get("stopLossRate") and not bool(item.get("isNoStopLoss")):

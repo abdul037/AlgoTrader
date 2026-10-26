@@ -21,6 +21,8 @@ from typing import Any
 def effective_execution_policy(settings: Any) -> dict[str, Any]:
     """Return the non-secret auto-execution policy as a flat, loggable dict."""
 
+    from app.broker.etoro_live_mirror import sizing_policy
+
     def _get(name: str, default: Any) -> Any:
         return getattr(settings, name, default)
 
@@ -116,6 +118,10 @@ def effective_execution_policy(settings: Any) -> dict[str, Any]:
         # Market panel (2026-10-18): with the deep scan on, the morning's market context and a
         # regime label are recorded in shadow. Default on, used by nothing; checkable at boot.
         "premarket_market_panel_enabled": bool(_get("premarket_market_panel_enabled", True)),
+        # eToro LIVE copy sizing (operator 2026-10-26): the effective share of equity per copy
+        # (the setting within its hard cap) and the code caps, so the Railway value is
+        # checkable at boot. Caps only: no account value.
+        **sizing_policy(settings),
         # A boolean only — never the account number itself.
         "alpaca_expected_account_configured": bool(
             str(_get("alpaca_expected_account_number", "") or "").strip()
