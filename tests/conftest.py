@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from app.config import AppSettings
 from app.models.execution import AccountSummary, BrokerOrderResponse, PortfolioSummary
 
@@ -73,6 +75,25 @@ def make_settings(tmp_path: Path, **overrides) -> AppSettings:
         "screener_min_accuracy_score": 0.52,
         "screener_min_confirmation_score": 0.45,
         "screener_max_false_positive_risk": 0.68,
+        # Wall-clock dependent (quiet hours); its own tests enable it and inject the clocks.
+        "backtest_short_research_enabled": False,
+        # Wall-clock dependent (off-hours earnings refresh, Yahoo by default) and it adds run
+        # logs to the proposal path; its own tests enable it with a fake provider and clocks.
+        "event_risk_shadow_enabled": False,
+        # Wall-clock dependent (the pre-market window) and Yahoo by default; its own tests
+        # enable it with a fake provider and clocks.
+        "premarket_market_panel_enabled": False,
     }
     defaults.update(overrides)
     return AppSettings(**defaults)
+
+
+@pytest.fixture
+def go_live_locks_open(monkeypatch):
+    """For tests of live-mode *routing* only: bypass the Phase 4 go-live locks
+    (readiness bar, micro-live cap, operator acknowledgement). The locks
+    themselves are covered in tests/test_go_live_guard.py."""
+
+    from app.automation.service import AutomationService
+
+    monkeypatch.setattr(AutomationService, "_go_live_guard_blockers", lambda self: [])

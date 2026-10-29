@@ -39,16 +39,22 @@ class FakeMarketData:
 
 
 def _frame(length: int = 80) -> pd.DataFrame:
+    # A sawtooth up-trend (6 up days, 3 pullback days) rather than a straight
+    # line: with correct cash accounting a straight line makes every trade a
+    # winner, which the leakage tripwire rightly rejects as too good to be real.
     timestamps = pd.date_range(datetime(2026, 1, 1, tzinfo=UTC), periods=length, freq="1D")
     rows = []
+    close = 100.0
     for index, timestamp in enumerate(timestamps):
-        close = 100.0 + index
+        pullback = index % 9 >= 6
+        close += -2.5 if pullback else 1.5
         rows.append(
             {
                 "timestamp": timestamp,
                 "open": close - 0.25,
-                "high": close + 5.0,
-                "low": close - 1.0,
+                "high": close + 1.0,
+                # Pullback days dip far enough intrabar for a 2% stop to fill.
+                "low": close - (3.5 if pullback else 0.5),
                 "close": close,
                 "volume": 1_000_000 + index,
             }

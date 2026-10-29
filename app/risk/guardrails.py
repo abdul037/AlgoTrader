@@ -30,6 +30,9 @@ class RiskContext(BaseModel):
     portfolio_drawdown_pct: float = 0.0
     consecutive_losses_today: int = 0
     trades_today: int = 0
+    recently_stopped_symbols: list[str] = Field(default_factory=list)
+    entries_today_by_correlation_bucket: dict[str, int] = Field(default_factory=dict)
+    """Symbols whose last trade closed at a loss inside the re-entry cooldown."""
     open_trade_risks_usd: list[float] = Field(default_factory=list)
     """Per-trade dollar risk (entry->stop) of each currently open position. Summed
     into portfolio heat and checked against ``portfolio_max_heat_pct``."""
@@ -44,8 +47,16 @@ class RiskManager:
         self.resolver = InstrumentResolver(settings)
         self.short_policy = ShortTradePolicy(settings)
 
-    def validate_order(self, order: TradeOrder, context: RiskContext) -> RiskValidationResult:
-        """Validate an order against configured guardrails."""
+    def validate_order(
+        self, order: TradeOrder, context: RiskContext, *, etoro_room: list[str] | None = None
+    ) -> RiskValidationResult:
+        """Validate an order against configured guardrails.
+
+        ``etoro_room`` (option 3, 2026-10-06) is the live eToro account's room verdict from
+        ``app.broker.etoro_live_room.room_verdict``: None keeps paper's portfolio-room checks;
+        a list replaces them (open positions, gross / symbol / sector / correlated exposure)
+        with eToro's reasons. Every per-trade and safety check below is unchanged.
+        """
 
         reasons: list[str] = []
         risk_amount = 0.0
@@ -66,8 +77,10 @@ class RiskManager:
                 f"Leverage {order.leverage} exceeds the cap of {leverage_cap} for {instrument.asset_class.value}"
             )
 
-        if context.open_positions >= self.settings.max_open_positions:
+        paper_room = etoro_room is None
+        if paper_room and context.open_positions >= self.settings.max_open_positions:
             reasons.append("Maximum number of open positions reached")
+        reasons.extend(f"eToro live room: {reason}" for reason in etoro_room or [])
 
         if context.trades_today >= int(getattr(self.settings, "max_trades_per_day", 999999)):
             reasons.append("Maximum number of trades for today reached")
@@ -75,6 +88,20 @@ class RiskManager:
         symbol_positions = int(context.positions_by_symbol.get(order.symbol.upper(), 0))
         if symbol_positions >= self.settings.per_symbol_position_limit:
             reasons.append("Per-symbol position limit reached")
+
+        # 2026-09-28: NVDA was re-bought 1h43m after its stop by another strategy
+        # and stopped again. A fresh stop-out is evidence against the setup.
+        if order.symbol.upper() in context.recently_stopped_symbols:
+            reasons.append(f"Re-entry cooldown after a losing exit on {order.symbol.upper()}")
+
+        # 2026-09-28: four tech longs (NVDA, AAPL, NVDA, META) opened on one down
+        # day all stopped out (-$601). Open-exposure caps never saw them together
+        # because the first two had closed before the next two opened.
+        bucket_cap = int(getattr(self.settings, "max_daily_entries_per_correlation_bucket", 0) or 0)
+        bucket = correlation_bucket_for_symbol(order.symbol)
+        bucket_entries = context.entries_today_by_correlation_bucket.get(bucket, 0)
+        if bucket_cap > 0 and bucket != "unclassified" and bucket_entries >= bucket_cap:
+            reasons.append(f"Daily entry cap of {bucket_cap} reached for the {bucket} group")
 
         # An unattended bot must react to a large OPEN loss, not just realized
         # PnL. Count current open losses toward the caps (open gains never mask a
@@ -105,6 +132,7 @@ class RiskManager:
             elif context.portfolio_drawdown_pct >= self.settings.portfolio_soft_drawdown_pct:
                 reasons.append("Portfolio soft drawdown pause reached")
 
+        if institutional_controls and paper_room:
             proposed_exposure_pct = (float(order.amount_usd) / context.account_balance) * 100.0
             if (
                 context.gross_exposure_pct + proposed_exposure_pct
@@ -207,4 +235,5 @@ class RiskManager:
             reasons=reasons,
             risk_amount_usd=round(risk_amount, 2),
             risk_pct_of_balance=round(risk_pct, 4),
+            room_authority="paper" if paper_room else "etoro_live",
         )

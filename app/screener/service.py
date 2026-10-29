@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from contextlib import suppress
+from contextlib import AbstractContextManager, nullcontext, suppress
 from typing import Any
 
 from app.backtesting.batch import BatchBacktestService
@@ -137,19 +137,33 @@ class MarketScreenerService:
         scan_task: str = "manual_scan",
         strategy_spec_keys: list[str] | None = None,
         cancel_event: Any | None = None,
+        kept_bars: Any | None = None,
     ) -> ScreenerRunResponse:
-        return scan_universe(
-            self,
-            symbols=symbols,
-            timeframes=timeframes,
-            limit=limit,
-            validated_only=validated_only,
-            notify=notify,
-            force_refresh=force_refresh,
-            scan_task=scan_task,
-            strategy_spec_keys=strategy_spec_keys,
-            cancel_event=cancel_event,
-        )
+        # The scan's no_signal decisions are queued for this scan's thread and written
+        # once per symbol and as the scan ends (raising in the scan if that fails).
+        with self._deferred_scan_decisions():
+            return scan_universe(
+                self,
+                symbols=symbols,
+                timeframes=timeframes,
+                limit=limit,
+                validated_only=validated_only,
+                notify=notify,
+                force_refresh=force_refresh,
+                scan_task=scan_task,
+                strategy_spec_keys=strategy_spec_keys,
+                cancel_event=cancel_event,
+                kept_bars=kept_bars,
+            )
+
+    def _deferred_scan_decisions(self) -> AbstractContextManager[Any]:
+        deferred_writes = getattr(self.scan_decisions, "deferred_writes", None)
+        return nullcontext() if deferred_writes is None else deferred_writes()
+
+    def _flush_scan_decisions(self) -> None:
+        flush = getattr(self.scan_decisions, "flush", None)
+        if flush is not None:
+            flush()
 
     def analyze_symbol(
         self,

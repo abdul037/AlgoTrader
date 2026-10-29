@@ -20,6 +20,123 @@ def _require_control_token(request: Request) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Control token required")
 
 
+@router.get("/go-live-readiness")
+def go_live_readiness(request: Request):
+    """Phase 2/3/4 status: pooled strategy evidence verdicts and the go-live bar."""
+
+    import json
+
+    from app.performance.go_live_readiness import READINESS_KEY
+    from app.performance.strategy_evidence import VERDICTS_KEY
+    from app.storage.repositories import RuntimeStateRepository
+
+    _require_control_token(request)
+    state = RuntimeStateRepository(request.app.state.db)
+    settings = request.app.state.settings
+
+    def _read(key: str) -> dict[str, Any]:
+        try:
+            return json.loads(state.get(key) or "{}")
+        except (TypeError, ValueError):
+            return {}
+
+    return {
+        "evidence_gate_enforced": bool(getattr(settings, "require_strategy_oos_evidence", False)),
+        "strategy_evidence": _read(VERDICTS_KEY),
+        "readiness": _read(READINESS_KEY),
+        "real_trading_enabled": bool(getattr(settings, "enable_real_trading", False)),
+    }
+
+
+@router.get("/live-scorecard")
+def live_scorecard(request: Request):
+    """eToro LIVE trades against their backtest: expected R vs realized R, fills, exits."""
+
+    import json
+
+    from app.broker.etoro_live_scorecard import SCORECARD_KEY, scorecard_report
+    from app.storage.repositories import RuntimeStateRepository
+
+    _require_control_token(request)
+    db = request.app.state.db
+    state = RuntimeStateRepository(db)
+    try:
+        cards = json.loads(state.get(SCORECARD_KEY) or "{}")
+    except (TypeError, ValueError):
+        cards = {}
+    ids = [str(t.get("proposal_id")) for t in cards.values() if t.get("proposal_id")]
+    fills: dict[str, float] = {}
+    if ids:
+        marks = ",".join("?" for _ in ids)
+        with db.connect() as connection:
+            rows = connection.execute(
+                f"SELECT proposal_id, response_json FROM executions WHERE proposal_id IN ({marks})",
+                tuple(ids),
+            ).fetchall()
+        for row in rows:
+            try:
+                broker = json.loads(row["response_json"] or "{}").get("broker_execution") or {}
+                fill = float(broker.get("filled_avg_price") or 0.0)
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if fill > 0:
+                fills[str(row["proposal_id"])] = fill
+    from app.performance.strategy_evidence import SHORT_VERDICTS_KEY
+    from app.workflow.shadow_ledger import shadow_ledger_report
+
+    report = scorecard_report(state, fills)
+    report["shadow_ledger"] = shadow_ledger_report(state)  # watchlist setups on later bars
+    from app.workflow.open_shadow import open_shadow_report  # Phase 3 shadow vs the live entries
+
+    settings = request.app.state.settings
+    report["open_shadow"] = open_shadow_report(state, db, cards, settings=settings)
+    try:  # short-setup backtests: research only, nothing on the trading path reads them
+        short_evidence = json.loads(state.get(SHORT_VERDICTS_KEY) or "{}")
+    except (TypeError, ValueError):
+        short_evidence = {}
+    report["short_evidence"] = short_evidence if isinstance(short_evidence, dict) else {}
+    try:  # earnings shadow check: flagged vs unflagged setups and live trades (nothing blocked)
+        from app.storage.repositories import RunLogRepository
+        from app.utils.time import utc_now
+        from app.workflow.event_risk import EVENT, event_risk_report
+
+        since = (utc_now() - timedelta(days=120)).isoformat()
+        logs = RunLogRepository(db).list_by_event(EVENT, limit=500, since_iso=since)
+        report["event_risk_shadow"] = event_risk_report(
+            state, trades=report.get("trades"), proposal_logs=logs
+        )
+    except Exception:  # noqa: BLE001 - a shadow section never takes the scorecard down
+        report["event_risk_shadow"] = {"error": "event_risk_report_failed", "shadow_only": True}
+    try:  # the pre-market market panel: its readings and label (logged only, nothing uses it)
+        from app.workflow.market_panel import market_panel_report
+
+        report["market_panel"] = market_panel_report(state, settings=settings)
+    except Exception:  # noqa: BLE001 - a shadow section never takes the scorecard down
+        report["market_panel"] = {"error": "market_panel_report_failed", "shadow_only": True}
+    try:  # paper-only entries (option B, 2026-10-21): paper's OOS bar alone, never copied
+        from app.performance.paper_only import paper_only_report
+
+        report["paper_only"] = paper_only_report(db)
+    except Exception:  # noqa: BLE001 - a report section never takes the scorecard down
+        report["paper_only"] = {"error": "paper_only_report_failed"}
+    return report
+
+
+@router.get("/live-daily-report")
+def live_daily_report(request: Request):
+    """Preview the daily eToro LIVE Telegram report for the last 24 h (nothing is sent)."""
+
+    from app.broker.etoro_live_daily_report import build_report
+
+    _require_control_token(request)
+    coordinator = getattr(request.app.state, "execution_coordinator", None)
+    mirror = getattr(coordinator, "etoro_live_mirror", None)
+    if mirror is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="eToro live mirror off")
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    return {"text": build_report(mirror, since=since)}
+
+
 @router.get("/weekly-target-readiness")
 def weekly_target_readiness(request: Request):
     _require_control_token(request)
@@ -31,7 +148,10 @@ def weekly_target_readiness(request: Request):
     paper_equity = max(float(getattr(settings, "paper_account_balance_usd", 100000.0) or 100000.0), 1.0)
     window_start = datetime.now(timezone.utc) - timedelta(weeks=window_weeks)
 
+    from app.performance.paper_only import lifecycle_is_paper_only
+
     lifecycles = request.app.state.paper_trading_service.lifecycles(limit=1000, autonomous_only=True)
+    lifecycles = [item for item in lifecycles if not lifecycle_is_paper_only(item)]  # option B
     closed = [item for item in lifecycles if item.flags.entry_filled and item.flags.exit_filled_or_position_flat]
     window_closed = [item for item in closed if _timestamp(item.updated_at or item.created_at) >= window_start]
     clean_window = [item for item in window_closed if _is_clean_lifecycle(item)]

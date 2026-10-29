@@ -22,15 +22,20 @@ class AlpacaDataProvider:
         self._cache_dir = cache_dir
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def get_bars(self, symbol: str, *, timeframe: str, start: datetime, end: datetime) -> pd.DataFrame:
-        """Return UTC-indexed OHLCV bars. Cache to parquet by symbol/timeframe/date range."""
+    def get_bars(
+        self, symbol: str, *, timeframe: str, start: datetime, end: datetime, cache: bool = True
+    ) -> pd.DataFrame:
+        """Return UTC-indexed OHLCV bars. Cache to parquet by symbol/timeframe/date range.
+
+        ``cache=False`` (the batch backtest's refetch every pass) neither reads nor writes one:
+        the range ends at the second it was asked, so the file would never be read again."""
 
         cache_path = self._cache_path(symbol, timeframe, start, end)
-        if cache_path.exists():
+        if cache and cache_path.exists():
             return _normalize_frame(pd.read_parquet(cache_path))
         bars = self._client.get_bars(symbol, timeframe=timeframe, start=start, end=end)
         bars = _normalize_frame(bars)
-        if not bars.empty:
+        if cache and not bars.empty:
             bars.to_parquet(cache_path, index=False)
         return bars
 

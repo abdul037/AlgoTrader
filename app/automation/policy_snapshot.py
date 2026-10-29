@@ -21,6 +21,8 @@ from typing import Any
 def effective_execution_policy(settings: Any) -> dict[str, Any]:
     """Return the non-secret auto-execution policy as a flat, loggable dict."""
 
+    from app.broker.etoro_live_mirror import sizing_policy
+
     def _get(name: str, default: Any) -> Any:
         return getattr(settings, name, default)
 
@@ -59,9 +61,67 @@ def effective_execution_policy(settings: Any) -> dict[str, Any]:
         "backtest_scheduler_deadline_seconds": float(
             _get("backtest_scheduler_deadline_seconds", 0.0) or 0.0
         ),
+        # Intraday evidence (2026-10-20): whether 10m is really scheduled (a Railway variable
+        # replaces the default list) and the modelled signal-to-order delay on minute bars.
+        "backtest_scheduler_timeframes": [str(tf) for tf in _get("backtest_scheduler_timeframes", []) or []],
+        "walk_forward_intraday_entry_delay_bars": int(_get("walk_forward_intraday_entry_delay_bars", 0) or 0),
+        # Paper OOS bar (operator option B, 2026-10-21): paper-only entries on pooled OOS evidence
+        # alone; off restores the old paper gate. Read as the gate reads it (absent = off).
+        "paper_oos_bar_enabled": bool(_get("paper_oos_bar_enabled", False)),
         "screener_batch_deadline_seconds": float(_get("screener_batch_deadline_seconds", 0.0) or 0.0),
         "market_universe_limit": int(_get("market_universe_limit", 0) or 0),
         "alpaca_data_feed": str(_get("alpaca_data_feed", "")),
+        # Position sizing caps (non-secret; the broker step sizes as
+        # floor(min(default_trade_amount, max_trade_amount) / price), so both
+        # decide whether a >$500/share name can trade at all).
+        "default_trade_amount_usd": float(_get("default_trade_amount_usd", 0.0) or 0.0),
+        "max_trade_amount_usd": float(_get("max_trade_amount_usd", 0.0) or 0.0),
+        "max_open_positions": int(_get("max_open_positions", 0) or 0),
+        "max_trades_per_day": int(_get("max_trades_per_day", 0) or 0),
+        # Risk profile (operator-approved aggressive paper profile, 2026-09-08).
+        "max_risk_per_trade_pct": float(_get("max_risk_per_trade_pct", 0.0) or 0.0),
+        "auto_propose_risk_based_sizing": bool(_get("auto_propose_risk_based_sizing", False)),
+        "max_daily_loss_usd": float(_get("max_daily_loss_usd", 0.0) or 0.0),
+        "max_weekly_loss_usd": float(_get("max_weekly_loss_usd", 0.0) or 0.0),
+        "max_consecutive_losses_before_cooldown": int(
+            _get("max_consecutive_losses_before_cooldown", 0) or 0
+        ),
+        "drawdown_governor_enabled": bool(_get("drawdown_governor_enabled", False)),
+        "drawdown_governor_soft_pct": float(_get("drawdown_governor_soft_pct", 0.0) or 0.0),
+        "drawdown_governor_hard_pct": float(_get("drawdown_governor_hard_pct", 0.0) or 0.0),
+        "drawdown_governor_floor": float(_get("drawdown_governor_floor", 0.0) or 0.0),
+        # Tradeable-instrument allowlist vs the scanned universe. On 2026-09-08 the
+        # two disagreed and 17 of 19 promoted candidates died at the proposal step
+        # ("not in the allowed instrument list") — invisible until someone read the
+        # run_logs by hand. Counts + an agreement flag only; the lists themselves
+        # are not secret but are long, and the flag is what matters.
+        "allowed_instruments_count": len(list(_get("allowed_instruments", []) or [])),
+        "market_universe_symbols_count": len(list(_get("market_universe_symbols", []) or [])),
+        "universe_not_in_allowlist": sorted(
+            {str(s).upper() for s in (_get("market_universe_symbols", []) or [])}
+            - {str(s).upper() for s in (_get("allowed_instruments", []) or [])}
+        )[:50],
+        # Shadow pre-market deep scan (2026-10-10): on = the 08:30 bucket runs it instead of
+        # the old rotating scan. It never trades; logged so the switch is checkable at boot.
+        "premarket_deep_scan_enabled": bool(_get("premarket_deep_scan_enabled", False)),
+        # Shorts step 2 (2026-10-17): with the deep scan on, short setups are listed and followed
+        # off-hours in shadow. Default on and never traded; logged so it is checkable at boot.
+        "premarket_short_shadow_enabled": bool(_get("premarket_short_shadow_enabled", True)),
+        # Event-risk (earnings) check (2026-10-18): default on, shadow only (it logs which entries
+        # an earnings rule would block and never blocks); logged so the switch is checkable at boot.
+        "event_risk_shadow_enabled": bool(_get("event_risk_shadow_enabled", True)),
+        # Its macro-calendar part (CPI, PPI, jobs report, FOMC days): default on, shadow only.
+        "event_risk_macro_shadow_enabled": bool(_get("event_risk_macro_shadow_enabled", True)),
+        # Phase 3 (2026-10-18): with the deep scan on, best-first entries at the open are logged in
+        # shadow. Default on and never traded; logged so it is checkable at boot.
+        "premarket_open_shadow_enabled": bool(_get("premarket_open_shadow_enabled", True)),
+        # Market panel (2026-10-18): with the deep scan on, the morning's market context and a
+        # regime label are recorded in shadow. Default on, used by nothing; checkable at boot.
+        "premarket_market_panel_enabled": bool(_get("premarket_market_panel_enabled", True)),
+        # eToro LIVE copy sizing (operator 2026-10-26): the effective share of equity per copy
+        # (the setting within its hard cap) and the code caps, so the Railway value is
+        # checkable at boot. Caps only: no account value.
+        **sizing_policy(settings),
         # A boolean only — never the account number itself.
         "alpaca_expected_account_configured": bool(
             str(_get("alpaca_expected_account_number", "") or "").strip()

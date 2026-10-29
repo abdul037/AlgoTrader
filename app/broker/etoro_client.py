@@ -134,6 +134,29 @@ class EToroClient(BrokerClient):
             return {"clientPortfolio": {"positions": [], "credit": 10000.0}}
         return self._request("GET", self._trading_info_path("portfolio"))
 
+    def fetch_trade_history(
+        self, min_date: str, *, page: int = 1, page_size: int = 100
+    ) -> list[dict[str, Any]]:
+        """Closed positions since ``min_date`` (YYYY-MM-DD, under a year back), one page.
+
+        eToro's ``GET /trading/info/trade/history`` (api-portal.etoro.com, "List trading
+        history"): each row has ``positionId``, ``closeRate``, ``closeTimestamp``,
+        ``netProfit``, ``fees`` and ``units``.
+        """
+        if self.settings.broker_simulation_enabled:
+            return []
+        payload: Any = self._request(
+            "GET",
+            self._trading_info_path("trade/history"),
+            params={"minDate": min_date, "page": page, "pageSize": page_size},
+        )
+        if isinstance(payload, dict):  # tolerate a wrapped list
+            wrapped = (payload.get(k) for k in ("items", "trades", "data"))
+            payload = next((rows for rows in wrapped if isinstance(rows, list)), [])
+        if not isinstance(payload, list):
+            return []
+        return [row for row in payload if isinstance(row, dict)]
+
     def open_market_order_by_amount(
         self,
         order: TradeOrder,
@@ -218,17 +241,25 @@ class EToroClient(BrokerClient):
         )
         if position is None:
             raise ValueError(f"No open position found for {instrument.symbol}")
+        return self.close_position_by_id(position.position_id, broker_instrument["instrument_id"])
 
-        payload = {
-            "InstrumentID": broker_instrument["instrument_id"],
-            "UnitsToDeduct": None,
-        }
+    def close_position_by_id(self, position_id: int, instrument_id: int) -> BrokerOrderResponse:
+        """Close one eToro position by its ids (no symbol lookup, so it also works for
+        instruments outside the equity allowlist, e.g. a crypto test position)."""
+
+        self._ensure_order_mode_allowed()
+        if self.settings.broker_simulation_enabled:
+            return BrokerOrderResponse(
+                order_id=generate_id("sim_close"),
+                status="simulated_closed",
+                mode=self.settings.etoro_account_mode,
+                message=f"Simulated close request for position {position_id}",
+                raw_response={"position_id": position_id},
+            )
         response = self._request(
             "POST",
-            self._trading_execution_path(
-                f"market-close-orders/positions/{position.position_id}"
-            ),
-            json_body=payload,
+            self._trading_execution_path(f"market-close-orders/positions/{position_id}"),
+            json_body={"InstrumentID": instrument_id, "UnitsToDeduct": None},
         )
         order_for_close = response.get("orderForClose", {})
         return BrokerOrderResponse(
@@ -295,6 +326,7 @@ class EToroClient(BrokerClient):
         *,
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
+        cooldown_on_rate_limit: bool = True,
     ) -> dict[str, Any]:
         url = self._build_url(path)
         try:
@@ -318,6 +350,7 @@ class EToroClient(BrokerClient):
                 self.settings,
                 status_code=exc.response.status_code,
                 body=raw_body,
+                mark=cooldown_on_rate_limit,
             ):
                 logger.warning("eToro broker request rate-limited: %s %s", exc, body)
                 raise EToroRateLimitError(f"eToro API rate-limited: {body}") from exc

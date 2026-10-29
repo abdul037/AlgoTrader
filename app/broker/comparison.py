@@ -29,6 +29,10 @@ class ParallelBrokerComparisonService:
     def mirror(self, *, proposal: Any, primary_execution: Any, primary_broker: str) -> BrokerComparison | None:
         if not self.settings.etoro_parallel_comparison_enabled:
             return None
+        from app.performance.paper_only import is_paper_only
+
+        if is_paper_only(getattr(proposal.order, "metadata", None)):
+            return None  # option B: not an eToro-copyable entry, so nothing to compare
         if self.etoro is None or not self.settings.etoro_demo_v2_enabled:
             return self._fail(
                 proposal,

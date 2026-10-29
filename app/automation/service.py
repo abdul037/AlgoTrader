@@ -7,6 +7,10 @@ from typing import Any
 from app.models.automation import AutomationStatus
 from app.utils.time import utc_now
 
+# The exact phrase the operator must set as LIVE_OPERATOR_ACKNOWLEDGEMENT to allow
+# live trading (never set by code or by Claude).
+LIVE_OPERATOR_ACKNOWLEDGEMENT = "I accept real-money risk on this account"
+
 
 class AutomationService:
     """Control scheduled scans, automatic proposals, and execution kill switch."""
@@ -96,6 +100,25 @@ class AutomationService:
                 blockers.append("enable_real_trading_false")
             if bool(getattr(self.settings, "paper_trading_enabled", True)):
                 blockers.append("paper_trading_enabled_in_live_mode")
+            blockers.extend(self._go_live_guard_blockers())
+        return blockers
+
+    def _go_live_guard_blockers(self) -> list[str]:
+        """Phase 4 locks (operator plan 2026-10-03): real money only after the Phase 3
+        readiness bar is met, with the 0.1% micro-live risk cap active and an
+        explicit operator acknowledgement. Each lock is independent of the others."""
+
+        from app.performance.go_live_readiness import readiness_ready
+
+        blockers: list[str] = []
+        if not readiness_ready(self.state):
+            blockers.append("go_live_readiness_not_met")
+        if not bool(getattr(self.settings, "institutional_portfolio_controls_enabled", False)):
+            blockers.append("micro_live_risk_cap_not_active")
+        elif float(getattr(self.settings, "portfolio_micro_live_max_risk_per_trade_pct", 1.0) or 1.0) > 0.1:
+            blockers.append("micro_live_risk_cap_above_0_1_pct")
+        if str(getattr(self.settings, "live_operator_acknowledgement", "") or "") != LIVE_OPERATOR_ACKNOWLEDGEMENT:
+            blockers.append("live_operator_acknowledgement_missing")
         return blockers
 
     def set_account_verified(self, verified: bool) -> None:
@@ -135,6 +158,10 @@ class AutomationService:
         results: list[dict[str, Any]] = []
         total_cancelled = 0
         total_closed = 0
+        if close_allowed:  # before closing: eToro live must not copy this as a strategy exit
+            from app.broker.etoro_live_exit_copy import mark_paper_safety_flatten
+
+            mark_paper_safety_flatten(self.state, symbol=None, reason=f"emergency_stop:{reason}")
         for client in self.broker_router.all_clients():
             item: dict[str, Any] = {
                 "client": client.__class__.__name__,

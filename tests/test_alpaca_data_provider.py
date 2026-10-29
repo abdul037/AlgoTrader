@@ -67,6 +67,22 @@ def test_get_bars_reads_from_cache_on_second_call_no_api_hit(tmp_path) -> None:
     pd.testing.assert_frame_equal(first, second)
 
 
+def test_get_bars_without_cache_neither_reads_nor_writes_parquet(tmp_path) -> None:
+    # The batch backtest refetches every pass with an end time to the second, so its files
+    # would never be read again and only pile up (2026-10-20).
+    client = FakeAlpacaClient()
+    provider = AlpacaDataProvider(client, cache_dir=tmp_path)
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 1, 31, tzinfo=timezone.utc)
+    provider.get_bars("AAPL", timeframe="1d", start=start, end=end)  # cached, as before
+
+    frame = provider.get_bars("AAPL", timeframe="1d", start=start, end=end, cache=False)
+    provider.get_bars("MSFT", timeframe="1d", start=start, end=end, cache=False)
+
+    assert client.bar_calls == 3 and len(frame) == 2
+    assert [path.name[:5] for path in tmp_path.glob("*.parquet")] == ["AAPL_"]
+
+
 def test_get_quote_always_calls_alpaca_no_cache(tmp_path) -> None:
     client = FakeAlpacaClient()
     provider = AlpacaDataProvider(client, cache_dir=tmp_path)
