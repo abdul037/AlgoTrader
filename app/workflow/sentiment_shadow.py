@@ -159,29 +159,92 @@ def fetch_news(settings: Any, symbol: str, start: datetime, end: datetime) -> li
         return list((response.json() or {}).get("news") or [])
 
 
-def fetch_feed(client: Any, symbol: str) -> list[dict[str, Any]]:
-    """The stock's latest eToro feed items. Never opens the live account's rate-limit cooldown."""
+# eToro's guides disagree on the feed's path and list key, and its API reference has no feed
+# page (checked 2026-11-01). The first live reads (11-01) came back 200 with no items, so the
+# reader tries both documented paths, finds the item list under any key, and records the shape
+# of each reply (``feed``) until the real one is known.
+FEED_PATHS = ("/feeds/markets/{id}", "/feeds/instruments/{id}")
+_LIST_KEYS = ("items", "posts", "data", "results", "feed", "feeds", "discussions", "activities", "entries")
 
+
+def _instrument_id(client: Any, symbol: str) -> int:
     resolved = client._instrument_cache_by_symbol.get(symbol)
-    if resolved is None:
-        found = client._request(
-            "GET", "/market-data/search", params={"internalSymbolFull": symbol}, cooldown_on_rate_limit=False
-        )
-        exact = next(
-            (i for i in found.get("items", []) if str(i.get("internalSymbolFull", "")).upper() == symbol), None
-        )
-        if exact is None:
-            raise RuntimeError(f"instrument_not_found:{symbol}")
-        instrument_id = int(exact["internalInstrumentId"])
-    else:
-        instrument_id = int(resolved["instrument_id"])
-    payload = client._request(
-        "GET", f"/feeds/markets/{instrument_id}", params={"take": FEED_TAKE}, cooldown_on_rate_limit=False
+    if resolved is not None:
+        return int(resolved["instrument_id"])
+    found = client._request(
+        "GET", "/market-data/search", params={"internalSymbolFull": symbol}, cooldown_on_rate_limit=False
     )
-    items = payload.get("items") if isinstance(payload, dict) else None
-    if items is None and isinstance(payload, dict):
-        items = payload.get("posts")
-    return [i for i in (items or []) if isinstance(i, dict)]
+    exact = next((i for i in found.get("items", []) if str(i.get("internalSymbolFull", "")).upper() == symbol), None)
+    if exact is None:
+        raise RuntimeError(f"instrument_not_found:{symbol}")
+    return int(exact["internalInstrumentId"])
+
+
+def feed_items(payload: Any) -> list[dict[str, Any]]:
+    """The item list of a feed reply, under whichever key holds it."""
+
+    if isinstance(payload, list):
+        return [i for i in payload if isinstance(i, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in _LIST_KEYS:
+        value = payload.get(key)
+        if isinstance(value, dict):
+            value = next((value[k] for k in ("items", "posts", "results", "data") if isinstance(value.get(k), list)), None)
+        if isinstance(value, list):
+            return [i for i in value if isinstance(i, dict)]
+    for value in payload.values():
+        if isinstance(value, list) and value and isinstance(value[0], dict):
+            return [i for i in value if isinstance(i, dict)]
+    return []
+
+
+def _shape(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, dict):
+        lists = {str(k): len(v) for k, v in payload.items() if isinstance(v, list)}
+        return {"type": "object", "keys": sorted(str(k) for k in payload)[:20], "lists": lists}
+    if isinstance(payload, list):
+        return {"type": "array", "length": len(payload)}
+    return {"type": type(payload).__name__}
+
+
+def read_feed(client: Any, symbol: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """(the stock's latest eToro feed items, how they were read). Never opens the live account's
+    rate-limit cooldown; a rate limit stops the reads (raised), any other error is recorded."""
+
+    from app.broker.etoro_rate_limit import EToroRateLimitError
+
+    instrument_id = _instrument_id(client, symbol)
+    attempts: list[dict[str, Any]] = []
+    for template in FEED_PATHS:
+        path = template.format(id=instrument_id)
+        try:
+            payload = client._request("GET", path, params={"take": FEED_TAKE}, cooldown_on_rate_limit=False)
+        except EToroRateLimitError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - e.g. a 404 on the path the guides disagree about
+            attempts.append({"path": path, "error": str(exc)[:120]})
+            continue
+        items = feed_items(payload)
+        attempts.append({"path": path, **_shape(payload)})
+        if items:
+            break
+    else:
+        items = []
+    return items, {"instrument_id": instrument_id, "attempts": attempts}
+
+
+def crowd_now(client: Any, symbol: str, until: datetime) -> dict[str, Any]:
+    """The crowd record for ``symbol`` over the ``CROWD_HOURS`` before ``until``, with the read's
+    shape when it found no items (so a changed or unexpected feed format shows)."""
+
+    items, feed = read_feed(client, symbol)
+    record = crowd_reading(items, until)
+    if not items:
+        record["feed"] = feed
+    else:
+        record["feed_path"] = feed["attempts"][-1]["path"]
+    return record
 
 
 def _records(runtime_state: Any) -> dict[str, Any]:
@@ -244,7 +307,7 @@ def refresh_sentiment_shadow(service: Any) -> dict[str, Any] | None:
         else:
             crowd_reads += 1
             try:
-                record["crowd"] = crowd_reading(fetch_feed(etoro, symbol), opened)
+                record["crowd"] = crowd_now(etoro, symbol, opened)
             except Exception as exc:  # noqa: BLE001 - a rate limit or format change: noted, not retried
                 record["crowd"] = {"status": "error", "reason": str(exc)[:160]}
         records[position.id] = record

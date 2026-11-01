@@ -83,7 +83,7 @@ def refresh_open_sentiment(service: Any) -> dict[str, Any] | None:
         kept[symbol]["news"] = {**part, "at": now.isoformat()}
     for symbol in crowd_due:
         try:
-            part = shadow.crowd_reading(shadow.fetch_feed(etoro, symbol), now)
+            part = shadow.crowd_now(etoro, symbol, now)
         except Exception as exc:  # noqa: BLE001 - a rate limit or a format change: shown, retried later
             part = {"status": "error", "reason": str(exc)[:160]}
         kept[symbol]["crowd"] = {**part, "at": now.isoformat()}

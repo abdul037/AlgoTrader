@@ -10,6 +10,7 @@ import pytest
 
 import app.workflow.sentiment_now as now_sentiment
 import app.workflow.sentiment_shadow as shadow
+from app.broker.etoro_rate_limit import EToroRateLimitError
 from app.utils.time import utc_now
 from tests.test_sentiment_shadow import _Etoro, _Positions, _position, _service
 
@@ -44,7 +45,8 @@ def test_news_for_every_held_stock_and_the_crowd_for_three_a_run(news) -> None:
     service = _service(rows, etoro=etoro)
     result = now_sentiment.refresh_open_sentiment(service)
     assert sorted(news) == ["AAPL", "ADBE", "COST", "CRM", "WMT"]
-    assert len(result["crowd"]) == now_sentiment.CROWD_READS_PER_RUN == len(etoro.calls)
+    assert len(result["crowd"]) == now_sentiment.CROWD_READS_PER_RUN
+    assert len(etoro.calls) == 2 * now_sentiment.CROWD_READS_PER_RUN  # empty feeds: both paths each
     assert all(cooldown is False for _, _, cooldown in etoro.calls)
     stored = json.loads(service.runtime_state.get(now_sentiment.OPEN_KEY))
     assert stored["WMT"]["news"]["label"] == "positive" and stored["WMT"]["held"] == ["paper"]
@@ -67,7 +69,7 @@ def test_parts_refresh_every_two_hours_and_sold_stocks_drop_out(news) -> None:
 
 def test_failures_are_shown_in_place_and_never_raise(monkeypatch) -> None:
     monkeypatch.setattr(shadow, "fetch_news", lambda *a: (_ for _ in ()).throw(RuntimeError("news down")))
-    service = _service([_position("p1", "WMT", 10)], etoro=_Etoro(error=RuntimeError("eToro API rate-limited")))
+    service = _service([_position("p1", "WMT", 10)], etoro=_Etoro(error=EToroRateLimitError("eToro API rate-limited")))
     now_sentiment.refresh_open_sentiment(service)
     record = json.loads(service.runtime_state.get(now_sentiment.OPEN_KEY))["WMT"]
     assert record["news"]["error"] == "news down" and record["crowd"]["status"] == "error"

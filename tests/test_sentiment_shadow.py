@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 import app.workflow.sentiment_shadow as shadow
+from app.broker.etoro_rate_limit import EToroRateLimitError
 from app.utils.time import utc_now
 from tests.test_workflow_service import FakeLogs, FakeState
 
@@ -121,8 +122,11 @@ def test_an_unknown_instrument_is_looked_up_without_the_cooldown(news) -> None:
     service = _service([_position("p1", "PYPL", 10)], etoro=etoro)
     shadow.refresh_sentiment_shadow(service)
     assert [(path, cool) for path, _, cool in etoro.calls] == [
-        ("/market-data/search", False), ("/feeds/markets/1484", False)
-    ]
+        ("/market-data/search", False), ("/feeds/markets/1484", False), ("/feeds/instruments/1484", False)
+    ]  # an empty feed: the other documented path is tried too, and both shapes recorded
+    crowd = json.loads(service.runtime_state.get(shadow.RECORDS_KEY))["p1"]["crowd"]
+    assert [a["path"] for a in crowd["feed"]["attempts"]] == ["/feeds/markets/1484", "/feeds/instruments/1484"]
+    assert crowd["feed"]["attempts"][0]["lists"] == {"items": 0}
 
 
 def test_crowd_reads_are_capped_per_run_and_the_rest_wait(news) -> None:
@@ -130,13 +134,13 @@ def test_crowd_reads_are_capped_per_run_and_the_rest_wait(news) -> None:
     etoro = _Etoro([])
     service = _service(rows, etoro=etoro)
     assert shadow.refresh_sentiment_shadow(service) == {"recorded": shadow.CROWD_READS_PER_RUN}
-    assert len(etoro.calls) == shadow.CROWD_READS_PER_RUN
+    assert len(etoro.calls) == 2 * shadow.CROWD_READS_PER_RUN  # empty feeds: both paths each
     assert shadow.refresh_sentiment_shadow(service) == {"recorded": 2}  # the next run takes the rest
 
 
 def test_failures_are_noted_in_the_record_and_never_raise(monkeypatch) -> None:
     monkeypatch.setattr(shadow, "fetch_news", lambda *a: (_ for _ in ()).throw(RuntimeError("news down")))
-    etoro = _Etoro(error=RuntimeError("eToro API rate-limited"))
+    etoro = _Etoro(error=EToroRateLimitError("eToro API rate-limited"))
     service = _service([_position("p1", "WMT", 10)], etoro=etoro)
     shadow.refresh_sentiment_shadow(service)
     record = json.loads(service.runtime_state.get(shadow.RECORDS_KEY))["p1"]
@@ -157,9 +161,28 @@ def test_entries_before_the_backfill_date_or_short_are_skipped(news) -> None:
     assert shadow.refresh_sentiment_shadow(_service([old, short])) is None and news == []
 
 
-def test_the_eToro_feed_reader_accepts_both_documented_shapes() -> None:
-    class _Posts(_Etoro):
-        def _request(self, method, path, *, params=None, cooldown_on_rate_limit=True):
-            return {"posts": [{"body": "x"}, "junk"]}
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"items": [{"body": "x"}, "junk"]},
+        {"posts": [{"body": "x"}]},
+        {"data": {"items": [{"body": "x"}]}},
+        {"cursor": "c", "unexpected": [{"body": "x"}]},
+        [{"body": "x"}],
+    ],
+)
+def test_the_feed_list_is_found_under_any_key(payload) -> None:
+    assert shadow.feed_items(payload) == [{"body": "x"}]
 
-    assert shadow.fetch_feed(_Posts(), "WMT") == [{"body": "x"}]
+
+def test_a_failing_path_is_recorded_and_the_other_tried() -> None:
+    class _Half(_Etoro):
+        def _request(self, method, path, *, params=None, cooldown_on_rate_limit=True):
+            self.calls.append(path)
+            if path.startswith("/feeds/markets/"):
+                raise RuntimeError("Broker request failed with status 404")
+            return {"posts": [{"type": "trade_open", "direction": "BUY", "createdAt": utc_now().isoformat()}]}
+
+    items, feed = shadow.read_feed(_Half(), "WMT")
+    assert len(items) == 1 and feed["attempts"][0]["error"].endswith("404")
+    assert feed["attempts"][1] == {"path": "/feeds/instruments/1035", "type": "object", "keys": ["posts"], "lists": {"posts": 1}}
