@@ -251,6 +251,9 @@ class AppSettings(BaseSettings):
     # News and eToro-crowd sentiment at each paper entry (operator 2026-11-01), RECORD ONLY: never
     # decides anything; off stops the reads and records (app/workflow/sentiment_shadow.py).
     sentiment_shadow_enabled: bool = True
+    # Research only (operator 2026-11-01): score the news before the bot's own daily backtest
+    # trades and compare results by news mood; stops when done (app/workflow/news_backtest.py).
+    news_backtest_enabled: bool = True
     # Phase 3 (operator 2026-10-18), SHADOW ONLY: after the live market-open scan, re-check the
     # watchlist's top setups on completed bars and at a fresh quote, rank them best-first and log
     # what entering them at the open would have done. Never trades; off stops it, nothing else.

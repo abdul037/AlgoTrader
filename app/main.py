@@ -631,6 +631,14 @@ def create_app(
                     func=_refresh_backtest_gate,
                 )
             )
+        if bool(getattr(app_settings, "news_backtest_enabled", True)):
+            from app.workflow.news_backtest import RUN_SECONDS, run_news_backtest
+
+            def _news_backtest() -> None:
+                # Research only: news mood before the bot's own backtest trades.
+                run_news_backtest(app_settings, runtime_state_repository, run_log_repository, app.state.db)
+
+            jobs.append(ScheduledJob(name="news_backtest", interval_seconds=RUN_SECONDS, func=_news_backtest))
         return SchedulerWorker(
             jobs,
             runtime_state=runtime_state_repository,
