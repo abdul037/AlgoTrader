@@ -39,6 +39,9 @@ without explicit operator sign-off recorded here.
     qualified ema_trend_stack's daily entries, which are net -$61.87 on 2 trades. On today's
     ledger only momentum_breakout:1d qualifies (3 trades, +$730.19). The pre-market deep scan
     and open-shadow copy hints apply it too.
+- **Deployed** Sun 07:02 UTC (`e2013ad`; 1,782 tests pass): boot 07:07:03 UTC (11:07 Dubai),
+  paper, real trading off; reconciliation OK, no error events; the first backtest run after the
+  boot has no row for the retired strategy.
 - **Diagnosis given to the operator:** no daily strategy has an edge distinguishable from zero
   (today -0.17 R .. +0.07 R per trade on 250-460 OOS trades; one standard error is ~0.07 R);
   11 daily strategies passed together on 10-03 and none by 10-27 (one long-only trend bet on the
