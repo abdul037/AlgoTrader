@@ -17,7 +17,6 @@ from research.momentum.data import Panel
 from research.momentum.engine import (
     TOP_N,
     ZERO,
-    Costs,
     Result,
     Universe,
     account,

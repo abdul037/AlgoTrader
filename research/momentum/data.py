@@ -21,7 +21,6 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 CASH_SYMBOLS = ["^IRX", "BIL"]
@@ -170,8 +169,3 @@ def month_calendar(dates: pd.DatetimeIndex) -> pd.DataFrame:
     frame["month"] = frame["date"].dt.to_period("M")
     grouped = frame.groupby("month")["date"]
     return pd.DataFrame({"first": grouped.min(), "last": grouped.max()})
-
-
-def nan_safe_ratio(numerator: np.ndarray, denominator: np.ndarray) -> np.ndarray:
-    with np.errstate(divide="ignore", invalid="ignore"):
-        return numerator / denominator
