@@ -89,6 +89,13 @@ without explicit operator sign-off recorded here.
     of users' `trade_open` items and posts' word mood over the 24 h before. eToro documents no
     date filter for the feed, so older entries have no crowd reading. eToro reads never open the
     live cooldown (`cooldown_on_rate_limit=False`), at most 3 a run. `sentiment_shadow_enabled`.
+- **Sentiment recording deployed** Sun 08:25 UTC (`d3d9fb1`; 1,810 tests pass): boot 08:29:27 UTC,
+  no error events; by 09:41 UTC all 21 paper entries since 10-01 had a news record (no read errors).
+  First look, 21 entries (open ones at today's price): positive news 10 trades -$836, neutral 5
+  +$988, negative 3 -$198, none 3 +$1,397 (WMT, PYPL had almost no news). Far too few to judge;
+  the word score also mis-reads some tagged articles (e.g. an XOM entry's top headline is about
+  Iran). The eToro crowd reading needs an entry within 60 minutes: first check at Monday's
+  15:15 UTC trade watch.
 - **Study result (`claude/wip-pullback-study` @ `4de59ad`, `docs/research/pullback_study.md`): no
   timing edge.** On today's S&P 500 members 2011-2026 the bot's ema_trend_stack rules earn +0.285 R
   a trade after costs (22,038 trades), but random entries in the same stock and year with the same
