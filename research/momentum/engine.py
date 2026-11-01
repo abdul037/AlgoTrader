@@ -87,6 +87,19 @@ class Universe:
     spy_below_sma10: np.ndarray  # K bool: SPY closed month k-1 below its 10-month SMA
     in_index: np.ndarray  # K x N bool: Wikipedia "date added" on or before S_k
     meta: dict = field(default_factory=dict)
+    dates: pd.DatetimeIndex | None = None
+
+    def daily_labels(self) -> list[str]:
+        """Labels for ``Result.equity_daily``: start, each close, each month's exit open."""
+
+        labels = ["start"]
+        for j in range(len(self.months.labels)):
+            t_in, t_out = self.months.t_in[j], self.months.t_out[j]
+            last = t_out if self.months.final_close_exit[j] else t_out - 1
+            labels.extend(str(day.date()) for day in self.dates[t_in : last + 1])
+            if not self.months.final_close_exit[j]:
+                labels.append(f"{self.dates[t_out].date()} open")
+        return labels
 
 
 def build_universe(panel: Panel) -> Universe:
@@ -178,7 +191,7 @@ def build_universe(panel: Panel) -> Universe:
     }
     return Universe(months, list(panel.symbols), eligible, mom12, mom6, vol12, ret, fallback, paths,
                     pd.DataFrame(bench_ret, columns=list(panel.bench_open.columns), index=months.labels),
-                    bench_paths, cash_ret, below, in_index, meta)
+                    bench_paths, cash_ret, below, in_index, meta, dates)
 
 
 def top_n(scores: np.ndarray, symbols: list[str], n: int = TOP_N) -> list[np.ndarray]:
