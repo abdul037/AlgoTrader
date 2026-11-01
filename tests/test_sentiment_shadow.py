@@ -186,3 +186,24 @@ def test_a_failing_path_is_recorded_and_the_other_tried() -> None:
     items, feed = shadow.read_feed(_Half(), "WMT")
     assert len(items) == 1 and feed["attempts"][0]["error"].endswith("404")
     assert feed["attempts"][1] == {"path": "/feeds/instruments/1035", "type": "object", "keys": ["posts"], "lists": {"posts": 1}}
+
+
+def test_the_live_feeds_nested_items_are_read() -> None:
+    now = utc_now()
+    nested = [
+        {"id": "1", "post": {"message": {"text": "Strong quarter, expect a rally"}, "created": (now - timedelta(hours=2)).isoformat(),
+                             "owner": {"username": "a"}}, "emotionsData": {"like": {"count": 3}}, "summary": {"comments": 1}},
+        {"id": "2", "post": {"text": "weak guidance", "createdAt": (now - timedelta(hours=1)).isoformat()},
+         "additionalData": {"position": {"isBuy": False, "type": "OpenPosition"}}},
+        {"id": "3", "post": {"text": "old", "created": (now - timedelta(hours=40)).isoformat()}},  # outside 24 h
+    ]
+    crowd = shadow.crowd_reading(nested, now)
+    assert (crowd["in_window"], crowd["posts"], crowd["trade_opens"], crowd["sells"]) == (2, 2, 1, 1)
+    assert crowd["post_score"] == 0.0
+    assert "post.message.text" in crowd["item_paths"] and "emotionsData.like.count" in crowd["item_paths"]
+
+
+def test_find_field_is_breadth_first_and_bounded() -> None:
+    item = {"a": {"text": "deep"}, "text": "top"}
+    assert shadow.find_field(item, frozenset({"text"})) == "top"
+    assert shadow.find_field({"a": {"b": {"c": {"d": {"e": {"text": "x"}}}}}}, frozenset({"text"}), depth=3) is None

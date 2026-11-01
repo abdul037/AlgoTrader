@@ -108,16 +108,74 @@ def news_reading(articles: list[dict[str, Any]], symbol: str) -> dict[str, Any]:
     }
 
 
+# The live feed (first read 2026-11-01) nests each item's content: its top-level keys are
+# additionalData, commentsData, emotionsData, id, post, requesterContext and summary. The fields
+# are therefore found by name at any depth (breadth-first), and each record keeps the dotted field
+# paths of the first item (``item_paths``) so the exact layout can be confirmed.
+_TIME_KEYS = frozenset({"createdAt", "created_at", "created", "occurredAt", "occurred", "publishedAt", "timestamp"})
+_TEXT_KEYS = frozenset({"text", "body", "content", "message"})
+_SIDE_KEYS = frozenset({"direction", "isBuy", "is_buy", "side"})
+_TYPE_KEYS = frozenset({"type", "postType", "feedItemType", "itemType"})
+
+
+def find_field(obj: Any, names: frozenset[str], depth: int = 4) -> Any:
+    """The first non-empty value under any of ``names``, breadth-first, ``depth`` levels down."""
+
+    level = [obj]
+    for _ in range(depth + 1):
+        nxt: list[Any] = []
+        for node in level:
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if key in names and value not in (None, "", [], {}):
+                        return value
+                nxt.extend(v for v in node.values() if isinstance(v, (dict, list)))
+            elif isinstance(node, list):
+                nxt.extend(v for v in node[:5] if isinstance(v, (dict, list)))
+        level = nxt
+    return None
+
+
+def item_paths(item: Any, prefix: str = "", depth: int = 3) -> list[str]:
+    """Dotted field paths of a feed item (values left out), for the record's layout check."""
+
+    if not isinstance(item, dict) or depth < 0:
+        return [prefix] if prefix else []
+    paths: list[str] = []
+    for key, value in item.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        paths.extend(item_paths(value, path, depth - 1) if isinstance(value, dict) and value else [path])
+    return paths
+
+
+def _item_text(item: Any) -> str:
+    value = find_field(item, _TEXT_KEYS)
+    if isinstance(value, dict):
+        value = find_field(value, frozenset({"text", "body", "content"}), depth=2)
+    return value if isinstance(value, str) else ""
+
+
+def _item_side(item: Any) -> str | None:
+    value = find_field(item, _SIDE_KEYS)
+    if value is True or str(value).lower() in {"buy", "long"}:
+        return "BUY"
+    if value is False or str(value).lower() in {"sell", "short"}:
+        return "SELL"
+    return None
+
+
 def crowd_reading(items: list[dict[str, Any]], opened_at: datetime) -> dict[str, Any]:
-    """The eToro crowd record from feed items: those in the ``CROWD_HOURS`` before the entry."""
+    """The eToro crowd record from feed items: those in the ``CROWD_HOURS`` before the entry. A
+    trade open is an item with a buy/sell side whose type does not say it closed; a post is an
+    item with text."""
 
     since = opened_at - timedelta(hours=CROWD_HOURS)
-    window = [i for i in items if (t := _when(i.get("createdAt") or i.get("created_at"))) and since <= t <= opened_at]
-    opens = [i for i in window if str(i.get("type") or "").lower() == "trade_open"]
-    buys = sum(1 for i in opens if str(i.get("direction") or "").upper() == "BUY")
-    sells = sum(1 for i in opens if str(i.get("direction") or "").upper() == "SELL")
-    posts = [i for i in window if str(i.get("type") or "post").lower() in {"post", "comment"}]
-    scores = [s for i in posts if (s := word_score(i.get("text") or i.get("body") or "")) is not None]
+    window = [i for i in items if (t := _when(find_field(i, _TIME_KEYS))) and since <= t <= opened_at]
+    sides = [(i, _item_side(i)) for i in window]
+    opens = [side for i, side in sides if side and "close" not in str(find_field(i, _TYPE_KEYS) or "").lower()]
+    buys, sells = opens.count("BUY"), opens.count("SELL")
+    texts = [text for i in window if (text := _item_text(i))]
+    scores = [s for text in texts if (s := word_score(text)) is not None]
     mean = sum(scores) / len(scores) if scores else None
     return {
         "items_seen": len(items),
@@ -126,10 +184,11 @@ def crowd_reading(items: list[dict[str, Any]], opened_at: datetime) -> dict[str,
         "buys": buys,
         "sells": sells,
         "buy_pct": None if buys + sells == 0 else round(100.0 * buys / (buys + sells), 1),
-        "posts": len(posts),
+        "posts": len(texts),
         "post_score": None if mean is None else round(mean, 3),
         "post_label": label(mean),
         "item_keys": sorted({k for i in items[:20] for k in i})[:30],
+        "item_paths": item_paths(items[0])[:60] if items else [],
     }
 
 
