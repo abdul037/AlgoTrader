@@ -3,6 +3,7 @@
     python -I research/pullback/cli.py data   --data-dir DATA
     python -I research/pullback/cli.py parity --data-dir DATA --out OUT
     python -I research/pullback/cli.py run    --data-dir DATA --out OUT
+    python -I research/pullback/cli.py calibrate --data-dir DATA --out OUT   # after run
 
 ``-I`` keeps the downloaded (untrusted) data directory and the current directory off
 ``sys.path``; the repository root is added explicitly below so ``app`` and ``research`` import.
@@ -22,7 +23,7 @@ if str(REPO_ROOT) not in sys.path:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pullback-study")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("data", "parity", "run"):
+    for name in ("data", "parity", "run", "calibrate"):
         cmd = sub.add_parser(name)
         cmd.add_argument("--data-dir", type=Path, required=True)
         cmd.add_argument("--out", type=Path, default=None)
@@ -44,6 +45,11 @@ def main(argv: list[str] | None = None) -> int:
         report = parity.run_parity(args.data_dir, args.symbols.split(","), window=args.window)
         parity.write_report(report, args.out)
         return 0 if report["all_match"] else 1
+    if args.command == "calibrate":
+        from research.pullback import calibration
+
+        calibration.run(args.data_dir, args.out)
+        return 0
     if args.command == "run":
         from research.pullback import study
 

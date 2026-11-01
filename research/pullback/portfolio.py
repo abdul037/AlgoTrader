@@ -33,6 +33,9 @@ class PortfolioConfig:
     max_positions: int = 12
     sector_cap: int | None = None
     min_notional: float = 100.0
+    haircut_per_day: float = 0.0
+    """Sensitivity only (not in the rule): a held position loses this log-return a trading day,
+    the rough survivorship drift of today's members over the equal-weight index (see report)."""
 
 
 @dataclass
@@ -72,7 +75,7 @@ def simulate(candidates: pd.DataFrame, calendar: pd.DatetimeIndex, closes: dict[
     def close_position(symbol: str) -> None:
         nonlocal cash
         pos = positions.pop(symbol)
-        proceeds = pos["shares"] * pos["exit"]
+        proceeds = pos["shares"] * pos["exit"] * np.exp(-config.haircut_per_day * (pos["exit_c"] - pos["entry_c"]))
         cost = HALF_COST * pos["notional"]
         cash += proceeds - cost
         pos["record"]["pnl_usd"] = proceeds - pos["notional"] - 2 * HALF_COST * pos["notional"]
@@ -102,10 +105,12 @@ def simulate(candidates: pd.DataFrame, calendar: pd.DatetimeIndex, closes: dict[
             positions[row.symbol] = {
                 "shares": shares, "notional": notional, "exit": row.exit, "exit_c": row.exit_c,
                 "exit_at_open": row.exit_at_open, "sector": row.sector, "record": record,
+                "entry_c": t,
             }
         for symbol in [s for s, p in positions.items() if p["exit_c"] == t]:
             close_position(symbol)
-        value = sum(p["shares"] * closes[s][t] for s, p in positions.items())
+        value = sum(p["shares"] * closes[s][t] * np.exp(-config.haircut_per_day * (t - p["entry_c"]))
+                    for s, p in positions.items())
         equity[t] = cash + value
         invested[t] = value
         equity_prev = equity[t]
