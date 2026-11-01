@@ -4,7 +4,8 @@
     python -I research/defensive/cli.py run  --data-dir DATA --out OUT
 
 ``-I`` keeps the downloaded (untrusted) data directory and the current directory off
-``sys.path``; this package's own directory is added explicitly below. Nothing imports ``app``.
+``sys.path``; the repository root is added explicitly below so ``research.defensive`` imports.
+Nothing here imports ``app``.
 """
 
 from __future__ import annotations
@@ -13,9 +14,9 @@ import argparse
 import sys
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-if str(HERE) not in sys.path:
-    sys.path.insert(0, str(HERE))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -28,17 +29,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "data":
-        import data
+        from research.defensive import data
 
         data.download(args.data_dir)
         return 0
     if args.command == "check":
-        import checks
+        from research.defensive import checks
 
         checks.run(args.data_dir)
         return 0
     if args.command == "run":
-        import study
+        from research.defensive import study
 
         study.run(args.data_dir, args.out)
         return 0

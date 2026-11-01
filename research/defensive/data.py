@@ -50,7 +50,8 @@ def download(data_dir: Path) -> None:
         if symbol != YIELD_INDEX:
             raw = _fetch(symbol, auto_adjust=False)
             raw[["Open", "Close", "Adj Close"]].to_csv(data_dir / "raw" / f"{_name(symbol)}.csv")
-        print(f"{symbol}: {len(adjusted)} bars {adjusted.index[0].date()} .. {adjusted.index[-1].date()}")
+        first, last = adjusted.index[0].date(), adjusted.index[-1].date()
+        print(f"{symbol}: {len(adjusted)} bars {first} .. {last}")
 
 
 def _name(symbol: str) -> str:
@@ -58,14 +59,16 @@ def _name(symbol: str) -> str:
 
 
 def load_adjusted(data_dir: Path, symbol: str) -> pd.DataFrame:
-    frame = pd.read_csv(data_dir / "adjusted" / f"{_name(symbol)}.csv", index_col="date",
-                        parse_dates=["date"])
+    frame = pd.read_csv(
+        data_dir / "adjusted" / f"{_name(symbol)}.csv", index_col="date", parse_dates=["date"]
+    )
     return frame.astype(float)
 
 
 def load_raw(data_dir: Path, symbol: str) -> pd.DataFrame:
-    frame = pd.read_csv(data_dir / "raw" / f"{_name(symbol)}.csv", index_col="date",
-                        parse_dates=["date"])
+    frame = pd.read_csv(
+        data_dir / "raw" / f"{_name(symbol)}.csv", index_col="date", parse_dates=["date"]
+    )
     return frame.astype(float)
 
 
@@ -85,6 +88,8 @@ def cash_daily_returns(data_dir: Path, calendar: pd.DatetimeIndex) -> tuple[pd.S
     first_bil = bil.first_valid_index()
     use_bil = (calendar > first_bil) & bil_ret.notna().to_numpy()
     out = pd.Series(np.where(use_bil, bil_ret, irx_ret), index=calendar).fillna(0.0)
-    note = (f"^IRX (actual/360) through {first_bil.date()}, BIL adjusted close from the next "
-            f"trading day")
+    note = (
+        f"^IRX (actual/360) through {first_bil.date()}, BIL adjusted close from the next "
+        f"trading day"
+    )
     return out, note
