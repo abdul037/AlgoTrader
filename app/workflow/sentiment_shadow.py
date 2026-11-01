@@ -1,0 +1,257 @@
+"""Sentiment at each paper entry -- RECORD ONLY (operator-approved 2026-11-01).
+
+For every paper entry (paper ledger positions opened since ``BACKFILL_FROM``) it records, once:
+
+* **news**: Alpaca's news headlines about the stock from the ``NEWS_HOURS`` before the entry,
+  scored with a small finance word list (positive minus negative words, over both, per article;
+  the mean over articles that tag at most ``FOCUSED_MAX_SYMBOLS`` stocks, so market round-ups do
+  not count). Alpaca serves past news, so every entry is scored as of its own entry time, the
+  October entries included.
+* **eToro crowd**: the stock's eToro feed (``GET /api/v1/feeds/markets/{instrumentId}``): the
+  share of BUY among the users' ``trade_open`` items, and the posts' word-list mood, over the
+  ``CROWD_HOURS`` before the entry. The feed serves only its latest items (eToro documents no
+  date filter), so an entry gets a crowd reading only when recorded within
+  ``CROWD_MAX_LAG_MINUTES`` of opening; older entries record why there is none. eToro's guides
+  disagree on field names (``items``/``posts``, ``text``/``body``), so both are read and the
+  item keys seen are recorded.
+
+Nothing reads these records to decide anything: no proposal, order, approval, ranking or alert
+changes. Each record goes to ``runtime_state[RECORDS_KEY]`` (the newest ``MAX_RECORDS``) and to
+one ``sentiment_shadow_recorded`` run log. The eToro reads use the LIVE client but never open
+its rate-limit cooldown (``cooldown_on_rate_limit=False``: a 429 here must not blind the live
+backup stop), go through its shared request slot, and are at most ``CROWD_READS_PER_RUN`` a
+run. It runs in the phase-gate maintenance step (every 30 minutes); ``sentiment_shadow_enabled``
+off stops it.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from app.utils.time import utc_now
+
+RECORDS_KEY = "sentiment:entries"
+MAX_RECORDS = 400
+BACKFILL_FROM = "2026-10-01"
+NEWS_HOURS = 72
+CROWD_HOURS = 24
+CROWD_MAX_LAG_MINUTES = 60
+FOCUSED_MAX_SYMBOLS = 5
+NEWS_READS_PER_RUN = 8
+CROWD_READS_PER_RUN = 3
+FEED_TAKE = 100
+LABEL_EDGE = 0.15  # mean score at or beyond +/- this reads positive / negative
+
+POSITIVE = frozenset(
+    """beat beats beating surpass surpassed surpasses exceed exceeded exceeds record strong
+    stronger strongest growth grow grows growing gain gains gained rally rallies rallied surge
+    surges surged soar soars soared jump jumps jumped rise rises rising rose upgrade upgraded
+    upgrades outperform outperformed outperforms bullish buy optimistic optimism profit profits
+    profitable boost boosts boosted raise raises raised expand expands expansion win wins won
+    approval approved breakthrough partnership momentum rebound rebounds rebounded recover
+    recovers recovered recovery high highs positive accelerate accelerates accelerating""".split()
+)
+NEGATIVE = frozenset(
+    """miss misses missed missing fall falls fell falling drop drops dropped decline declines
+    declined declining slump slumps slumped plunge plunges plunged tumble tumbles tumbled sink
+    sinks sank slide slides slid loss losses lose loses losing weak weaker weakest downgrade
+    downgraded downgrades underperform underperformed underperforms bearish sell selloff
+    pessimistic cut cuts cutting lower lowers lowered warn warns warned warning lawsuit sued
+    probe investigation recall recalls layoff layoffs fraud fine fined delay delays delayed
+    concern concerns worry worries risk risks negative slowdown slowing halt halted crash
+    crashes crashed bankruptcy default lows""".split()
+)
+_WORD = re.compile(r"[a-z']+")
+
+
+def word_score(text: str) -> float | None:
+    """(positive - negative) / (positive + negative) words, or None when neither occurs."""
+
+    words = _WORD.findall(str(text or "").lower())
+    pos = sum(1 for w in words if w in POSITIVE)
+    neg = sum(1 for w in words if w in NEGATIVE)
+    return None if pos + neg == 0 else (pos - neg) / (pos + neg)
+
+
+def label(score: float | None) -> str:
+    if score is None:
+        return "no_signal"
+    return "positive" if score >= LABEL_EDGE else "negative" if score <= -LABEL_EDGE else "neutral"
+
+
+def _when(value: Any) -> datetime | None:
+    """An ISO time; one without a zone is read as UTC."""
+
+    try:
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+
+
+def news_reading(articles: list[dict[str, Any]], symbol: str) -> dict[str, Any]:
+    """The news record from Alpaca articles (already limited to the window before the entry)."""
+
+    focused = [a for a in articles if len(a.get("symbols") or []) <= FOCUSED_MAX_SYMBOLS]
+    scores = [s for a in focused if (s := word_score(f"{a.get('headline', '')} {a.get('summary', '')}")) is not None]
+    mean = sum(scores) / len(scores) if scores else None
+    return {
+        "articles": len(articles),
+        "focused": len(focused),
+        "scored": len(scores),
+        "score": None if mean is None else round(mean, 3),
+        "label": "no_news" if not focused else label(mean),
+        "headlines": [str(a.get("headline") or "")[:140] for a in focused[:3]],
+    }
+
+
+def crowd_reading(items: list[dict[str, Any]], opened_at: datetime) -> dict[str, Any]:
+    """The eToro crowd record from feed items: those in the ``CROWD_HOURS`` before the entry."""
+
+    since = opened_at - timedelta(hours=CROWD_HOURS)
+    window = [i for i in items if (t := _when(i.get("createdAt") or i.get("created_at"))) and since <= t <= opened_at]
+    opens = [i for i in window if str(i.get("type") or "").lower() == "trade_open"]
+    buys = sum(1 for i in opens if str(i.get("direction") or "").upper() == "BUY")
+    sells = sum(1 for i in opens if str(i.get("direction") or "").upper() == "SELL")
+    posts = [i for i in window if str(i.get("type") or "post").lower() in {"post", "comment"}]
+    scores = [s for i in posts if (s := word_score(i.get("text") or i.get("body") or "")) is not None]
+    mean = sum(scores) / len(scores) if scores else None
+    return {
+        "items_seen": len(items),
+        "in_window": len(window),
+        "trade_opens": len(opens),
+        "buys": buys,
+        "sells": sells,
+        "buy_pct": None if buys + sells == 0 else round(100.0 * buys / (buys + sells), 1),
+        "posts": len(posts),
+        "post_score": None if mean is None else round(mean, 3),
+        "post_label": label(mean),
+        "item_keys": sorted({k for i in items[:20] for k in i})[:30],
+    }
+
+
+def fetch_news(settings: Any, symbol: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
+    """Alpaca news about ``symbol`` published in [start, end] (newest first, at most 50)."""
+
+    import httpx
+
+    key, secret = str(settings.alpaca_api_key or ""), str(settings.alpaca_secret_key or "")
+    if not key or not secret:
+        raise RuntimeError("alpaca_keys_missing")
+    root = str(getattr(settings, "alpaca_data_url", "") or "https://data.alpaca.markets").rstrip("/")
+    with httpx.Client(timeout=10.0) as client:
+        response = client.get(
+            f"{root}/v1beta1/news",
+            headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret},
+            params={
+                "symbols": symbol,
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "limit": 50,
+                "sort": "desc",
+                "include_content": "false",
+            },
+        )
+        response.raise_for_status()
+        return list((response.json() or {}).get("news") or [])
+
+
+def fetch_feed(client: Any, symbol: str) -> list[dict[str, Any]]:
+    """The stock's latest eToro feed items. Never opens the live account's rate-limit cooldown."""
+
+    resolved = client._instrument_cache_by_symbol.get(symbol)
+    if resolved is None:
+        found = client._request(
+            "GET", "/market-data/search", params={"internalSymbolFull": symbol}, cooldown_on_rate_limit=False
+        )
+        exact = next(
+            (i for i in found.get("items", []) if str(i.get("internalSymbolFull", "")).upper() == symbol), None
+        )
+        if exact is None:
+            raise RuntimeError(f"instrument_not_found:{symbol}")
+        instrument_id = int(exact["internalInstrumentId"])
+    else:
+        instrument_id = int(resolved["instrument_id"])
+    payload = client._request(
+        "GET", f"/feeds/markets/{instrument_id}", params={"take": FEED_TAKE}, cooldown_on_rate_limit=False
+    )
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if items is None and isinstance(payload, dict):
+        items = payload.get("posts")
+    return [i for i in (items or []) if isinstance(i, dict)]
+
+
+def _records(runtime_state: Any) -> dict[str, Any]:
+    try:
+        stored = json.loads(runtime_state.get(RECORDS_KEY) or "{}")
+    except (TypeError, ValueError):
+        stored = {}
+    return stored if isinstance(stored, dict) else {}
+
+
+def refresh_sentiment_shadow(service: Any) -> dict[str, Any] | None:
+    """Record the entries not yet recorded (newest first, bounded per run); None when off,
+    nothing is due, or there is no paper ledger."""
+
+    settings = service.settings
+    if not bool(getattr(settings, "sentiment_shadow_enabled", True)):
+        return None
+    positions = getattr(getattr(service, "paper_trading", None), "positions", None)
+    if positions is None:
+        return None
+    records = _records(service.runtime_state)
+    entries = [
+        p for p in positions.list(limit=500)
+        if p.id not in records and str(p.opened_at) >= BACKFILL_FROM and str(p.side).lower() == "buy"
+    ]
+    if not entries:
+        return None
+    entries.sort(key=lambda p: str(p.opened_at), reverse=True)
+    mirror = getattr(getattr(getattr(service, "auto_trading", None), "execution", None), "etoro_live_mirror", None)
+    etoro = getattr(mirror, "client", None)
+    now, done, crowd_reads = utc_now(), [], 0
+    for position in entries[:NEWS_READS_PER_RUN]:
+        opened = _when(position.opened_at)
+        if opened is None:
+            continue
+        symbol = str(position.symbol).upper()
+        lag = (now - opened).total_seconds() / 60.0
+        wants_crowd = lag <= CROWD_MAX_LAG_MINUTES and etoro is not None
+        if wants_crowd and crowd_reads >= CROWD_READS_PER_RUN:
+            continue  # waits for the next run's crowd read, while still inside the window
+        record: dict[str, Any] = {
+            "position_id": position.id,
+            "proposal_id": position.proposal_id,
+            "symbol": symbol,
+            "strategy": position.strategy_name,
+            "timeframe": position.timeframe,
+            "paper_only": bool((position.payload or {}).get("paper_only")),
+            "opened_at": position.opened_at,
+            "recorded_at": now.isoformat(),
+        }
+        try:
+            articles = fetch_news(settings, symbol, opened - timedelta(hours=NEWS_HOURS), opened)
+            record["news"] = news_reading(articles, symbol)
+        except Exception as exc:  # noqa: BLE001 - record-only: one failed read is that record's note
+            record["news"] = {"error": str(exc)[:160]}
+        if lag > CROWD_MAX_LAG_MINUTES:
+            record["crowd"] = {"status": "not_available", "reason": "entry_older_than_feed_window"}
+        elif etoro is None:
+            record["crowd"] = {"status": "not_available", "reason": "no_etoro_client"}
+        else:
+            crowd_reads += 1
+            try:
+                record["crowd"] = crowd_reading(fetch_feed(etoro, symbol), opened)
+            except Exception as exc:  # noqa: BLE001 - a rate limit or format change: noted, not retried
+                record["crowd"] = {"status": "error", "reason": str(exc)[:160]}
+        records[position.id] = record
+        done.append(record)
+        service.run_logs.log("sentiment_shadow_recorded", record)
+    if not done:
+        return None
+    newest = sorted(records.items(), key=lambda kv: str(kv[1].get("opened_at")), reverse=True)
+    service.runtime_state.set(RECORDS_KEY, json.dumps(dict(newest[:MAX_RECORDS])))
+    return {"recorded": len(done)}
