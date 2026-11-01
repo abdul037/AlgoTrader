@@ -44,10 +44,10 @@ def parse_wikipedia_constituents(html: str) -> pd.DataFrame:
     if table is None:
         raise ValueError("constituents table not found")
     rows = table.find_all("tr")
-    header = [cell.get_text(strip=True) for cell in rows[0].find_all(["th", "td"])]
+    header = [" ".join(cell.get_text(" ", strip=True).split()) for cell in rows[0].find_all(["th", "td"])]
     records = []
     for row in rows[1:]:
-        cells = [cell.get_text(strip=True) for cell in row.find_all(["th", "td"])]
+        cells = [" ".join(cell.get_text(" ", strip=True).split()) for cell in row.find_all(["th", "td"])]
         if len(cells) == len(header):
             records.append(dict(zip(header, cells, strict=True)))
     frame = pd.DataFrame.from_records(records)
