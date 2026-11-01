@@ -357,7 +357,8 @@ def test_the_trading_path_never_mentions_short_research() -> None:
 def test_only_the_research_path_names_any_short_research_artefact() -> None:
     """All of app/, not a list of directories: a new reader of the short rows, the short engine
     or its cost legs anywhere (notifications, dashboard, workflow, main) must be added here on
-    purpose. main.py may hold only the one call after the long pass."""
+    purpose. The scheduled job may hold only the one call after the long pass (in main.py until
+    2026-11-01, then app/backtesting/gate_refresh.py)."""
 
     needles = ("short_research", "SHORT_OOS", "SHORT_NAME_SUFFIX", "walk_forward_oos_short", "short_entries=",
                ".short_entries", "refresh_short_verdicts", "pattern=SHORT", "short_holding_cost", "short_borrow_fee")
@@ -374,8 +375,9 @@ def test_only_the_research_path_names_any_short_research_artefact() -> None:
         lines = [line.strip() for line in text.splitlines() if any(n in line for n in needles)]
         if lines:
             hits[file.relative_to(APP.parent).as_posix()] = lines
-    main = hits.pop("app/main.py", None)
-    assert main == ["app.state.batch_backtest_service.run_short_research(runtime_state_repository)"]
+    assert hits.pop("app/main.py", None) is None
+    job = hits.pop("app/backtesting/gate_refresh.py", None)
+    assert job == ["batch.run_short_research(runtime_state)"]
     assert set(hits) <= allowed, sorted(set(hits) - allowed)
 
 

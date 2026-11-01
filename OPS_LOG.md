@@ -47,6 +47,28 @@ without explicit operator sign-off recorded here.
   11 daily strategies passed together on 10-03 and none by 10-27 (one long-only trend bet on the
   same 25 names, passing while the market rose); paper swing trades: 10, 4 wins, winners +$420
   after 10 days, losers -$343 after 24 days.
+- **Operator (11-01): "go" on the dip-in-uptrend study; A, B and C approved, with the condition
+  "I don't want to block any of the trades which might make money".**
+  - **Study** (research only, branch `claude/wip-pullback-study`, report due Wed 11-04): the
+    daily ema_trend_stack rules on today's S&P 500 members, 2010-2026, eToro-style costs, six
+    pre-registered variants (baseline; SPY above its 200-day average; VIX below 25; stop to entry
+    at +1R; exit on a close below the 20 EMA; at most 2 positions per sector), day-clustered
+    t-stats with a Holm correction, results by year and market condition, and against holding SPY.
+  - **A, daily backtests first** (`app/backtesting/gate_refresh.py`, moved out of `app/main.py`):
+    with daily and minute timeframes configured, passes run the daily timeframes alone on their
+    own cursor until every symbol is covered (then every 12 h), and the minute timeframes on the
+    original cursor the rest of the time. Before: each pass ran all timeframes symbol by symbol
+    (~2 symbols a pass) and only 10-16 of 25 symbols had fresh daily evidence a day.
+  - **B, not built as a stricter bar (the operator's condition).** Checked on the 10 eToro
+    copies since 10-05: winners and losers had about the same backtest edge at entry (losers
+    0.00..0.02 R; WMT 0.045, PYPL 0.038, COST 0.031, DIS 0.021, XOM 0.012). The +0.03 R bar in
+    force since 10-16 would have refused the three losers (and XOM +$50.69, DIS +$30 open) and kept
+    WMT, PYPL, COST and the momentum MSFT; any stricter bar (a confidence bound needs about +0.06..0.10 R on 250-450 trades) also refuses
+    WMT, PYPL and COST. So the bar stays at +0.03 R, and B became a measurement: the scorecard
+    lists every paper trade eToro did not copy, why, and how it ended on paper.
+  - **C, SPY comparison** (`app/workflow/benchmark.py`): the phase-gate step stores SPY's daily
+    closes from 2026-06-01 every 6 h (`benchmark:spy_daily`, display only); the scorecard shows
+    the paper account since 06-11 and AlgoBot since 10-04 against holding SPY.
 
 ## 2026-10-26 (Mon) — eToro equal-risk sizing, three copies a day, option B scan fix
 

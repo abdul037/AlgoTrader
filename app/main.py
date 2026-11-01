@@ -615,39 +615,12 @@ def create_app(
             and app.state.batch_backtest_service is not None
         ):
             def _refresh_backtest_gate() -> None:
-                # A full-universe walk-forward pass overruns the scheduler's hard
-                # job cap and was killed every cycle. Bound each run to a soft
-                # deadline and rotate a persisted cursor so successive runs sweep
-                # the whole universe instead of only its leading symbols.
-                from app.universe import resolve_universe
+                # Bounded, cursor-rotated passes, daily timeframes first (app/backtesting/gate_refresh.py).
+                from app.backtesting.gate_refresh import refresh_backtest_gate
 
-                limit = app_settings.backtest_scheduler_symbol_limit or None
-                universe_size = len(resolve_universe(app_settings, limit=limit))
-                cursor_key = "backtest_gate_refresh:cursor"
-                unit_key = "backtest_gate_refresh:unit"
-                try:
-                    cursor = int(runtime_state_repository.get(cursor_key) or "0")
-                    unit = int(runtime_state_repository.get(unit_key) or "0")
-                except (TypeError, ValueError):
-                    cursor, unit = 0, 0
-                summary = app.state.batch_backtest_service.run(
-                    timeframes=list(app_settings.backtest_scheduler_timeframes) or ["1d"],
-                    limit=limit,
-                    walk_forward=True,
-                    deadline_seconds=max(float(app_settings.backtest_scheduler_deadline_seconds), 1.0),
-                    start_offset=cursor,
-                    start_unit=unit,
+                refresh_backtest_gate(
+                    app.state.batch_backtest_service, app_settings, runtime_state_repository
                 )
-                covered = int(getattr(summary, "symbols_evaluated", 0) or 0)
-                mid_symbol = bool(getattr(summary, "stopped_mid_symbol", False))
-                resume = int(getattr(summary, "resume_unit", 0) or 0) if mid_symbol else 0
-                if universe_size > 0:
-                    # Stopped mid-symbol: stay on it and resume at that strategy.
-                    advance = covered - 1 if mid_symbol else max(covered, 1)
-                    next_cursor = (cursor + advance) % universe_size
-                    runtime_state_repository.set(cursor_key, str(next_cursor))
-                    runtime_state_repository.set(unit_key, str(resume))
-                app.state.batch_backtest_service.run_short_research(runtime_state_repository)
 
             jobs.append(
                 ScheduledJob(

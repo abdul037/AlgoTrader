@@ -796,6 +796,7 @@ def refresh_phase_gates(service: Any, completed: list[str], errors: list[str]) -
     from app.broker.etoro_live_test_order import run_from_maintenance
     from app.performance.go_live_readiness import refresh_readiness
     from app.performance.strategy_evidence import refresh_verdicts
+    from app.workflow.benchmark import refresh_benchmark
     from app.workflow.earnings_calendar import refresh_earnings_cache, warm_memory
     from app.workflow.shadow_ledger import refresh_shadow_ledger, refresh_short_shadow_ledger
 
@@ -815,6 +816,7 @@ def refresh_phase_gates(service: Any, completed: list[str], errors: list[str]) -
         ("premarket_shadow_ledger", lambda: refresh_shadow_ledger(service) is not None),
         ("premarket_short_shadow_ledger", lambda: refresh_short_shadow_ledger(service) is not None),
         ("event_risk_earnings_refresh", lambda: refresh_earnings_cache(service) is not None),
+        ("benchmark_refresh", lambda: refresh_benchmark(service) is not None),  # SPY, display only
     ):
         try:
             if step():
