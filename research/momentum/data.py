@@ -36,6 +36,12 @@ BREAK_FACTOR_JUMP = 0.15
 """A day on which yfinance's dividend-adjustment factor (adjusted close / split-adjusted close)
 moves by more than 15% is a large corporate action (spin-off, special dividend) that yfinance
 adjusts unreliably (DHR 2016-07-05 shows a fake +61% day)."""
+EXTRA_BREAKS = {"HWM": ["2020-04-01"]}
+"""Breaks the factor test misses. Arconic Inc. became Howmet and spun off Arconic Corp. on
+2020-04-01; yfinance folds that into its split column, so the factor does not move, and the
+day's open (15.40, also its high, against a 12.32 prior close and a 13.20 close) is a
+when-issued print. Added after the pre-registration commit from a results-blind check of opens
+on month-boundary trade days, before any variant was compared with a control."""
 
 
 def download_extra(extra_dir: Path, symbols: list[str] = CASH_SYMBOLS, start: str = "2009-06-01") -> dict[str, int]:
@@ -102,7 +108,8 @@ def clean_symbol(price_dir: Path, symbol: str) -> tuple[pd.DataFrame, list[pd.Ti
         factor = merged["close"] / merged["Close"]
         jump = (factor / factor.shift(1) - 1.0).abs()
         breaks = [pd.Timestamp(ts) for ts in merged.loc[jump > BREAK_FACTOR_JUMP, "timestamp"]]
-    return frame, breaks
+    breaks += [pd.Timestamp(day) for day in EXTRA_BREAKS.get(symbol, [])]
+    return frame, sorted(breaks)
 
 
 class Panel:
