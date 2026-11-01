@@ -371,12 +371,14 @@ class EtoroLiveMirrorService:
         runtime_state: Any,
         run_logs: Any,
         notifier: Any | None = None,
+        paper_trades: Any | None = None,
     ):
         self.settings = settings
         self.client = client
         self.state = runtime_state
         self.logs = run_logs
         self.notifier = notifier
+        self.paper_trades = paper_trades  # the paper ledger: no ledger, no copy (paper record)
         # One lock for every live-eToro state change: entries (execution thread), reconcile
         # (scheduler) and the guard thread's test order / backup stops.
         self.lock = threading.RLock()
@@ -384,8 +386,10 @@ class EtoroLiveMirrorService:
     # -- gates -----------------------------------------------------------------
     def blockers(self, proposal: Any, primary_broker: str) -> list[str]:
         from app.automation.service import LIVE_OPERATOR_ACKNOWLEDGEMENT
+        from app.broker.etoro_live_paper_record import paper_record_blocker, read_paper_records
         from app.performance.strategy_evidence import (
             EDGE_BELOW_BAR,
+            STRATEGY_RETIRED,
             VERDICTS_KEY,
             evidence_blocker,
             passing_hours,
@@ -460,14 +464,18 @@ class EtoroLiveMirrorService:
                 timeframe=str(timeframe),
                 min_expectancy_r=MIRROR_MIN_EXPECTANCY_R,
             ):
-                reasons.append(
-                    evidence if evidence == EDGE_BELOW_BAR else "strategy_lacks_oos_evidence"
-                )
+                kept = evidence in {EDGE_BELOW_BAR, STRATEGY_RETIRED}
+                reasons.append(evidence if kept else "strategy_lacks_oos_evidence")
             hours = passing_hours(
                 cached, strategy=str(order.strategy_name or ""), timeframe=str(timeframe)
             )
             if streak := evidence_streak_blocker(hours):
                 reasons.append(streak)
+        # Operator 2026-11-01: only a strategy paper has shown making money on this timeframe
+        # (3+ closed trades, positive total; app/broker/etoro_live_paper_record.py).
+        records = read_paper_records(self.paper_trades)
+        if record := paper_record_blocker(records, order.strategy_name, timeframe):
+            reasons.append(record)
         # Rules 1, 2 and 4 read the scan's metadata (the order's own wins over the signal's).
         copy_inputs = {**metadata, **(getattr(order, "metadata", None) or {})}
         for blocker in (planner_blocker(copy_inputs), backtest_check_blocker(copy_inputs)):

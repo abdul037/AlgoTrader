@@ -343,6 +343,7 @@ def refresh_short_verdicts(db: Any, settings: Any, runtime_state: Any) -> dict[s
 
 
 EDGE_BELOW_BAR = "strategy_edge_below_bar"
+STRATEGY_RETIRED = "strategy_retired"  # app.strategies.RETIRED_STRATEGY_NAMES (operator)
 
 
 def evidence_blocker(
@@ -365,8 +366,15 @@ def evidence_blocker(
     2026-10-20). ``paper`` also admits a verdict whose ``PAPER_OOS_PASSED_FIELD`` is set while
     ``paper_oos_bar_enabled`` is on (``paper_oos_only``; a verdict without it fails). Every
     other caller, the eToro ones included, reads ``passed`` alone.
+
+    A retired strategy is refused (``STRATEGY_RETIRED``) whatever its evidence, and whether or
+    not evidence is required: retiring is the operator's decision, not the backtests'.
     """
 
+    from app.strategies import is_retired
+
+    if is_retired(strategy):
+        return STRATEGY_RETIRED
     if not bool(getattr(settings, "require_strategy_oos_evidence", False)) or runtime_state is None:
         return None
     try:

@@ -37,7 +37,7 @@ from app.broker.etoro_live_mirror import (
 from app.broker.etoro_live_room import ROOM_REASONS, open_exposure_usd, room_verdict
 from app.broker.etoro_live_scorecard import SCORECARD_KEY
 from app.utils.time import utc_now
-from tests.test_etoro_live_mirror import _Client, _Logs, _proposal, _run, _state
+from tests.test_etoro_live_mirror import _Client, _Logs, _PaperLedger, _proposal, _run, _state
 from tests.test_etoro_live_mirror import _mirror as _base_mirror
 
 EQUITY = 9_770.0  # the real AlgoBot account, 2026-10-26
@@ -401,7 +401,12 @@ def test_parity_with_d2c7faf_on_seeded_orders(tmp_path) -> None:
         if halted:
             state.set(HALTED_KEY, json.dumps({"reason": "test"}))
         new = live.EtoroLiveMirrorService(
-            settings=settings, client=_Client(), runtime_state=state, run_logs=_Logs()
+            settings=settings,
+            client=_Client(),
+            runtime_state=state,
+            run_logs=_Logs(),
+            # The 2026-11-01 paper record passes, so it is not part of the comparison.
+            paper_trades=_PaperLedger((proposal.order.strategy_name,)),
         )
         old = old_mirror.EtoroLiveMirrorService(  # its own default share: 10% of equity
             settings=settings.model_copy(update={"etoro_live_trade_pct_of_equity": 10.0}),

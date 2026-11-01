@@ -22,8 +22,9 @@ the live screener's scores, eToro's room and every risk gate still decide.
 ``etoro_copy_rules_ok`` is a hint for the live eToro copy (never part of ``tradeable`` or the
 ranking): the copy's rules whose inputs exist here -- edge >= +0.03 R, stop <= 8%, evidence
 passing >= 24 h unbroken (``evidence_passing_hours``) and no chased move on the completed bars
-(``return_20d_pct``, ``rsi_14``, ``new_high_252_recent``). The planner and per-signal backtest
-rules are only known when the live scan builds the signal.
+(``return_20d_pct``, ``rsi_14``, ``new_high_252_recent``) and, from 2026-11-01, paper's record of
+the strategy (app/broker/etoro_live_paper_record.py). The planner and per-signal backtest rules
+are only known when the live scan builds the signal.
 
 It is resumable: a scan stopped by its deadline saves a cursor and the bucket stays due. A
 feed outage pauses it and the next tick retries: an eToro rate-limit cooldown, or symbols in
@@ -511,7 +512,8 @@ def _item(
         "new_high_252_recent": extension.get("new_high_252_recent"),
         "evidence_passing_hours": None if streak_hours is None else round(streak_hours, 2),
         # The live copy's own per-trade rules whose inputs exist here: edge >= +0.03 R and
-        # stop <= 8% (2026-10-16), evidence passing >= 24 h unbroken and no chase (2026-10-18).
+        # stop <= 8% (2026-10-16), evidence passing >= 24 h unbroken and no chase (2026-10-18),
+        # and paper's record of the strategy (3+ closed trades, positive total; 2026-11-01).
         # The planner and per-signal backtest rules are decided by the live scan at the open.
         "etoro_copy_rules_ok": bool(
             context["copy_edge_ok"](str(spec.name))
@@ -608,6 +610,7 @@ def _prefetch(service: Any) -> dict[str, Any]:
         STATE_KEY,
         _StrictEvidence,
     )
+    from app.broker.etoro_live_paper_record import paper_record_blocker, read_paper_records
     from app.broker.etoro_live_room import bucket_blockers, effective_open_symbols
     from app.models.approval import ApprovalStatus
     from app.performance.strategy_evidence import VERDICTS_KEY, evidence_blocker, passing_hours
@@ -633,7 +636,9 @@ def _prefetch(service: Any) -> dict[str, Any]:
     def evidence_ok(strategy: str) -> bool:  # the live gate itself, on the one cached read
         return evidence_blocker(strict, one_key, strategy=strategy, timeframe="1d") is None
 
-    def copy_edge_ok(strategy: str) -> bool:  # the eToro copy's higher bar
+    records = read_paper_records(getattr(getattr(service, "paper_trading", None), "trades", None))
+
+    def copy_edge_ok(strategy: str) -> bool:  # the eToro copy's higher bar and paper record
         return (
             evidence_blocker(
                 strict,
@@ -643,6 +648,7 @@ def _prefetch(service: Any) -> dict[str, Any]:
                 min_expectancy_r=MIRROR_MIN_EXPECTANCY_R,
             )
             is None
+            and paper_record_blocker(records, strategy, "1d") is None
         )
 
     reconciliation = getattr(service, "reconciliation", None)

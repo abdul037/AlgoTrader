@@ -461,6 +461,7 @@ def create_app(
         runtime_state=runtime_state_repository,
         run_logs=run_log_repository,
         notifier=app.state.telegram_notifier,
+        paper_trades=paper_trade_repository,
     )
     from app.broker.etoro_live_guard import attach_live_guard
 

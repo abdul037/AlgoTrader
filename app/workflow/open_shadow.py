@@ -210,6 +210,7 @@ def _start(service: Any, session_date: str) -> dict[str, Any]:
     """A new record from today's watchlist, or a final one when the watchlist fails closed."""
 
     from app.broker.etoro_live_mirror import HALTED_KEY, STATE_KEY
+    from app.broker.etoro_live_paper_record import read_paper_records
     from app.broker.etoro_live_scorecard import SCORECARD_KEY
     from app.performance.strategy_evidence import VERDICTS_KEY
     from app.workflow import premarket_deep_scan as deep
@@ -238,7 +239,10 @@ def _start(service: Any, session_date: str) -> dict[str, Any]:
     record["watchlist_status"] = watchlist.get("status")
     record["watchlist_computed_at"] = watchlist.get("computed_at")
     record["etoro"] = _etoro_snapshot(service.settings, values, session_date)
-    record["candidates"] = _candidates(service.settings, watchlist["signals"], values)
+    ledger = getattr(getattr(service, "paper_trading", None), "trades", None)
+    record["candidates"] = _candidates(
+        service.settings, watchlist["signals"], values, read_paper_records(ledger)
+    )
     return record
 
 
@@ -277,8 +281,11 @@ def _resumable(record: dict[str, Any], session_date: str) -> bool:
     )
 
 
-def _candidates(settings: Any, signals: list, values: dict[str, Any]) -> list[dict[str, Any]]:
-    """The top setups an entry at the open could take, with their evidence decided now."""
+def _candidates(
+    settings: Any, signals: list, values: dict[str, Any], records: Any = None
+) -> list[dict[str, Any]]:
+    """The top setups an entry at the open could take, with their evidence decided now.
+    ``records``: paper's record per strategy (None, unread, refuses every copy)."""
 
     from app.broker.etoro_live_mirror import (
         HARD_MAX_STOP_DISTANCE_PCT,
@@ -288,6 +295,7 @@ def _candidates(settings: Any, signals: list, values: dict[str, Any]) -> list[di
         extension_blockers,
         stop_distance_pct,
     )
+    from app.broker.etoro_live_paper_record import paper_record_blocker
     from app.performance.strategy_evidence import VERDICTS_KEY, evidence_blocker, passing_hours
     from app.workflow.premarket_deep_scan import _OneKey
 
@@ -324,6 +332,8 @@ def _candidates(settings: Any, signals: list, values: dict[str, Any]) -> list[di
         )
         extension = {"timeframe": "1d", **{k: item.get(k) for k in _EXTENSION_FIELDS}}
         rules = ([streak] if streak else []) + extension_blockers(extension, "1d")
+        if record := paper_record_blocker(records, strategy, "1d"):  # operator 2026-11-01
+            rules.append(record)
         stop_pct = stop_distance_pct(entry, stop)
         verdict = verdicts.get(f"{strategy}:1d")
         picked.append(

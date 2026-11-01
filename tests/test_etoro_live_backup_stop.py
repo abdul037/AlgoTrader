@@ -18,6 +18,7 @@ from app.broker.etoro_live_mirror import HALTED_KEY, EtoroLiveMirrorService
 from app.broker.etoro_live_test_order import REQUEST_KEY, EtoroLiveTestOrder
 from app.utils.time import utc_now
 from tests.conftest import make_settings
+from tests.test_etoro_live_mirror import _PaperLedger
 from tests.test_etoro_live_test_order import _bars
 
 
@@ -93,6 +94,7 @@ def _mirror(tmp_path, client, state=None):
         client=client,
         runtime_state=state if state is not None else _State(),
         run_logs=logs,
+        paper_trades=_PaperLedger(),
     ), logs
 
 

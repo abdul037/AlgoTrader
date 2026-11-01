@@ -154,13 +154,33 @@ def _proposal(
     return SimpleNamespace(id=f"prop_{symbol}", order=order, signal=signal)
 
 
-def _mirror(tmp_path, client=None, state=None, **overrides):
+class _PaperLedger:
+    """The paper ledger: three closed winners per strategy these tests copy (eToro copies only
+    a strategy paper has shown making money, operator 2026-11-01)."""
+
+    def __init__(
+        self, names=("momentum_breakout", "vwap_reclaim"), pnl=100.0, payload=None, timeframe="1d"
+    ):
+        self.trades = [
+            SimpleNamespace(
+                strategy_name=name, timeframe=timeframe, realized_pnl_usd=pnl, payload=payload or {}
+            )
+            for name in names
+            for _ in range(3)
+        ]
+
+    def list(self, *, limit=500):
+        return self.trades[:limit]
+
+
+def _mirror(tmp_path, client=None, state=None, paper_trades=None, **overrides):
     logs = _Logs()
     service = EtoroLiveMirrorService(
         settings=_settings(tmp_path, **overrides),
         client=client if client is not None else _Client(),
         runtime_state=state if state is not None else _state(),
         run_logs=logs,
+        paper_trades=_PaperLedger() if paper_trades is None else paper_trades,
     )
     return service, logs
 

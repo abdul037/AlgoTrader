@@ -12,6 +12,39 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-11-01 (Sun) — rotation strategy retired; eToro copies need a paper record
+
+- **Trading 10-27..30:** paper closed AMZN -$501.02 (ema_trend_stack), NVDA -$511.61 and SPY
+  -$140.07 (both etf_mega_cap_relative_strength_rotation); eToro closed SPY -$13.97 (-1.0 R).
+  Paper equity $100,760.88 (+0.8% since 06-11; -$1,266 from the 10-21 high). AlgoBot
+  $9,753.54 at cost (cash + invested; ~$9,911 at eToro's marks with the 4 open copies +$158).
+- **Operator's $500 copy (screenshot, 11-01):** closed -$10.50, fees -$1.20, open +$7.83, value
+  $496.13 (-$3.87). The copy's fees are $1.20 in all, not $1 per trade: the open item on stock
+  copy fees is closed.
+- **Found:** the rotation strategy made 0 of 4 paper trades (-$1,556.90) and all three of
+  eToro's losing copies (AMD, META, SPY: -$280.25); its first copy (10-05) came ten days before
+  its first closed paper trade. Every other October paper trade: 8 trades, 6 wins, +$1,488.10.
+- **Operator decisions (11-01):** (1) retire etf_mega_cap_relative_strength_rotation; (2) eToro
+  copies a strategy only after 3+ closed paper trades with a positive total. Declined: halving
+  the risk per copy to 0.25%.
+  - (1) `app.strategies.RETIRED_STRATEGY_NAMES`: never in a scan, a backtest or the live-signal
+    names (`get_strategy_specs`), and `evidence_blocker` refuses it (`strategy_retired`, kept as
+    such in the eToro log) whatever its evidence. The class stays registered for stored trades.
+    Paper's open CRM and COST keep their broker stops and targets.
+  - (2) `app/broker/etoro_live_paper_record.py`: `etoro_live_paper_record_too_few` /
+    `_not_positive` / `_unknown` (no ledger, unreadable, or a non-finite P&L); none is a room
+    reason, so paper's own entry still goes ahead and builds the record. Paper-only trades do
+    not count. **Refinement, told to the operator:** the record is per strategy AND timeframe
+    (the evidence key), not pooled by name: pooled, September's 15-minute trades would have
+    qualified ema_trend_stack's daily entries, which are net -$61.87 on 2 trades. On today's
+    ledger only momentum_breakout:1d qualifies (3 trades, +$730.19). The pre-market deep scan
+    and open-shadow copy hints apply it too.
+- **Diagnosis given to the operator:** no daily strategy has an edge distinguishable from zero
+  (today -0.17 R .. +0.07 R per trade on 250-460 OOS trades; one standard error is ~0.07 R);
+  11 daily strategies passed together on 10-03 and none by 10-27 (one long-only trend bet on the
+  same 25 names, passing while the market rose); paper swing trades: 10, 4 wins, winners +$420
+  after 10 days, losers -$343 after 24 days.
+
 ## 2026-10-26 (Mon) — eToro equal-risk sizing, three copies a day, option B scan fix
 
 - **Option B made no entry on 10-23:** its second, paper-only scan was skipped in all 48 swing
@@ -1386,9 +1419,7 @@ Convened locally over the 31 unreviewed commits (`0a12efe..2575a1b`) plus the we
 
 - Evidence bar level: paper keeps `STRATEGY_EVIDENCE_MIN_EXPECTANCY_R` at 0; the eToro copy
   needs +0.03 R in code since 2026-10-16 (operator decision).
-- Stock copy fees: AlgoBot pays $1 per stock trade each way (0.1% of a $1,000 position). If the
-  operator's $500 copy pays the same flat $1 on its ~$50 copied positions, that is ~2% each way:
-  operator to check one closed copied trade (e.g. COST 10-14) in the eToro app.
+- ~~Stock copy fees~~ closed 2026-11-01: the operator's copy shows $1.20 of fees in all.
 - Branch `claude/repo-audit-962zde` is ~95 commits ahead of `main` and conflicts with
   it (main last updated by #31); needs a PR + conflict merge when the operator wants
   main current. Railway deploys from the branch, so production is unaffected.

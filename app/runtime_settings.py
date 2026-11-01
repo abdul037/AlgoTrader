@@ -563,7 +563,6 @@ class AppSettings(BaseSettings):
             "momentum_breakout",
             "ema_trend_stack",
             "regime_filtered_mean_reversion",
-            "etf_mega_cap_relative_strength_rotation",
         ]
     )
     auto_execution_min_score: float = 65.0

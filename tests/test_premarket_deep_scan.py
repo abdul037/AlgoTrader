@@ -19,15 +19,16 @@ import app.workflow.premarket_deep_scan as deep
 from app.backtesting.strategy_selection import strategy_specs_for
 from app.broker.etoro_rate_limit import EToroRateLimitError
 from app.performance.strategy_evidence import VERDICTS_KEY
-from app.strategies import get_strategy
+from app.strategies import STRATEGY_REGISTRY, get_strategy
 from tests.conftest import make_settings
+from tests.test_etoro_live_mirror import _PaperLedger
 from tests.test_workflow_service import FakeLogs, FakeState
 
 NY = ZoneInfo("America/New_York")
 MONDAY_0835_NY = datetime(2026, 10, 12, 12, 35, tzinfo=UTC)  # 08:35 EDT
 SYMBOLS = [f"S{i:02d}" for i in range(25)]
 STATE_KEY = "workflow:last_premarket_scan_at"
-DAILY_SPECS = 19  # every daily strategy except pairs_stat_arb
+DAILY_SPECS = 18  # every daily strategy except pairs_stat_arb (one retired 2026-11-01)
 
 
 def _completed(seed: int, n: int = 400, *, stamp: str = "04:00") -> pd.DataFrame:
@@ -211,6 +212,7 @@ def _service(
         market_data=market or _MarketData(),
         runtime_state=state,
         run_logs=FakeLogs(),
+        paper_trading=SimpleNamespace(trades=_PaperLedger(tuple(STRATEGY_REGISTRY))),
         proposal_service=None,
         reconciliation=None,
         notifier=_Notifier(),

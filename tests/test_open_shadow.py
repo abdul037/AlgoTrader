@@ -24,6 +24,7 @@ from app.broker.etoro_rate_limit import EToroRateLimitError
 from app.live_signal_schema import MarketQuote
 from app.performance.strategy_evidence import VERDICTS_KEY
 from tests.conftest import make_settings
+from tests.test_etoro_live_mirror import _PaperLedger
 from tests.test_premarket_deep_scan import CALM, _Boom, _frame
 from tests.test_workflow_service import FakeLogs, FakeState
 
@@ -212,6 +213,7 @@ def _env(
         market_data=_Market(env),
         runtime_state=state,
         run_logs=FakeLogs(),
+        paper_trading=SimpleNamespace(trades=_PaperLedger(tuple(env.strategies))),
         proposal_service=None,
         reconciliation=None,
     )

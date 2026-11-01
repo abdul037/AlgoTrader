@@ -129,6 +129,22 @@ ENHANCED_RESEARCH_STRATEGY_NAMES = frozenset(
     }
 )
 
+# Retired by the operator: never scanned, backtested or traded again. The classes stay registered
+# so stored trades, positions and reports still resolve the names (get_strategy).
+RETIRED_STRATEGY_NAMES = frozenset(
+    {
+        # 2026-11-01: 0 of 4 paper trades (-$1,557) and all three losing eToro copies (-$280).
+        "etf_mega_cap_relative_strength_rotation",
+    }
+)
+
+
+def is_retired(name: object) -> bool:
+    """True for a retired strategy name (any case or padding)."""
+
+    return str(name or "").strip().lower() in RETIRED_STRATEGY_NAMES
+
+
 CORE_METADATA = {
     "pack": "core_scanner",
     "asset_class": "us_equity",
@@ -251,9 +267,9 @@ def get_strategy_specs(
     timeframe: str | None = None,
     styles: list[str] | None = None,
 ) -> list[StrategySpec]:
-    """Return strategy specs filtered by timeframe and optional style."""
+    """Return strategy specs filtered by timeframe and optional style; never a retired one."""
 
-    specs = STRATEGY_SPECS
+    specs = [spec for spec in STRATEGY_SPECS if not is_retired(spec.name)]
     if timeframe is not None:
         normalized_timeframe = timeframe.strip().lower()
         specs = [spec for spec in specs if spec.timeframe == normalized_timeframe]
@@ -285,6 +301,7 @@ __all__ = [
     "MultiTimeframeTrendPullbackStrategy",
     "OpeningRangeBreakoutRetestStrategy",
     "PullbackTrendStrategy",
+    "RETIRED_STRATEGY_NAMES",
     "RSIReversalStrategy",
     "RSITrendContinuationStrategy",
     "RSIVWAPEMAConfluenceStrategy",
@@ -298,4 +315,5 @@ __all__ = [
     "VWAPReclaimStrategy",
     "get_strategy",
     "get_strategy_specs",
+    "is_retired",
 ]
