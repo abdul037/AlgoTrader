@@ -69,6 +69,36 @@ without explicit operator sign-off recorded here.
   - **C, SPY comparison** (`app/workflow/benchmark.py`): the phase-gate step stores SPY's daily
     closes from 2026-06-01 every 6 h (`benchmark:spy_daily`, display only); the scorecard shows
     the paper account since 06-11 and AlgoBot since 10-04 against holding SPY.
+  - **A and C deployed** Sun 07:50 UTC (`6089c04`; 1,800 tests pass): boot 07:54:38 UTC, no error
+    events; the first daily-only backtest pass covered 7 symbols; SPY closes stored 08:06 UTC
+    (107 days). SPY 06-11 -> 10-30: +2.45% (paper +0.76%); 10-02 -> 10-30: -1.81% (AlgoBot about
+    -0.9% with its open copies at eToro's marks).
+  - **Scorecard v8-v9** (artifact GHdfkyLvv8ZQqGWfvoV5f9): "Can eToro copy it?", trades eToro
+    skipped and their paper result (6 since 10-07, -$403 on paper), sentiment at entry, versus
+    holding SPY.
+- **Operator (11-01): market sentiment matters; "yes, build the news sentiment recording"; "can
+  you fetch it from eToro data?"; "self approve for all requests" (taken as: no asks for
+  research, record-only features, scorecard work, fixes and off-hours deploys; real-money and
+  risk-limit changes still get a yes).**
+  - Study scope (before any result): three more market filters, V7 VIX below VIX3M, V8 breadth
+    (half the universe above its 50-day average), V9 HYG/IEF above its 50-day average.
+  - **Sentiment recording** (`app/workflow/sentiment_shadow.py`, record only, phase-gate step):
+    per paper entry since 10-01, Alpaca news from the 72 h before the entry (word-list score,
+    stock-specific articles only; past news, so October is filled in), and for entries recorded
+    within 60 minutes of opening the eToro feed (`/api/v1/feeds/markets/{instrumentId}`): BUY share
+    of users' `trade_open` items and posts' word mood over the 24 h before. eToro documents no
+    date filter for the feed, so older entries have no crowd reading. eToro reads never open the
+    live cooldown (`cooldown_on_rate_limit=False`), at most 3 a run. `sentiment_shadow_enabled`.
+- **Study result (`claude/wip-pullback-study` @ `4de59ad`, `docs/research/pullback_study.md`): no
+  timing edge.** On today's S&P 500 members 2011-2026 the bot's ema_trend_stack rules earn +0.285 R
+  a trade after costs (22,038 trades), but random entries in the same stock and year with the same
+  bracket earn +0.317 R (V1 minus control -0.031 R); today's members beat the equal-weight index by
+  5.9 points a year, and a rough survivorship correction halves V1 (Sharpe 0.84 -> 0.49; SPY 0.85).
+  Only V6 (2 open per sector) passes the pre-registered rule, by a Sharpe margin inside the noise
+  that fails after the correction. **All five market filters remove trades that earned more than
+  the ones they keep** (removed +0.32..+0.64 R, kept +0.24..+0.27 R): none should be added. The
+  break-even stop (V4) and the 20-EMA exit (V5) were worse. On the live 24 names over two years:
+  +0.009 R (179 trades). The sample has no long bear market.
 
 ## 2026-10-26 (Mon) — eToro equal-risk sizing, three copies a day, option B scan fix
 
