@@ -29,8 +29,10 @@ SHORT_SPECS = ("momentum_breakout", "mean_reversion")  # stubbed to emit shorts 
 # its state, run logs and fetches; both at bc82efd. The deep-scan digest moved on 2026-10-18 only
 # because each item gained the eToro copy-rule hint fields (COPY_HINT_FIELDS); with those removed
 # and the two new hint checks neutral it is still the bc82efd digest (test below).
-GOLDEN_DEEP_SCAN = "10bc066c2cc7db978e6068c559e743cf59ccd75979ffc87c9c73b67e25c32f45"
-GOLDEN_DEEP_SCAN_BC82EFD = "4a5bfca0d670c02b35f352a07eaa19fb9d327a197670039dbc012091330b6299"
+# 2026-11-01: re-recorded without the retired etf_mega_cap_relative_strength_rotation spec; with
+# the retirement switched off both digests were the old ones (10bc066c..., 4a5bfca0...).
+GOLDEN_DEEP_SCAN = "d4f46ada65019e5a4119ea8d49d6936c443fab85f37181f72f120a2069b31697"
+GOLDEN_DEEP_SCAN_BC82EFD = "f19bc192373a7dd23a5ad2d057400fd9a010d56704df3e569eb92bab3ff53eb5"
 COPY_HINT_FIELDS = ("return_20d_pct", "rsi_14", "new_high_252_recent", "evidence_passing_hours")
 GOLDEN_LEDGER = "7ae57206a5aebc98367dfddee84d3f6d96e2e02c7bd190d27dcc272f9e36d893"
 GOLDEN_REPORT = "f0907d76c01480637e5a5c3251ab818e1f3ac1dcb8aac399165feabf153bac87"

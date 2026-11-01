@@ -259,9 +259,9 @@ def test_scheduled_all_mode_reaches_core_and_enhanced_strategy_specs(tmp_path) -
     end_of_day = len(_strategy_specs(settings, timeframe="1w"))
 
     assert intraday == 32
-    assert swing == 38
+    assert swing == 37  # 38 until the rotation strategy's 1d spec was retired (2026-11-01)
     assert end_of_day == 6
-    assert intraday + swing + end_of_day == 76
+    assert intraday + swing + end_of_day == 75
 
 
 def test_paper_exploration_profile_applies_only_to_effective_screener_settings(tmp_path) -> None:
