@@ -64,3 +64,34 @@ def correlation_bucket_for_symbol(symbol: str) -> str:
     if override:
         return override
     return _CORRELATION_BUCKET_BY_SECTOR_ETF.get(sector_for_symbol(symbol), UNKNOWN_BUCKET)
+
+
+# The standard (GICS) sectors, for the open-positions-per-sector cap (operator 2026-11-01; the
+# pullback study's V6 capped open positions per GICS sector). The sector-ETF map is finer (chips,
+# software and cybersecurity apart from XLK), so its proxies are folded back into GICS sectors.
+_GICS_BY_SECTOR_ETF: dict[str, str] = {
+    "XLK": "information_technology",
+    "SMH": "information_technology",
+    "IGV": "information_technology",
+    "HACK": "information_technology",
+    "IWF": "information_technology",  # PLTR, the only name on the growth proxy
+    "XLC": "communication_services",
+    "XLY": "consumer_discretionary",
+    "XLP": "consumer_staples",
+    "XLF": "financials",
+    "XLV": "health_care",
+    "XLE": "energy",
+    "XLI": "industrials",
+    "XLB": "materials",
+}
+_GICS_OVERRIDES: dict[str, str] = {
+    "CSCO": "information_technology",
+    "PYPL": "financials",
+}
+
+
+def gics_sector_for_symbol(symbol: str) -> str:
+    """The symbol's standard (GICS) sector, or ``"unknown"`` (index ETFs, unmapped names)."""
+
+    key = str(symbol or "").upper()
+    return _GICS_OVERRIDES.get(key) or _GICS_BY_SECTOR_ETF.get(sector_for_symbol(key), UNKNOWN_SECTOR)

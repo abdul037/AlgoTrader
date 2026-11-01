@@ -395,6 +395,9 @@ class AppSettings(BaseSettings):
     # an unattended bot halts on a large open drawdown, not only realized losses.
     loss_limit_includes_unrealized: bool = True
     max_open_positions: int = 3
+    # Operator 2026-11-01: at most this many open paper positions per GICS sector on a new buy
+    # (app/risk/sectors.py gics_sector_for_symbol). Paper's room only; 0 turns it off.
+    max_open_positions_per_sector: int = 2
     max_trades_per_day: int = 6
     # Paper-only: an owned position whose bracket legs are no longer live at the
     # broker is closed at market by reconciliation instead of tripping the

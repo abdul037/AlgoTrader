@@ -8,7 +8,7 @@ from app.broker.instrument_resolver import InstrumentResolver
 from app.config import AppSettings
 from app.models.trade import TradeOrder
 from app.risk.rules import RiskValidationResult, estimate_risk_amount, leverage_cap_for_asset
-from app.risk.sectors import correlation_bucket_for_symbol, sector_for_symbol
+from app.risk.sectors import UNKNOWN_SECTOR, correlation_bucket_for_symbol, gics_sector_for_symbol, sector_for_symbol
 from app.risk.shorting import ShortTradePolicy
 from app.risk.volatility_target import fits_within_heat, portfolio_heat_pct
 
@@ -102,6 +102,22 @@ class RiskManager:
         bucket_entries = context.entries_today_by_correlation_bucket.get(bucket, 0)
         if bucket_cap > 0 and bucket != "unclassified" and bucket_entries >= bucket_cap:
             reasons.append(f"Daily entry cap of {bucket_cap} reached for the {bucket} group")
+
+        # Operator 2026-11-01 (pullback study V6): at most this many OPEN paper positions per
+        # standard (GICS) sector on a new buy. A paper-room rule: while eToro's room decides (an
+        # order the live mirror would copy) eToro's own group cap applies instead, so paper's
+        # holdings never block a real-money copy (the 10-06 lesson, app/broker/etoro_live_room.py).
+        sector_cap = int(getattr(self.settings, "max_open_positions_per_sector", 0) or 0)
+        gics = gics_sector_for_symbol(order.symbol)
+        is_buy = str(getattr(order.side, "value", order.side) or "").lower() == "buy"
+        if paper_room and sector_cap > 0 and is_buy and gics != UNKNOWN_SECTOR:
+            held = sum(
+                count
+                for symbol, count in context.positions_by_symbol.items()
+                if count > 0 and symbol.upper() != order.symbol.upper() and gics_sector_for_symbol(symbol) == gics
+            )
+            if held >= sector_cap:
+                reasons.append(f"Open-position cap of {sector_cap} reached for the {gics.replace('_', ' ')} sector")
 
         # An unattended bot must react to a large OPEN loss, not just realized
         # PnL. Count current open losses toward the caps (open gains never mask a
