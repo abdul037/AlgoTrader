@@ -283,3 +283,90 @@ def test_monitor_thread_runs_only_when_self_heal_enabled() -> None:
     off.start()
     assert off._monitor_thread is None
     off.stop()
+
+
+class FakeRunLogs:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def log(self, event: str, payload: dict) -> None:
+        self.events.append((event, payload))
+
+    def names(self) -> list[str]:
+        return [name for name, _ in self.events]
+
+
+def test_timed_out_job_waits_for_its_abandoned_run_instead_of_overlapping() -> None:
+    # 2026-10-09: 21 of 52 timed-out workflow_cadence runs kept running beside the
+    # next run (all 5 eToro LIVE entries came from such abandoned threads).
+    import threading
+
+    clock = Clock(datetime(2026, 1, 1, tzinfo=UTC))
+    logs = FakeRunLogs()
+    release = threading.Event()
+    started: list[int] = []
+
+    def slow() -> None:
+        started.append(1)
+        release.wait(5)
+
+    job = ScheduledJob("workflow_cadence", 0, slow, timeout_seconds=0.2)
+    worker = SchedulerWorker([job], runtime_state=FakeRuntimeState(), run_logs=logs, clock=clock)
+
+    assert worker.run_due_jobs() == ["workflow_cadence"]  # times out, thread keeps running
+    clock.advance(0.05)  # (fake clock; the wait cap is overlap_grace_seconds = 120 s)
+    assert worker.run_due_jobs() == []  # due, but its previous run is still alive
+    clock.advance(0.05)
+    assert worker.run_due_jobs() == []
+    assert len(started) == 1
+    assert logs.names().count("scheduler_job_overlap_skipped") == 1  # once per overrun
+    assert worker.status()["jobs"][0]["overrun_running"] is True
+
+    release.set()
+    job.overrun_thread.join(2)
+    assert worker.run_due_jobs() == ["workflow_cadence"]  # resumes on the next tick
+    assert "scheduler_job_overrun_finished" in logs.names()
+    assert len(started) == 2
+
+
+def test_presumed_hung_run_stops_blocking_after_the_grace() -> None:
+    import threading
+
+    clock = Clock(datetime(2026, 1, 1, tzinfo=UTC))
+    logs = FakeRunLogs()
+    release = threading.Event()
+    job = ScheduledJob("workflow_cadence", 0, lambda: release.wait(5), timeout_seconds=0.2)
+    worker = SchedulerWorker(
+        [job],
+        runtime_state=FakeRuntimeState(),
+        run_logs=logs,
+        clock=clock,
+        overlap_grace_seconds=30,
+    )
+
+    worker.run_due_jobs()
+    clock.advance(29)
+    assert worker.run_due_jobs() == []
+    clock.advance(1)  # waited the full grace past the overrun: presume a hung call
+    assert worker.run_due_jobs() == ["workflow_cadence"]
+    assert "scheduler_job_overrun_presumed_hung" in logs.names()
+    release.set()
+
+
+def test_overlap_grace_zero_restores_old_behaviour() -> None:
+    import threading
+
+    clock = Clock(datetime(2026, 1, 1, tzinfo=UTC))
+    release = threading.Event()
+    started: list[int] = []
+    job = ScheduledJob(
+        "workflow_cadence", 0, lambda: started.append(1) or release.wait(5), timeout_seconds=0.2
+    )
+    worker = SchedulerWorker(
+        [job], runtime_state=FakeRuntimeState(), clock=clock, overlap_grace_seconds=0
+    )
+    worker.run_due_jobs()
+    clock.advance(0.05)
+    assert worker.run_due_jobs() == ["workflow_cadence"]  # starts beside the abandoned run
+    assert job.overrun_thread is None and len(started) == 2
+    release.set()

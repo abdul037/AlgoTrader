@@ -87,7 +87,7 @@ def test_db_unique_blocks_duplicate_queue(tmp_path, monkeypatch) -> None:
     assert queued[0].symbol == "NVDA"
 
 
-def test_broker_retry_with_same_client_order_id_is_idempotent(tmp_path) -> None:
+def test_broker_retry_with_same_client_order_id_is_idempotent(tmp_path, go_live_locks_open) -> None:
     broker = MockBroker()
     app = create_app(
         make_settings(
@@ -136,7 +136,7 @@ def test_queue_item_claim_is_atomic(tmp_path) -> None:
     assert repository.claim_for_processing(queued.id, stale_before="1970-01-01T00:00:00+00:00") is False
 
 
-def test_restart_recovers_execution_before_resubmitting(tmp_path) -> None:
+def test_restart_recovers_execution_before_resubmitting(tmp_path, go_live_locks_open) -> None:
     broker = MockBroker()
     app = create_app(
         make_settings(

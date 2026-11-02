@@ -242,11 +242,18 @@ def strategy_demote_verdicts(
     per strategy, using the per-strategy backtest expectancy baseline when known.
     This is the single source of truth the live-selection auto-demote gate reads,
     so the dashboard, the daily digest, and the enforcement path all agree.
+
+    Paper-only trades (operator option B, 2026-10-21; app/performance/paper_only.py) never
+    count: the demotion is keyed by strategy NAME and drops every timeframe's spec from the
+    scan, so their losses must not switch off a strategy's eToro-copyable entries, nor their
+    wins keep a strategy losing on those entries in the scan.
     """
+
+    from app.performance.paper_only import without_paper_only
 
     baseline = backtest_expectancy_by_strategy or {}
     verdicts: list[StrategyDecayVerdict] = []
-    for live in analyze_by_strategy(trades):
+    for live in analyze_by_strategy(without_paper_only(trades)):
         verdicts.append(
             decay_verdict(
                 live,

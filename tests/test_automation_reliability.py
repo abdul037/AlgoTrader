@@ -310,3 +310,27 @@ def test_paper_unattended_near_miss_bypass_requires_unattended_mode(tmp_path) ->
     )
     blockers = auto_approval_tier_blockers(settings=supervised, candidate=_near_miss_candidate(), lifecycles=[])
     assert "near_miss_requires_human_approval" in blockers
+
+
+def test_missing_lifecycle_evidence_blocks_the_unattended_near_miss_path() -> None:
+    # Operator-approved 2026-10-10: with no lifecycle evidence the circuit breaker cannot
+    # run, so the near-miss auto-entry path (mirrored to eToro live) must block too.
+    from types import SimpleNamespace
+
+    from app.automation.reliability import auto_approval_tier_blockers
+
+    settings = SimpleNamespace(
+        paper_auto_approval_tier="tier2_strict_valid",
+        paper_unattended_near_miss_auto_exec_enabled=True,
+        execution_mode="paper",
+        enable_real_trading=False,
+        paper_auto_operation_mode="unattended",
+        paper_auto_min_clean_supervised_lifecycles=0,
+    )
+    candidate = SimpleNamespace(
+        metadata={"signal_classification": "paper_near_miss", "source": "paper_near_miss"}
+    )
+    missing = auto_approval_tier_blockers(settings=settings, candidate=candidate, lifecycles=None)
+    assert "paper_lifecycle_evidence_unavailable" in missing
+    clean = auto_approval_tier_blockers(settings=settings, candidate=candidate, lifecycles=[])
+    assert "paper_lifecycle_evidence_unavailable" not in clean

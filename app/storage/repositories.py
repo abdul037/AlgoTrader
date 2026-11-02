@@ -25,7 +25,6 @@ from app.models.institutional import (
 from app.models.live_signal import LiveSignalSnapshot
 from app.models.paper import PaperPerformanceSummary, PaperPositionRecord, PaperTradeRecord
 from app.models.rl_policy import RLPolicyProposal, RLPolicyVersion
-from app.models.screener import ScanDecisionRecord
 from app.models.signal import Signal
 from app.models.strategy_lab import (
     GeneratedStrategyRecord,
@@ -34,6 +33,7 @@ from app.models.strategy_lab import (
 )
 from app.models.workflow import AlertHistoryRecord, TrackedSignalRecord
 from app.storage.db import Database
+from app.storage.scan_decisions import ScanDecisionRepository  # noqa: F401 - re-export
 from app.utils.time import utc_now
 
 
@@ -378,7 +378,7 @@ class ExecutionRepository:
             filled_at = next(
                 (
                     leg.get("filled_at")
-                    for leg in list(broker_execution.get("legs") or [])
+                    for leg in [*(broker_execution.get("legs") or []), dict(payload.get("exit_fill") or {})]
                     if str(leg.get("status") or "").lower() == "filled" and leg.get("filled_at")
                 ),
                 row["updated_at"],
@@ -647,15 +647,15 @@ class BacktestRepository:
         """Average backtest ``expectancy_usd`` per strategy across recent runs.
 
         The live-vs-backtest decay monitor compares a strategy's live paper
-        expectancy against this baseline. Averaged across the strategy's backtest
-        rows (all symbols) so a single symbol's run does not define the baseline.
+        expectancy against this baseline, averaged over walk-forward OOS
+        aggregate rows (all symbols). Legacy per-fold rows are excluded.
         """
 
         with self.db.connect() as connection:
             rows = connection.execute(
                 "SELECT strategy_name, metrics_json FROM backtests "
-                "ORDER BY completed_at DESC LIMIT ?",
-                (max(limit, 1),),
+                "WHERE file_path LIKE ? ORDER BY completed_at DESC LIMIT ?",
+                ("%:walk_forward_oos", max(limit, 1)),
             ).fetchall()
         buckets: dict[str, list[float]] = {}
         for row in rows:
@@ -669,138 +669,6 @@ class BacktestRepository:
             name = str(row["strategy_name"] or "unknown")
             buckets.setdefault(name, []).append(float(expectancy))
         return {name: round(sum(vals) / len(vals), 4) for name, vals in buckets.items() if vals}
-
-
-class ScanDecisionRepository:
-    """Persist per-candidate scan decisions for review and anti-spam logic."""
-
-    def __init__(self, db: Database):
-        self.db = db
-
-    def create(
-        self,
-        *,
-        scan_task: str,
-        symbol: str,
-        strategy_name: str,
-        timeframe: str,
-        status: str,
-        final_score: float | None,
-        alert_eligible: bool,
-        freshness: str | None,
-        reason_codes: list[str],
-        rejection_reasons: list[str],
-        payload: dict[str, Any] | None = None,
-    ) -> ScanDecisionRecord:
-        created_at = utc_now().isoformat()
-        with self.db.connect() as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO scan_decisions (
-                    scan_task, symbol, strategy_name, timeframe, status, final_score,
-                    alert_eligible, freshness, reason_codes_json, rejection_reasons_json,
-                    payload_json, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    scan_task,
-                    symbol.upper(),
-                    strategy_name,
-                    timeframe,
-                    status,
-                    final_score,
-                    1 if alert_eligible else 0,
-                    freshness,
-                    json.dumps(reason_codes),
-                    json.dumps(rejection_reasons),
-                    json.dumps(payload or {}),
-                    created_at,
-                ),
-            )
-            record_id = int(cursor.lastrowid)
-        return self.get(record_id)
-
-    def list(
-        self,
-        *,
-        limit: int = 100,
-        status: str | None = None,
-        scan_task: str | None = None,
-        symbol: str | None = None,
-    ) -> list[ScanDecisionRecord]:
-        query = "SELECT * FROM scan_decisions WHERE 1 = 1"
-        params: list[Any] = []
-        if status is not None:
-            query += " AND status = ?"
-            params.append(status)
-        if scan_task is not None:
-            query += " AND scan_task = ?"
-            params.append(scan_task)
-        if symbol is not None:
-            query += " AND symbol = ?"
-            params.append(symbol.upper())
-        query += " ORDER BY created_at DESC LIMIT ?"
-        params.append(max(1, limit))
-        with self.db.connect() as connection:
-            rows = connection.execute(query, tuple(params)).fetchall()
-        return [self._row_to_model(row) for row in rows]
-
-    def get_latest(
-        self,
-        *,
-        symbol: str,
-        strategy_name: str,
-        timeframe: str,
-        since_minutes: int | None = None,
-        statuses: list[str] | None = None,
-    ) -> ScanDecisionRecord | None:
-        query = """
-            SELECT *
-            FROM scan_decisions
-            WHERE symbol = ? AND strategy_name = ? AND timeframe = ?
-        """
-        params: list[Any] = [symbol.upper(), strategy_name, timeframe]
-        if since_minutes is not None:
-            since_dt = utc_now() - timedelta(minutes=max(since_minutes, 1))
-            query += " AND created_at >= ?"
-            params.append(since_dt.isoformat())
-        if statuses:
-            placeholders = ", ".join(["?"] * len(statuses))
-            query += f" AND status IN ({placeholders})"
-            params.extend(statuses)
-        query += " ORDER BY created_at DESC LIMIT 1"
-        with self.db.connect() as connection:
-            row = connection.execute(query, tuple(params)).fetchone()
-        return None if row is None else self._row_to_model(row)
-
-    def get(self, record_id: int) -> ScanDecisionRecord:
-        with self.db.connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM scan_decisions WHERE id = ?",
-                (record_id,),
-            ).fetchone()
-        if row is None:
-            raise KeyError(f"Scan decision {record_id} not found")
-        return self._row_to_model(row)
-
-    @staticmethod
-    def _row_to_model(row: Any) -> ScanDecisionRecord:
-        return ScanDecisionRecord(
-            id=int(row["id"]),
-            scan_task=row["scan_task"],
-            symbol=row["symbol"],
-            strategy_name=row["strategy_name"],
-            timeframe=row["timeframe"],
-            status=row["status"],
-            final_score=row["final_score"],
-            alert_eligible=bool(row["alert_eligible"]),
-            freshness=row["freshness"],
-            reason_codes=json.loads(row["reason_codes_json"] or "[]"),
-            rejection_reasons=json.loads(row["rejection_reasons_json"] or "[]"),
-            payload=json.loads(row["payload_json"] or "{}"),
-            created_at=row["created_at"],
-        )
 
 
 class RunLogRepository:

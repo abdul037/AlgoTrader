@@ -5,6 +5,7 @@ Design rules (enforced by tests):
 1. **No same-bar fills.** A strategy that produces a signal using bar N's close
    cannot fill on bar N. The fill lands on bar N+1's open, with cost-model
    friction applied. If bar N+1 does not exist the signal is dropped.
+   ``entry_delay_bars`` = k moves an entry to bar N+1+k's open (the live delay).
 2. **Gap-through losses.** Stop fills assume the worse of (stop_price,
    bar.open). Take-profit fills assume the better of (tp_price, bar.open) for
    the trader, i.e. no free intrabar TP overshoot.
@@ -17,6 +18,9 @@ Design rules (enforced by tests):
    reports can be reproduced.
 5. **Bar-frequency aware.** Annualization uses ``bars_per_year`` instead of a
    hardcoded 252. The caller must supply the correct value.
+6. **One side per run.** A run opens longs from BUYs or -- research only, with
+   ``short_entries`` -- shorts from bracketed ``entry_short`` SELLs; the opposite
+   signal closes. A long run is byte-identical to the pre-short engine.
 
 If any of these invariants are relaxed, the brief's live-readiness contract is
 broken. Do not work around them silently.
@@ -24,7 +28,8 @@ broken. Do not work around them silently.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections import deque
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -32,6 +37,11 @@ import pandas as pd
 from pydantic import BaseModel, Field
 
 from app.backtesting.cost_model import CostModel, is_extended_hours
+from app.backtesting.intraday import (
+    floored_stop_and_target,
+    last_bar_of_session,
+    session_atr_by_bar,
+)
 from app.backtesting.metrics import (
     DAILY_BARS_PER_YEAR,
     compute_expectancy,
@@ -39,6 +49,7 @@ from app.backtesting.metrics import (
     compute_sharpe_like,
     summarize_trades,
 )
+from app.indicators import precomputed_indicators
 from app.storage.repositories import BacktestRepository
 from app.strategies.base import valid_trade_plan
 from app.utils.ids import generate_id
@@ -75,6 +86,20 @@ class EngineConfig:
     cost_model: CostModel = field(default_factory=CostModel)
     allow_extended_hours: bool = False
     """When False, fills outside 09:30-16:00 ET are dropped entirely."""
+    flatten_at_session_end: bool = False
+    """Intraday only: close at the last bar of each session and take no entry on
+    it, mirroring the live close-before-the-bell rule."""
+    min_stop_session_atr_multiple: float = 0.0
+    """Intraday only: widen a stop to at least this many prior-session ATRs below
+    the fill (target widened to keep the signal's R:R). 0 = off."""
+    short_entries: bool = False
+    """Research only: open bracketed ``entry_short`` SELLs (filled at the bid) instead of
+    BUYs. Never set on the live evidence path; see app/backtesting/short_research.py."""
+    entry_delay_bars: int = 0
+    """Bars between a signal and its order: a signal on bar N's close fills at bar N+1+k's
+    open, as the live bot's order goes in a scan after the bar closed. 0 = bar N+1. A delayed
+    entry is dropped when a session ends in between (intraday flatten on) or a position was
+    open when the signal fired."""
 
 
 class BacktestResult(BaseModel):
@@ -112,10 +137,24 @@ class BacktestEngine:
         file_path: str,
         initial_cash: float | None = None,
         config: EngineConfig | None = None,
+        trade_window_start: Any | None = None,
     ) -> BacktestResult:
+        """Run ``strategy`` over ``data``.
+
+        ``trade_window_start`` lets a caller pass warm-up history (bars the
+        strategy's indicators need) without evaluating it: bars before that
+        timestamp are fed to the strategy as context only — no signals, no
+        entries, no equity points — so metrics and ``bars_evaluated`` describe
+        just the window from ``trade_window_start`` on. Walk-forward folds rely
+        on this: a 14-day test fold on its own is ~10 daily bars, which is below
+        every strategy's indicator warm-up, so without warm-up context no fold
+        could ever produce a trade.
+        """
+
         run_config = config or self.config
         if initial_cash is not None:
             run_config = _override_cash(run_config, initial_cash)
+        window_start = _ensure_utc(pd.Timestamp(trade_window_start)) if trade_window_start is not None else None
 
         started_at = utc_now().isoformat()
         normalized = _normalize_data(data)
@@ -132,63 +171,109 @@ class BacktestEngine:
         # one bar short of the end for new entries, and hard-closes any open
         # trade at the last bar's close as end-of-data.
         total_bars = len(normalized)
-        for index in range(total_bars):
-            bar = normalized.iloc[index]
-            bar_time = _ensure_utc(bar["timestamp"])
-            window = normalized.iloc[: index + 1]
+        intraday = run_config.bars_per_year > DAILY_BARS_PER_YEAR
+        session_ends = last_bar_of_session(normalized["timestamp"]) if intraday and run_config.flatten_at_session_end else []
+        session_atr = (
+            session_atr_by_bar(normalized) if intraday and run_config.min_stop_session_atr_multiple > 0 else []
+        )
+        delay = max(int(run_config.entry_delay_bars or 0), 0)
+        recent_signals: deque[tuple[int, Any]] = deque(maxlen=delay + 1)  # (bar index, entry signal)
+        with precomputed_indicators(normalized):
+            for index in range(total_bars):
+                bar = normalized.iloc[index]
+                bar_time = _ensure_utc(bar["timestamp"])
+                if window_start is not None and bar_time < window_start:
+                    # Warm-up context only: visible to the strategy through
+                    # ``window`` on later bars, never evaluated itself.
+                    continue
+                window = normalized.iloc[: index + 1]
 
-            # Generate the signal from data available THROUGH this bar's close.
-            signal = strategy.generate_signal(window, symbol)
+                # Generate the signal from data available THROUGH this bar's close.
+                signal = strategy.generate_signal(window, symbol)
 
-            # --- Exit handling for a currently open trade. -------------------
-            if open_trade is not None:
-                exit_action = _evaluate_exit(
-                    open_trade=open_trade,
-                    bar=bar,
-                    signal=signal,
-                    bar_index=index,
-                    total_bars=total_bars,
-                    next_bar=_maybe_next_bar(normalized, index),
-                    cost_model=run_config.cost_model,
-                    allow_extended_hours=run_config.allow_extended_hours,
-                    bars_per_year=run_config.bars_per_year,
-                )
-                if exit_action is not None:
+                # --- Exit handling for a currently open trade. -------------------
+                if open_trade is not None:
+                    exit_action = _evaluate_exit(
+                        open_trade=open_trade,
+                        bar=bar,
+                        signal=signal,
+                        bar_index=index,
+                        total_bars=total_bars,
+                        next_bar=_maybe_next_bar(normalized, index),
+                        cost_model=run_config.cost_model,
+                        allow_extended_hours=run_config.allow_extended_hours,
+                        bars_per_year=run_config.bars_per_year,
+                    )
+                    if exit_action is not None:
+                        realized, cost_event, trade_record, warning = _close_trade(
+                            open_trade=open_trade,
+                            exit_price=exit_action.fill_price,
+                            exit_time=exit_action.fill_time,
+                            exit_timestamp_raw=exit_action.fill_timestamp_raw,
+                            exit_reason=exit_action.reason,
+                            cost_model=run_config.cost_model,
+                        )
+                        # ``realized`` is the net proceeds of the *position*; the
+                        # uninvested balance was already netted out at entry. Adding
+                        # (not assigning) keeps that balance — assigning silently
+                        # discarded it on every partial-size trade.
+                        cash += realized
+                        trades.append(trade_record)
+                        cost_events.append(cost_event)
+                        if warning:
+                            warnings.append(warning)
+                        open_trade = None
+
+                at_session_end = bool(session_ends) and session_ends[index]
+                if open_trade is not None and at_session_end:
+                    exit_price = run_config.cost_model.exit_fill_price(float(bar["close"]), side=open_trade.side, extended_hours=False)
                     realized, cost_event, trade_record, warning = _close_trade(
                         open_trade=open_trade,
-                        exit_price=exit_action.fill_price,
-                        exit_time=exit_action.fill_time,
-                        exit_timestamp_raw=exit_action.fill_timestamp_raw,
-                        exit_reason=exit_action.reason,
+                        exit_price=exit_price,
+                        exit_time=bar_time,
+                        exit_timestamp_raw=bar["timestamp"],
+                        exit_reason="session_close",
                         cost_model=run_config.cost_model,
                     )
-                    cash = realized
+                    cash += realized
                     trades.append(trade_record)
                     cost_events.append(cost_event)
                     if warning:
                         warnings.append(warning)
                     open_trade = None
 
-            # --- Entry handling using next-bar open. -------------------------
-            if open_trade is None and signal is not None and getattr(signal.action, "value", None) == "buy":
-                next_bar = _maybe_next_bar(normalized, index)
-                if next_bar is None:
-                    # Cannot fill without a following bar; drop the signal.
-                    continue
-                entry_attempt = _attempt_entry(
-                    signal=signal,
-                    next_bar=next_bar,
-                    cash=cash,
-                    config=run_config,
-                    fill_bar_index=index + 1,
-                )
-                if entry_attempt is None:
-                    continue
-                open_trade = entry_attempt.open_trade
-                cash = entry_attempt.cash_after_entry
+                # --- Entry handling using next-bar open, ``delay`` bars late. ------
+                recent_signals.append((index, signal if open_trade is None else None))
+                entry_signal = _entry_signal(recent_signals, index=index, delay=delay, session_ends=session_ends)
+                if (
+                    open_trade is None
+                    and not at_session_end
+                    and entry_signal is not None
+                    and _opens_position(entry_signal, short=run_config.short_entries)
+                ):
+                    next_bar = _maybe_next_bar(normalized, index)
+                    if next_bar is None:
+                        # Cannot fill without a following bar; drop the signal.
+                        continue
+                    atr = session_atr[index] if session_atr else None
+                    entry_attempt = _attempt_entry(
+                        signal=entry_signal,
+                        next_bar=next_bar,
+                        cash=cash,
+                        config=run_config,
+                        fill_bar_index=index + 1,
+                        min_stop_distance=(atr * run_config.min_stop_session_atr_multiple) if atr else 0.0,
+                    )
+                    if entry_attempt is None:
+                        continue
+                    open_trade = entry_attempt.open_trade
+                    cash = entry_attempt.cash_after_entry
+                    # Signals that fired while this order was pending were seen with a position
+                    # on the way: none may enter after it, even if it stops out on its fill bar.
+                    recent_signals.clear()
 
-            equity = _mark_to_market(cash=cash, open_trade=open_trade, bar=bar)
-            equity_curve.append(equity)
+                equity = _mark_to_market(cash=cash, open_trade=open_trade, bar=bar)
+                equity_curve.append(equity)
 
         # Any trade still open at the end of data force-closes at the final close.
         if open_trade is not None and not normalized.empty:
@@ -199,7 +284,7 @@ class BacktestEngine:
                 side=open_trade.side,
                 extended_hours=False,
             )
-            cash, cost_event, trade_record, warning = _close_trade(
+            realized, cost_event, trade_record, warning = _close_trade(
                 open_trade=open_trade,
                 exit_price=exit_price,
                 exit_time=final_time,
@@ -207,6 +292,7 @@ class BacktestEngine:
                 exit_reason="end_of_data",
                 cost_model=run_config.cost_model,
             )
+            cash += realized
             trades.append(trade_record)
             cost_events.append(cost_event)
             if warning:
@@ -283,13 +369,24 @@ class _EntryAttempt:
 
 
 def _override_cash(config: EngineConfig, initial_cash: float) -> EngineConfig:
-    return EngineConfig(
-        initial_cash=initial_cash,
-        risk_per_trade_pct=config.risk_per_trade_pct,
-        leverage=config.leverage,
-        bars_per_year=config.bars_per_year,
-        cost_model=config.cost_model,
-        allow_extended_hours=config.allow_extended_hours,
+    # Every other knob carries over (it used to drop the flatten, stop floor and entry delay).
+    return replace(config, initial_cash=initial_cash)
+
+
+def _opens_position(signal: Any, *, short: bool) -> bool:
+    """A BUY opens a long. A short run opens only on a bracketed ``entry_short`` SELL:
+    watches (``entry_short_watch``), bare exit SELLs and unbracketed SELLs never open one."""
+
+    action = getattr(signal.action, "value", None)
+    if not short:
+        return action == "buy"
+    metadata = getattr(signal, "metadata", None)
+    role = metadata.get("signal_role") if isinstance(metadata, dict) else None
+    return (
+        action == "sell"
+        and role == "entry_short"
+        and getattr(signal, "stop_loss", None) is not None
+        and getattr(signal, "take_profit", None) is not None
     )
 
 
@@ -319,6 +416,21 @@ def _maybe_next_bar(frame: pd.DataFrame, index: int) -> pd.Series | None:
     if index + 1 >= len(frame):
         return None
     return frame.iloc[index + 1]
+
+
+def _entry_signal(
+    recent: deque[tuple[int, Any]], *, index: int, delay: int, session_ends: list[bool]
+) -> Any | None:
+    """The signal to act on at bar ``index``: the one from ``delay`` bars back (``recent``
+    holds the last ``delay + 1`` evaluated bars), or None when that bar was not evaluated or a
+    session ended since (a late order never carries over the close). ``delay`` 0 is this bar's."""
+
+    signal_index, signal = recent[0]
+    if signal_index != index - delay:
+        return None
+    if delay and session_ends and any(session_ends[signal_index:index]):
+        return None
+    return signal
 
 
 def _evaluate_exit(
@@ -374,10 +486,11 @@ def _evaluate_exit(
             fill = cost_model.exit_fill_price(raw_fill, side="sell", extended_hours=extended)
             return _ExitAction(fill, bar_time, bar["timestamp"], "take_profit")
 
-    # Strategy-driven exit: fills on the NEXT bar's open, not this close.
+    # Strategy-driven exit: fills on the NEXT bar's open, not this close. The opposite
+    # action closes: a SELL closes a long, a BUY closes a short.
     if (
         signal is not None
-        and getattr(signal.action, "value", None) == "sell"
+        and getattr(signal.action, "value", None) == ("buy" if open_trade.side == "sell" else "sell")
         and next_bar is not None
     ):
         ref_price = float(next_bar["open"])
@@ -396,6 +509,7 @@ def _attempt_entry(
     cash: float,
     config: EngineConfig,
     fill_bar_index: int = -1,
+    min_stop_distance: float = 0.0,
 ) -> _EntryAttempt | None:
     if not valid_trade_plan(
         action=getattr(signal, "action", None),
@@ -412,10 +526,21 @@ def _attempt_entry(
     if extended and not config.allow_extended_hours:
         return None
     raw_price = next_open
-    fill_price = config.cost_model.entry_fill_price(raw_price, side="buy", extended_hours=extended)
+    side = "sell" if config.short_entries else "buy"  # a short sells at the bid
+    fill_price = config.cost_model.entry_fill_price(raw_price, side=side, extended_hours=extended)
 
+    stop = _coerce_float(getattr(signal, "stop_loss", None))
+    target = _coerce_float(getattr(signal, "take_profit", None))
+    if min_stop_distance > 0 and stop is not None and side == "buy":  # the floor is long-only
+        stop, target = floored_stop_and_target(
+            fill_price=fill_price,
+            signal_price=float(getattr(signal, "price", fill_price) or fill_price),
+            stop=stop,
+            target=target,
+            min_distance=min_stop_distance,
+        )
     quantity = _size_position(
-        signal=signal,
+        stop=stop,
         fill_price=fill_price,
         cash=cash,
         config=config,
@@ -435,11 +560,12 @@ def _attempt_entry(
         entry_timestamp_raw=next_bar["timestamp"],
         entry_price=fill_price,
         quantity=quantity,
-        side="buy",
-        stop_loss=_coerce_float(getattr(signal, "stop_loss", None)),
-        take_profit=_coerce_float(getattr(signal, "take_profit", None)),
+        side=side,
+        stop_loss=stop,
+        take_profit=target,
         entry_notional=notional,
-        entry_spread_usd=max(entry_spread, 0.0),
+        # A short fills below the reference price, so its spread cost is the negative gap.
+        entry_spread_usd=max(entry_spread, 0.0) if side == "buy" else abs(entry_spread),
         entry_bar_index=fill_bar_index,
         max_hold_bars=_max_hold_bars(signal),
     )
@@ -466,12 +592,11 @@ def _max_hold_bars(signal: Any) -> int | None:
 
 def _size_position(
     *,
-    signal: Any,
+    stop: float | None,
     fill_price: float,
     cash: float,
     config: EngineConfig,
 ) -> float:
-    stop = _coerce_float(getattr(signal, "stop_loss", None))
     if config.risk_per_trade_pct is None or stop is None or stop <= 0:
         if fill_price <= 0:
             return 0.0
@@ -497,23 +622,32 @@ def _close_trade(
     exit_reason: str,
     cost_model: CostModel,
 ) -> tuple[float, dict[str, float], dict[str, Any], str | None]:
-    proceeds = open_trade.quantity * exit_price
-    exit_spread_usd = abs(proceeds - open_trade.quantity * _unadjusted_exit_price(exit_price, open_trade, cost_model))
-    financing_usd = cost_model.holding_cost_usd(
+    short = open_trade.side == "sell"
+    exit_notional = open_trade.quantity * exit_price
+    exit_spread_usd = abs(exit_notional - open_trade.quantity * _unadjusted_exit_price(exit_price, open_trade, cost_model))
+    holding_cost = cost_model.short_holding_cost_usd if short else cost_model.holding_cost_usd
+    financing_usd = holding_cost(
         notional_usd=open_trade.entry_notional,
         entry_time=open_trade.entry_time,
         exit_time=exit_time,
     )
     fx_usd = cost_model.fx_round_trip_cost_usd(notional_usd=open_trade.entry_notional)
-    # Commission is charged on both legs; slippage drags both notionals; US equity
-    # regulatory fees apply to the sell leg only (the exit of a long).
-    commission_usd = 2.0 * cost_model.commission_usd(quantity=open_trade.quantity)
+    # Commission is charged on both legs (per share, plus any flat or percentage fee a leg:
+    # eToro's own trade fees); slippage drags both notionals; US equity regulatory fees
+    # apply to the sell leg only (the exit of a long, the entry of a short).
+    commission_usd = (
+        2.0 * cost_model.commission_usd(quantity=open_trade.quantity)
+        + cost_model.leg_fee_usd(notional_usd=open_trade.entry_notional)
+        + cost_model.leg_fee_usd(notional_usd=exit_notional)
+    )
     slippage_usd = cost_model.slippage_usd(
         notional_usd=open_trade.entry_notional
-    ) + cost_model.slippage_usd(notional_usd=proceeds)
+    ) + cost_model.slippage_usd(notional_usd=exit_notional)
     regulatory_usd = cost_model.regulatory_sell_fee_usd(
-        notional_usd=proceeds, quantity=open_trade.quantity
+        notional_usd=open_trade.entry_notional if short else exit_notional, quantity=open_trade.quantity
     )
+    # A short's collateral (its entry notional) comes back plus (entry - exit) per share.
+    proceeds = 2.0 * open_trade.entry_notional - exit_notional if short else exit_notional
     realized = proceeds - financing_usd - fx_usd - commission_usd - slippage_usd - regulatory_usd
     invested = open_trade.entry_notional
     pnl_usd = realized - invested
@@ -540,6 +674,8 @@ def _close_trade(
         "slippage_usd": round(slippage_usd, 6),
         "regulatory_usd": round(regulatory_usd, 6),
     }
+    if short:  # long trade dicts keep their exact keys
+        trade_record["side"] = "short"
     cost_event = {
         "spread_usd": open_trade.entry_spread_usd + exit_spread_usd,
         "financing_usd": financing_usd,
@@ -568,6 +704,9 @@ def _mark_to_market(
 ) -> float:
     if open_trade is None:
         return cash
+    if open_trade.side == "sell":  # the collateral back plus the short's open gain
+        close = float(bar["close"])
+        return cash + open_trade.entry_notional + open_trade.quantity * (open_trade.entry_price - close)
     return cash + open_trade.quantity * float(bar["close"])
 
 
@@ -581,9 +720,14 @@ def _compile_metrics(
 ) -> dict[str, float]:
     total_return_pct = ((ending_cash - initial_cash) / initial_cash) * 100 if initial_cash else 0.0
     periods = max(len(equity_curve), 1)
-    annualized_return_pct = (
-        ((ending_cash / initial_cash) ** (bars_per_year / periods) - 1) * 100 if initial_cash > 0 else 0.0
-    )
+    if initial_cash <= 0:
+        annualized_return_pct = 0.0
+    elif ending_cash <= 0:
+        # Wiped out: a short gapped through its stop (an unlevered long cannot end below
+        # zero). A negative base to a fractional power is complex and used to drop the run.
+        annualized_return_pct = -100.0
+    else:
+        annualized_return_pct = ((ending_cash / initial_cash) ** (bars_per_year / periods) - 1) * 100
     metrics: dict[str, float] = {
         "total_return_pct": total_return_pct,
         "annualized_return_pct": annualized_return_pct,

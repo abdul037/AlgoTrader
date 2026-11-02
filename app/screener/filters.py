@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 
 from app.indicators import compute_confluence_score, enrich_technical_indicators
+from app.screener.extension import entry_extension
 
 
 @dataclass(slots=True)
@@ -26,6 +27,9 @@ class MarketContext:
     momentum_pct: float
     regime_alignment_score: float
     measurements: dict[str, float | None] = field(default_factory=dict)
+    # The eToro copy's "don't chase" inputs for the signal bar (app/screener/extension.py);
+    # read only by the copy, never by a filter, score or gate.
+    extension: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -126,6 +130,7 @@ def build_market_context(history: pd.DataFrame, *, quote: Any, signal: Any) -> M
         momentum_pct=momentum_pct,
         regime_alignment_score=regime_alignment_score,
         measurements=measurements,
+        extension=entry_extension(frame, timeframe=timeframe),
     )
 
 

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from app.broker import crypto as crypto_symbols
 from app.runtime_settings import AppSettings
-
 
 # Liquid large-cap default watchlist. It is configurable through settings and can be
 # replaced entirely with another universe without changing screener code.
@@ -76,4 +76,16 @@ def resolve_universe(settings: AppSettings, *, limit: int | None = None) -> list
         normalized.append(cleaned)
         seen.add(cleaned)
     max_items = max(1, min(limit or settings.market_universe_limit, len(normalized)))
-    return normalized[:max_items]
+    resolved = normalized[:max_items]
+    # Crypto is additive to the equity universe and always scanned when enabled
+    # (it is not subject to the equity list's size cap). It trades 24/7, so the
+    # screener keeps generating crypto candidates when equities are closed.
+    if bool(getattr(settings, "crypto_trading_enabled", False)):
+        for symbol in getattr(settings, "crypto_symbols", []) or []:
+            if not crypto_symbols.is_crypto_symbol(symbol):
+                continue
+            canonical = crypto_symbols.to_alpaca_symbol(symbol)
+            if canonical not in seen:
+                resolved.append(canonical)
+                seen.add(canonical)
+    return resolved

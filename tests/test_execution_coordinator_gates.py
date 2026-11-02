@@ -137,3 +137,17 @@ def test_status_guard_blocks_rejected_proposal(tmp_path) -> None:
     assert result.latest_quote_price is None
     assert result.proposal_id == proposal.id
     assert market_data.calls == []
+
+
+def test_reward_to_risk_rechecked_at_the_live_quote() -> None:
+    # 2026-09-28 AAPL: 1.20 R:R at the proposal price, 0.69 at the fill after drift.
+    from types import SimpleNamespace
+
+    from app.execution.coordinator import ExecutionCoordinator
+
+    order = SimpleNamespace(side="buy", stop_loss=340.17, take_profit=344.16)
+    proposal = SimpleNamespace(order=order)
+
+    assert ExecutionCoordinator._alpaca_bracket_reasons(proposal, 341.99, 1.0) == []
+    assert ExecutionCoordinator._alpaca_bracket_reasons(proposal, 342.53, 1.0) == ["reward_to_risk_below_min_at_quote"]
+    assert ExecutionCoordinator._alpaca_bracket_reasons(proposal, 342.53, 0.0) == []

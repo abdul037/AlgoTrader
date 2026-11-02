@@ -4,17 +4,22 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+import math
+import os
+import threading
+from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import sleep, time
 from typing import Any
 
 import pandas as pd
 
+from app.broker import crypto as crypto_symbols
 from app.broker.etoro_rate_limit import EToroRateLimitError
+from app.data.market_data import MarketDataService
 from app.live_signal_schema import MarketQuote
 from app.runtime_settings import AppSettings
-from app.data.market_data import MarketDataService
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +60,21 @@ class MarketDataEngine:
         bars: int = 250,
         provider: str | None = None,
         force_refresh: bool = False,
+        write_cache: bool = True,
+        backtest: bool = False,
     ) -> pd.DataFrame:
-        """Return normalized OHLCV history for a symbol and timeframe."""
+        """Return normalized OHLCV history for a symbol and timeframe.
 
+        ``write_cache=False`` still reads a fresh cached frame but never stores a fetched one:
+        for shadow readers, whose requests must not become a live scan's input (2026-10-19).
+        ``backtest=True`` is the batch backtest's long minute-bar fetch (2026-10-20): always
+        fetched, its Alpaca window counts the bars as whole sessions (live callers keep the
+        calendar-day window), and it is stored in neither cache, so it never becomes a live
+        scan's input and adds no parquet file per pass."""
+
+        if backtest:
+            force_refresh, write_cache = True, False
+        fetch_options = {"backtest": True} if backtest else {}  # only when set: live calls as before
         normalized_symbol = symbol.upper().strip()
         normalized_timeframe = self._normalize_timeframe(timeframe)
         provider_name = self._resolve_provider(normalized_timeframe, provider)
@@ -85,6 +102,7 @@ class MarketDataEngine:
                         timeframe=normalized_timeframe,
                         bars=bars,
                         provider=candidate_provider,
+                        **fetch_options,
                     )
                     break
                 except EToroRateLimitError:
@@ -105,10 +123,11 @@ class MarketDataEngine:
                 from_cache=False,
                 data_age_seconds=0.0,
             )
-            self._write_cached_frame(
-                self._cache_path(normalized_symbol, normalized_timeframe, candidate_provider),
-                frame,
-            )
+            if write_cache:
+                self._write_cached_frame(
+                    self._cache_path(normalized_symbol, normalized_timeframe, candidate_provider),
+                    frame,
+                )
             return frame.tail(bars).reset_index(drop=True)
 
         raise RuntimeError(
@@ -123,8 +142,10 @@ class MarketDataEngine:
         timeframe: str = "1d",
         provider: str | None = None,
         force_refresh: bool = False,
+        write_cache: bool = True,
     ) -> MarketQuote:
-        """Return the best available quote for a symbol."""
+        """Return the best available quote for a symbol (``write_cache``: as in get_history,
+        for the fallback that derives the quote from history)."""
 
         normalized_symbol = symbol.upper().strip()
         normalized_timeframe = self._normalize_timeframe(timeframe)
@@ -178,6 +199,7 @@ class MarketDataEngine:
             bars=2,
             provider="yfinance" if provider_name != "etoro" else None,
             force_refresh=force_refresh,
+            write_cache=write_cache,
         )
         last = frame.iloc[-1]
         attrs = dict(frame.attrs)
@@ -203,6 +225,7 @@ class MarketDataEngine:
         timeframe: str,
         bars: int,
         provider: str,
+        backtest: bool = False,
     ) -> pd.DataFrame:
         if provider == "etoro":
             if self.etoro_client is None:
@@ -216,7 +239,10 @@ class MarketDataEngine:
 
         if provider == "yfinance":
             config = TIMEFRAME_CONFIG[timeframe]
-            yf_symbol = symbol.replace(".", "-")
+            if crypto_symbols.is_crypto_symbol(symbol):
+                yf_symbol = crypto_symbols.to_yfinance_symbol(symbol)
+            else:
+                yf_symbol = symbol.replace(".", "-")
             frame = self.history_service.load_yfinance(
                 yf_symbol,
                 period=config["period"],
@@ -228,7 +254,11 @@ class MarketDataEngine:
             return frame
 
         if provider == "alpaca":
-            start, end = self._history_window(timeframe, bars)
+            start, end = self._history_window(timeframe, bars, sessions=backtest)
+            if backtest:
+                return self._get_alpaca_provider().get_bars(
+                    symbol, timeframe=timeframe, start=start, end=end, cache=False
+                )
             return self._get_alpaca_provider().get_bars(symbol, timeframe=timeframe, start=start, end=end)
 
         raise ValueError(f"Unsupported provider: {provider}")
@@ -272,15 +302,25 @@ class MarketDataEngine:
             return None
 
     def _write_cached_frame(self, path: Path, frame: pd.DataFrame) -> None:
+        suffix = f".tmp-{os.getpid()}-{threading.get_ident()}"
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             cached = frame.copy()
             cached["timestamp"] = pd.to_datetime(cached["timestamp"], utc=True)
-            cached.to_csv(path, index=False)
+            # Write-then-rename (2026-10-10): a concurrent reader (e.g. an abandoned timed-out
+            # scan thread) sees the old file or the new one, never a truncated frame.
+            tmp_csv = path.with_name(path.name + suffix)
+            cached.to_csv(tmp_csv, index=False)
+            os.replace(tmp_csv, path)
             meta_path = path.with_suffix(".meta.json")
-            meta_path.write_text(json.dumps({"rows": len(cached), "updated_at": int(time())}), encoding="utf-8")
+            tmp_meta = meta_path.with_name(meta_path.name + suffix)
+            tmp_meta.write_text(json.dumps({"rows": len(cached), "updated_at": int(time())}), encoding="utf-8")
+            os.replace(tmp_meta, meta_path)
         except Exception as exc:
             logger.warning("Failed to write market data cache %s: %s", path, exc)
+            for leftover in (path.with_name(path.name + suffix), path.with_suffix(".meta.json" + suffix)):
+                with suppress(OSError):
+                    leftover.unlink(missing_ok=True)
 
     def _cache_path(self, symbol: str, timeframe: str, provider: str) -> Path:
         safe_symbol = symbol.replace("/", "_").replace(":", "_")
@@ -381,15 +421,22 @@ class MarketDataEngine:
         return self.alpaca_provider
 
     @staticmethod
-    def _history_window(timeframe: str, bars: int) -> tuple[datetime, datetime]:
-        end = datetime.now(timezone.utc)
+    def _history_window(timeframe: str, bars: int, *, sessions: bool = False) -> tuple[datetime, datetime]:
+        end = datetime.now(UTC)
         if timeframe == "1d":
             lookback_days = max(10, int(bars * 3))
         elif timeframe == "1h":
             lookback_days = max(10, int(bars // 4) + 5)
         elif timeframe.endswith("m"):
             minutes = int(timeframe[:-1])
-            lookback_days = max(5, int((bars * minutes) / (60 * 6.5)) + 5)
+            session_count = (bars * minutes) / (60 * 6.5)
+            if sessions:
+                # The batch backtest's long fetch: 5 sessions take 7 calendar days. Counted as
+                # calendar days, the 120-day intraday walk-forward got ~90 days and fit ~10 folds
+                # instead of ~13 (2026-10-20); +5 days covers holidays.
+                lookback_days = max(5, math.ceil(session_count * 7 / 5) + 5)
+            else:  # live scans keep the window, so their frames and indicators do too
+                lookback_days = max(5, int(session_count) + 5)
         else:
             lookback_days = max(10, int(bars * 7))
         return end - timedelta(days=lookback_days), end

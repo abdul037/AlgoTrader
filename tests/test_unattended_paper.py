@@ -236,6 +236,8 @@ def test_unattended_candidate_requires_explicit_opt_in(tmp_path):
             is_regular_market_open=lambda: True,
             is_supported_equity=lambda _symbol: True,
         ),
+        # Production wires a paper service; no lifecycle evidence now blocks (10-10).
+        paper_trading_service=SimpleNamespace(lifecycles=lambda limit=1000: []),
     )
     candidate = SimpleNamespace(
         symbol="AAPL",
@@ -296,7 +298,7 @@ def test_paper_near_miss_uses_configured_score_gap_without_bypassing_safety(tmp_
             is_regular_market_open=lambda: True,
             is_supported_equity=lambda _symbol: True,
         ),
-        strategy_governance=governance,
+        strategy_governance=governance,  # no paper service: lifecycle evidence unavailable
     )
     candidate = SimpleNamespace(
         symbol="NVDA",
@@ -351,6 +353,8 @@ def test_approve_enqueue_execute_records_blocked_candidate_into_funnel(tmp_path)
             is_regular_market_open=lambda: True,
             is_supported_equity=lambda _symbol: True,
         ),
+        # Production wires a paper service; no lifecycle evidence now blocks (10-10).
+        paper_trading_service=SimpleNamespace(lifecycles=lambda limit=1000: []),
     )
     near_miss_candidate = SimpleNamespace(
         symbol="NVDA",
@@ -434,6 +438,8 @@ def _clean_paper_auto_service(settings, *, run_logs, notifier, proposals, execut
             is_regular_market_open=lambda: True,
             is_supported_equity=lambda _symbol: True,
         ),
+        # Production wires a paper service; no lifecycle evidence now blocks (10-10).
+        paper_trading_service=SimpleNamespace(lifecycles=lambda limit=1000: []),
     )
 
 
@@ -558,6 +564,8 @@ def _near_miss_service(settings, *, run_logs, notifier, proposals, execution):
             is_regular_market_open=lambda: True,
             is_supported_equity=lambda _symbol: True,
         ),
+        # Production wires a paper service; no lifecycle evidence now blocks (10-10).
+        paper_trading_service=SimpleNamespace(lifecycles=lambda limit=1000: []),
         strategy_governance=governance,
     )
 

@@ -25,7 +25,7 @@ class FakeRepository:
     def __init__(self, champion):
         self._champion = champion
 
-    def champion(self):
+    def champion(self, *, force_refresh=False):
         return self._champion
 
 

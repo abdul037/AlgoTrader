@@ -84,6 +84,64 @@ class FakeEtoroClient:
         }
 
 
+class DailyHistoryService:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def load_yfinance(self, symbol: str, *, period: str, interval: str, auto_adjust: bool = False):
+        self.calls += 1
+        timestamps = pd.date_range("2026-01-01", periods=30, freq="1D", tz="UTC")
+        return pd.DataFrame(
+            {
+                "timestamp": timestamps,
+                "open": [100.0] * 30,
+                "high": [101.0] * 30,
+                "low": [99.0] * 30,
+                "close": [100.5] * 30,
+                "volume": [1_000_000] * 30,
+            }
+        )
+
+
+def _yfinance_engine(tmp_path, history) -> MarketDataEngine:
+    return MarketDataEngine(
+        make_settings(
+            tmp_path,
+            primary_market_data_provider="yfinance",
+            fallback_market_data_provider="none",
+            market_data_cache_dir=str(tmp_path / "cache"),
+        ),
+        history_service=history,
+    )
+
+
+def test_market_data_engine_write_cache_false_reads_the_cache_but_never_stores(tmp_path) -> None:
+    """Shadow readers (review 10-19): a fresh cached frame is still served, a fetched one is
+    never stored (it would be a live scan's input); every other caller stores as before."""
+
+    history = DailyHistoryService()
+    engine = _yfinance_engine(tmp_path, history)
+    cached = tmp_path / "cache" / "yfinance" / "1d" / "NVDA.csv"
+
+    engine.get_history("NVDA", timeframe="1d", bars=20, write_cache=False)
+    assert history.calls == 1 and not cached.exists()
+    engine.get_history("NVDA", timeframe="1d", bars=20)  # the default: fetched and stored
+    assert history.calls == 2 and cached.exists()
+    frame = engine.get_history("NVDA", timeframe="1d", bars=20, write_cache=False)
+    assert history.calls == 2 and frame.attrs["from_cache"] is True
+
+
+def test_market_data_engine_quote_from_history_honours_write_cache(tmp_path) -> None:
+    history = DailyHistoryService()
+    engine = _yfinance_engine(tmp_path, history)
+    cached = tmp_path / "cache" / "yfinance" / "1d" / "NVDA.csv"
+
+    quote = engine.get_quote("NVDA", timeframe="1d", force_refresh=True, write_cache=False)
+    assert quote.quote_derived_from_history and history.calls == 1 and not cached.exists()
+    engine.get_quote("NVDA", timeframe="1d", force_refresh=True)
+    assert history.calls == 2 and cached.exists()
+
+
 def test_market_data_engine_retries_transient_provider_failure(tmp_path) -> None:
     history = FlakyHistoryService()
     engine = MarketDataEngine(
@@ -280,3 +338,56 @@ def test_market_data_engine_auto_stays_yfinance_without_alpaca_credentials(tmp_p
     )
 
     assert engine._resolve_provider("1d", None) == "yfinance"
+
+
+def test_only_the_backtest_fetch_counts_sessions_and_live_windows_are_unchanged() -> None:
+    def calendar_days(timeframe: str, bars: int, **kwargs) -> int:
+        start, end = MarketDataEngine._history_window(timeframe, bars, **kwargs)
+        return (end - start).days
+
+    # The batch backtest's 120-day minute walk-forward asks for ~85.7 sessions of bars; counted
+    # as calendar days they fetched 90 (~64 sessions, ~10 folds instead of ~13). 126 days = 18
+    # weeks = 90 weekdays, enough for the 86 sessions plus holidays (2026-10-20).
+    for timeframe, bars in (("1m", 33429), ("5m", 6686), ("10m", 3343), ("15m", 2229)):
+        assert calendar_days(timeframe, bars, sessions=True) == 126, timeframe
+        assert calendar_days(timeframe, bars) == 90, timeframe  # as at 1046d29
+    # Live scan windows are exactly the 1046d29 ones, so live frames and indicators are too.
+    live = (("1m", 360), ("5m", 320), ("10m", 320), ("15m", 300), ("1h", 300), ("1d", 500), ("1w", 520))
+    assert [calendar_days(tf, bars) for tf, bars in live] == [5, 9, 13, 16, 80, 1500, 3640]
+
+
+class RecordingAlpacaProvider:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def get_bars(self, symbol: str, *, timeframe: str, start, end, **kwargs):
+        self.calls.append({"days": (end - start).days, **kwargs})
+        stamps = pd.date_range(end - pd.Timedelta(days=1), periods=30, freq="5min")
+        return pd.DataFrame(
+            {"timestamp": stamps, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0}
+        )
+
+
+def test_backtest_fetch_refetches_and_stores_nothing_while_live_fetches_are_unchanged(tmp_path) -> None:
+    alpaca = RecordingAlpacaProvider()
+    engine = MarketDataEngine(
+        make_settings(
+            tmp_path,
+            primary_market_data_provider="alpaca",
+            fallback_market_data_provider="none",
+            market_data_cache_dir=str(tmp_path / "cache"),
+        ),
+        alpaca_provider=alpaca,
+    )
+    cache = tmp_path / "cache"
+
+    engine.get_history("AAPL", timeframe="5m", bars=6686, backtest=True)
+    # Stored nowhere: no CSV a live scan would read, no parquet file per pass.
+    assert alpaca.calls == [{"days": 126, "cache": False}]
+    assert not list(cache.rglob("*.csv"))
+
+    engine.get_history("AAPL", timeframe="5m", bars=320)  # a live scan, exactly as before
+    assert alpaca.calls[-1] == {"days": 9}
+    assert [path.name for path in cache.rglob("*.csv")] == ["AAPL.csv"]
+    engine.get_history("AAPL", timeframe="5m", bars=6686, backtest=True)  # never reads the cache
+    assert len(alpaca.calls) == 3

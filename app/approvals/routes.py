@@ -75,8 +75,15 @@ def approve_proposal(
     decision: ApprovalDecisionRequest,
     request: Request,
 ) -> TradeProposal:
+    from app.performance.paper_only import AUTO_REVIEWER, AUTOMATIC_ONLY, is_paper_only
+
+    service = _proposal_service(request)
     try:
-        return _proposal_service(request).approve_proposal(proposal_id, decision)
+        if decision.reviewer == AUTO_REVIEWER and is_paper_only(
+            service.get_proposal(proposal_id).order.metadata
+        ):  # the unattended path's name is not a client's to give for a paper-only proposal
+            raise ValueError(AUTOMATIC_ONLY)
+        return service.approve_proposal(proposal_id, decision)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:

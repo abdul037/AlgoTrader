@@ -9,13 +9,15 @@ objects and hold no module state beyond the reason-alias table.
 
 from __future__ import annotations
 
+import logging
 from contextlib import suppress
-from datetime import datetime
+from datetime import date, datetime
 from datetime import time as local_time
 from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from app.broker import crypto as crypto_symbols
 from app.models.signal import Signal, SignalAction
 from app.runtime_settings import DEFAULT_PAPER_NEAR_MISS_ALLOWED_REASONS
 from app.screener.filters import FilterOutcome
@@ -24,6 +26,9 @@ from app.screener.profiles import (
     paper_exploration_profile_enabled,
 )
 from app.utils.time import utc_now
+
+_logger = logging.getLogger(__name__)
+
 
 def _is_unattended_paper_exploration(settings: Any) -> bool:
     """True when the bot is running fully autonomous paper exploration.
@@ -201,14 +206,56 @@ def _regular_market_hours_open(settings: Any) -> bool:
     return now.weekday() < 5 and local_time(9, 30) <= now.time() < local_time(16, 0)
 
 
+def _weak_valid_count_rows(repository: Any, today: date) -> Any:
+    """The rows the daily count can use: all of today's candidate rows.
+
+    A status that lowers to ``'candidate'`` (the scan writes exactly that) and
+    ``created_at >= today`` as text: a timestamp written on ``today``, with or without
+    a time, fraction, offset or ``Z``, sorts at or after the bare date and any earlier
+    day before it -- bytewise on SQLite, and on Postgres (a TEXT column) under a
+    bytewise or ICU collation alike. A later date, which only a skewed clock writes, is
+    left to the count's own date check. ``LOWER(status)`` also keeps both databases on
+    ``idx_scan_decisions_created_at`` (on an exact match SQLite walks every candidate
+    row ever written instead). Rows are built by the repository's own converter, after
+    writing this thread's queued scan rows (``flush``), as ``list()`` does. Any other
+    repository (test fakes) keeps the plain ``list()`` call.
+    """
+    from app.storage.repositories import ScanDecisionRepository
+
+    if type(repository) is not ScanDecisionRepository:
+        return repository.list(limit=5000)
+    repository.flush()
+    with repository.db.connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM scan_decisions
+            WHERE LOWER(status) = 'candidate' AND created_at >= ?
+            ORDER BY created_at DESC
+            """,
+            (today.isoformat(),),
+        ).fetchall()
+    return [repository._row_to_model(row) for row in rows]
+
+
+def _weak_valid_daily_limit(settings: Any) -> int:
+    return int(getattr(settings, "paper_supervised_weak_valid_max_proposals_per_day", 4) or 0)
+
+
 def _weak_valid_daily_count(service: Any) -> int:
+    """Today's (UTC date) promoted supervised weak-valid candidates, for the daily cap.
+
+    Fails closed: if the rows cannot be read, or one of them cannot be checked, the
+    count is the daily limit (so the cap reads as reached) and the failure is
+    logged -- never 0, which would let promotions past the cap.
+    """
     repository = getattr(service, "scan_decisions", None)
     if repository is None or not hasattr(repository, "list"):
         return 0
     today = utc_now().date()
     count = 0
-    with suppress(Exception):
-        for row in repository.list(limit=5000):
+    try:
+        for row in _weak_valid_count_rows(repository, today):
             if str(getattr(row, "status", "") or "").lower() != "candidate":
                 continue
             payload = dict(getattr(row, "payload", {}) or {})
@@ -228,6 +275,19 @@ def _weak_valid_daily_count(service: Any) -> int:
                 created_date = created_at.date()
             if created_date == today:
                 count += 1
+    except Exception as exc:  # noqa: BLE001 - fail closed; the scan carries on
+        return _weak_valid_count_failed(service, exc)
+    return count
+
+
+def _weak_valid_count_failed(service: Any, exc: Exception) -> int:
+    count = max(_weak_valid_daily_limit(getattr(service, "settings", None)), 1)
+    error = f"{type(exc).__name__}: {exc}"[:300]
+    _logger.warning("Supervised weak-valid daily count failed, counted as the limit (%s): %s", count, error)
+    logs = getattr(service, "logs", None)
+    if logs is not None:
+        with suppress(Exception):
+            logs.log("paper_supervised_weak_valid_daily_count_failed", {"error": error, "daily_count": count})
     return count
 
 
@@ -247,7 +307,15 @@ def _weak_valid_symbol_blockers(service: Any, symbol: str) -> list[str]:
         except Exception:  # noqa: BLE001
             blockers.append("symbol_blacklist_check_failed")
     alpaca = getattr(auto_trading, "alpaca", None)
-    if alpaca is not None and hasattr(alpaca, "is_supported_equity"):
+    if crypto_symbols.is_crypto_symbol(normalized):
+        # Crypto trades on Alpaca 24/7; check crypto support, not equity support.
+        if alpaca is not None and hasattr(alpaca, "is_supported_crypto"):
+            try:
+                if not bool(alpaca.is_supported_crypto(normalized)):
+                    blockers.append("unsupported_crypto")
+            except Exception:  # noqa: BLE001
+                blockers.append("unsupported_crypto_check_failed")
+    elif alpaca is not None and hasattr(alpaca, "is_supported_equity"):
         try:
             if not bool(alpaca.is_supported_equity(normalized)):
                 blockers.append("unsupported_equity")
@@ -454,7 +522,7 @@ def _paper_supervised_weak_valid_blockers(
     max_scan = int(getattr(settings, "paper_supervised_weak_valid_max_proposals_per_scan", 1) or 0)
     if max_scan <= 0 or weak_valid_scan_count >= max_scan:
         blockers.append("supervised_weak_valid_scan_limit_reached")
-    max_day = int(getattr(settings, "paper_supervised_weak_valid_max_proposals_per_day", 4) or 0)
+    max_day = _weak_valid_daily_limit(settings)
     if max_day <= 0 or weak_valid_daily_count + weak_valid_scan_count >= max_day:
         blockers.append("supervised_weak_valid_daily_limit_reached")
 

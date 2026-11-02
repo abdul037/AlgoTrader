@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.broker.etoro_client import BrokerClient
+from app.broker.etoro_live_room import room_verdict
 from app.config import AppSettings
 from app.models.approval import ApprovalDecisionRequest, ApprovalStatus, TradeProposal, TradeProposalCreate
 from app.models.trade import TradeOrder
@@ -41,7 +42,9 @@ class ProposalService:
 
         order = self._prepare_order(request.to_order())
         risk_context = self._risk_context()
-        risk = self.risk_manager.validate_order(order, risk_context)
+        # Option 3: the live eToro account decides room for orders it would copy.
+        room = room_verdict(getattr(self, "etoro_live_mirror", None), order, signal=request.signal)
+        risk = self.risk_manager.validate_order(order, risk_context, etoro_room=room)
         if not risk.passed:
             raise ValueError("; ".join(risk.reasons))
 
@@ -63,6 +66,7 @@ class ProposalService:
                 "symbol": proposal.order.symbol,
                 "risk_pct_of_balance": risk.risk_pct_of_balance,
                 "risk_amount_usd": risk.risk_amount_usd,
+                "room_authority": risk.room_authority,
             },
         )
         return proposal
@@ -87,6 +91,12 @@ class ProposalService:
         proposal = self.get_proposal(proposal_id)
         if proposal.status != ApprovalStatus.PENDING:
             raise ValueError("Only pending proposals can be approved")
+        from app.performance.paper_only import AUTO_REVIEWER, AUTOMATIC_ONLY, is_paper_only
+
+        # Option B: a paper-only entry is approved by the unattended path in its own pass or
+        # not at all (app/workflow/paper_only.py, rule 6).
+        if is_paper_only(proposal.order.metadata) and decision.reviewer != AUTO_REVIEWER:
+            raise ValueError(AUTOMATIC_ONLY)
         proposal.status = ApprovalStatus.APPROVED
         proposal.approved_by = decision.reviewer
         proposal.decision_notes = decision.notes

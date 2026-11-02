@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -9,6 +11,7 @@ from app.models.paper import (
     PaperLifecycleFlags,
     PaperTradeLifecycleRecord,
 )
+from app.utils.time import utc_now
 from tests.conftest import MockBroker, make_settings
 
 
@@ -45,8 +48,10 @@ def _lifecycle(*, realized_pnl_usd: float = 13000.0) -> PaperTradeLifecycleRecor
         exit_order_id="target",
         exit_fill_price=230.0,
         realized_pnl_usd=realized_pnl_usd,
-        created_at="2026-07-02T14:30:00+00:00",
-        updated_at="2026-07-02T20:00:00+00:00",
+        # Relative to now: a hardcoded 2026-07-02 aged out of the readiness window
+        # on 2026-10-01 and the test started failing on the calendar alone.
+        created_at=(utc_now() - timedelta(days=2, hours=5)).isoformat(),
+        updated_at=(utc_now() - timedelta(days=2)).isoformat(),
         legs=[
             PaperBrokerOrderLeg(side="sell", order_type="limit", limit_price=230.0, status="filled"),
             PaperBrokerOrderLeg(side="sell", order_type="stop", stop_price=90.0, status="canceled"),
@@ -67,8 +72,8 @@ def _lifecycle(*, realized_pnl_usd: float = 13000.0) -> PaperTradeLifecycleRecor
         entry_fill_price=100.0,
         exit_fill_price=230.0,
         realized_pnl_usd=realized_pnl_usd,
-        created_at="2026-07-02T14:30:00+00:00",
-        updated_at="2026-07-02T20:00:00+00:00",
+        created_at=execution.created_at,
+        updated_at=execution.updated_at,
         flags=PaperLifecycleFlags(
             entry_submitted=True,
             entry_filled=True,

@@ -12,6 +12,10 @@ def test_railway_deployment_keeps_single_non_overlapping_service() -> None:
     assert config["build"] == {
         "builder": "DOCKERFILE",
         "dockerfilePath": "Dockerfile",
+        # Markdown-only pushes (OPS_LOG / ROADMAP / README) must not restart the
+        # bot; the include rule must be the gitignore-style "**" (a leading
+        # slash matched nothing and silently skipped a code deploy on 2026-09-08).
+        "watchPatterns": ["**", "!**/*.md", "!/docs/**"],
     }
     assert config["deploy"]["preDeployCommand"] == (
         "python scripts/validate_railway_env.py && alembic upgrade head"

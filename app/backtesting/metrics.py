@@ -23,6 +23,7 @@ DAILY_BARS_PER_YEAR = 252
 WEEKLY_BARS_PER_YEAR = 52
 HOURLY_BARS_PER_YEAR = 1638  # ~6.5h session x 252 days
 FIFTEEN_MIN_BARS_PER_YEAR = 6552
+TEN_MIN_BARS_PER_YEAR = 9828
 FIVE_MIN_BARS_PER_YEAR = 19656
 ONE_MIN_BARS_PER_YEAR = 98280
 
@@ -36,6 +37,9 @@ def bars_per_year_for(timeframe: str) -> int:
     mapping = {
         "1m": ONE_MIN_BARS_PER_YEAR,
         "5m": FIVE_MIN_BARS_PER_YEAR,
+        # Without it 10m fell back to 252 and ran as a daily strategy: no session-close
+        # flatten, no session-ATR stop floor, no extended-hours spread (2026-10-20).
+        "10m": TEN_MIN_BARS_PER_YEAR,
         "15m": FIFTEEN_MIN_BARS_PER_YEAR,
         "1h": HOURLY_BARS_PER_YEAR,
         "60m": HOURLY_BARS_PER_YEAR,

@@ -65,10 +65,10 @@ def resolve_live_strategy_names(service: Any) -> list[str]:
 
     Uses ``live_signal_strategy_names`` when set, otherwise falls back to
     ``screener_active_strategy_names``; the alias ``"all"`` expands to the core
-    strategy pack. The gold-only strategy is never run on equities.
+    strategy pack. The gold-only strategy is never run on equities, nor a retired one.
     """
 
-    from app.strategies import CORE_STRATEGY_NAMES, STRATEGY_REGISTRY
+    from app.strategies import CORE_STRATEGY_NAMES, STRATEGY_REGISTRY, is_retired
 
     configured = list(getattr(service.settings, "live_signal_strategy_names", []) or [])
     if not configured:
@@ -79,7 +79,7 @@ def resolve_live_strategy_names(service: Any) -> list[str]:
         name = str(raw).strip().lower()
         if name == "all":
             names.extend(sorted(CORE_STRATEGY_NAMES))
-        elif name in STRATEGY_REGISTRY:
+        elif name in STRATEGY_REGISTRY and not is_retired(name):
             names.append(name)
 
     resolved: list[str] = []
