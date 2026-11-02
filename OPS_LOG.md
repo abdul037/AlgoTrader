@@ -12,6 +12,68 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-11-02 (Mon) — sector limit live; news, momentum and defensive research find no edge; PR #32 merged
+
+- **Later on 11-01 (UTC):**
+  - **Held-stock sentiment** (`app/workflow/sentiment_now.py`, display only, `999866e`, boot
+    10:12 UTC): news and eToro crowd for every stock open on paper or AlgoBot, refreshed every
+    2 h (`sentiment:open`), at most 3 eToro reads a run.
+  - **eToro feed fixes.** The feed answered 200 with no list under the expected keys: the reader now
+    finds the list under any key and tries both documented paths (`5936273`, boot 14:43 UTC). That
+    found about 100 items a stock, but nested (`post.message.text`, `post.created`, ...), so none
+    counted: a breadth-first field finder plus the recorded field layout (`item_paths`), shipped
+    with the news research job (`72a5df1`, boot 20:14:08 UTC).
+  - **Operator: "do all the points"** (the to-build list: 4 news rule, 5 better news scoring,
+    6 sector limit, 7 momentum study, 8 defensive study, 9 Telegram, 10 Railway re-auth,
+    11 merge into main).
+  - **6, sector limit deployed** Sun 20:56 UTC (`b6a60f3`; 1,841 tests pass, CI green; Railway
+    reported it live 21:00:55 UTC). At most 2 open paper positions per GICS sector on a new buy
+    (`max_open_positions_per_sector`; the sector-ETF proxies fold into GICS sectors; index funds
+    and unmapped names are never capped). Paper room only: while eToro's room decides an order the
+    mirror would copy, eToro's own group cap of 4 applies, so paper's holdings never block a
+    real-money copy. Applying it to eToro would be a separate yes. At deploy paper held 4
+    information technology names (MSFT, CRM, AAPL, ADBE) and 2 consumer staples (WMT, COST), so
+    new paper buys in those two sectors wait for a close.
+  - **8, defensive trend study** (`claude/wip-defensive-study` @ `13bb642`,
+    `docs/research/defensive_trend_study.md`, pre-registered): no rule passes. The best, SPY only
+    while its month-end close is above its 10-month average, 2007-2026 after costs: 7.88% a year
+    (SPY 10.78%), worst fall -24.7% (SPY -55.2%), missing the pre-registered return floor (8.08%)
+    by 0.20 points. It held 2008 to -9.9% but lost more than SPY in 2022 (-24.7% vs -24.5%, worse
+    on the way back). No rule earned measurably more per unit of risk than SPY (every bootstrap
+    interval spans zero); a 60/40 SPY/bond mix earned the same 7.9%; 8-, 9- and 12-month averages
+    pass where the planned 10 does not (fragile). A trade of return for a smaller worst case, not
+    an edge.
+  - **7, momentum study** (`claude/wip-momentum-study` @ `56375f3`,
+    `docs/research/momentum_study.md`, pre-registered): buying the 20 strongest of today's S&P 500
+    members monthly passes on paper (M1, M3, M4: 26-31% a year on $10k after costs vs SPY 13.9%),
+    but 43% of M1's holdings were not in the index yet: they are on today's list because they kept
+    rising. On stocks already in the index on each date every variant fails every test (M1 17.2% a
+    year at zero cost, Sharpe 0.77 vs SPY 0.87, over equal weight +5.3% a year, Holm p 0.30). It
+    lost 24% and 21% in July and October 2026 (16 of 20 names in chips and hardware), and $1 fees
+    would take 27-43% a year of a $500 copy. Not a demonstrated edge; no real money.
+- **00:37 UTC:** one `etoro_live_exit_copy_read_failed` (eToro dropped the connection); the next
+  sweeps read normally.
+- **05:08 UTC, news research complete** (`sentiment:backtest:summary`): 3,248 daily walk-forward
+  trades on 1,805 stock-days (May 2025 - Oct 2026), news from the 72 h before each open, scored as
+  at live entries. Positive news 1,837 trades -0.040 R (44.2% won, t -1.92); neutral 380 -0.052 R;
+  negative 384 +0.053 R (51.6%, t 1.25); no stock news 378 +0.058 R; no mood words 269 -0.059 R.
+  Skipping negative news would have blocked better trades (removed +0.053 R, kept -0.030 R).
+  Skipping positive news removes 57% of trades at -0.040 R and keeps +0.005 R, about zero, with
+  t under 2 even before allowing for same-day trades moving together. **Decision: 4 and 5 not
+  built** (no news rule; no AI scorer, which could only sharpen a signal this weak). Recording at
+  live entries continues.
+- **eToro crowd, 08:38 UTC refresh:** posts now read (MSFT 59 in 24 h, AAPL 45, TSLA 18, WMT 5)
+  with a word mood. `trade_opens` is 0 for every stock: the feed carries users' posts, not their
+  trades (`additionalData` holds only `reliableRecAiAssets`), so there is no BUY share; the crowd
+  reading is post mood only.
+- **Scorecard v12** (artifact GHdfkyLvv8ZQqGWfvoV5f9): the news research verdict with the luck
+  caveat; eToro crowd shown as post mood.
+- **11, PR #32** description refreshed and merged into `main` (`59b0917`, merge commit; no
+  conflicts, `main` was an ancestor). Railway still deploys `claude/repo-audit-962zde`.
+- **Still the operator's:** 9, Telegram (`TELEGRAM_ENABLED=true`, bot token and chat ID in
+  Railway); 10, re-authorise the Railway connector in claude.ai. Parked: intraday fast paths,
+  shorts steps 3-4 (not approved), the database move.
+
 ## 2026-11-01 (Sun) — rotation strategy retired; eToro copies need a paper record
 
 - **Trading 10-27..30:** paper closed AMZN -$501.02 (ema_trend_stack), NVDA -$511.61 and SPY
