@@ -61,7 +61,10 @@ without explicit operator sign-off recorded here.
   Skipping positive news removes 57% of trades at -0.040 R and keeps +0.005 R, about zero, with
   t under 2 even before allowing for same-day trades moving together. **Decision: 4 and 5 not
   built** (no news rule; no AI scorer, which could only sharpen a signal this weak). Recording at
-  live entries continues.
+  live entries continues. Per strategy (small groups, noise): ema_trend_stack positive news 147
+  trades +0.020 R, negative 32 -0.063 R, no news 41 -0.208 R (t -1.86); momentum_breakout positive
+  158 +0.045 R, negative 21 +0.199 R, neutral 19 -0.375 R (t -1.97), no news 21 +0.538 R. Limits:
+  a word-list scorer, 18 months, 25 stocks, backtest (not live) trades.
 - **eToro crowd, 08:38 UTC refresh:** posts now read (MSFT 59 in 24 h, AAPL 45, TSLA 18, WMT 5)
   with a word mood. `trade_opens` is 0 for every stock: the feed carries users' posts, not their
   trades (`additionalData` holds only `reliableRecAiAssets`), so there is no BUY share; the crowd
