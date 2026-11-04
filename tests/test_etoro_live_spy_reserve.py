@@ -272,3 +272,35 @@ def test_the_guard_runs_the_top_up(monkeypatch) -> None:
     monkeypatch.setattr(guard, "top_up", lambda mirror: {"bought": 4311.87})
     mirror = SimpleNamespace(logs=_Logs(), state={})
     assert "etoro_live_spy_reserve" in guard.run_live_checks(mirror, None)
+
+
+def test_the_guard_prices_the_spy_and_records_the_account_value(tmp_path, monkeypatch) -> None:
+    client = _Etoro(credit=2600.0, positions=[_spy(4311.87, pid=7)])
+    service = _mirror(tmp_path, client)
+    service.state.set(reserve.RESERVE_KEY, json.dumps({"instrument_id": SPY_ID}))
+    monkeypatch.setattr(backup_stop, "utc_now", lambda: THURSDAY_10AM_NY)
+    monkeypatch.setattr(backup_stop, "fresh_rate", lambda client, symbol: 510.0)  # bought at 500
+    backup_stop.check_backup_stops(service)  # no strategy stops at all: SPY alone is priced
+    assert json.loads(service.state.get(backup_stop.MARKS_KEY))["SPY"]["rate"] == 510.0
+    rows = json.loads(service.state.get(backup_stop.POSITIONS_KEY))["positions"]
+    assert [r["symbol"] for r in rows] == ["SPY"]
+    history = json.loads(service.state.get(backup_stop.VALUE_KEY))
+    units = 4311.87 / RATE
+    assert history["day"] == "2026-11-05" and history["points"][-1][1] == round(2600.0 + units * 510.0, 2)
+
+
+def test_the_value_history_starts_each_new_york_day_from_the_last_close(tmp_path, monkeypatch) -> None:
+    client = _Etoro(credit=2600.0, positions=[_spy(4311.87, pid=7)])
+    service = _mirror(tmp_path, client)
+    service.state.set(reserve.RESERVE_KEY, json.dumps({"instrument_id": SPY_ID}))
+    service.state.set(backup_stop.VALUE_KEY, json.dumps({"day": "2026-11-04", "prev_close": 9800.0, "points": [["t", 9900.0]]}))
+    monkeypatch.setattr(backup_stop, "utc_now", lambda: THURSDAY_10AM_NY)
+    backup_stop.check_backup_stops(service)
+    history = json.loads(service.state.get(backup_stop.VALUE_KEY))
+    assert history["prev_close"] == 9900.0 and len(history["points"]) == 1
+
+
+def test_nothing_is_read_without_stops_or_a_spy_reserve(tmp_path) -> None:
+    client = _Etoro()
+    client.fetch_raw_portfolio = lambda: pytest.fail("no eToro read needed")
+    assert backup_stop.check_backup_stops(_mirror(tmp_path, client)) is None
