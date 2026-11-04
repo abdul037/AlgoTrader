@@ -488,13 +488,15 @@ class EtoroLiveMirrorService:
         if trades_today is None or trades_today >= HARD_MAX_TRADES_PER_DAY:
             reasons.append("etoro_live_daily_trade_cap")  # an unreadable count is a full day
         from app.broker.etoro_live_room import bucket_blockers, effective_open_symbols
+        from app.broker.etoro_live_spy_reserve import counted_symbols
 
         held = effective_open_symbols(self.state, state)  # ids mapped, unfilled orders kept
         if order.symbol.upper() in held:
             reasons.append("etoro_live_symbol_already_open")
-        if len(held) >= HARD_MAX_OPEN_POSITIONS:
+        trades = counted_symbols(settings, held)  # the SPY reserve is idle cash, not a trade
+        if len(trades) >= HARD_MAX_OPEN_POSITIONS:
             reasons.append("etoro_live_open_position_cap")
-        reasons.extend(bucket_blockers(order.symbol, held))
+        reasons.extend(bucket_blockers(order.symbol, trades))
         start, last = _finite(state.get("day_start_equity")), _finite(state.get("last_equity"))
         if start is None or start <= 0:
             reasons.append("etoro_live_day_start_unknown")  # the loss stop cannot be checked
@@ -523,18 +525,22 @@ class EtoroLiveMirrorService:
         if stake is None or stake < MIN_TRADE_USD or equity is None or equity <= 0:
             return None, []  # refused above (equity unknown, unsized or below the minimum)
         from app.broker.etoro_live_room import open_exposure_usd
+        from app.broker.etoro_live_spy_reserve import sellable_usd
 
         exposure = open_exposure_usd(self.state, state)
         if exposure is None or _finite(exposure) is None:  # an unreadable position: no copy
             return None, ["etoro_live_exposure_unknown"]
+        spare = sellable_usd(self.settings, state)  # SPY the copy may sell first (2026-11-04)
         rooms = {
-            "etoro_live_exposure_cap": equity * HARD_MAX_EXPOSURE_PCT_OF_EQUITY / 100.0 - exposure
+            "etoro_live_exposure_cap": equity * HARD_MAX_EXPOSURE_PCT_OF_EQUITY / 100.0
+            - exposure
+            + spare
         }
         cash = state.get("last_cash")
         if cash is not None:  # only trade with money left; a NaN or infinite cash refuses
             finite = _finite(cash)
             rooms["etoro_live_insufficient_cash"] = (
-                math.nan if finite is None else finite - CASH_RESERVE_USD
+                math.nan if finite is None else finite - CASH_RESERVE_USD + spare
             )
         return fit_to_room(stake, rooms)
 
@@ -586,6 +592,20 @@ class EtoroLiveMirrorService:
             self.logs.log(
                 "etoro_live_mirror_blocked",
                 {"symbol": symbol, "proposal_id": proposal.id, "reasons": ["etoro_live_unsized"]},
+            )
+            return None
+        from app.broker.etoro_live_spy_reserve import release_for_copy
+
+        try:  # sell the SPY reserve's shortfall first (operator 2026-11-04); no-op with cash
+            state = release_for_copy(self, state, float(amount))
+        except Exception as exc:  # noqa: BLE001 - this copy is refused; nothing halts
+            self.logs.log(
+                "etoro_live_mirror_blocked",
+                {
+                    "symbol": symbol,
+                    "proposal_id": proposal.id,
+                    "reasons": [f"etoro_live_spy_reserve_release_failed:{str(exc)[:160]}"],
+                },
             )
             return None
         if leverage > 1:
@@ -705,16 +725,21 @@ class EtoroLiveMirrorService:
         credit = (raw.get("clientPortfolio", {}) or {}).get("credit")
         if credit is not None:
             state["last_cash"] = round(float(credit), 2)  # free cash, for the funds check
-        state["open_symbols"] = sorted({str(p.symbol).upper() for p in portfolio.positions})
-        by_position = {p.position_id: str(p.symbol).upper() for p in portfolio.positions}
+        from app.broker.etoro_live_spy_reserve import position_symbol, reserve_instrument_id
+
+        spy_id = reserve_instrument_id(self.settings, self.state)  # SPY by id, whatever the lookup
+        state["open_symbols"] = sorted({position_symbol(p, spy_id) for p in portfolio.positions})
+        by_position = {p.position_id: position_symbol(p, spy_id) for p in portfolio.positions}
         state["open_notional"] = open_notional(raw, by_position)
         closed: list[str] = []
+        from app.broker.etoro_live_spy_reserve import is_reserve_symbol
+
         for item in (raw.get("clientPortfolio", {}) or {}).get("positions", []) or []:
             if item.get("stopLossRate") and not bool(item.get("isNoStopLoss")):
                 continue
             symbol = by_position.get(item.get("positionID"))
-            if not symbol:
-                continue
+            if not symbol or is_reserve_symbol(self.settings, symbol):
+                continue  # the SPY reserve has no stop by design (operator 2026-11-04, version A)
             try:
                 self.client.close_position_by_id(
                     int(item["positionID"]), int(item.get("instrumentID") or 0)

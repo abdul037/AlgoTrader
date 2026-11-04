@@ -12,6 +12,45 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-11-04 (Wed) — idle cash in SPY (operator: "SPY A"); trades 11-02..04
+
+- **Trades.**
+  - Mon 11-02 17:46 UTC: WMT (ema_trend_stack) hit its target on both accounts. Paper +$1,060.82;
+    eToro +$144.40 on $993.20 (+14.5%, 2.19 R, no fees; the operator's 5% copy about +$7.22).
+  - Tue 11-03: paper stops AAPL -$474.70 (ema_trend_stack) and CRM -$525.36 (rotation), neither on
+    eToro; XOM opened 16:22 UTC as a paper-only entry (eToro: `etoro_live_paper_only`; news positive,
+    analyst target raises; 9 eToro posts, neutral).
+  - Wed 11-04 16:36 UTC: XOM stopped on paper, -$426.16. No eToro trade 11-03..04. 18:30 UTC: AlgoBot
+    $9,896.94 at cost (cash $6,911.87; PYPL, DIS, MSFT open, +$247 at eToro's marks), about +$144
+    overall since 10-04; paper +$751.51 on the day (Alpaca).
+  - The sector limit blocked nothing yet; no strategy passed the copy check (none of 49 passes its
+    backtest: daily average -0.045 R, 5/10/15-minute about -0.10 R a trade over 20,000 trades).
+- **Operator correction:** the operator's real money is a $500 eToro copy of AlgoBot (5% of its
+  $10,000); AlgoBot's figures are not the operator's. The scorecard now shows both.
+- **Scorecard v13-v15** (artifact GHdfkyLvv8ZQqGWfvoV5f9): a closed-trades table (AlgoBot and the
+  operator's copy side by side), "AlgoBot" on the top figures, a Status panel (today, what is
+  live, research results, what waits on the operator), a paper-account section (open, and closed
+  in the last 14 days), and the SPY holding.
+- **Operator: idle cash -> SPY, version A ("SPY A, and buy SPY today").** Options given: A always
+  hold SPY (2007-2026: 10.8% a year, worst fall -55%) or B hold it only above its 10-month average
+  (7.9%, -25%; recommended); risk per trade (0.5%) and leverage (1x) unchanged and not approved
+  to change. Not bought today: deploying in the session would restart the bot, so the first buy is
+  Thu 11-05 at 09:45 New York (14:45 UTC); the operator was told not to buy SPY by hand (reconcile
+  closes any live position without a stop).
+  - `app/broker/etoro_live_spy_reserve.py` (`etoro_live_spy_reserve_enabled`, default on): once a
+    New York trading day between 09:45 and 15:45 New York with Alpaca's clock open, buy SPY with the
+    cash above a $2,500 buffer and the $100 reserve, the holding at most 60% of equity at cost,
+    nothing under $50, the day written before the order. No stop or target (version A); reconcile
+    skips it (by symbol and by its stored instrument id, so a failed name lookup cannot close it).
+    It counts toward neither the 9-position nor the group cap, but toward the 100% exposure cap,
+    where a copy's room is credited with 90% of its cost. A copy short of cash first sells SPY units
+    worth the shortfall plus 1% (partial close, `UnitsToDeduct`; the whole lot if under $20 would
+    be left), waits up to 15 s for eToro's cash; a failed sale refuses that copy only, never halts.
+    Off: no buys or sales, and reconcile closes the stop-less SPY (off means out of SPY).
+  - Expected at the first buy: about $4,300 of SPY (cash $6,912 - $2,500 - $100), about $215 in the
+    operator's copy. To verify on 11-05: eToro accepts the stop-less 1x order, and the copy follows
+    the buy (and later the partial sales) in proportion.
+
 ## 2026-11-02 (Mon) — sector limit live; news, momentum and defensive research find no edge; PR #32 merged
 
 - **Later on 11-01 (UTC):**

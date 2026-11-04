@@ -243,9 +243,12 @@ class EToroClient(BrokerClient):
             raise ValueError(f"No open position found for {instrument.symbol}")
         return self.close_position_by_id(position.position_id, broker_instrument["instrument_id"])
 
-    def close_position_by_id(self, position_id: int, instrument_id: int) -> BrokerOrderResponse:
+    def close_position_by_id(
+        self, position_id: int, instrument_id: int, *, units_to_deduct: float | None = None
+    ) -> BrokerOrderResponse:
         """Close one eToro position by its ids (no symbol lookup, so it also works for
-        instruments outside the equity allowlist, e.g. a crypto test position)."""
+        instruments outside the equity allowlist, e.g. a crypto test position). With
+        ``units_to_deduct`` only that many units are sold (the SPY reserve's partial sale)."""
 
         self._ensure_order_mode_allowed()
         if self.settings.broker_simulation_enabled:
@@ -259,7 +262,7 @@ class EToroClient(BrokerClient):
         response = self._request(
             "POST",
             self._trading_execution_path(f"market-close-orders/positions/{position_id}"),
-            json_body={"InstrumentID": instrument_id, "UnitsToDeduct": None},
+            json_body={"InstrumentID": instrument_id, "UnitsToDeduct": units_to_deduct},
         )
         order_for_close = response.get("orderForClose", {})
         return BrokerOrderResponse(

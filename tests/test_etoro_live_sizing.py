@@ -391,7 +391,9 @@ def test_parity_with_d2c7faf_on_seeded_orders(tmp_path) -> None:
     old_mirror = _baseline("_baseline_mirror", "app/broker/etoro_live_mirror.py")
     old_room = _baseline("_baseline_room", "app/broker/etoro_live_room.py")
     assert (old_mirror.HARD_MAX_TRADES_PER_DAY, old_mirror.HARD_MAX_TRADE_USD) == (2, 1_000.0)
-    settings = _mirror(tmp_path)[0].settings
+    # The SPY reserve (2026-11-04) is off here: it is tested on its own, and at d2c7faf a held
+    # SPY was an ordinary position.
+    settings = _mirror(tmp_path)[0].settings.model_copy(update={"etoro_live_spy_reserve_enabled": False})
     rng = random.Random(20261026)
     seen = {"copied": 0, "exposure": 0, "third": 0, "same": 0, "old_refused_new_copies": 0}
     for index in range(600):

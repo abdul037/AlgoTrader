@@ -27,6 +27,7 @@ from app.broker.etoro_live_backup_stop import check_backup_stops
 from app.broker.etoro_live_daily_report import maybe_send_daily_report
 from app.broker.etoro_live_exit_copy import copy_paper_exits, paper_reader
 from app.broker.etoro_live_scorecard import update_scorecard
+from app.broker.etoro_live_spy_reserve import top_up
 from app.utils.time import utc_now
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,7 @@ def run_live_checks(mirror: Any, tester: Any | None) -> list[str]:
         ("etoro_live_backup_stop", backup_stops),
         ("etoro_live_exit_copy", lambda: bool(copy_paper_exits(mirror, _symbols(closes)))),
         ("etoro_live_scorecard", lambda: update_scorecard(mirror, closes) > 0),
+        ("etoro_live_spy_reserve", lambda: bool((top_up(mirror) or {}).get("bought"))),
         ("etoro_live_overnight_alert", lambda: _overnight_alerts(mirror) > 0),
         ("etoro_live_daily_report", lambda: maybe_send_daily_report(mirror)),
     ):
@@ -168,6 +170,8 @@ def attach_live_guard(
         proposals.etoro_live_mirror = mirror  # option 3: eToro room at proposal time too
     if paper is not None and hasattr(paper, "get_portfolio"):
         mirror.paper_reader = paper_reader(paper)
+    if paper is not None and hasattr(paper, "is_regular_market_open"):
+        mirror.market_open = paper.is_regular_market_open  # the SPY reserve's buy window
     mirror.overnight_alert = OvernightAdverseMoveAlert(
         mirror=mirror, bars=bars, stop_hits=stop_hit_reader(tracked_signals)
     )

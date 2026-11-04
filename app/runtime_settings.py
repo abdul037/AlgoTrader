@@ -635,6 +635,10 @@ class AppSettings(BaseSettings):
     # Option 3 (operator 2026-10-06): while the mirror would copy an order, eToro's own room
     # (6 positions, 3 per group, free cash) replaces paper's gross/sector/correlated limits.
     etoro_live_room_authority_enabled: bool = True
+    # Operator 2026-11-04 ("SPY A"): AlgoBot's idle cash held in SPY, always held, sold as copies
+    # need cash (app/broker/etoro_live_spy_reserve.py). Off: no buys or sales, and reconcile then
+    # closes the stop-less SPY like any unprotected position.
+    etoro_live_spy_reserve_enabled: bool = True
     # Live stop-width floor in prior-session ATRs (widens stop and target, keeping
     # R:R; sizing keeps $ risk constant). 0 = off until the intraday walk-forward
     # shows a floor improves out-of-sample expectancy. Backtests use the same value.
