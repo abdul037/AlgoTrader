@@ -12,6 +12,30 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-11-05 (Thu) — SPY bought 11-04; copying halted by eToro read timeouts; fix
+
+- **Wed 11-04, operator: "the market is open for now" -> deploy now (asked: a mid-session restart
+  of about 2 minutes; answer "Yes, deploy now").** `756708e` pushed 19:19 UTC after 1,861 tests
+  passed; the new container booted about 19:23:40 UTC.
+- **SPY bought 19:24:37 UTC:** eToro position 3626565679 (instrument 3000), 5.614706 units at
+  $767.96, $4,311.87, no fees; AlgoBot cash $2,600 left. eToro set a placeholder stop of 0.0001
+  (no stop). Every reconcile since lists SPY with `closed_unprotected` [] (checked to 07:36 UTC).
+- **Operator added $500 to the copy (about 19:21 UTC):** the copy is $1,000, about 10% of AlgoBot
+  for trades opened since; the positions open before stay at their 5% size.
+- **Scorecard v13-v19:** your-copy share per trade by its open date (5% before 4 Nov 19:20 UTC,
+  10% since), real money first and separate (account value now, since 4 Oct), paper below with its
+  own equity line, refresh every 15 s, SPY labelled and priced, a today's-growth chart (fed by the
+  value history below).
+- **`35acd68` (built 11-04, deployed 11-05):** the guard prices SPY each minute and appends the
+  account value at eToro's prices to `etoro_live:value_history` (display only). The 21:03 UTC
+  deploy task was lost to a session restart.
+- **The mirror halted three times on reconcile READ timeouts** (19:39, 20:41, 22:45 UTC, "Broker
+  request failed: The read operation timed out"; eToro's API was slow all evening, 36 guard read
+  errors overnight). Halted, no copy, SPY top-up or sale can happen; nothing in the account changed.
+  **Fix `8832c11`:** a failed reconcile read is logged (`etoro_live_reconcile_read_failed`) and
+  retried; only 3 in a row (about 90 minutes) halt; a good read resets the count. Operator 11-05
+  08:4x UTC: "Yes, clear and deploy" -> deployed before the open and the halt cleared.
+
 ## 2026-11-04 (Wed) — idle cash in SPY (operator: "SPY A"); trades 11-02..04
 
 - **Trades.**
