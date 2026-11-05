@@ -157,6 +157,11 @@ LEVERAGE_TEST_ENABLED = False
 
 HALTED_KEY = "etoro_live:halted"
 STATE_KEY = "etoro_live:state"
+# 2026-11-04: eToro's API timed out for hours and each failed reconcile READ halted the mirror
+# (3 halts, all copies stopped although nothing had changed). A failed read changes nothing, so
+# only this many failures in a row (about 90 minutes at the 30-minute cadence) halt it now.
+RECONCILE_FAILURES_KEY = "etoro_live:reconcile_failures"
+RECONCILE_FAILURES_TO_HALT = 3
 
 
 def build_live_client(settings: Any) -> Any | None:
@@ -714,8 +719,18 @@ class EtoroLiveMirrorService:
             if isinstance(exc, EToroRateLimitError):  # local cooldown: skip, don't halt
                 self.logs.log("etoro_live_reconcile_rate_limited", {"error": str(exc)})
                 return None
-            self._halt(f"reconcile_failed:{exc}")
+            failures = self._reconcile_failures() + 1
+            self.state.set(RECONCILE_FAILURES_KEY, str(failures))
+            if failures < RECONCILE_FAILURES_TO_HALT:  # a read changed nothing: try again later
+                self.logs.log(
+                    "etoro_live_reconcile_read_failed",
+                    {"error": str(exc)[:300], "consecutive": failures},
+                )
+                return None
+            self._halt(f"reconcile_failed:{failures}_in_a_row:{exc}")
             return None
+        if self._reconcile_failures():
+            self.state.set(RECONCILE_FAILURES_KEY, "0")
         state = self._state()
         equity = account_value_at_cost(raw, fallback=float(portfolio.account.equity or 0.0))
         start = _finite(state.get("day_start_equity"))
@@ -758,6 +773,12 @@ class EtoroLiveMirrorService:
         return summary
 
     # -- helpers ---------------------------------------------------------------
+    def _reconcile_failures(self) -> int:
+        try:
+            return max(int(self.state.get(RECONCILE_FAILURES_KEY) or 0), 0)
+        except (TypeError, ValueError):
+            return RECONCILE_FAILURES_TO_HALT  # unreadable: as if the limit were reached
+
     def _state(self) -> dict[str, Any]:
         today = utc_now().date().isoformat()
         try:
