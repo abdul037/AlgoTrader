@@ -1,0 +1,1428 @@
+<title>AlgoBot Live Scorecard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=Public+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a trading-desk ledger. Status strip, live eToro P/L, which strategies eToro may copy,
+   one card per live trade with an R ruler (stop = -1R, entry = 0, target = planned R), then
+   strategy verdicts, the pre-market list and the bot's event log. */
+:root {
+  --bg: #f3f5f7;
+  --surface: #ffffff;
+  --ink: #17202b;
+  --muted: #5b6878;
+  --line: #d9dfe6;
+  --track: #e7ebf0;
+  --accent: #2b5d8a;
+  --gain: #16794c;
+  --loss: #b4372d;
+  --warn: #9a6a00;
+  --gain-soft: #e3f3ea;
+  --loss-soft: #f8e5e2;
+  --warn-soft: #f6edd6;
+  --accent-soft: #e4edf6;
+  --font-display: "Familjen Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Public Sans", "Segoe UI", system-ui, sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11161c; --surface: #18202a; --ink: #e6ebf1; --muted: #93a1b2; --line: #2a3542;
+    --track: #232e3a; --accent: #7fb0dd; --gain: #4cc38a; --loss: #f0796d; --warn: #e2b44c;
+    --gain-soft: #16342a; --loss-soft: #3a1f1d; --warn-soft: #3a3019; --accent-soft: #1d2d3d;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11161c; --surface: #18202a; --ink: #e6ebf1; --muted: #93a1b2; --line: #2a3542;
+  --track: #232e3a; --accent: #7fb0dd; --gain: #4cc38a; --loss: #f0796d; --warn: #e2b44c;
+  --gain-soft: #16342a; --loss-soft: #3a1f1d; --warn-soft: #3a3019; --accent-soft: #1d2d3d;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 14px;
+  line-height: 1.5; padding-inline: 16px; padding-block: 20px 40px;
+}
+.wrap { max-width: 1080px; margin: 0 auto; display: grid; gap: 22px; grid-template-columns: minmax(0, 1fr); }
+h1, h2 { font-family: var(--font-display); margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+h1 { font-size: 1.75rem; font-weight: 700; }
+h2 { font-size: 1.1rem; font-weight: 600; }
+.num, .mono { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+.label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+.muted { color: var(--muted); }
+header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 12px; }
+.sub { color: var(--muted); max-width: 62ch; }
+.updated { text-align: right; font-size: 0.82rem; color: var(--muted); }
+.strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px;
+  background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.cell { background: var(--surface); padding: 12px 14px; display: grid; gap: 4px; min-width: 0; }
+.cell .v { font-size: 1.05rem; font-weight: 600; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; font-weight: 600;
+  padding: 2px 9px; border-radius: 999px; width: fit-content; }
+.pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.ok { color: var(--gain); background: var(--gain-soft); }
+.bad { color: var(--loss); background: var(--loss-soft); }
+.wait { color: var(--warn); background: var(--warn-soft); }
+.info { color: var(--accent); background: var(--accent-soft); }
+.off { color: var(--muted); background: var(--track); }
+.notice { border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 14px 16px; }
+.notice.err { border-color: var(--loss); }
+.trades { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 14px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px;
+  display: grid; gap: 14px; min-width: 0; }
+.card-head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+.sym { font-family: var(--font-display); font-size: 1.45rem; font-weight: 700; line-height: 1.1; }
+.strat { color: var(--muted); font-size: 0.85rem; overflow-wrap: anywhere; }
+.big { text-align: right; }
+.big .r { font-family: var(--font-data); font-size: 1.35rem; font-weight: 500; }
+.gain { color: var(--gain); } .loss { color: var(--loss); }
+.ruler { display: grid; gap: 4px; }
+.ruler svg { width: 100%; height: 46px; display: block; overflow: visible; }
+.ruler-legend { display: flex; justify-content: space-between; font-size: 0.72rem; color: var(--muted); }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 12px; }
+.stat { display: grid; gap: 1px; min-width: 0; }
+.stat .v { font-family: var(--font-data); font-size: 0.92rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.foot { font-size: 0.78rem; color: var(--muted); border-top: 1px solid var(--line); padding-top: 10px; }
+.table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+table { border-collapse: collapse; width: 100%; min-width: 640px; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+td.n, th.n { text-align: right; font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+td.strong { font-weight: 700; }
+tr.total td { border-top: 2px solid var(--line); border-bottom: none; font-weight: 600; }
+.small { font-size: 0.8rem; }
+table.pl { min-width: 0; }
+table.pl .sub { font-size: 0.75rem; }
+table.pl td.n, table.pl th.n { white-space: nowrap; }
+table.cc { min-width: 0; }
+table.cc .sub { font-size: 0.75rem; font-family: var(--font-data); font-variant-numeric: tabular-nums; margin-top: 3px; }
+table.cc .pill { white-space: nowrap; }
+table.cc tr.can td:first-child { box-shadow: inset 3px 0 0 var(--gain); }
+table.pm { min-width: 0; }
+table.pm .sub { font-size: 0.75rem; }
+table.pm td.rank { font-family: var(--font-data); color: var(--muted); width: 2.5em; }
+table.pm td.n, table.pm th.n { white-space: nowrap; }
+table.pm .flags { display: flex; flex-wrap: wrap; gap: 4px; }
+table.pm .flags .pill { white-space: nowrap; }
+table.pm .show-sm { display: none; }
+.pm-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.pm-sub { color: var(--muted); font-size: 0.85rem; }
+.status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 14px; }
+.status-grid h3 { margin: 0 0 8px; font-size: 0.95rem; }
+.status-grid ul { margin: 0; padding-left: 18px; }
+.status-grid li { margin: 5px 0; font-size: 0.9rem; }
+@media (max-width: 560px) {
+  table.pl .hide-sm, table.pm .hide-sm, table.cc .hide-sm { display: none; }
+  table.pm .show-sm { display: flex; margin-top: 4px; }
+  table.pl th, table.pl td, table.pm th, table.pm td, table.cc th, table.cc td { padding: 9px 8px; }
+}
+.events { display: grid; gap: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+.event { display: grid; grid-template-columns: 150px 1fr; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.event:last-child { border-bottom: 0; }
+.event .t { font-family: var(--font-data); font-size: 0.8rem; color: var(--muted); }
+section { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr); }
+.notes { font-size: 0.8rem; color: var(--muted); display: grid; gap: 4px; max-width: 80ch; }
+button { font: inherit; font-weight: 600; color: var(--accent); background: var(--accent-soft);
+  border: 1px solid transparent; border-radius: 8px; padding: 5px 12px; cursor: pointer; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 560px) {
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .event { grid-template-columns: 1fr; gap: 2px; }
+  .updated { text-align: left; }
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <h1>AlgoBot Live Scorecard</h1>
+      <div class="sub">Real eToro trades checked against what each strategy's backtest expected, and which strategies eToro is allowed to copy. R is the trade's result in multiples of what it risks: the stop is −1R.</div>
+    </div>
+    <div class="updated">
+      <div id="updated">Waiting for the first reading…</div>
+      <button id="refresh" type="button">Refresh now</button>
+    </div>
+  </header>
+
+  <div id="notice" class="notice" hidden></div>
+
+  <div class="strip" id="strip">
+    <div class="cell"><span class="label">Bot backup stop</span><span class="v muted">—</span></div>
+    <div class="cell"><span class="label">Live trading</span><span class="v muted">—</span></div>
+    <div class="cell"><span class="label">AlgoBot balance at cost</span><span class="v muted">—</span></div>
+    <div class="cell"><span class="label">Trades today</span><span class="v muted">—</span></div>
+    <div class="cell"><span class="label">eToro can copy</span><span class="v muted">—</span></div>
+    <div class="cell"><span class="label">AlgoBot open P/L</span><span class="v muted">—</span></div>
+    <div class="cell"><span class="label">AlgoBot closed P/L</span><span class="v muted">—</span></div>
+    <div class="cell"><span class="label">AlgoBot total P/L</span><span class="v muted">—</span></div>
+    <div class="cell"><span class="label">Your copy ($1,000)</span><span class="v muted">—</span></div>
+  </div>
+
+  <section>
+    <h2>Real money: AlgoBot on eToro, live</h2>
+    <div class="pm-sub">Only real money in this section and the closed trades below it: the AlgoBot eToro account and your copy. Paper (practice money) has its own section further down.</div>
+    <div class="notice" id="real-summary" style="margin-bottom: 12px;"><span class="muted">The account value appears once the page reads the bot's data.</span></div>
+    <div class="table-wrap">
+      <table class="pl">
+        <thead><tr><th>Stock</th><th class="n hide-sm">Units</th><th class="n hide-sm">Invested</th><th class="n hide-sm">eToro open</th><th class="n">eToro price</th><th class="n hide-sm">Fees</th><th class="n">eToro P/L</th><th class="n">Your copy</th></tr></thead>
+        <tbody id="openpl"><tr><td colspan="8" class="muted">The AlgoBot account's open eToro positions and their profit or loss right now.</td></tr></tbody>
+      </table>
+    </div>
+    <div class="muted small" id="openpl-note"></div>
+  </section>
+
+  <section>
+    <h2>Closed trades</h2>
+    <div class="pm-sub">Every trade the bot has closed on eToro, newest first. Your copy holds each trade at its share when the trade opened: 5% of AlgoBot's size ($500) until 4 Nov, 10% ($1,000) since. The last column is your share.</div>
+    <div class="table-wrap">
+      <table class="pl">
+        <thead><tr><th>Stock</th><th class="hide-sm">Held</th><th class="n">Invested<div class="muted sub">AlgoBot · your copy</div></th><th class="n hide-sm">Result</th><th class="n">AlgoBot P/L</th><th class="n">Your copy</th></tr></thead>
+        <tbody id="closedpl"><tr><td colspan="6" class="muted">Closed trades appear here once the page reads the bot's data.</td></tr></tbody>
+      </table>
+    </div>
+    <div class="muted small" id="closedpl-note"></div>
+  </section>
+
+  <section>
+    <h2>Status</h2>
+    <div class="status-grid" id="status"><div class="notice muted">The status appears once the page reads the bot's data.</div></div>
+  </section>
+
+  <section>
+    <h2>Paper account (practice money)</h2>
+    <div class="pm-sub">The bot's $100,000 Alpaca practice account. Not real money: every strategy builds its record here before eToro may copy it.</div>
+    <div class="notice" id="paper-summary" style="margin: 10px 0 12px;"><span class="muted">—</span></div>
+    <div class="table-wrap">
+      <table class="pl">
+        <thead><tr><th>Open now</th><th class="hide-sm">Opened</th><th class="n">Entry → now</th><th class="n hide-sm">Stop</th><th class="n">P/L</th></tr></thead>
+        <tbody id="paperopen"><tr><td colspan="5" class="muted">Open paper positions appear here once the page reads the bot's data.</td></tr></tbody>
+      </table>
+    </div>
+    <div class="table-wrap" style="margin-top: 12px;">
+      <table class="pl">
+        <thead><tr><th>Closed, last 14 days</th><th class="hide-sm">Held</th><th class="n hide-sm">Entry</th><th class="n">P/L</th></tr></thead>
+        <tbody id="paperclosed"><tr><td colspan="4" class="muted">Closed paper trades appear here.</td></tr></tbody>
+      </table>
+    </div>
+    <div class="muted small" id="paper-note"></div>
+  </section>
+
+  <section>
+    <h2>Sentiment now: the stocks we hold</h2>
+    <div class="notice" id="mood"><span class="muted">The market mood the bot reads before each US open appears here.</span></div>
+    <div class="table-wrap">
+      <table class="cc">
+        <thead><tr><th>Stock</th><th>News, last 3 days</th><th>eToro crowd, last 24 h</th><th class="hide-sm">Updated</th></tr></thead>
+        <tbody id="sentnow"><tr><td colspan="4" class="muted">News and eToro-crowd mood for every stock open on paper or eToro, refreshed every 2 hours.</td></tr></tbody>
+      </table>
+    </div>
+    <div class="muted small" id="sentnow-note"></div>
+  </section>
+
+  <section>
+    <h2>Can eToro copy it?</h2>
+    <div class="pm-sub">Since 1 Nov a strategy needs both: a passing backtest, and at least 3 closed paper trades on the same timeframe that made money in total. Daily strategies are listed, plus any other that passes its backtest.</div>
+    <div class="table-wrap">
+      <table class="cc">
+        <thead><tr><th>Strategy</th><th>Backtest</th><th>Paper record</th><th>eToro</th></tr></thead>
+        <tbody id="copycheck"><tr><td colspan="4" class="muted">Each strategy's backtest result and paper record, read from the bot.</td></tr></tbody>
+      </table>
+    </div>
+    <div class="muted small" id="copycheck-note"></div>
+  </section>
+
+  <section>
+    <h2>Skipped by eToro: how they did on paper</h2>
+    <div class="pm-sub">Every paper trade eToro did not copy, why, and its result on paper. A positive total means the copy rules skipped trades that made money.</div>
+    <div class="table-wrap">
+      <table class="cc">
+        <thead><tr><th>Stock</th><th>Why eToro skipped it</th><th class="n">Paper result</th></tr></thead>
+        <tbody id="skipped"><tr><td colspan="3" class="muted">Paper trades eToro skipped appear here with their result.</td></tr></tbody>
+      </table>
+    </div>
+    <div class="muted small" id="skipped-note"></div>
+  </section>
+
+  <section>
+    <h2>Sentiment at entry</h2>
+    <div class="pm-sub">Record only: news about the stock in the 3 days before each paper entry, and what eToro users were doing in the 24 hours before it. Nothing here changes a trade. After a few weeks this shows whether trades entered on bad news or a selling crowd do worse.</div>
+    <div class="table-wrap">
+      <table class="cc">
+        <thead><tr><th>Stock</th><th>News before entry</th><th class="hide-sm">eToro crowd</th><th class="n">Paper result</th></tr></thead>
+        <tbody id="sentiment"><tr><td colspan="4" class="muted">The bot records news and eToro-crowd mood at every paper entry.</td></tr></tbody>
+      </table>
+    </div>
+    <div class="muted small" id="sentiment-note"></div>
+  </section>
+
+  <section>
+    <h2>Does news mood predict results?</h2>
+    <div class="pm-sub">Research, started 1 Nov: the news before each of the bot's own daily backtest trades on its 25 stocks (May 2025 to Oct 2026), scored the same way as at live entries, against how each trade ended. Nothing here changes a trade.</div>
+    <div class="notice" id="newsres-status"><span class="muted">Waiting for the research's first results.</span></div>
+    <div class="table-wrap">
+      <table class="cc">
+        <thead><tr><th>News mood before entry</th><th class="n">Trades</th><th class="n">Average result</th><th class="n hide-sm">Win rate</th><th class="n hide-sm">Confidence (t)</th></tr></thead>
+        <tbody id="newsres"><tr><td colspan="5" class="muted">Results by news mood appear here when every trade is scored.</td></tr></tbody>
+      </table>
+    </div>
+    <div class="muted small" id="newsres-note"></div>
+  </section>
+
+  <section>
+    <h2>Versus holding SPY</h2>
+    <div class="table-wrap">
+      <table class="cc">
+        <thead><tr><th>Account</th><th class="n">Account</th><th class="n">Holding SPY</th><th class="n">Difference</th></tr></thead>
+        <tbody id="spy"><tr><td colspan="4" class="muted">The same dates, as if the money had simply bought SPY.</td></tr></tbody>
+      </table>
+    </div>
+    <div class="muted small" id="spy-note"></div>
+  </section>
+
+  <section>
+    <h2>Trades</h2>
+    <div class="trades" id="trades">
+      <div class="notice muted">Live trades appear here once the page reads the bot's data from Supabase. Each card shows the eToro fill, the price now, the result in R and the backtest's expectation.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Does live match the backtest?</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Strategy</th><th class="n">Open</th><th class="n">Closed</th><th class="n">Backtest expects</th><th class="n">Live avg</th><th class="n">Win rate</th><th class="n">P/L</th><th>Verdict</th></tr></thead>
+        <tbody id="strategies"><tr><td colspan="8" class="muted">A verdict needs 10 closed trades per strategy.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="pm-head"><h2>Pre-market best setups</h2><span id="pm-status" class="pill wait">Waiting for the first run</span></div>
+    <div class="pm-sub" id="pm-sub">Before each session the bot checks every allowed stock with every daily strategy on the last completed daily bar, the same bar its backtests trade from, and ranks what it finds. Shadow only: nothing on this list is traded.</div>
+    <div class="table-wrap">
+      <table class="pm">
+        <thead><tr><th>#</th><th>Stock</th><th class="n">Signal price</th><th class="n hide-sm">Stop</th><th class="n hide-sm">Target</th><th class="n">R:R</th><th class="n hide-sm">Backtest expects</th><th class="hide-sm">Notes</th></tr></thead>
+        <tbody id="pm-items"><tr><td colspan="8" class="muted">The first list arrives at 08:30 New York on the next trading day.</td></tr></tbody>
+      </table>
+    </div>
+    <div class="muted small" id="pm-note"></div>
+  </section>
+
+  <section>
+    <h2>Recent bot actions</h2>
+    <div class="events" id="events"><div class="event"><span class="t">—</span><span class="muted">Orders, closes, skipped copies and halts from the bot show here.</span></div></div>
+  </section>
+
+  <div class="notes">
+    <div>P/L is the price move only. eToro charges about 1% each way on crypto. 1x stocks are real shares with no overnight fee.</div>
+    <div>Prices are eToro's own live price, saved by the bot every minute; if none is fresh the paper account's price is used and labelled. From 2 Nov (US winter time) stocks trade 6:30 pm–1:00 am Dubai.</div>
+    <div>Total P/L = Closed P/L (eToro balance at cost minus the $10,000 funded, after fees) + Open P/L.</div>
+    <div>"Can eToro copy it?" shows the two strategy-level rules. Each trade must also pass its own checks before eToro copies it: stop no more than 8% below the entry, the trade planner, the setup's own backtest, no chase after a big run-up, and room in the account (9 positions, 3 copies a day, 5% daily loss stop). The bot's own gate decides; this table is a reading of the same data.</div>
+    <div>Retired strategies never trade again: etf mega cap relative strength rotation was retired on 1 Nov after 0 of 4 paper trades won (−$1,557) and all three losing eToro copies came from it.</div>
+    <div>Pre-market setups rank tradeable ones first: a full-strength signal from a strategy that passes the live evidence gate, on an allowed stock the bot doesn't already hold or have an order pending for. Then full-strength signals before weak ones, then by the backtest's expected R, then by reward to risk. At the open the bot's own checks and risk limits still decide every trade.</div>
+    <div>Versus holding SPY uses SPY's daily closes saved by the bot every 6 hours (from 1 Nov). The 1 Nov research found that the strategies' October winners came mostly from a rising market, so this comparison is the fairest test of whether the bot adds anything.</div>
+    <div>"Your copy" is AlgoBot's actual eToro P/L scaled to your $500 (500 / 10,000 = 5% of every trade). The bot cannot read your own eToro account, so eToro's copy rounding and fees make the app differ slightly: on 1 Nov the app showed $496.13 and this page $495.57.</div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const SERVER = "Supabase";
+  const TOOL = "execute_sql";
+  // The operator's real money copying AlgoBot: $500 from 4 Oct, $1,000 from 4 Nov ~19:20 UTC (added
+  // $500). eToro sizes each copied trade by the copy's share when that trade opens.
+  const COPY_STEPS = [["", 500], ["2026-11-04T19:20:00", 1000]];
+  const COPY_USD = COPY_STEPS[COPY_STEPS.length - 1][1];
+  const STARTING_BALANCE_FOR_COPY = 10000;
+  // A copy holds every AlgoBot position at the size ratio set when copying started, so its P/L
+  // is AlgoBot's actual eToro P/L x 500 / 10,000.
+  const COPY_SHARE = COPY_USD / STARTING_BALANCE_FOR_COPY;
+  const shareAt = (iso) => COPY_STEPS.reduce((usd, [from, v]) => (String(iso || "") >= from ? v : usd), COPY_STEPS[0][1]) / STARTING_BALANCE_FOR_COPY;
+  let openCopy = 0;  // the copy's share of the open eToro P/L, set by renderOpenPl
+  // When the copy grew to $1,000 (4 Nov ~19:21 UTC) eToro bought 5% more of each AlgoBot position
+  // then open, at that moment's price. Estimated from AlgoBot's eToro prices at 19:29 UTC.
+  const COPY_TOPUP = { at: "2026-11-04T19:20:00", extra: 0.05, prices: { PYPL: 60.44, DIS: 119.48, MSFT: 555.41 } };
+  function copyPnl(symbol, opened, units, rate, pnl) {
+    if (pnl == null) return null;
+    const base = pnl * shareAt(opened), topup = COPY_TOPUP.prices[String(symbol || "").toUpperCase()];
+    const u = num(units), r = num(rate);
+    return topup && String(opened || "") < COPY_TOPUP.at && u && r ? base + COPY_TOPUP.extra * u * (r - topup) : base;
+  }
+  const MIN_CLOSED = 10;
+  const REFRESH_MS = 15000;  // the bot saves eToro prices once a minute; asking eToro every second would hit its rate limit
+  const STARTING_BALANCE = 10000;  // the AlgoBot account was funded with $10,000
+  const PAPER_START = 100000;  // the Alpaca paper account, 11 Jun 2026
+  const PAPER_START_DATE = "2026-06-11";
+  const ALGOBOT_START_DATE = "2026-10-04";  // AlgoBot funded with $10,000 (a Saturday)
+  const ETORO_MARK_MAX_AGE_MS = 15 * 60 * 1000;
+  // The bot's copy rules (app/broker/etoro_live_mirror.py, app/broker/etoro_live_paper_record.py).
+  const COPY_MIN_R = 0.03;
+  const STREAK_HOURS = 24;
+  const MIN_PAPER_TRADES = 3;
+  const RETIRED = { etf_mega_cap_relative_strength_rotation: "1 Nov" };
+  const SQL = "select json_build_object('now', now(), " +
+    "'scorecard', (select case when state_value like '{%' then state_value::jsonb end from runtime_state where state_key='etoro_live:scorecard'), " +
+    "'eth', (select case when state_value like '{%' then state_value::jsonb end from runtime_state where state_key='etoro_live:test_order'), " +
+    "'spy_reserve', (select case when state_value like '{%' and state_value not like '%NaN%' then state_value::jsonb end from runtime_state where state_key='etoro_live:spy_reserve'), " +
+    "'value_history', (select case when state_value like '{%' and state_value not like '%NaN%' and state_value not like '%Infinity%' then state_value::jsonb end from runtime_state where state_key='etoro_live:value_history'), " +
+    "'live', (select case when state_value like '{%' then state_value::jsonb end from runtime_state where state_key='etoro_live:state'), " +
+    "'halted', (select state_value from runtime_state where state_key='etoro_live:halted'), " +
+    "'heartbeat', (select state_value from runtime_state where state_key='etoro_live_guard:heartbeat_at'), " +
+    "'etoro_positions', (select case when state_value like '{%' then state_value::jsonb end from runtime_state where state_key='etoro_live:positions'), " +
+    "'etoro_marks', (select case when state_value like '{%' then state_value::jsonb end from runtime_state where state_key='etoro_live:marks'), " +
+    "'marks', (select json_agg(json_build_object('symbol', symbol, 'qty', quantity, 'mv', market_value, 'at', updated_at)) from broker_position_snapshots where active=1), " +
+    "'verdicts', (select jsonb_build_object('computed_at', v->'computed_at', 'passing_since', v->'passing_since', 'verdicts', " +
+    "(select jsonb_object_agg(k, jsonb_build_object('passed', x->'passed', 'oos', x->'paper_oos_passed', 'r', x->'oos_expectancy_r', 'n', x->'oos_trades')) " +
+    "from jsonb_each(case when jsonb_typeof(v->'verdicts') = 'object' then v->'verdicts' else '{}'::jsonb end) e(k, x))) " +
+    "from (select case when state_value like '{%' and state_value not like '%Infinity%' and state_value not like '%NaN%' then state_value::jsonb end as v " +
+    "from runtime_state where state_key='strategy_evidence:verdicts') s), " +
+    "'paper_record', (select json_agg(json_build_object('k', k, 'n', n, 'total', total)) from (select lower(trim(strategy_name)) || ':' || lower(trim(timeframe)) as k, count(*) as n, sum(realized_pnl_usd) as total " +
+    "from (select * from paper_trades order by closed_at desc limit 2000) t where coalesce(payload_json, '') not like '%\"paper_only\": true%' and coalesce(trim(strategy_name), '') <> '' group by 1) r), " +
+    "'paper_equity', (select case when payload_json like '{%' and payload_json not like '%Infinity%' and payload_json not like '%NaN%' then payload_json::jsonb->'account'->>'equity' end " +
+    "from run_logs where event_type='alpaca_reconciliation_ok' order by created_at desc limit 1), " +
+    "'paper_open', (select json_agg(json_build_object('symbol', symbol, 'strategy', strategy_name, 'tf', timeframe, 'qty', quantity, 'entry', entry_price, 'now', current_price, 'stop', stop_loss, 'pnl', unrealized_pnl_usd, 'opened_at', opened_at, " +
+    "'paper_only', coalesce(payload_json, '') like '%\"paper_only\": true%') order by opened_at) from paper_positions where status = 'open'), " +
+    "'paper_closed', (select json_agg(json_build_object('symbol', symbol, 'strategy', strategy_name, 'tf', timeframe, 'qty', quantity, 'entry', entry_price, 'pnl', realized_pnl_usd, 'opened_at', opened_at, 'closed_at', closed_at, " +
+    "'paper_only', coalesce(payload_json, '') like '%\"paper_only\": true%') order by closed_at desc) from paper_positions where status = 'closed' and nullif(closed_at, '')::timestamptz >= now() - interval '14 days'), " +
+    "'skipped', (select json_agg(json_build_object('at', b.created_at, 'symbol', b.payload_json::jsonb->>'symbol', 'reasons', b.payload_json::jsonb->'reasons', " +
+    "'closed', (select json_build_object('strategy', t.strategy_name, 'tf', t.timeframe, 'pnl', t.realized_pnl_usd, 'r', t.payload_json::jsonb->>'realized_r_multiple') " +
+    "from paper_trades t where t.proposal_id = b.payload_json::jsonb->>'proposal_id' and t.payload_json like '{%' and t.payload_json not like '%NaN%' and t.payload_json not like '%Infinity%' limit 1), " +
+    "'open', (select json_build_object('strategy', p.strategy_name, 'tf', p.timeframe, 'pnl', p.unrealized_pnl_usd, 'entry', p.entry_price, 'now', p.current_price, 'stop', p.stop_loss) " +
+    "from paper_positions p where p.proposal_id = b.payload_json::jsonb->>'proposal_id' and p.status = 'open' limit 1)) order by b.created_at desc) " +
+    "from (select * from run_logs where event_type='etoro_live_mirror_blocked' and payload_json like '{%' and payload_json not like '%NaN%' order by created_at desc limit 20) b), " +
+    "'spy', (select case when state_value like '{%' and state_value not like '%NaN%' and state_value not like '%Infinity%' then state_value::jsonb end from runtime_state where state_key='benchmark:spy_daily'), " +
+    "'sentiment_now', (select case when state_value like '{%' and state_value not like '%NaN%' and state_value not like '%Infinity%' then state_value::jsonb end from runtime_state where state_key='sentiment:open'), " +
+    "'panel', (select jsonb_build_object('session_date', v->'session_date', 'regime', v->'regime', 'panel', v->'panel', 'events', v->'economic_events'->'events') " +
+    "from (select case when state_value like '{%' and state_value not like '%NaN%' and state_value not like '%Infinity%' then state_value::jsonb end as v " +
+    "from runtime_state where state_key like 'premarket:market_panel:%' order by state_key desc limit 1) w), " +
+    "'news_research', json_build_object('summary', (select case when state_value like '{%' and state_value not like '%NaN%' and state_value not like '%Infinity%' then state_value::jsonb end " +
+    "from runtime_state where state_key='sentiment:backtest:summary'), " +
+    "'scored', (select (select count(*) from jsonb_object_keys(state_value::jsonb)) from runtime_state where state_key='sentiment:backtest:scores' and state_value like '{%' and state_value not like '%NaN%'), " +
+    "'pairs', (select count(distinct (e->>'symbol') || ':' || (e->>'day')) from runtime_state s, " +
+    "jsonb_array_elements(case when s.state_value like '[%' and s.state_value not like '%NaN%' then s.state_value::jsonb else '[]'::jsonb end) e where s.state_key='sentiment:backtest:trades')), " +
+    "'sentiment', (select json_agg(json_build_object('rec', x.v, 'pos', (select json_build_object('status', p.status, 'realized', p.realized_pnl_usd, 'unrealized', p.unrealized_pnl_usd) " +
+    "from paper_positions p where p.id = x.v->>'position_id')) order by x.v->>'opened_at' desc) from (select e.value as v from runtime_state r, " +
+    "jsonb_each(case when r.state_value like '{%' and r.state_value not like '%NaN%' and r.state_value not like '%Infinity%' then r.state_value::jsonb else '{}'::jsonb end) e " +
+    "where r.state_key='sentiment:entries' order by e.value->>'opened_at' desc limit 20) x), " +
+    "'premarket', (select jsonb_build_object('session_date', v->'session_date', 'status', v->'status', 'computed_at', v->'computed_at', " +
+    "'evaluated_runs', v->'evaluated_runs', 'symbols', jsonb_array_length(case when jsonb_typeof(v->'universe') = 'array' then v->'universe' else '[]'::jsonb end), 'specs', jsonb_array_length(case when jsonb_typeof(v->'specs') = 'array' then v->'specs' else '[]'::jsonb end), " +
+    "'cursor', v->'cursor', 'signals', jsonb_array_length(case when jsonb_typeof(v->'signals') = 'array' then v->'signals' else '[]'::jsonb end), 'errors', jsonb_array_length(case when jsonb_typeof(v->'errors') = 'array' then v->'errors' else '[]'::jsonb end), " +
+    "'items', v->'items', 'shadow_items', v->'shadow_items', 'paused_reason', v->'paused_reason', 'failed_symbols', v->'failed_symbols') from (select state_value::jsonb as v from runtime_state where state_key like 'premarket:watchlist:%' and state_value like '{%' order by state_key desc limit 1) w), " +
+    "'events', (select json_agg(e) from (select created_at, event_type, left(payload_json, 400) as payload from run_logs where event_type in ('etoro_live_mirror_submitted','etoro_live_scorecard_closed','etoro_live_backup_stop_closed','etoro_live_mirror_rejected','etoro_live_mirror_halted','etoro_live_test_order_closed','etoro_live_mirror_blocked') order by created_at desc limit 10) e)) as d;";
+  const INPUT = { project_id: "lwnxmzonaxdrrkruxqiu", query: SQL };
+
+  const $ = (id) => document.getElementById(id);
+  let lastGood = null;
+
+  const num = (v) => { if (v === null || v === "" || typeof v === "boolean") return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+  const money = (v, d = 2) => v == null ? "—" : (v < 0 ? "−$" : "$") + Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+  const signedMoney = (v, d = 2) => v == null ? "—" : (v >= 0 ? "+" : "") + money(v, d);
+  const price = (v) => v == null ? "—" : "$" + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const rFmt = (v, d = 2) => v == null ? "—" : (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(d) + "R";
+  const cls = (v) => v == null ? "" : v >= 0 ? "gain" : "loss";
+  const words = (s) => String(s || "").replaceAll("_", " ");
+  function dubai(iso) {
+    const t = new Date(iso);
+    if (isNaN(t)) return "—";
+    const d = new Date(t.getTime() + 4 * 3600 * 1000);
+    const day = d.toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short", timeZone: "UTC" });
+    const hm = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+    const utc = t.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+    return `${day} ${hm} Dubai (${utc} UTC)`;
+  }
+  function el(tag, attrs = {}, ...kids) {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === "class") n.className = v; else if (k === "text") n.textContent = v; else n.setAttribute(k, v);
+    }
+    for (const k of kids) if (k != null) n.append(k);
+    return n;
+  }
+  const pill = (kind, text) => el("span", { class: "pill " + kind, text });
+
+  // The connector answers with text around a JSON array; take the array between the data markers.
+  function parsePayload(payload) {
+    let text = typeof payload === "string" ? payload : payload && typeof payload === "object" ? payload.result : null;
+    if (Array.isArray(payload)) return payload[0] && payload[0].d;
+    if (typeof text !== "string") throw new Error("unexpected_shape");
+    // The marker also appears in the warning sentence before the data, so anchor on the
+    // closing marker and take the opening marker nearest before it.
+    const end = text.indexOf("</untrusted-data-");
+    let body = text;
+    if (end >= 0) {
+      const open = text.lastIndexOf("<untrusted-data-", end);
+      body = text.slice(text.indexOf(">", open) + 1, end);
+    }
+    const rows = JSON.parse(body.trim());
+    if (!Array.isArray(rows) || !rows[0] || !rows[0].d) throw new Error("unexpected_shape");
+    return rows[0].d;
+  }
+
+  function buildTrades(d) {
+    const marks = {};
+    for (const m of d.marks || []) {
+      const qty = num(m.qty), mv = num(m.mv);
+      if (qty && mv) marks[String(m.symbol).toUpperCase()] = { price: mv / qty, at: m.at };
+    }
+    // eToro's own price (saved by the bot every minute) wins; the paper mark is a fallback.
+    const nowMs = new Date(d.now).getTime();
+    for (const [sym, m] of Object.entries(d.etoro_marks || {})) {
+      const rate = num(m && m.rate), at = m && m.at;
+      if (rate && at && nowMs - new Date(at).getTime() < ETORO_MARK_MAX_AGE_MS) marks[sym.toUpperCase()] = { price: rate, at, source: "eToro" };
+    }
+    const trades = [];
+    for (const [id, t] of Object.entries(d.scorecard || {})) {
+      const open = num(t.open_rate) || num(t.signal_price);
+      const closed = t.status === "closed";
+      const mark = marks[String(t.symbol).toUpperCase()];
+      trades.push({
+        id, symbol: t.symbol, strategy: t.strategy_name, timeframe: t.timeframe, status: t.status,
+        opened_at: t.opened_at, open, signal: num(t.signal_price), stop: num(t.stop_loss), target: num(t.take_profit),
+        notional: num(t.notional_usd) || num(t.amount_usd), leverage: t.leverage || 1,
+        now: closed ? num(t.close_rate) : mark ? mark.price : null,
+        nowSource: closed ? "close" : mark ? (mark.source || "paper mark") : null,
+        markAt: closed ? null : mark ? mark.at : null,
+        expected: num(t.expected_r) ?? (t.expected_r === 0 ? 0 : null),
+        holdout: num(t.holdout_expected_r), slip: t.entry_slippage_bps, exit: t.exit_reason,
+        realized: num(t.realized_r), backtested: true,
+      });
+    }
+    const e = d.eth;
+    if (e && e.symbol) {
+      const closed = e.status && e.status !== "open" && e.status !== "submitted";
+      trades.push({
+        id: e.order_id, symbol: e.symbol, strategy: "Fixed ATR test (not a backtested strategy)", timeframe: "1d",
+        status: closed ? "closed" : e.status, opened_at: e.opened_at, open: num(e.open_rate), signal: num(e.entry_rate_ref),
+        stop: num(e.stop_loss), target: num(e.take_profit), notional: num(e.amount_usd), leverage: 1,
+        now: num(closed ? e.close_rate : e.last_rate) ?? num(e.last_rate), nowSource: "eToro",
+        expected: null, holdout: null, slip: null, exit: e.close_reason, realized: null, backtested: false,
+        maxHold: e.max_hold_until,
+      });
+    }
+    for (const t of trades) {
+      const risk = t.open && t.stop && t.open > t.stop ? t.open - t.stop : null;
+      t.rNow = risk && t.now ? (t.now - t.open) / risk : null;
+      if (t.realized != null) t.rNow = t.realized;
+      t.rTarget = risk && t.target ? (t.target - t.open) / risk : null;
+      t.pnl = t.open && t.now && t.notional ? t.notional * (t.now / t.open - 1) : null;
+      t.riskUsd = risk && t.notional ? t.notional * risk / t.open : null;
+    }
+    trades.sort((a, b) => (a.status === "closed") - (b.status === "closed") || String(b.opened_at).localeCompare(String(a.opened_at)));
+    return trades;
+  }
+
+  function ruler(t) {
+    const W = 300, H = 46, pad = 6;
+    const lo = -1, hi = Math.max(t.rTarget || 1, 0.5);
+    const x = (r) => pad + (Math.min(Math.max(r, lo), hi) - lo) / (hi - lo) * (W - 2 * pad);
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", `${t.symbol}: ${rFmt(t.rNow)} now, stop at −1R, target ${rFmt(t.rTarget, 1)}`);
+    const add = (tag, a) => { const n = document.createElementNS(ns, tag); for (const k in a) n.setAttribute(k, a[k]); svg.append(n); return n; };
+    const y = 22;
+    add("rect", { x: pad, y: y - 4, width: W - 2 * pad, height: 8, rx: 4, fill: "var(--track)" });
+    add("rect", { x: pad, y: y - 4, width: x(0) - pad, height: 8, rx: 4, fill: "var(--loss-soft)" });
+    add("rect", { x: x(0), y: y - 4, width: W - pad - x(0), height: 8, rx: 4, fill: "var(--gain-soft)" });
+    add("line", { x1: x(0), x2: x(0), y1: y - 9, y2: y + 9, stroke: "var(--muted)", "stroke-width": 1.5 });
+    if (t.expected != null) {
+      const ex = x(t.expected);
+      add("path", { d: `M${ex - 5},${y - 13} L${ex + 5},${y - 13} L${ex},${y - 7} Z`, fill: "var(--accent)" });
+    }
+    if (t.rNow != null) {
+      add("line", { x1: x(0), x2: x(t.rNow), y1: y, y2: y, stroke: t.rNow >= 0 ? "var(--gain)" : "var(--loss)", "stroke-width": 4, "stroke-linecap": "round" });
+      add("circle", { cx: x(t.rNow), cy: y, r: 6, fill: "var(--surface)", stroke: t.rNow >= 0 ? "var(--gain)" : "var(--loss)", "stroke-width": 3 });
+    }
+    const label = (txt, xx, anchor) => { const n = add("text", { x: xx, y: H - 2, "text-anchor": anchor, "font-size": 10, fill: "var(--muted)", "font-family": "IBM Plex Mono, monospace" }); n.textContent = txt; };
+    label("stop −1R", pad, "start");
+    label("entry 0", x(0), "middle");
+    label(`target ${rFmt(t.rTarget, 1)}`, W - pad, "end");
+    return svg;
+  }
+
+  function stat(labelText, value, extraClass = "") {
+    return el("div", { class: "stat" }, el("span", { class: "label", text: labelText }), el("span", { class: "v " + extraClass, text: value }));
+  }
+
+  function tradeCard(t) {
+    const statusPill = t.status === "closed"
+      ? pill("info", "Closed" + (t.exit ? ` · ${words(t.exit)}` : ""))
+      : t.status === "pending_fill" ? pill("wait", "Waiting for fill")
+      : t.status === "not_filled" ? pill("bad", "Not filled")
+      : pill("ok", "Open");
+    const head = el("div", { class: "card-head" },
+      el("div", {}, el("div", { class: "sym", text: t.symbol }), el("div", { class: "strat", text: `${t.strategy}${t.timeframe ? " · " + t.timeframe : ""}` }), statusPill),
+      el("div", { class: "big" },
+        el("div", { class: "r " + cls(t.rNow), text: rFmt(t.rNow) }),
+        el("div", { class: "num " + cls(t.pnl), text: signedMoney(t.pnl) }),
+        el("div", { class: "label", text: t.status === "closed" ? "result" : "now" })));
+    const legend = el("div", { class: "ruler-legend" },
+      el("span", { text: `▼ backtest expects ${t.expected == null ? "n/a" : rFmt(t.expected)}` }),
+      el("span", { text: `risk ${money(t.riskUsd)}` }));
+    const stats = el("div", { class: "stats" },
+      stat("eToro fill", price(t.open)),
+      stat(t.status === "closed" ? "Closed at" : `Now (${t.nowSource || "no price"})`, price(t.now)),
+      stat("Your copy", signedMoney(t.pnl == null ? null : t.pnl * shareAt(t.opened_at)), cls(t.pnl)),
+      stat("Stop", price(t.stop)),
+      stat("Target", price(t.target)),
+      stat("Fill vs paper", t.slip == null ? "—" : `${t.slip > 0 ? "+" : ""}${t.slip} bp`),
+      stat("Size", `${money(t.notional, 0)} · ${t.leverage}x`),
+      stat("Backtest holdout", t.holdout == null ? "—" : rFmt(t.holdout)),
+      stat("Opened", t.opened_at ? dubai(t.opened_at).split(" (")[0] : "—"));
+    const foot = t.maxHold ? el("div", { class: "foot", text: `Closes by ${dubai(t.maxHold)} if neither level is hit.` }) : null;
+    return el("article", { class: "card" }, head, el("div", { class: "ruler" }, ruler(t), legend), stats, foot);
+  }
+
+  function verdict(rs, expected) {
+    if (rs.length < MIN_CLOSED) return { text: `Collecting (${rs.length}/${MIN_CLOSED} closed)`, kind: "wait" };
+    const mean = rs.reduce((a, b) => a + b, 0) / rs.length;
+    const v = rs.reduce((a, b) => a + (b - mean) ** 2, 0) / (rs.length - 1);
+    const se = Math.sqrt(v / rs.length);
+    if (expected != null && mean + 2 * se < expected) return { text: "Below backtest", kind: "bad" };
+    if (mean - 2 * se > 0) return { text: "Profitable live", kind: "ok" };
+    return { text: "In line with backtest", kind: "info" };
+  }
+
+  function renderStrategies(trades) {
+    const groups = {};
+    for (const t of trades.filter((t) => t.backtested)) (groups[`${t.strategy}:${t.timeframe}`] ||= []).push(t);
+    const body = $("strategies");
+    body.replaceChildren();
+    const keys = Object.keys(groups);
+    if (!keys.length) { body.append(el("tr", {}, el("td", { colspan: "8", class: "muted", text: "No backtested live trades yet." }))); return; }
+    for (const k of keys) {
+      const rows = groups[k];
+      const closed = rows.filter((t) => t.status === "closed" && t.realized != null);
+      const rs = closed.map((t) => t.realized);
+      const expected = rows.find((t) => t.expected != null)?.expected ?? null;
+      const avg = rs.length ? rs.reduce((a, b) => a + b, 0) / rs.length : null;
+      const wins = rs.length ? rs.filter((r) => r > 0).length / rs.length : null;
+      const pnl = closed.reduce((a, t) => a + (t.pnl || 0), 0);
+      const [name, tf] = k.split(":");
+      const vd = RETIRED[name] ? { text: `Retired ${RETIRED[name]}`, kind: "off" } : verdict(rs, expected);
+      body.append(el("tr", {},
+        el("td", {}, el("div", { text: name }), el("div", { class: "muted", text: tf })),
+        el("td", { class: "n", text: String(rows.filter((t) => t.status !== "closed").length) }),
+        el("td", { class: "n", text: String(closed.length) }),
+        el("td", { class: "n", text: rFmt(expected) }),
+        el("td", { class: "n " + cls(avg), text: avg == null ? "—" : rFmt(avg) }),
+        el("td", { class: "n", text: wins == null ? "—" : Math.round(wins * 100) + "%" }),
+        el("td", { class: "n " + (closed.length ? cls(pnl) : ""), text: closed.length ? signedMoney(pnl) : "—" }),
+        el("td", {}, pill(vd.kind, vd.text))));
+    }
+  }
+
+  // -- Can eToro copy it? The two strategy-level copy rules, read from the bot's own data. -------
+  function backtestState(v, sinceIso, nowMs) {
+    if (!v) return { kind: "off", text: "No result", detail: "", ok: false };
+    const r = num(v.r), n = num(v.n);
+    const detail = r == null ? "" : `${rFmt(r, 3)} on ${n ?? 0} trades`;
+    if (v.passed === true) {
+      if (r == null || r < COPY_MIN_R) return { kind: "wait", text: "Edge under +0.03R", detail, ok: false };
+      const hours = sinceIso ? (nowMs - new Date(sinceIso).getTime()) / 3600000 : null;
+      if (hours == null || !(hours >= STREAK_HOURS)) return { kind: "wait", text: "Passing under 24 h", detail, ok: false };
+      return { kind: "ok", text: "Passes", detail, ok: true };
+    }
+    if (v.oos === true) return { kind: "info", text: "Paper only", detail: detail + (detail ? " · " : "") + "last 14 days fail", ok: false };
+    return { kind: "bad", text: "Fails", detail, ok: false };
+  }
+
+  function recordState(rec) {
+    const n = rec ? rec.n : 0;
+    if (!n) return { kind: "off", text: `0 of ${MIN_PAPER_TRADES} trades`, detail: "", ok: false };
+    if (rec.total == null) return { kind: "bad", text: "Unreadable", detail: `${n} trades`, ok: false };
+    const detail = `${n} trade${n === 1 ? "" : "s"} · ${signedMoney(rec.total)}`;
+    if (n < MIN_PAPER_TRADES) return { kind: "wait", text: `${n} of ${MIN_PAPER_TRADES} trades`, detail, ok: false };
+    if (!(rec.total > 0)) return { kind: "bad", text: "Lost money", detail, ok: false };
+    return { kind: "ok", text: "Made money", detail, ok: true };
+  }
+
+  function copyRows(d) {
+    const cache = d.verdicts || {};
+    const verdicts = cache.verdicts || {};
+    const since = cache.passing_since || {};
+    const records = {};
+    for (const r of d.paper_record || []) records[String(r.k)] = { n: num(r.n) || 0, total: num(r.total) };
+    const nowMs = new Date(d.now).getTime();
+    const keys = new Set(Object.keys(verdicts).filter((k) => {
+      const parts = k.split(":"), v = verdicts[k] || {};
+      return parts.length === 2 && (parts[1] === "1d" || v.passed === true || v.oos === true);
+    }));
+    for (const name of Object.keys(RETIRED)) keys.add(`${name}:1d`);
+    const rows = [];
+    for (const key of keys) {
+      const [name, tf] = key.split(":");
+      const bt = backtestState(verdicts[key], since[key], nowMs);
+      const rec = recordState(records[key]);
+      let state;
+      if (RETIRED[name]) state = { kind: "off", text: `Retired ${RETIRED[name]}`, rank: 4 };
+      else if (bt.ok && rec.ok) state = { kind: "ok", text: "Can copy", rank: 0 };
+      else if (bt.ok) state = { kind: "wait", text: "Needs paper record", rank: 1 };
+      else if (rec.ok) state = { kind: "wait", text: "Needs backtest pass", rank: 2 };
+      else state = { kind: "off", text: "No", rank: 3 };
+      rows.push({ name, tf, bt, rec, state, r: num((verdicts[key] || {}).r) });
+    }
+    rows.sort((a, b) => a.state.rank - b.state.rank || (b.r ?? -9) - (a.r ?? -9) || a.name.localeCompare(b.name));
+    return rows;
+  }
+
+  function renderCopyCheck(d) {
+    const body = $("copycheck");
+    body.replaceChildren();
+    const rows = copyRows(d);
+    if (!rows.length) {
+      body.append(el("tr", {}, el("td", { colspan: "4", class: "muted", text: "No backtest results yet." })));
+      $("copycheck-note").textContent = "";
+      return null;
+    }
+    for (const row of rows) {
+      const cell = (s) => el("td", {}, pill(s.kind, s.text), s.detail ? el("div", { class: "sub muted", text: s.detail }) : null);
+      body.append(el("tr", { class: row.state.rank === 0 ? "can" : "" },
+        el("td", {}, el("div", { text: words(row.name) }), el("div", { class: "muted sub", text: row.tf === "1d" ? "daily bars" : row.tf })),
+        cell(row.bt), cell(row.rec),
+        el("td", {}, pill(row.state.kind, row.state.text))));
+    }
+    const computed = d.verdicts && d.verdicts.computed_at;
+    $("copycheck-note").textContent = (computed ? `Backtests as of ${dubai(computed)}; refreshed every 30 minutes. ` : "") +
+      "Backtest passes = pooled walk-forward result at least +0.03R per trade, the last 14 days passing too, unbroken for 24 hours. Paper record = closed paper trades on the same timeframe, paper-only trades left out.";
+    return rows.filter((r) => r.state.rank === 0).length;
+  }
+
+  function renderSkipped(d) {
+    const body = $("skipped");
+    body.replaceChildren();
+    const rows = Array.isArray(d.skipped) ? d.skipped : [];
+    if (!rows.length) {
+      body.append(el("tr", {}, el("td", { colspan: "3", class: "muted", text: "eToro has not skipped any paper trade yet." })));
+      $("skipped-note").textContent = "";
+      return;
+    }
+    let closedSum = 0, openSum = 0, priced = 0;
+    for (const row of rows) {
+      const closed = row.closed, open = row.open, trade = closed || open || {};
+      let pnl = null, r = null, state = "no paper trade found";
+      if (closed) {
+        pnl = num(closed.pnl); r = num(closed.r); state = "closed";
+        if (pnl != null) { closedSum += pnl; priced += 1; }
+      } else if (open) {
+        pnl = num(open.pnl); state = "open";
+        const entry = num(open.entry), now = num(open.now), stop = num(open.stop);
+        r = entry && now && stop && entry > stop ? (now - entry) / (entry - stop) : null;
+        if (pnl != null) { openSum += pnl; priced += 1; }
+      }
+      body.append(el("tr", {},
+        el("td", {}, el("div", {}, el("strong", { text: row.symbol || "—" })),
+          el("div", { class: "muted sub", text: `${words(trade.strategy) || "strategy n/a"} · ${row.at ? dubai(row.at).split(" ").slice(0, 3).join(" ") : "—"}` })),
+        el("td", { class: "small", text: skipWords(row.reasons) || "—" }),
+        el("td", { class: "n" }, el("div", { class: cls(pnl), text: signedMoney(pnl) }),
+          el("div", { class: "muted sub", text: `${rFmt(r)} · ${state}` }))));
+    }
+    const total = closedSum + openSum;
+    body.append(el("tr", { class: "total" },
+      el("td", { text: `${rows.length} skipped` }), el("td", { class: "small", text: `closed ${signedMoney(closedSum)} · open ${signedMoney(openSum)}` }),
+      el("td", { class: "n strong " + (priced ? cls(total) : ""), text: priced ? signedMoney(total) : "—" })));
+    $("skipped-note").textContent = "Paper positions are about ten times the size of an eToro copy, so divide by about 10 for what eToro would have made or lost. Open results move with the market.";
+  }
+
+  const MOOD = { positive: ["ok", "Positive"], negative: ["bad", "Negative"], neutral: ["info", "Neutral"], no_news: ["off", "No news"], no_signal: ["off", "No mood words"] };
+
+  function renderSentiment(d) {
+    const body = $("sentiment");
+    body.replaceChildren();
+    const rows = Array.isArray(d.sentiment) ? d.sentiment : [];
+    if (!rows.length) {
+      body.append(el("tr", {}, el("td", { colspan: "4", class: "muted", text: "No records yet. The bot fills in entries since 1 Oct within a few hours of starting, then records each new entry within 30 minutes." })));
+      $("sentiment-note").textContent = "";
+      return;
+    }
+    const byMood = {};
+    for (const { rec, pos } of rows) {
+      const news = rec.news || {}, crowd = rec.crowd || {};
+      const [kind, text] = news.error ? ["off", "Not read"] : (MOOD[news.label] || ["off", words(news.label) || "—"]);
+      const pnl = pos ? (pos.status === "open" ? num(pos.unrealized) : num(pos.realized)) : null;
+      if (pnl != null && !news.error) {
+        const g = (byMood[text] ||= { n: 0, sum: 0 });
+        g.n += 1; g.sum += pnl;
+      }
+      const crowdText = crowd.status ? (crowd.status === "error" ? "Not read" : "Not available")
+        : `${crowd.buy_pct == null ? "" : crowd.buy_pct + "% buying · "}${crowd.posts || 0} posts${crowd.post_score == null ? "" : ", " + (MOOD[crowd.post_label] || ["", words(crowd.post_label)])[1].toLowerCase()}`;
+      body.append(el("tr", {},
+        el("td", {}, el("div", {}, el("strong", { text: rec.symbol || "—" })),
+          el("div", { class: "muted sub", text: `${words(rec.strategy)} · ${rec.opened_at ? sessionDay(rec.opened_at) : "—"}` })),
+        el("td", {}, pill(kind, text),
+          el("div", { class: "muted sub", text: news.error ? "" : `${news.score == null ? "" : rFmt(news.score, 2).replace("R", "") + " · "}${news.focused ?? 0} stock-specific of ${news.articles ?? 0} articles` }),
+          (news.headlines || [])[0] ? el("div", { class: "muted small", text: news.headlines[0] }) : null),
+        el("td", { class: "hide-sm small", text: crowdText }),
+        el("td", { class: "n" }, el("div", { class: cls(pnl), text: signedMoney(pnl) }),
+          el("div", { class: "muted sub", text: pos ? pos.status : "—" }))));
+    }
+    const groups = Object.entries(byMood).map(([mood, g]) => `${mood}: ${g.n} trade${g.n === 1 ? "" : "s"}, ${signedMoney(g.sum)}`);
+    $("sentiment-note").textContent = (groups.length ? `So far by news mood (paper results, open ones at today's price): ${groups.join("; ")}. ` : "") +
+      "The news score counts positive and negative finance words in headlines that name the stock (round-ups of many stocks are left out). The eToro crowd is read only for entries recorded within an hour of opening; eToro does not serve older feed history.";
+  }
+
+  const pctTxt = (v) => v == null ? "—" : `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(2)}%`;
+
+  function renderMood(p) {
+    const box = $("mood");
+    box.replaceChildren();
+    if (!p || !p.session_date) {
+      box.append(el("span", { class: "muted", text: "No market reading yet. The bot reads the market before each US open." }));
+      return;
+    }
+    const regime = p.regime || {}, panel = p.panel || {}, parts = regime.components || {};
+    const labels = { neutral: ["info", "Neutral"], risk_off: ["bad", "Risk off"], rates_shock: ["bad", "Rates shock"], chips_weak: ["wait", "Chips weak"], unknown: ["off", "Unknown"] };
+    const [kind, text] = labels[regime.label] || ["off", words(regime.label) || "—"];
+    const flags = [
+      ["asia_selloff", "Asia sold off"], ["futures_down", "Nasdaq futures down"], ["bonds_bid", "Bonds bid (money seeking safety)"],
+      ["chips_lag", "Chip stocks lagging"], ["rates_shock", "Rates jumped"],
+    ].filter(([k]) => parts[k]).map(([, t]) => pill("wait", t));
+    const asia = panel.asia || {}, y = panel.us_10y_yield || {}, chips = panel.chips_vs_staples || {};
+    const readings = [
+      `Nasdaq futures ${pctTxt(num((panel.nasdaq_100_futures || {}).change_pct))}`,
+      `Korea ${pctTxt(num((asia.kospi || {}).change_pct))}`,
+      `Japan ${pctTxt(num((asia.nikkei || {}).change_pct))}`,
+      `US 10-year ${num(y.level_pct) == null ? "—" : num(y.level_pct).toFixed(2) + "%"} (${num(y.change_5d_bp) == null ? "—" : (num(y.change_5d_bp) >= 0 ? "+" : "−") + Math.abs(num(y.change_5d_bp)).toFixed(1) + " bp"} in 5 days)`,
+      `Oil ${price(num((panel.wti_oil || {}).last))} (${pctTxt(num((panel.wti_oil || {}).change_pct))})`,
+      `Chips vs staples ${num(chips.relative_5d_pp) == null ? "—" : (num(chips.relative_5d_pp) >= 0 ? "+" : "−") + Math.abs(num(chips.relative_5d_pp)).toFixed(1) + " pts"} in 5 days, ${num(chips.relative_20d_pp) == null ? "—" : (num(chips.relative_20d_pp) >= 0 ? "+" : "−") + Math.abs(num(chips.relative_20d_pp)).toFixed(1) + " pts"} in 20`,
+    ];
+    const events = Array.isArray(p.events) ? p.events.map((e) => (e && (e.kind || e.name)) || String(e)).filter(Boolean) : [];
+    box.append(
+      el("div", { class: "pm-head" }, el("strong", { text: `Market mood before the open, ${sessionDay(p.session_date)}` }), pill(kind, text), ...flags),
+      el("div", { class: "small", text: readings.join(" · ") }),
+      el("div", { class: "muted small", text: (events.length ? `Economic events that day: ${events.join(", ")}. ` : "") + "Recorded only: the 1 Nov study found that market-mood filters removed trades that earned more than the ones they kept." }));
+  }
+
+  function renderSentimentNow(d) {
+    const body = $("sentnow");
+    body.replaceChildren();
+    const stocks = d.sentiment_now && typeof d.sentiment_now === "object" ? Object.entries(d.sentiment_now) : [];
+    if (!stocks.length) {
+      body.append(el("tr", {}, el("td", { colspan: "4", class: "muted", text: "No readings yet. The bot reads each held stock's news and eToro crowd within 30 minutes of starting, then every 2 hours." })));
+      $("sentnow-note").textContent = "";
+      return;
+    }
+    stocks.sort(([a], [b]) => a.localeCompare(b));
+    for (const [symbol, rec] of stocks) {
+      const news = rec.news || {}, crowd = rec.crowd || {};
+      const [kind, text] = news.error ? ["off", "Not read"] : (MOOD[news.label] || ["off", news.label ? words(news.label) : "Waiting"]);
+      let crowdCell;
+      if (!rec.crowd) crowdCell = [pill("off", "Waiting")];
+      else if (crowd.status === "error") crowdCell = [pill("off", "Not read"), el("div", { class: "muted sub", text: crowd.reason || "" })];
+      else {
+        const buy = num(crowd.buy_pct), posts = num(crowd.posts) || 0;
+        const [pk, pt] = crowd.post_score == null ? ["off", posts ? "Posts without mood words" : "No posts"] : (MOOD[crowd.post_label] || ["off", words(crowd.post_label)]);
+        crowdCell = [
+          buy == null ? pill(pk, crowd.post_score == null ? pt : `Posts ${pt.toLowerCase()}`) : pill(buy >= 60 ? "ok" : buy <= 40 ? "bad" : "info", `${buy.toFixed(0)}% buying`),
+          el("div", { class: "muted sub", text: `${posts} post${posts === 1 ? "" : "s"} in 24 h${crowd.post_score == null ? "" : " · " + (crowd.post_score >= 0 ? "+" : "−") + Math.abs(crowd.post_score).toFixed(2)}${buy == null ? "" : " · " + (crowd.trade_opens ?? 0) + " trades opened"}` }),
+        ];
+      }
+      const at = [news.at, crowd.at].filter(Boolean).sort().pop();
+      body.append(el("tr", {},
+        el("td", {}, el("div", {}, el("strong", { text: symbol })), el("div", { class: "muted sub", text: (rec.held || []).join(" + ") })),
+        el("td", {}, pill(kind, text),
+          el("div", { class: "muted sub", text: news.error ? "" : `${news.score == null ? "" : (news.score >= 0 ? "+" : "−") + Math.abs(news.score).toFixed(2) + " · "}${news.focused ?? 0} stock-specific of ${news.articles ?? 0} articles` }),
+          (news.headlines || [])[0] ? el("div", { class: "muted small", text: news.headlines[0] }) : null),
+        el("td", {}, ...crowdCell),
+        el("td", { class: "hide-sm small muted", text: at ? dubai(at).split(" (")[0] : "—" })));
+    }
+    $("sentnow-note").textContent = "News mood counts positive and negative finance words in headlines that name the stock. eToro crowd = the mood of the posts eToro users wrote about the stock in the last 24 hours, scored with the same words. eToro's feed carries users' posts, not their trades, so there is no buying share. Display only: no trade reads it.";
+  }
+
+  function renderNewsResearch(r) {
+    const status = $("newsres-status"), body = $("newsres");
+    status.replaceChildren();
+    body.replaceChildren();
+    const summary = r && r.summary, scored = num(r && r.scored) || 0, pairs = num(r && r.pairs) || 0;
+    if (!summary) {
+      const left = Math.max(pairs - scored, 0);
+      status.append(pairs
+        ? el("span", { text: `Running: news scored for ${scored.toLocaleString("en-US")} of ${pairs.toLocaleString("en-US")} stock-days (about ${Math.ceil(left / 240)} hours left, 240 an hour).` })
+        : el("span", { class: "muted", text: "Starting: the bot is collecting its backtest trades." }));
+      body.append(el("tr", {}, el("td", { colspan: "5", class: "muted", text: "Results by news mood appear here when every trade is scored." })));
+      $("newsres-note").textContent = "";
+      return;
+    }
+    const names = { positive: "Positive", neutral: "Neutral", negative: "Negative", no_news: "No stock news", no_signal: "News without mood words", unread: "Not read" };
+    for (const [mood, st] of Object.entries(summary.by_mood || {})) {
+      const [kind] = MOOD[mood] || ["off"];
+      body.append(el("tr", {},
+        el("td", {}, pill(kind, names[mood] || words(mood))),
+        el("td", { class: "n", text: String(st.trades ?? 0) }),
+        el("td", { class: "n strong " + cls(num(st.mean_r)), text: rFmt(num(st.mean_r), 3) }),
+        el("td", { class: "n hide-sm", text: st.win_pct == null ? "—" : st.win_pct + "%" }),
+        el("td", { class: "n hide-sm", text: st.t == null ? "—" : String(st.t) })));
+    }
+    const rules = summary.rules || {};
+    const ruleLine = (name, label) => {
+      const rule = rules[name] || {}, removed = rule.removed || {}, kept = rule.kept || {};
+      if (!removed.trades) return `${label}: no such trades.`;
+      const helps = num(removed.mean_r) < num(kept.mean_r), clear = helps && num(removed.t) != null && num(removed.t) <= -2;
+      const verdict = !helps ? "it would have blocked trades that did better" : clear ? "it would have removed clearly weaker trades" : `it would have removed slightly weaker trades, but the gap could be luck (t ${removed.t})`;
+      return `${label} would remove ${removed.trades} trades averaging ${rFmt(num(removed.mean_r), 3)} and keep ${kept.trades} averaging ${rFmt(num(kept.mean_r), 3)}: ${verdict}.`;
+    };
+    status.append(
+      el("div", {}, el("strong", { text: `Done ${summary.completed_at ? dubai(summary.completed_at) : ""}: ${Number(summary.trades || 0).toLocaleString("en-US")} trades on ${Number(summary.pairs || 0).toLocaleString("en-US")} stock-days.` })),
+      el("div", { class: "small", text: ruleLine("skip_negative_news", "Skipping negative news") }),
+      el("div", { class: "small", text: ruleLine("skip_positive_news", "Skipping positive news") }),
+      el("div", { class: "small" }, el("strong", { text: "Verdict (2 Nov): no news rule. " }), "Neither rule clearly removes losers without also removing winners. The bot keeps recording the news at every live entry, so this can be re-checked on real trades."));
+    $("newsres-note").textContent = "R = the result in multiples of the amount risked. A confidence (t) under about 2 means the average could easily be luck; these t values treat every trade as independent, and trades on the same days move together, so the real confidence is lower still. A rule is only worth proposing if the trades it removes did clearly worse than the ones it keeps; then it goes to paper first, with your yes.";
+  }
+
+  function closeOnOrBefore(closes, date) {
+    const days = Object.keys(closes).filter((k) => k <= date).sort();
+    return days.length ? { day: days[days.length - 1], close: num(closes[days[days.length - 1]]) } : null;
+  }
+
+  function renderBenchmark(d, algoTotal) {
+    const body = $("spy");
+    body.replaceChildren();
+    const spy = d.spy && d.spy.closes && typeof d.spy.closes === "object" ? d.spy.closes : null;
+    const days = spy ? Object.keys(spy).sort() : [];
+    if (!spy || !days.length) {
+      body.append(el("tr", {}, el("td", { colspan: "4", class: "muted", text: "SPY prices arrive with the bot's next update (every 6 hours)." })));
+      $("spy-note").textContent = "";
+      return;
+    }
+    const last = { day: days[days.length - 1], close: num(spy[days[days.length - 1]]) };
+    const paper = num(d.paper_equity);
+    const accounts = [
+      ["Paper account", PAPER_START_DATE, paper == null ? null : (paper - PAPER_START) / PAPER_START],
+      ["AlgoBot on eToro", ALGOBOT_START_DATE, algoTotal == null ? null : algoTotal / STARTING_BALANCE],
+    ];
+    const pct = (v) => v == null ? "—" : `${v >= 0 ? "+" : "−"}${Math.abs(v * 100).toFixed(2)}%`;
+    for (const [name, start, mine] of accounts) {
+      const base = closeOnOrBefore(spy, start);
+      const spyReturn = base && base.close && last.close ? last.close / base.close - 1 : null;
+      const diff = mine == null || spyReturn == null ? null : mine - spyReturn;
+      body.append(el("tr", {},
+        el("td", {}, el("div", { text: name }), el("div", { class: "muted sub", text: `since ${sessionDay(start)}` })),
+        el("td", { class: "n " + cls(mine), text: pct(mine) }),
+        el("td", { class: "n " + cls(spyReturn), text: pct(spyReturn) }),
+        el("td", { class: "n strong " + cls(diff), text: diff == null ? "—" : pct(diff).replace("%", " pts") })));
+    }
+    $("spy-note").textContent = `SPY from its close on or before each start date to its latest price (${sessionDay(last.day)}), without dividends. AlgoBot's figure includes its open positions at eToro's prices.`;
+  }
+
+  const SKIP_REASONS = {
+    strategy_retired: "strategy retired",
+    strategy_lacks_oos_evidence: "strategy fails its backtest",
+    strategy_edge_below_bar: "backtest edge under +0.03R",
+    etoro_live_evidence_streak_too_short: "passing for under 24 h",
+    etoro_live_evidence_streak_unknown: "pass time unknown",
+    etoro_live_paper_record_too_few: "under 3 paper trades",
+    etoro_live_paper_record_not_positive: "paper trades lost money",
+    etoro_live_paper_record_unknown: "paper record unreadable",
+    etoro_live_stop_too_wide: "stop more than 8% away",
+    etoro_live_planner_not_buy_now: "planner said wait",
+    etoro_live_backtest_check_failed: "this setup's backtest failed",
+    etoro_live_extended_rsi: "already overbought",
+    etoro_live_extended_20d_rise: "already ran up",
+    etoro_live_extended_new_high: "just made a new high",
+    etoro_live_daily_trade_cap: "3 copies already today",
+    etoro_live_open_position_cap: "9 positions open",
+    etoro_live_bucket_cap: "sector group full",
+    etoro_live_exposure_cap: "fully invested",
+    etoro_live_insufficient_cash: "not enough cash",
+    etoro_live_symbol_already_open: "already held",
+    etoro_live_paper_only: "paper-only trade",
+    etoro_live_daily_loss_stop: "daily loss stop",
+    etoro_live_trade_below_minimum: "under eToro's $10 minimum",
+  };
+  const skipWords = (reasons) => (Array.isArray(reasons) ? reasons : []).map((r) => SKIP_REASONS[r] || words(r).replace(/^etoro live /, "")).join(", ");
+
+  function describeEvent(ev) {
+    let p = {};
+    try { p = JSON.parse(ev.payload || "{}"); } catch (_) { p = {}; }
+    const s = p.symbol || "";
+    switch (ev.event_type) {
+      case "etoro_live_mirror_submitted": return `Bought ${s}: ${money(num(p.amount_usd), 0)} at ${p.leverage || 1}x (${p.strategy_name || "strategy"}), stop ${p.stop_loss}, target ${p.take_profit}`;
+      case "etoro_live_scorecard_closed": return `${s} closed${p.exit_reason ? " by " + words(p.exit_reason) : ""}${p.realized_r != null ? ", " + rFmt(num(p.realized_r)) : ""}`;
+      case "etoro_live_backup_stop_closed": return `Bot backup stop closed ${s}`;
+      case "etoro_live_mirror_rejected": return `eToro rejected the ${s} order; nothing opened`;
+      case "etoro_live_mirror_halted": return "Live trading halted; check the bot";
+      case "etoro_live_test_order_closed": return `ETH test closed${p.close_reason ? " (" + words(p.close_reason) + ")" : ""}`;
+      case "etoro_live_mirror_blocked": return `eToro skipped ${s || "a paper trade"}${Array.isArray(p.reasons) && p.reasons.length ? ": " + skipWords(p.reasons) : ""}`;
+      default: return ev.event_type;
+    }
+  }
+
+  // The copy's P/L: closed trades at their own share, eToro charges not tied to a trade at 5%,
+  // open positions at their share (openCopy); "now" adds the money put in.
+  function copyCell(realized, openTotal, closedTotals) {
+    if (realized == null) return el("span", { class: "v num muted", text: "—" });
+    const closed = closedTotals || { pnl: 0, copy: 0 };
+    const copy = (realized - closed.pnl) * shareAt("") + closed.copy + (openTotal == null ? 0 : openCopy);
+    return el("span", { class: "v num strong " + cls(copy), text: `${signedMoney(copy)} · now ${money(COPY_USD + copy)}` });
+  }
+
+  function renderStrip(d, openTotal, copyable, closedTotals) {
+    const hb = d.heartbeat ? new Date(d.heartbeat) : null;
+    const age = hb && d.now ? (new Date(d.now) - hb) / 1000 : null;
+    const live = d.live || {};
+    // Closed P/L = eToro balance at cost (cash + money in open trades) minus the $10,000 funded.
+    const equity = num(live.last_equity);
+    const realized = equity == null ? null : equity - STARTING_BALANCE;
+    const total = realized == null || openTotal == null ? realized : realized + openTotal;
+    const pct = total == null ? "" : ` (${total >= 0 ? "+" : "−"}${Math.abs(total / STARTING_BALANCE * 100).toFixed(2)}%)`;
+    const halted = d.halted && String(d.halted).trim() && String(d.halted).trim() !== "null";
+    const paper = num(d.paper_equity);
+    const paperChange = paper == null ? null : paper - PAPER_START;
+    const cells = [
+      ["Bot backup stop", age != null && age < 180 ? pill("ok", `Checking (${Math.round(age)}s ago)`) : pill("bad", age == null ? "No signal" : `Silent ${Math.round(age / 60)} min`)],
+      ["Live trading", halted ? pill("bad", "Halted") : pill("ok", "Active")],
+      ["AlgoBot balance at cost", el("span", { class: "v num", text: money(num(live.last_equity), 0) })],
+      ["Trades today", el("span", { class: "v num", text: live.trades_today == null ? "—" : `${live.trades_today} of 3` })],
+      ["eToro can copy", copyable == null ? el("span", { class: "v muted", text: "—" }) : copyable ? pill("ok", `${copyable} strateg${copyable === 1 ? "y" : "ies"}`) : pill("wait", "None right now")],
+      ["AlgoBot open P/L", el("span", { class: "v num " + cls(openTotal), text: openTotal == null ? "—" : signedMoney(openTotal) })],
+      ["AlgoBot closed P/L", el("span", { class: "v num " + cls(realized), text: realized == null ? "—" : signedMoney(realized) })],
+      ["AlgoBot total P/L", el("span", { class: "v num strong " + cls(total), text: total == null ? "—" : signedMoney(total) + pct })],
+      [`Your copy (${money(COPY_USD, 0)})`, copyCell(realized, openTotal, closedTotals)],
+    ];
+    $("strip").replaceChildren(...cells.map(([l, v]) => el("div", { class: "cell" }, el("span", { class: "label", text: l }), v)));
+    return total;
+  }
+
+  // eToro's own positions (saved by the bot each minute) priced at eToro's own rate. P/L is
+  // eToro's figure when the API gives one, else units x (eToro price - eToro open) - eToro fees.
+  function etoroRows(d, trades) {
+    const snap = d.etoro_positions;
+    const nowMs = new Date(d.now).getTime();
+    if (!snap || !Array.isArray(snap.positions) || !snap.at || nowMs - new Date(snap.at).getTime() > ETORO_MARK_MAX_AGE_MS) return null;
+    const byInstrument = {};
+    for (const t of Object.values(d.scorecard || {})) if (t && t.instrument_id) byInstrument[String(t.instrument_id)] = t;
+    const marks = d.etoro_marks || {};
+    return snap.positions.map((p) => {
+      const card = byInstrument[String(p.instrumentID)] || {};
+      const spy = d.spy_reserve && d.spy_reserve.instrument_id != null && String(d.spy_reserve.instrument_id) === String(p.instrumentID);
+      const symbol = spy ? "SPY" : String(p.symbol || card.symbol || p.instrumentID).toUpperCase();
+      const m = marks[symbol];
+      const spyDays = spy && d.spy && d.spy.closes ? Object.keys(d.spy.closes).sort() : [];
+      const rate = (m && nowMs - new Date(m.at).getTime() < ETORO_MARK_MAX_AGE_MS ? num(m.rate) : null)
+        ?? (spyDays.length ? num(d.spy.closes[spyDays[spyDays.length - 1]]) : null);  // SPY: the bot's last saved SPY price
+      const units = num(p.units), open = num(p.openRate), fees = num(p.totalFees) || 0;
+      const side = p.isBuy === false ? -1 : 1;
+      const reported = [p.unrealizedPnL, p.netProfit, p.pnL, p.pnl].map(num).find((v) => v != null);
+      const pnl = reported != null ? reported : units && open && rate ? side * units * (rate - open) - fees : null;
+      return {
+        symbol, strategy: spy ? "idle cash in SPY (always held)" : card.strategy_name || "", units, open, rate, fees, pnl, reported: reported != null,
+        invested: num(p.amount), leverage: num(p.leverage) || 1, at: m ? m.at : snap.at, opened: p.openDateTime,
+      };
+    });
+  }
+
+  function renderOpenPl(d, trades) {
+    const body = $("openpl");
+    body.replaceChildren();
+    const rows = etoroRows(d, trades);
+    if (rows == null) {
+      body.append(el("tr", {}, el("td", { colspan: "8", class: "muted", text: "Waiting for the bot's next eToro portfolio read (every minute)." })));
+      $("openpl-note").textContent = "";
+      return null;
+    }
+    if (!rows.length) {
+      body.append(el("tr", {}, el("td", { colspan: "8", class: "muted", text: "No open eToro positions." })));
+      $("openpl-note").textContent = "";
+      return 0;
+    }
+    let total = 0, priced = 0, invested = 0, copySum = 0;
+    for (const r of rows) {
+      if (r.pnl != null) { total += r.pnl; priced += 1; copySum += copyPnl(r.symbol, r.opened, r.units, r.rate, r.pnl); }
+      invested += r.invested || 0;
+      body.append(el("tr", {},
+        el("td", {}, el("div", { text: r.symbol + (r.leverage > 1 ? ` · ${r.leverage}x` : "") }), el("div", { class: "muted sub", text: words(r.strategy) })),
+        el("td", { class: "n hide-sm", text: r.units == null ? "—" : r.units.toFixed(4) }),
+        el("td", { class: "n hide-sm", text: money(r.invested) }),
+        el("td", { class: "n hide-sm", text: price(r.open) }),
+        el("td", { class: "n", text: price(r.rate) }),
+        el("td", { class: "n hide-sm", text: money(r.fees) }),
+        el("td", { class: "n strong " + cls(r.pnl), text: signedMoney(r.pnl) }),
+        el("td", { class: "n " + cls(r.pnl), text: signedMoney(copyPnl(r.symbol, r.opened, r.units, r.rate, r.pnl)) })));
+    }
+    const sum = priced ? total : null;
+    openCopy = priced ? copySum : 0;
+    const cash = num((d.live || {}).last_cash);
+    const positionsNow = rows.reduce((a, r) => a + (r.pnl != null && r.invested != null ? r.invested + r.pnl : (r.invested || 0)), 0);
+    if (cash != null) {
+      const value = cash + positionsNow, change = value - STARTING_BALANCE;
+      $("real-summary").replaceChildren(
+        el("div", {}, el("strong", { text: `AlgoBot is worth ${money(value)} now` }), ` (cash ${money(cash)} + positions ${money(positionsNow)} at eToro's prices).`),
+        el("div", { class: "small" }, "Since 4 Oct: ", el("strong", { class: cls(change), text: `${signedMoney(change)} (${change >= 0 ? "+" : "−"}${Math.abs(change / STARTING_BALANCE * 100).toFixed(2)}%)` }),
+          ` on the $10,000 funded. Prices from eToro, saved by the bot every minute; this page refreshes every 15 seconds.`),
+        ...valueToday(d.value_history));
+    }
+    body.append(el("tr", { class: "total" },
+      el("td", { text: `Total (${rows.length} open)` }), el("td", { class: "hide-sm" }),
+      el("td", { class: "n hide-sm", text: money(invested) }), el("td", { class: "hide-sm" }), el("td", {}), el("td", { class: "hide-sm" }),
+      el("td", { class: "n strong " + cls(sum), text: signedMoney(sum) }),
+      el("td", { class: "n strong " + cls(sum), text: signedMoney(sum == null ? null : copySum) })));
+    const latest = rows.map((r) => r.at).filter(Boolean).sort().pop();
+    $("openpl-note").textContent = `From eToro: positions, open prices, units and fees from the AlgoBot account; eToro prices as of ${latest ? dubai(latest) : "—"}. ` +
+      (rows.some((r) => r.reported) ? "P/L is eToro's own figure. " : "P/L = units x (eToro price − eToro open) − eToro fees. ") +
+      (priced < rows.length ? `${rows.length - priced} position(s) have no eToro price yet. ` : "") +
+      "Your copy = AlgoBot P/L x your copy's share when the trade opened (5% before 4 Nov 19:20 UTC, 10% since). PYPL, DIS and MSFT also count the extra 5% eToro bought when your copy grew to $1,000, at about $60.44, $119.48 and $555.41 (estimated from AlgoBot's eToro prices that evening); eToro shows your exact figures.";
+    return sum;
+  }
+
+  function sessionDay(iso) {  // "2026-10-12" -> "Mon 12 Oct"
+    const t = new Date(String(iso).slice(0, 10) + "T12:00:00Z");
+    return isNaN(t) ? "—" : t.toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short", timeZone: "UTC" });
+  }
+
+  function setupNotes(item, where) {
+    const flags = [];
+    if (item.allowed === false) flags.push(["bad", "Not on the allowed list"]);
+    if (item.blacklisted) flags.push(["bad", "Blacklisted"]);
+    if (item.evidence_passing === false) flags.push(["wait", "Backtest evidence too thin"]);
+    if (item.kind === "weak") flags.push(["wait", "Weak signal: needs your approval"]);
+    if (item.held_paper) flags.push(["info", "Already held"]);
+    if (item.pending_proposal) flags.push(["info", "Order pending"]);
+    if (item.etoro_symbol_open) flags.push(["info", "Open on eToro"]);
+    else if (item.etoro_bucket_full) flags.push(["wait", "eToro group full"]);
+    return el("div", { class: "flags " + where }, ...flags.map(([kind, text]) => pill(kind, text)));
+  }
+
+  function setupRow(item, rank) {
+    return el("tr", {},
+      el("td", { class: "rank", text: String(rank) }),
+      el("td", {}, el("div", {}, el("strong", { text: item.symbol })), el("div", { class: "muted sub", text: words(item.strategy) }), setupNotes(item, "show-sm")),
+      el("td", { class: "n", text: price(num(item.entry)) }),
+      el("td", { class: "n hide-sm", text: price(num(item.stop)) }),
+      el("td", { class: "n hide-sm", text: price(num(item.target)) }),
+      el("td", { class: "n", text: num(item.rr) == null ? "—" : num(item.rr).toFixed(2) }),
+      el("td", { class: "n hide-sm", text: rFmt(num(item.oos_expectancy_r), 3) }),
+      el("td", { class: "hide-sm" }, setupNotes(item, "")));
+  }
+
+  function renderPremarket(w) {
+    const body = $("pm-items"), status = $("pm-status");
+    body.replaceChildren();
+    if (!w || !w.session_date) {
+      status.className = "pill wait"; status.textContent = "Waiting for the first run";
+      body.append(el("tr", {}, el("td", { colspan: "8", class: "muted", text: "The first list arrives at 08:30 New York on the next trading day." })));
+      $("pm-note").textContent = "";
+      return;
+    }
+    const items = w.items || [], shadow = w.shadow_items || [];
+    const states = {
+      complete: ["ok", "Complete"], complete_with_gaps: ["wait", "Complete, some stocks had no data"],
+      incomplete_at_cutoff: ["wait", "Stopped at the 09:20 New York cutoff"],
+      missed_cutoff: ["wait", "No list: the bot was off before 09:20 New York"],
+      partial: w.paused_reason === "etoro_rate_limit" ? ["wait", `Paused at ${w.cursor ?? 0} of ${w.symbols}: eToro rate limit, retrying`]
+        : w.paused_reason === "market_data_unavailable" ? ["wait", `Paused at ${w.cursor ?? 0} of ${w.symbols}: no market data, retrying`]
+        : ["info", `Scanning (${w.cursor ?? 0} of ${w.symbols} stocks)`],
+      running: ["info", "Scanning"],
+    };
+    const [kind, label] = states[w.status] || ["wait", String(w.status || "—")];
+    status.className = "pill " + kind;
+    status.textContent = `${sessionDay(w.session_date)} · ${label}`;
+    const rows = items.length ? items : shadow.slice(0, 10);
+    if (!rows.length) {
+      const why = w.status === "missed_cutoff" ? "The bot was not running between 08:30 and 09:20 New York, so it skipped the scan rather than run into the session."
+        : ["complete", "complete_with_gaps", "incomplete_at_cutoff"].includes(w.status) ? "No strategy signalled a buy on the last completed bar."
+        : "Setups appear here when the scan finishes.";
+      body.append(el("tr", {}, el("td", { colspan: "8", class: "muted", text: why })));
+    } else {
+      if (!items.length) body.append(el("tr", {}, el("td", { colspan: "8", class: "muted", text: "None of today's setups can be traded. The strongest ones, for reference:" })));
+      rows.forEach((item, i) => body.append(setupRow(item, i + 1)));
+      if (items.length && shadow.length) body.append(el("tr", {}, el("td", { colspan: "8", class: "muted small", text: `${shadow.length}${shadow.length >= 25 ? "+" : ""} more setup${shadow.length === 1 ? "" : "s"} signalled but can't be traded automatically (thin backtest evidence, a weak signal, or the stock is already held or pending).` })));
+    }
+    const bar = rows[0] && rows[0].signal_bar_ts ? `the completed daily bar of ${sessionDay(rows[0].signal_bar_ts)}` : "the last completed daily bar";
+    $("pm-note").textContent = `${w.symbols} stocks × ${w.specs} daily strategies = ${w.evaluated_runs ?? 0} checks on ${bar}; ${w.signals ?? 0} buy signals, ${items.length} tradeable.` +
+      (w.computed_at ? ` Finished ${dubai(w.computed_at)}.` : "") +
+      (Array.isArray(w.failed_symbols) && w.failed_symbols.length ? ` No market data for ${w.failed_symbols.join(", ")}.` : "") +
+      (w.errors ? ` ${w.errors} check${w.errors === 1 ? "" : "s"} failed and ${w.errors === 1 ? "was" : "were"} skipped.` : "") +
+      (w.status === "incomplete_at_cutoff" && w.paused_reason ? ` It was paused (${w.paused_reason === "etoro_rate_limit" ? "eToro rate limit" : "no market data"}) when the cutoff came.` : "");
+  }
+
+  function nyClock(iso) {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+      .formatToParts(new Date(iso)).map((p) => [p.type, p.value]));
+    const mins = Number(parts.hour) * 60 + Number(parts.minute), weekday = !["Sat", "Sun"].includes(parts.weekday);
+    return { open: weekday && mins >= 570 && mins < 960, weekday, mins };
+  }
+  const utcDay = (iso) => String(iso || "").slice(0, 10);
+
+  const STATUS_LIVE = [
+    "eToro copies a paper trade only when its strategy's backtest passes (+0.03R a trade or better, for 24 hours) and its paper record is 3+ closed trades in profit on the same timeframe (1 Nov).",
+    "Real-money limits: 1x only; a trade loses at most 0.5% of AlgoBot at its stop; at most 3 new trades a day and 9 open; a 5% daily loss stop.",
+    "Idle cash in SPY, version A (from 5 Nov): bought once a trading day after 09:45 New York, keeping $2,500 in cash; sold just enough when a copy needs the cash.",
+    "eToro copying pauses only after 3 failed eToro account reads in a row (5 Nov; one slow read paused it on 4 Nov).",
+    "Rotation strategy retired (1 Nov).",
+    "Daily backtests run first, then every 12 hours (1 Nov).",
+    "Paper: at most 2 open positions per sector on a new buy (1 Nov).",
+    "News and eToro post mood recorded at every paper entry and every 2 hours for held stocks; display only (1 Nov).",
+  ];
+  const STATUS_RESEARCH = [
+    "Buy the dip, 16 years of S&P 500 stocks: no timing edge; market filters removed winners (1 Nov).",
+    "News mood before 3,248 backtest trades: no rule; skipping bad news would have blocked better trades (2 Nov).",
+    "Monthly top-20 momentum: strong only on today's index list; fails on stocks that were in the index at the time (2 Nov).",
+    "SPY trend rules: smaller falls but lower return; none passed the test set in advance (2 Nov).",
+    "Intraday (5-15 minute bars): no edge after costs, so the bot stays on daily bars (Oct).",
+  ];
+  const STATUS_WAITING = [
+    "Telegram alerts: set TELEGRAM_ENABLED=true, the bot token and the chat ID in Railway.",
+    "Railway connector: re-authorise it in claude.ai Settings → Connectors.",
+    "Not approved: short selling (steps 3-4), leverage above 1x, a higher risk per trade.",
+  ];
+
+  function spyLine(r) {
+    const buy = r && r.last_buy, sale = r && r.last_release;
+    if (!buy) return r && r.last_error ? `Idle cash in SPY: the last purchase failed (${r.last_error}); it retries the next trading day.` : "Idle cash in SPY: the first purchase is made at the next 09:45 New York.";
+    const sold = sale ? ` Last sale: ${money(num(sale.value_usd), 0)} on ${sessionDay(sale.at)} to fund a copy.` : "";
+    return `Idle cash in SPY: last bought ${money(num(buy.amount_usd), 0)} on ${sessionDay(buy.at)} at ${price(num(buy.rate))}.${sold}`;
+  }
+
+  function renderStatus(d, copyable) {
+    const today = utcDay(d.now), clock = nyClock(d.now), live = d.live || {};
+    const cards = Object.values(d.scorecard || {}).filter((t) => t && typeof t === "object");
+    const etoroOpened = cards.filter((t) => utcDay(t.opened_at) === today);
+    const etoroClosed = cards.filter((t) => t.status === "closed" && utcDay(t.etoro_closed_at || t.closed_seen_at) === today);
+    const paperOpened = [...(d.paper_open || []), ...(d.paper_closed || [])].filter((p) => utcDay(p.opened_at) === today);
+    const paperClosed = (d.paper_closed || []).filter((p) => utcDay(p.closed_at) === today);
+    const list = (items) => items.length ? items.join(", ") : "none";
+    const w = d.premarket || {};
+    const scan = w.session_date === today ? `${w.signals ?? 0} buy signals, ${(w.items || []).length} the bot may trade` : "not run yet today (08:30 New York)";
+    const market = clock.open ? "open until 16:00 New York" : clock.weekday && clock.mins < 570 ? "closed, opens 09:30 New York" : "closed";
+    const todayItems = [
+      `US market: ${market}.`,
+      `Real money (eToro): ${live.trades_today ?? 0} of 3 new copies today. Opened: ${list(etoroOpened.map((t) => t.symbol))}. Closed: ${list(etoroClosed.map((t) => `${t.symbol} ${signedMoney(num(t.etoro_net_profit_usd) ?? num(t.pnl_usd))}`))}.`,
+      `Paper: opened ${list(paperOpened.map((p) => p.symbol + (p.paper_only ? " (paper-only)" : "")))}; closed ${list(paperClosed.map((p) => `${p.symbol} ${signedMoney(num(p.pnl))}`))}.`,
+      `Today's setup scan: ${scan}.`,
+      `Strategies eToro may copy now: ${copyable == null ? "—" : copyable || "none"}.`,
+      spyLine(d.spy_reserve),
+    ];
+    const card = (title, items) => el("div", { class: "notice" }, el("h3", { text: title }), el("ul", {}, ...items.map((t) => el("li", { text: t }))));
+    $("status").replaceChildren(
+      card(`Today, ${sessionDay(d.now)}`, todayItems),
+      card("Live in the bot", STATUS_LIVE),
+      card("Research results", STATUS_RESEARCH),
+      card("Waiting on you", STATUS_WAITING));
+  }
+
+  // Today's growth from the bot's minute-by-minute account value (etoro_live:value_history).
+  function valueToday(h) {
+    const points = h && Array.isArray(h.points) ? h.points.filter((p) => Array.isArray(p) && num(p[1]) != null) : [];
+    if (points.length < 2) return [el("div", { class: "small muted", text: "Today's growth chart starts with the bot's minute-by-minute value record (from the 4 Nov evening update)." })];
+    const values = points.map((p) => num(p[1])), last = values[values.length - 1];
+    const base = num(h.prev_close) ?? values[0], change = last - base;
+    const lo = Math.min(...values, base), hi = Math.max(...values, base), span = hi - lo || 1;
+    const W = 600, H = 70, x = (i) => (i / (values.length - 1)) * W, y = (v) => H - 4 - ((v - lo) / span) * (H - 8);
+    const ns = "http://www.w3.org/2000/svg", svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", `AlgoBot value today, from ${money(values[0])} to ${money(last)}`);
+    svg.style.cssText = "width: 100%; height: 70px; display: block; margin-top: 8px;";
+    const add = (tag, a) => { const n = document.createElementNS(ns, tag); for (const k in a) n.setAttribute(k, a[k]); svg.append(n); return n; };
+    add("line", { x1: 0, x2: W, y1: y(base), y2: y(base), stroke: "var(--line)", "stroke-width": 1, "stroke-dasharray": "4 4" });
+    add("polyline", { points: values.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" "), fill: "none",
+      stroke: change >= 0 ? "var(--gain)" : "var(--loss)", "stroke-width": 2, "vector-effect": "non-scaling-stroke" });
+    const since = num(h.prev_close) != null ? "since yesterday's close" : `since ${dubai(points[0][0]).split(" (")[0]}`;
+    return [
+      el("div", { class: "small" }, "Today: ", el("strong", { class: cls(change), text: `${signedMoney(change)} (${change >= 0 ? "+" : "−"}${Math.abs(change / base * 100).toFixed(2)}%)` }), ` ${since}; your copy about ${signedMoney(change * COPY_SHARE)}.`),
+      svg,
+      el("div", { class: "small muted", text: `${points.length} readings today, latest ${dubai(points[points.length - 1][0])}. Dashed line: ${num(h.prev_close) != null ? "yesterday's close" : "the first reading"}.` }),
+    ];
+  }
+
+  function renderPaper(d) {
+    const paper = num(d.paper_equity);
+    $("paper-summary").replaceChildren(paper == null ? el("span", { class: "muted", text: "Paper equity appears with the bot's next Alpaca read." })
+      : el("span", {}, el("strong", { text: `Paper account: ${money(paper, 0)}` }), ` (${signedMoney(paper - PAPER_START, 0)}, ${paper >= PAPER_START ? "+" : "−"}${Math.abs((paper - PAPER_START) / PAPER_START * 100).toFixed(2)}% since 11 Jun). Practice money only.`));
+    const openBody = $("paperopen"), closedBody = $("paperclosed");
+    openBody.replaceChildren();
+    closedBody.replaceChildren();
+    const open = d.paper_open || [], closed = d.paper_closed || [];
+    const tag = (p) => words(p.strategy) + (p.paper_only ? " · paper-only" : "") + (RETIRED[p.strategy] ? " · retired" : "");
+    let openSum = 0;
+    if (!open.length) openBody.append(el("tr", {}, el("td", { colspan: "5", class: "muted", text: "No open paper positions." })));
+    for (const p of open) {
+      const pnl = num(p.pnl);
+      if (pnl != null) openSum += pnl;
+      openBody.append(el("tr", {},
+        el("td", {}, el("div", {}, el("strong", { text: p.symbol })), el("div", { class: "muted sub", text: tag(p) })),
+        el("td", { class: "hide-sm small", text: p.opened_at ? sessionDay(p.opened_at) : "—" }),
+        el("td", { class: "n" }, el("div", { text: `${price(num(p.entry))} → ${price(num(p.now))}` }), el("div", { class: "muted sub", text: `${num(p.qty) ?? "—"} shares` })),
+        el("td", { class: "n hide-sm", text: price(num(p.stop)) }),
+        el("td", { class: "n strong " + cls(pnl), text: signedMoney(pnl) })));
+    }
+    if (open.length) openBody.append(el("tr", { class: "total" }, el("td", { text: `${open.length} open` }), el("td", { class: "hide-sm" }), el("td", {}),
+      el("td", { class: "hide-sm" }), el("td", { class: "n " + cls(openSum), text: signedMoney(openSum) })));
+    let closedSum = 0, wins = 0;
+    if (!closed.length) closedBody.append(el("tr", {}, el("td", { colspan: "4", class: "muted", text: "No paper trades closed in the last 14 days." })));
+    for (const p of closed) {
+      const pnl = num(p.pnl);
+      if (pnl != null) { closedSum += pnl; if (pnl > 0) wins += 1; }
+      closedBody.append(el("tr", {},
+        el("td", {}, el("div", {}, el("strong", { text: p.symbol })), el("div", { class: "muted sub", text: tag(p) })),
+        el("td", { class: "hide-sm small", text: `${p.opened_at ? sessionDay(p.opened_at) : "—"} → ${p.closed_at ? sessionDay(p.closed_at) : "—"}` }),
+        el("td", { class: "n hide-sm", text: price(num(p.entry)) }),
+        el("td", { class: "n strong " + cls(pnl), text: signedMoney(pnl) })));
+    }
+    if (closed.length) closedBody.append(el("tr", { class: "total" }, el("td", { text: `${closed.length} closed · ${wins} won` }), el("td", { class: "hide-sm" }),
+      el("td", { class: "hide-sm" }), el("td", { class: "n " + cls(closedSum), text: signedMoney(closedSum) })));
+    $("paper-note").textContent = "Paper-only = a trade taken on paper on weaker evidence to build a record; eToro never copies it. Retired = the rotation strategy, retired on 1 Nov: its open paper trades run to their stop or target.";
+  }
+
+  function renderClosed(d, trades) {
+    const body = $("closedpl");
+    body.replaceChildren();
+    const sc = d.scorecard || {};
+    const rows = trades.filter((t) => t.status === "closed").map((t) => {
+      const raw = (t.backtested ? sc[t.id] : d.eth) || {};
+      const net = num(raw.etoro_net_profit_usd) ?? num(raw.pnl_usd);
+      return { ...t, units: num(raw.units), invested: num(raw.amount_usd) ?? t.notional, net: net ?? t.pnl, exact: net != null,
+        closedAt: raw.etoro_closed_at || raw.closed_seen_at || null };
+    }).sort((a, b) => String(b.closedAt || "").localeCompare(String(a.closedAt || "")));
+    if (!rows.length) {
+      body.append(el("tr", {}, el("td", { colspan: "6", class: "muted", text: "No closed trades yet." })));
+      $("closedpl-note").textContent = "";
+      return;
+    }
+    let total = 0, wins = 0, copyTotal = 0;
+    for (const t of rows) {
+      const pnl = t.net, approx = t.exact ? "" : "≈ ";
+      if (pnl != null) { total += pnl; copyTotal += copyPnl(t.symbol, t.opened_at, t.units, t.now, pnl); if (pnl > 0) wins += 1; }
+      body.append(el("tr", {},
+        el("td", {}, el("div", {}, el("strong", { text: t.symbol })), el("div", { class: "muted sub", text: t.backtested ? words(t.strategy) : "one-off crypto test" })),
+        el("td", { class: "hide-sm small" }, el("div", { text: `${t.opened_at ? sessionDay(t.opened_at) : "—"} → ${t.closedAt ? sessionDay(t.closedAt) : "—"}` }),
+          el("div", { class: "muted sub", text: t.exit ? words(t.exit) + (t.leverage > 1 ? ` · ${t.leverage}x` : "") : "" })),
+        el("td", { class: "n" }, el("div", { text: money(t.invested, 0) }), el("div", { class: "muted sub", text: money(t.invested == null ? null : t.invested * shareAt(t.opened_at)) })),
+        el("td", { class: "n hide-sm " + cls(t.rNow), text: rFmt(t.rNow) }),
+        el("td", { class: "n " + cls(pnl), text: pnl == null ? "—" : approx + signedMoney(pnl) }),
+        el("td", { class: "n strong " + cls(pnl), text: pnl == null ? "—" : approx + signedMoney(copyPnl(t.symbol, t.opened_at, t.units, t.now, pnl)) })));
+    }
+    body.append(el("tr", { class: "total" },
+      el("td", { text: `${rows.length} closed · ${wins} won` }), el("td", { class: "hide-sm" }), el("td", {}), el("td", { class: "hide-sm" }),
+      el("td", { class: "n " + cls(total), text: signedMoney(total) }),
+      el("td", { class: "n strong " + cls(copyTotal), text: signedMoney(copyTotal) })));
+    $("closedpl-note").textContent = "AlgoBot P/L is eToro's own closed profit for the AlgoBot account, after fees; ≈ marks the bot's estimate where eToro's figure was not recorded. Your copy is that × your copy's share when the trade opened (5% until 4 Nov, 10% since): eToro's exact figures for your copy are in your portfolio under the AlgoBot copy → History, and can differ by cents and copy fees. The AlgoBot closed P/L at the top also counts eToro charges not tied to one trade.";
+    return { pnl: total, copy: copyTotal };
+  }
+
+  function render(d, storedAt) {
+    lastGood = d;
+    const trades = buildTrades(d);
+    const copyable = renderCopyCheck(d);
+    const closedTotals = renderClosed(d, trades);
+    renderBenchmark(d, renderStrip(d, renderOpenPl(d, trades), copyable, closedTotals));
+    renderStatus(d, copyable);
+    renderPaper(d);
+    renderSkipped(d);
+    renderSentiment(d);
+    renderMood(d.panel);
+    renderSentimentNow(d);
+    renderNewsResearch(d.news_research);
+    $("trades").replaceChildren(...(trades.length ? trades.map(tradeCard) : [el("div", { class: "notice muted", text: "No live trades yet. The first mirrored entry appears here." })]));
+    renderStrategies(trades);
+    renderPremarket(d.premarket);
+    const evs = d.events || [];
+    $("events").replaceChildren(...(evs.length ? evs.map((ev) => el("div", { class: "event" }, el("span", { class: "t", text: dubai(ev.created_at).split(" (")[0] }), el("span", { text: describeEvent(ev) }))) : [el("div", { class: "event" }, el("span", { class: "t", text: "—" }), el("span", { class: "muted", text: "No bot actions yet." }))]));
+    const when = storedAt ? new Date(storedAt).toISOString() : d.now;
+    $("updated").textContent = "Data as of " + dubai(when);
+  }
+
+  function showNotice(text, isError) {
+    const n = $("notice");
+    n.textContent = text;
+    n.className = "notice" + (isError ? " err" : "");
+    n.hidden = !text;
+  }
+
+  function retract(text) {
+    lastGood = null;
+    $("trades").replaceChildren(el("div", { class: "notice muted", text: "Live data is hidden until Supabase access is restored." }));
+    showNotice(text, true);
+  }
+
+  function handleError(err) {
+    const code = err && err.code;
+    switch (code) {
+      case "needs_reauth": return retract("Supabase needs reconnecting. Reconnect it in claude.ai Settings → Connectors, then reload this page.");
+      case "server_not_connected":
+      case "server_not_found": return retract("This page reads the bot's data through the Supabase connector. Add Supabase in claude.ai Settings → Connectors, then reload.");
+      case "selection_required": return retract("You have more than one Supabase connector. Choose one when the viewer asks, then reload.");
+      case "not_in_manifest": return retract("Supabase is turned off for this page. Allow it from the page's Permissions menu to see live data.");
+      case "blocked_by_policy":
+      case "approval_required": return retract("Your organization's policy blocks Supabase on this page.");
+      case "not_granted":
+      case "capability_disabled":
+      case "capability_removed": return showNotice("Live data isn't available in this view. Open the page in claude.ai to see the scorecard.", true);
+      case "tool_error": return showNotice("Supabase answered with an error: " + (err.message || "query failed") + ". Showing the last good reading.", true);
+      default: return showNotice((lastGood ? "Couldn't refresh just now. Showing the last good reading; it retries every minute." : "Couldn't reach Supabase yet. It retries every minute.") + (code ? ` (${code})` : ""), true);
+    }
+  }
+
+  function onData(result) {
+    try {
+      render(parsePayload(result.payload), result.cache && result.cache.storedAt);
+      showNotice("", false);
+    } catch (e) {
+      showNotice("The data came back in an unexpected format (" + (e && e.message ? e.message.slice(0, 80) : "parse error") + "). " + (lastGood ? "Showing the last good reading." : "It retries every minute."), true);
+    }
+  }
+
+  let mcpRef = null, pollTimer = null, polling = false;
+  async function pollOnce(fresh) {
+    try {
+      const res = await mcpRef.callTool(SERVER, TOOL, INPUT, fresh ? { cache: false } : { cache: { staleTime: 30000 } });
+      onData(res);
+    } catch (err) { handleError(err); }
+  }
+  function startPolling() {
+    if (polling) return;
+    polling = true;
+    pollOnce(false);
+    pollTimer = setInterval(() => { if (!document.hidden) pollOnce(false); }, REFRESH_MS);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) pollOnce(false); });
+  }
+
+  let hostedPoll = null;  // set when the bot serves this page itself (/scorecard)
+  $("refresh").addEventListener("click", () => { if (mcpRef) pollOnce(true); else if (hostedPoll) hostedPoll(); });
+
+  // Served by the bot (https://<bot>/scorecard?key=...): the same data from /scorecard/data.
+  function startHosted() {
+    const key = new URLSearchParams(location.search).get("key") || "";
+    const url = "/scorecard/data?key=" + encodeURIComponent(key);
+    hostedPoll = async () => {
+      try {
+        const res = await fetch(url, { cache: "no-store" });
+        if (res.status === 403 || res.status === 404) return retract("This link's key is missing or wrong. Use the private link you were given.");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const body = await res.json();
+        render(body.d, null);
+        showNotice("", false);
+      } catch (err) {
+        showNotice((lastGood ? "Couldn't refresh just now. Showing the last good reading; " : "Couldn't reach the bot yet; ") + "it retries in 15 seconds.", true);
+      }
+    };
+    hostedPoll();
+    setInterval(() => { if (!document.hidden) hostedPoll(); }, REFRESH_MS);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) hostedPoll(); });
+  }
+
+  async function start() {
+    const mcp = window.claude && window.claude.use ? await window.claude.use("mcp") : null;
+    if (!mcp && /^https?:$/.test(location.protocol) && /\/scorecard\/?$/.test(location.pathname)) return startHosted();
+    if (!mcp) {
+      showNotice("Live data needs the claude.ai viewer with your Supabase connector. Open this page in claude.ai.", true);
+      $("refresh").hidden = true;
+      return;
+    }
+    mcpRef = mcp;
+    // Supabase's SQL tool can also write, so the viewer may refuse to watch it; poll instead then.
+    if (typeof mcp.watchTool !== "function") { startPolling(); return; }
+    mcp.watchTool(SERVER, TOOL, INPUT, (ev) => {
+      if (ev.type === "data") onData(ev.result);
+      else if (ev.error && (ev.error.code === "bad_request" || ev.error.code === "capability_removed")) startPolling();
+      else handleError(ev.error);
+    }, { cache: { staleTime: 30000 }, refetchInterval: REFRESH_MS });
+  }
+  start();
+})();
+</script>

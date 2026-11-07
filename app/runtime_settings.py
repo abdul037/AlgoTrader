@@ -639,6 +639,9 @@ class AppSettings(BaseSettings):
     # need cash (app/broker/etoro_live_spy_reserve.py). Off: no buys or sales, and reconcile then
     # closes the stop-less SPY like any unprotected position.
     etoro_live_spy_reserve_enabled: bool = True
+    # Operator 2026-11-07: the Live Scorecard served by the bot at /scorecard?key=<token>
+    # (app/dashboard/scorecard.py). Empty: the page and its data answer 404 (off).
+    scorecard_token: str = ""
     # Live stop-width floor in prior-session ATRs (widens stop and target, keeping
     # R:R; sizing keeps $ risk constant). 0 = off until the intraday walk-forward
     # shows a floor improves out-of-sample expectancy. Backtests use the same value.
