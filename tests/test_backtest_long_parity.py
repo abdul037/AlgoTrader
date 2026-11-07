@@ -33,10 +33,11 @@ wrote) are left out of the comparison: everything else, the replayed variants in
 still match bc82efd exactly.
 
 The deep daily warm-up (2026-11-07, ``batch.DEEP_WARMUP_TIMEFRAMES``) is a deliberate long
-change for the two daily strategies whose 210 required bars exceed the ~124-bar train window
-(``DEEP_WARMUP_STRATEGIES``): bc82efd gave them 0 walk-forward trades. The bc82efd comparison
-runs with it off; one more sweep with it on (today's default) must differ from that run in
-exactly those two strategies' daily walk-forward rows and that case's summary, nothing else.
+change for the daily strategy whose 210 required bars exceed the ~124-bar train window
+(``DEEP_WARMUP_STRATEGIES``): bc82efd gave it 0 walk-forward trades. overnight_drift needs it
+too but is held back until paper honours its one-bar hold. The bc82efd comparison runs with it
+off; one more sweep with it on (today's default) must differ from that run in exactly that
+strategy's daily walk-forward rows and that case's summary, nothing else.
 
 Re-baseline only after a deliberate long change, from a known-good commit: copy its
 ``app/backtesting/<name>.py`` over ``tests/long_parity_reference/<name>.py.txt``, update
@@ -77,7 +78,9 @@ SELL_EMITTERS = (
 )
 INTRADAY_SPECS = ("vwap_reclaim", "ema_trend_stack")
 # The daily strategies the deep warm-up changes on purpose (required_bars 210 > the train window).
-DEEP_WARMUP_STRATEGIES = ("connors_rsi2_reversion", "overnight_drift")
+# overnight_drift needs it too but is held back (batch.DEEP_WARMUP_HELD_BACK): its rows do not move.
+DEEP_WARMUP_STRATEGIES = ("connors_rsi2_reversion",)
+DEEP_WARMUP_HELD_BACK = ("overnight_drift",)
 COST_LEGS = ("spread_usd", "financing_usd", "fx_usd", "commission_usd", "slippage_usd", "regulatory_usd")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -357,9 +360,9 @@ def test_long_backtests_match_the_pre_short_code_exactly(computed) -> None:
 
 
 def test_the_deep_daily_warmup_moves_only_the_two_strategies_it_is_for(computed) -> None:
-    """With the deep warm-up on (as deployed), exactly the connors / overnight daily
-    walk-forward rows and that case's summary differ from the bc82efd-matching run; both
-    strategies trade there now, where the train-window warm-up gave them none."""
+    """With the deep warm-up on (as deployed), exactly the connors daily walk-forward rows and
+    that case's summary differ from the bc82efd-matching run; connors trades there now, where
+    the train-window warm-up gave it none, and the held-back overnight_drift still does not."""
 
     current, deep = computed["current"], computed["deep"]
     assert [label for label, _ in deep] == [label for label, _ in current]
@@ -378,6 +381,8 @@ def test_the_deep_daily_warmup_moves_only_the_two_strategies_it_is_for(computed)
     for name in DEEP_WARMUP_STRATEGIES:
         assert oos_trades(computed["fee_free_rows"], name) == 0, name  # bc82efd's (and the gate's) 0
         assert oos_trades(computed["deep_rows"], name) > 0, name
+    for name in DEEP_WARMUP_HELD_BACK:
+        assert oos_trades(computed["deep_rows"], name) == 0, name
 
 
 def test_the_reference_is_the_pre_short_code_and_leaves_no_trace(computed) -> None:

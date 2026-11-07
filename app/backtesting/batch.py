@@ -58,6 +58,13 @@ from app.utils.time import utc_now
 # do not move. 1h, 1w and the minute bars are left as they were: some of their strategies have
 # the same shortfall, but a deeper warm-up there would change evidence the gate already reads.
 DEEP_WARMUP_TIMEFRAMES = frozenset({"1d"})
+# Strategies kept on the train-window warm-up although they need more (2026-11-07):
+# overnight_drift's backtest exits after one bar (metadata max_hold_bars=1), but paper ignores
+# max_hold_bars and holds a 1d position until its stop/target or up to paper_max_hold_days_swing
+# days, and the eToro copy follows paper. Its evidence would describe a different trade from
+# the one paper and the copy would make, so it stays without OOS trades (and so out of paper)
+# until paper honours max_hold_bars.
+DEEP_WARMUP_HELD_BACK = frozenset({"overnight_drift"})
 
 
 def _with_warmup(window: Any, history: pd.DataFrame | None = None, required_bars: int = 0) -> pd.DataFrame:
@@ -98,6 +105,8 @@ def _deep_warmup_bars(timeframe: str, strategy: Any) -> int:
     window as it is, on every timeframe outside ``DEEP_WARMUP_TIMEFRAMES``)."""
 
     if str(timeframe or "").lower() not in DEEP_WARMUP_TIMEFRAMES:
+        return 0
+    if str(getattr(strategy, "name", "") or "") in DEEP_WARMUP_HELD_BACK:
         return 0
     try:
         return max(int(getattr(strategy, "required_bars", 0) or 0), 0)
