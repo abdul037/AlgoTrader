@@ -102,12 +102,20 @@ def scorecard_data(request: Request, key: str = "") -> JSONResponse:
 
 
 def _run(db: Any) -> Any:
-    """The page's query in a read-only transaction with a statement timeout."""
+    """The page's query in a read-only transaction with a statement timeout, on the driver's own
+    cursor with no parameters, so its LIKE '%' patterns are sent as written (through
+    SQLAlchemy's exec_driver_sql psycopg 3 read them as placeholders: seen 2026-11-07)."""
 
     with db._engine.connect() as connection:
-        connection.exec_driver_sql("SET TRANSACTION READ ONLY")
-        connection.exec_driver_sql(f"SET LOCAL statement_timeout = {int(STATEMENT_TIMEOUT_MS)}")
-        row = connection.exec_driver_sql(scorecard_sql()).fetchone()
-        connection.rollback()
+        raw = connection.connection  # the pooled DBAPI connection
+        cursor = raw.cursor()
+        try:
+            cursor.execute("SET TRANSACTION READ ONLY")
+            cursor.execute(f"SET LOCAL statement_timeout = {int(STATEMENT_TIMEOUT_MS)}")
+            cursor.execute(scorecard_sql())
+            row = cursor.fetchone()
+        finally:
+            cursor.close()
+            raw.rollback()
     value = row[0] if row is not None else None
     return json.loads(value) if isinstance(value, str) else value

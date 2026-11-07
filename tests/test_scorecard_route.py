@@ -53,22 +53,31 @@ def test_the_sql_is_the_pages_own_query() -> None:
     assert sql.rstrip().endswith("as d;")
 
 
-class _Conn:
+class _Cursor:
     def __init__(self, calls, row):
         self.calls, self.row = calls, row
+
+    def execute(self, sql, params=None):
+        assert params is None  # no parameters: the driver sends the '%' patterns as written
+        self.calls.append(sql)
+
+    def fetchone(self):
+        return self.row
+
+    def close(self):
+        self.calls.append("CLOSE")
+
+
+class _Conn:
+    def __init__(self, calls, row):
+        self.calls = calls
+        self.connection = SimpleNamespace(cursor=lambda: _Cursor(calls, row), rollback=lambda: calls.append("ROLLBACK"))
 
     def __enter__(self):
         return self
 
     def __exit__(self, *exc):
         return False
-
-    def exec_driver_sql(self, sql):
-        self.calls.append(sql)
-        return SimpleNamespace(fetchone=lambda: self.row)
-
-    def rollback(self):
-        self.calls.append("ROLLBACK")
 
 
 def test_postgres_runs_read_only_and_caches(tmp_path: Path) -> None:
@@ -79,9 +88,9 @@ def test_postgres_runs_read_only_and_caches(tmp_path: Path) -> None:
     first = client.get("/scorecard/data", params={"key": "k"})
     assert first.status_code == 200 and first.json() == {"d": {"now": "t"}}
     assert calls[0] == "SET TRANSACTION READ ONLY" and calls[1].startswith("SET LOCAL statement_timeout")
-    assert calls[2] == scorecard.scorecard_sql() and calls[-1] == "ROLLBACK"
+    assert calls[2] == scorecard.scorecard_sql() and calls[-2:] == ["CLOSE", "ROLLBACK"]
     assert client.get("/scorecard/data", params={"key": "k"}).json() == {"d": {"now": "t"}}
-    assert len(calls) == 4  # the second read came from the 10-second cache
+    assert len(calls) == 5  # the second read came from the 10-second cache
 
 
 def test_the_repo_page_matches_the_published_one() -> None:
