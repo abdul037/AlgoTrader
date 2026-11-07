@@ -12,6 +12,47 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-11-07 (Sat) — Thursday's drop, SPY kept; scorecard hosted by the bot; connors backtest fix
+
+- **Thu 11-05:** the S&P 500 fell about 4.4% (AI and chip selloff). AlgoBot lost about $290 that
+  day, mostly on SPY. **Operator: "Keep holding SPY"** (version A stays: no stop, always held).
+- **Correction to the 11-05 entry:** when the copy grew to $1,000, eToro also topped up the
+  copy's open positions at that day's prices (an extra 5% of AlgoBot's PYPL at $60.44, DIS at
+  $119.48 and MSFT at $555.41); they did not stay at their 5% size. The scorecard models this
+  (v20/v21, `COPY_TOPUP`). Advice given: no action needed.
+- **Fri 11-06 close:** AlgoBot $9,867.06 (-$132.94, -1.33% since 4 Oct; cash $2,600); SPY $735.29
+  against $767.96 bought; the copy about $978. Paper $99,669.57. No strategy cleared the eToro
+  copy bar this week, so nothing was copied.
+- **Operator 11-07: "I need the AlgoBot Live Scorecard to be deployed somewhere for Live".**
+  `1858983` (pushed 12:35 UTC) serves it from the bot: `GET /scorecard?key=` and
+  `GET /scorecard/data?key=`, the key being Railway's `SCORECARD_TOKEN` (set with skipDeploys; its
+  value is only in Railway and the operator's link, never in the repository). The data route runs
+  the page's own SQL in a read-only transaction (20 s timeout, 10 s cache); without a token both
+  routes answer 404. The first read failed with 502: psycopg 3 parsed the SQL's `LIKE '%'` as
+  placeholders because SQLAlchemy passed an empty parameter set. `1ba745d` (12:48 UTC) runs it on
+  the driver cursor with no parameters. **Verified 12:55 UTC:** data 200 (~100 KB), and the page
+  renders in Chromium from the bot with no errors. Scorecard v22: the stat strip has no grey gap.
+- **Weekly summary:** a scheduled task runs Sundays 06:17 UTC (10:17 Dubai), first on 11-08.
+- **PR #33** (`claude/repo-audit-962zde` -> `main`) opened to bring `main` up to date.
+- **Strategies with 0 out-of-sample trades (investigation):**
+  - `connors_rsi2_reversion:1d` and `overnight_drift:1d` need 210 daily bars (200-EMA filter),
+    but a walk-forward fold gave them only its 180-day train window (~124 bars) plus ~10 test
+    bars, so they returned no signal on every bar of every fold and the holdout. The live scan
+    passes 400 bars, so it does emit them. **Fix (`8ea57d3` + `DEEP_WARMUP_HELD_BACK`):** on 1d,
+    a strategy needing more than the train window gets every earlier bar of the fetched history
+    as warm-up (never an embargo or test bar). Every other daily strategy needs at most 120 bars
+    and is unchanged (long parity test).
+  - **Only connors gets it.** overnight_drift's backtest exits after one bar (`max_hold_bars=1`),
+    but paper ignores `max_hold_bars` and holds a 1d position until its stop/target or up to
+    `paper_max_hold_days_swing` days, and the eToro copy follows paper. Its evidence would
+    describe a different trade, so it stays without OOS trades until paper honours the hold.
+  - `post_earnings_drift:1d` is inert on every path, live included: nothing ever sets its
+    earnings provider, and the bot stores no earnings-surprise history. It needs an
+    earnings-history source (and an as-of-date provider) before it can be tested.
+  - **Effect:** connors gets real OOS evidence at the next daily gate refresh. If it clears the
+    paper bar, its proposals go to paper on their own; an eToro copy still needs +0.03 R with a
+    24 h streak and 3+ profitable paper trades. Risk limits are unchanged.
+
 ## 2026-11-05 (Thu) — SPY bought 11-04; copying halted by eToro read timeouts; fix
 
 - **Wed 11-04, operator: "the market is open for now" -> deploy now (asked: a mid-session restart
@@ -1610,9 +1651,10 @@ Convened locally over the 31 unreviewed commits (`0a12efe..2575a1b`) plus the we
 - Evidence bar level: paper keeps `STRATEGY_EVIDENCE_MIN_EXPECTANCY_R` at 0; the eToro copy
   needs +0.03 R in code since 2026-10-16 (operator decision).
 - ~~Stock copy fees~~ closed 2026-11-01: the operator's copy shows $1.20 of fees in all.
-- Branch `claude/repo-audit-962zde` is ~95 commits ahead of `main` and conflicts with
-  it (main last updated by #31); needs a PR + conflict merge when the operator wants
-  main current. Railway deploys from the branch, so production is unaffected.
+- `main` is brought up to date by PR merges from `claude/repo-audit-962zde` (#32 on 11-02,
+  #33 on 11-07). Railway deploys from the branch, so production is unaffected.
+- overnight_drift: make paper honour a signal's `max_hold_bars`, then release it from
+  `DEEP_WARMUP_HELD_BACK`. post_earnings_drift: an earnings-history source, or leave it inert.
 - Turn Telegram on in Railway (`TELEGRAM_ENABLED=true`, `TELEGRAM_BOT_TOKEN`,
   `TELEGRAM_CHAT_ID`); nothing the bot sends reaches the operator until then.
 - Queued builds: "close all live" command; cost
