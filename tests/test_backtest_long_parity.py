@@ -32,6 +32,12 @@ The 15m case runs with the 2026-10-20 options off (``walk_forward_intraday_entry
 wrote) are left out of the comparison: everything else, the replayed variants included, must
 still match bc82efd exactly.
 
+The deep daily warm-up (2026-11-07, ``batch.DEEP_WARMUP_TIMEFRAMES``) is a deliberate long
+change for the two daily strategies whose 210 required bars exceed the ~124-bar train window
+(``DEEP_WARMUP_STRATEGIES``): bc82efd gave them 0 walk-forward trades. The bc82efd comparison
+runs with it off; one more sweep with it on (today's default) must differ from that run in
+exactly those two strategies' daily walk-forward rows and that case's summary, nothing else.
+
 Re-baseline only after a deliberate long change, from a known-good commit: copy its
 ``app/backtesting/<name>.py`` over ``tests/long_parity_reference/<name>.py.txt``, update
 ``REFERENCE_COMMIT`` and ``REFERENCE_SHA256``, and say so in the commit.
@@ -70,6 +76,8 @@ SELL_EMITTERS = (
     "rsi_trend_continuation", "rsi_vwap_ema_confluence", "ma_crossover", "pullback_trend",
 )
 INTRADAY_SPECS = ("vwap_reclaim", "ema_trend_stack")
+# The daily strategies the deep warm-up changes on purpose (required_bars 210 > the train window).
+DEEP_WARMUP_STRATEGIES = ("connors_rsi2_reversion", "overnight_drift")
 COST_LEGS = ("spread_usd", "financing_usd", "fx_usd", "commission_usd", "slippage_usd", "regulatory_usd")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -192,6 +200,22 @@ def _patched(module, name, value):
         setattr(module, name, original)
 
 
+@contextlib.contextmanager
+def _fee_free():
+    """eToro's own trade fees at 0, as bc82efd charged none."""
+
+    with _patched(cost_module, "ETORO_STOCK_FEE_USD_PER_LEG", 0.0), _patched(
+        cost_module, "ETORO_CRYPTO_FEE_PER_LEG", 0.0
+    ):
+        yield
+
+
+def _shallow_warmup():
+    """bc82efd's fold warm-up: the train window alone, on every timeframe."""
+
+    return _patched(batch_module, "DEEP_WARMUP_TIMEFRAMES", frozenset())
+
+
 def _record(case, summary, rows, events) -> list[tuple[str, str]]:
     """What a run leaves behind, as (label, exact text) pairs."""
 
@@ -286,14 +310,17 @@ def bc82efd_backtesting(report: dict):
 @pytest.fixture(scope="module")
 def computed(tmp_path_factory):
     tmp_dir = tmp_path_factory.mktemp("parity")
-    # First (every lazy import binds to today's code), with eToro's fees at 0 like bc82efd.
+    # First (every lazy import binds to today's code), with eToro's fees at 0 like bc82efd and
+    # bc82efd's train-window warm-up (the deep daily warm-up off).
     fee_free_rows: list = []
-    with _patched(cost_module, "ETORO_STOCK_FEE_USD_PER_LEG", 0.0), _patched(
-        cost_module, "ETORO_CRYPTO_FEE_PER_LEG", 0.0
-    ):
+    with _fee_free(), _shallow_warmup():
         current, coverage = _sweep(CURRENT, tmp_dir, fee_free_rows)
+    deep_rows: list = []
+    with _fee_free():
+        deep, _ = _sweep(CURRENT, tmp_dir, deep_rows)  # the deep daily warm-up on, as deployed
     fee_rows: list = []
-    with_fees, _ = _sweep(CURRENT, tmp_dir, fee_rows)  # today's real default
+    with _shallow_warmup():
+        with_fees, _ = _sweep(CURRENT, tmp_dir, fee_rows)  # today's real fees
     report: dict = {}
     with bc82efd_backtesting(report) as reference:
         legacy, legacy_coverage = _sweep(reference, tmp_dir)
@@ -310,7 +337,7 @@ def computed(tmp_path_factory):
     return {
         "current": current, "legacy": legacy, "coverage": coverage, "legacy_coverage": legacy_coverage,
         "wiring": wiring, "restored": restored, "with_fees": with_fees, "fee_free_rows": fee_free_rows,
-        "fee_rows": fee_rows, **report,
+        "fee_rows": fee_rows, "deep": deep, "deep_rows": deep_rows, **report,
     }
 
 
@@ -327,6 +354,30 @@ def test_long_backtests_match_the_pre_short_code_exactly(computed) -> None:
     # The stop floor ran the same way too (the floor is long-only and its count is not persisted).
     floors = ("floor_calls", "floor_widened")
     assert [computed["coverage"][k] for k in floors] == [computed["legacy_coverage"][k] for k in floors]
+
+
+def test_the_deep_daily_warmup_moves_only_the_two_strategies_it_is_for(computed) -> None:
+    """With the deep warm-up on (as deployed), exactly the connors / overnight daily
+    walk-forward rows and that case's summary differ from the bc82efd-matching run; both
+    strategies trade there now, where the train-window warm-up gave them none."""
+
+    current, deep = computed["current"], computed["deep"]
+    assert [label for label, _ in deep] == [label for label, _ in current]
+    moved = {label for (label, now), (_, then) in zip(deep, current, strict=True) if now != then}
+    expected = {"daily7_wf summary"} | {
+        f"daily7_wf row {name} auto:1d:{SYMBOL}:walk_forward_oos {part}"
+        for name in DEEP_WARMUP_STRATEGIES
+        for part in ("metrics", "trades")
+    }
+    assert moved == expected, sorted(moved ^ expected)
+
+    def oos_trades(rows, name):
+        (row,) = [r for case, r in rows if case == "daily7_wf" and r["strategy_name"] == name]
+        return len(row["trades"])
+
+    for name in DEEP_WARMUP_STRATEGIES:
+        assert oos_trades(computed["fee_free_rows"], name) == 0, name  # bc82efd's (and the gate's) 0
+        assert oos_trades(computed["deep_rows"], name) > 0, name
 
 
 def test_the_reference_is_the_pre_short_code_and_leaves_no_trace(computed) -> None:
