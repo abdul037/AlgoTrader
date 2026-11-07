@@ -591,6 +591,10 @@ class AppSettings(BaseSettings):
     # Close intraday-timeframe positions this many minutes before the bell (paper);
     # swing (1d+) positions keep their GTC brackets. 0 = off.
     intraday_flatten_minutes_before_close: float = 10.0
+    # Close a 1d paper position once its signal's metadata max_hold_bars sessions have started
+    # since the entry filled, as the backtest does (operator 2026-11-07, overnight_drift's
+    # one-day hold; app/automation/max_hold_exit.py).
+    paper_max_hold_exit_enabled: bool = True
     # New entries allowed per correlation bucket (e.g. tech_complex) per day. 0 = off.
     max_daily_entries_per_correlation_bucket: int = 2
     # Block new intraday longs while SPY (and QQQ for tech) is below today's VWAP

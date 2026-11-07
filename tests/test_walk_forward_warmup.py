@@ -167,7 +167,7 @@ def _service(tmp_path, frame: pd.DataFrame) -> tuple[BatchBacktestService, _Rows
 def test_daily_strategies_needing_210_bars_now_trade_out_of_sample(tmp_path, monkeypatch, name) -> None:
     """The production symptom: 0 OOS trades with the train-window warm-up, trades with the deep
     one, every entry inside a fold's test window (never in the warm-up, the embargo or later).
-    The mechanism for both; overnight_drift is held back from it as deployed (next test)."""
+    The mechanism, with any hold-back cleared."""
 
     monkeypatch.setattr(batch_module, "DEEP_WARMUP_HELD_BACK", frozenset())
     frame = _daily_bars()
@@ -252,18 +252,24 @@ def test_a_strategy_the_train_window_covers_keeps_exactly_the_train_window() -> 
     assert embargo.empty and deep["timestamp"].max() == window.test_df["timestamp"].max()
 
 
-def test_as_deployed_connors_trades_out_of_sample_and_overnight_drift_is_held_back(tmp_path) -> None:
-    """overnight_drift's evidence is a one-bar hold that paper (and the eToro copy after it)
-    does not make, so it stays on the train-window warm-up: 0 OOS trades, never admitted."""
+def test_as_deployed_both_trade_out_of_sample_and_nothing_is_held_back(tmp_path) -> None:
+    """overnight_drift was held back on 2026-11-07 until paper honoured its one-bar hold
+    (app/automation/max_hold_exit.py); it is released, so both get the deep warm-up."""
 
-    assert "overnight_drift" in batch_module.DEEP_WARMUP_HELD_BACK
-    assert _deep_warmup_bars("1d", get_strategy("overnight_drift")) == 0
+    assert not batch_module.DEEP_WARMUP_HELD_BACK
+    assert _deep_warmup_bars("1d", get_strategy("overnight_drift")) == 210
     frame = _daily_bars()
     service, rows = _service(tmp_path, frame)
     service.run(symbols=["SYN"], timeframes=["1d"], strategy_names=list(DEEP), walk_forward=True)
     trades = {row["strategy_name"]: row["metrics"]["number_of_trades"] for row in rows.rows}
     assert trades["connors_rsi2_reversion"] > 0
-    assert trades["overnight_drift"] == 0
+    assert trades["overnight_drift"] > 0
+
+
+def test_a_held_back_strategy_keeps_the_train_window(monkeypatch) -> None:
+    monkeypatch.setattr(batch_module, "DEEP_WARMUP_HELD_BACK", frozenset({"overnight_drift"}))
+    assert _deep_warmup_bars("1d", get_strategy("overnight_drift")) == 0
+    assert _deep_warmup_bars("1d", get_strategy("connors_rsi2_reversion")) == 210
 
 
 def test_deep_warmup_is_daily_only() -> None:
