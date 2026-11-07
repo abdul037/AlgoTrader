@@ -87,7 +87,8 @@ def test_paper_full_but_etoro_has_room_lets_aapl_through(tmp_path) -> None:
 
 
 def test_etoro_full_blocks_paper_too(tmp_path) -> None:
-    full = ("100001", "META", "MSFT", "TSLA", "JPM", "XOM", "SPY", "COST", "AMZN")
+    # Not SPY: since 2026-11-04 a held SPY is the idle-cash reserve and is not counted.
+    full = ("100001", "META", "MSFT", "TSLA", "JPM", "XOM", "WMT", "COST", "AMZN")
     mirror, _ = _live(tmp_path, open_symbols=full)
     order = _order("AAPL")
     room = room_verdict(mirror, order)

@@ -363,7 +363,8 @@ def test_a_short_or_unknown_streak_keeps_paper_room_rules(tmp_path, hours) -> No
 
 
 def test_a_room_refusal_on_a_copyable_order_is_still_etoros(tmp_path) -> None:
-    full = ("100001", "META", "MSFT", "TSLA", "JPM", "XOM", "SPY", "COST", "AMZN")
+    # Not SPY: since 2026-11-04 a held SPY is the idle-cash reserve and is not counted.
+    full = ("100001", "META", "MSFT", "TSLA", "JPM", "XOM", "WMT", "COST", "AMZN")
     mirror, _ = _live(tmp_path, open_symbols=full)
     assert room_verdict(mirror, _order("AAPL")) == ["etoro_live_open_position_cap"]
 

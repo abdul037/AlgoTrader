@@ -664,6 +664,9 @@ def create_app(
     from app.dashboard.routes import router as dashboard_router
 
     app.include_router(dashboard_router)
+    from app.dashboard.scorecard import router as scorecard_router
+
+    app.include_router(scorecard_router)
     app.include_router(telegram_router)
     app.include_router(workflow_router)
     app.include_router(automation_router)

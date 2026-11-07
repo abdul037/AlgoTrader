@@ -49,8 +49,23 @@ from app.universe import resolve_universe
 from app.utils.ids import generate_id
 from app.utils.time import utc_now
 
+# Timeframes whose folds give a strategy more warm-up than the train window when it needs it
+# (2026-11-07). A 180-day daily train window holds ~124 bars, below the 210 that
+# connors_rsi2_reversion and overnight_drift require (their 200-EMA trend filter): both
+# returned None on every bar of every fold and the gate recorded 0 OOS trades for them, while
+# the live scan (400 daily bars) does emit them. Every other daily strategy needs at most 120
+# bars, which the train window covers, so it keeps exactly the train window and its results
+# do not move. 1h, 1w and the minute bars are left as they were: some of their strategies have
+# the same shortfall, but a deeper warm-up there would change evidence the gate already reads.
+DEEP_WARMUP_TIMEFRAMES = frozenset({"1d"})
+# Strategies kept on the train-window warm-up although they need more: a strategy whose
+# evidence would describe a different trade from the one paper (and the eToro copy after it)
+# makes. overnight_drift was held back on 2026-11-07 until paper honoured its one-bar hold
+# (metadata max_hold_bars=1); paper does since app/automation/max_hold_exit.py, so it is released.
+DEEP_WARMUP_HELD_BACK: frozenset[str] = frozenset()
 
-def _with_warmup(window: Any) -> pd.DataFrame:
+
+def _with_warmup(window: Any, history: pd.DataFrame | None = None, required_bars: int = 0) -> pd.DataFrame:
     """Train bars + test bars, so the strategy has indicator context in the test window.
 
     The engine is told (via ``trade_window_start``) to evaluate only from the
@@ -58,13 +73,43 @@ def _with_warmup(window: Any) -> pd.DataFrame:
     points — they are context, exactly as the live scanner sees history before
     today's bar. Without this every fold was ~10 daily bars and no strategy
     could ever warm up, so the gate recorded 0 trades in 1.2M runs.
+
+    With ``history`` and a ``required_bars`` the train window does not hold, the warm-up is
+    every bar of ``history`` before the train window's end instead (never an embargo or test
+    bar, so nothing from the test window or after it leaks in). Otherwise it is the train
+    window, as before.
     """
 
     train_df = getattr(window, "train_df", None)
     test_df = window.test_df
+    if history is not None and required_bars > (0 if train_df is None else len(train_df)):
+        train_df = _bars_before(history, window.train_end)
     if train_df is None or len(train_df) == 0:
         return test_df
     return pd.concat([train_df, test_df], ignore_index=True)
+
+
+def _bars_before(history: pd.DataFrame, end: Any) -> pd.DataFrame:
+    """The bars of ``history`` strictly before ``end``, with UTC timestamps, as the splitter
+    gives its train and test frames."""
+
+    stamps = pd.to_datetime(history["timestamp"], utc=True)
+    frame = history.assign(timestamp=stamps).sort_values("timestamp")
+    return frame.loc[frame["timestamp"] < pd.Timestamp(end)]
+
+
+def _deep_warmup_bars(timeframe: str, strategy: Any) -> int:
+    """The bars a fold's warm-up must hold for ``strategy`` on ``timeframe`` (0: the train
+    window as it is, on every timeframe outside ``DEEP_WARMUP_TIMEFRAMES``)."""
+
+    if str(timeframe or "").lower() not in DEEP_WARMUP_TIMEFRAMES:
+        return 0
+    if str(getattr(strategy, "name", "") or "") in DEEP_WARMUP_HELD_BACK:
+        return 0
+    try:
+        return max(int(getattr(strategy, "required_bars", 0) or 0), 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 class BatchBacktestService:
@@ -365,14 +410,16 @@ class BatchBacktestService:
         # expectancy baseline average ~10-bar fold slices instead of the real
         # OOS aggregate. Only the aggregate walk_forward_oos row is persisted.
         fold_engine = BacktestEngine(config=engine.config)
+        warmup_bars = _deep_warmup_bars(timeframe, strategy)
         for window in splitter.split(history):
             # Feed the train bars as indicator warm-up but evaluate only the
             # test window: a 14-day fold alone (~10 daily bars) is below every
             # strategy's warm-up, which is why 1.2M fold runs produced 0 trades.
+            # A daily strategy needing more bars than the train window gets the earlier ones too.
             fold_result = fold_engine.run(
                 symbol=symbol,
                 strategy=strategy,
-                data=_with_warmup(window),
+                data=_with_warmup(window, history, warmup_bars),
                 file_path=f"{file_path}:fold:{window.test_start.isoformat()}",
                 trade_window_start=window.test_start,
             )
@@ -405,7 +452,9 @@ class BatchBacktestService:
         # Evaluate the sealed holdout (the permanent last-N-days window that no
         # fold ever trained or tested on). This is the honest final check the
         # brief mandates; its result gates promotion in _promotion_hint.
-        metrics.update(self._evaluate_holdout(engine, symbol, strategy, history, splitter, file_path))
+        metrics.update(
+            self._evaluate_holdout(engine, symbol, strategy, history, splitter, file_path, warmup_bars=warmup_bars)
+        )
         skip = _minute_row_skip(timeframe, history, metrics["fold_count"]) if persist else None
         if cost_profiles and metrics["fold_count"] and not skip:
             try:
@@ -525,10 +574,13 @@ class BatchBacktestService:
         history: Any,
         splitter: WalkForwardSplitter,
         file_path: str,
+        *,
+        warmup_bars: int = 0,
     ) -> dict[str, Any]:
         """Score the sealed holdout window. Runs through a repo-less engine so the
         holdout result is surfaced in the OOS metrics but never persisted as its
-        own backtest row (which could pollute the gate's latest-summary lookup)."""
+        own backtest row (which could pollute the gate's latest-summary lookup).
+        ``warmup_bars`` deepens its warm-up as the folds' (``_with_warmup``)."""
 
         try:
             window = splitter.holdout_window(history)
@@ -541,7 +593,7 @@ class BatchBacktestService:
             result = holdout_engine.run(
                 symbol=symbol,
                 strategy=strategy,
-                data=_with_warmup(window),
+                data=_with_warmup(window, history, warmup_bars),
                 file_path=f"{file_path}:holdout",
                 trade_window_start=window.test_start,
             )

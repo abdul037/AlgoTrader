@@ -12,6 +12,190 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-11-07 (Sat) — Thursday's drop, SPY kept; scorecard hosted by the bot; connors backtest fix
+
+- **Thu 11-05:** the S&P 500 fell about 4.4% (AI and chip selloff). AlgoBot lost about $290 that
+  day, mostly on SPY. **Operator: "Keep holding SPY"** (version A stays: no stop, always held).
+- **Correction to the 11-05 entry:** when the copy grew to $1,000, eToro also topped up the
+  copy's open positions at that day's prices (an extra 5% of AlgoBot's PYPL at $60.44, DIS at
+  $119.48 and MSFT at $555.41); they did not stay at their 5% size. The scorecard models this
+  (v20/v21, `COPY_TOPUP`). Advice given: no action needed.
+- **Fri 11-06 close:** AlgoBot $9,867.06 (-$132.94, -1.33% since 4 Oct; cash $2,600); SPY $735.29
+  against $767.96 bought; the copy about $978. Paper $99,669.57. No strategy cleared the eToro
+  copy bar this week, so nothing was copied.
+- **Operator 11-07: "I need the AlgoBot Live Scorecard to be deployed somewhere for Live".**
+  `1858983` (pushed 12:35 UTC) serves it from the bot: `GET /scorecard?key=` and
+  `GET /scorecard/data?key=`, the key being Railway's `SCORECARD_TOKEN` (set with skipDeploys; its
+  value is only in Railway and the operator's link, never in the repository). The data route runs
+  the page's own SQL in a read-only transaction (20 s timeout, 10 s cache); without a token both
+  routes answer 404. The first read failed with 502: psycopg 3 parsed the SQL's `LIKE '%'` as
+  placeholders because SQLAlchemy passed an empty parameter set. `1ba745d` (12:48 UTC) runs it on
+  the driver cursor with no parameters. **Verified 12:55 UTC:** data 200 (~100 KB), and the page
+  renders in Chromium from the bot with no errors. Scorecard v22: the stat strip has no grey gap.
+- **Weekly summary:** a scheduled task runs Sundays 06:17 UTC (10:17 Dubai), first on 11-08.
+- **PR #33** (`claude/repo-audit-962zde` -> `main`) opened to bring `main` up to date.
+- **Strategies with 0 out-of-sample trades (investigation):**
+  - `connors_rsi2_reversion:1d` and `overnight_drift:1d` need 210 daily bars (200-EMA filter),
+    but a walk-forward fold gave them only its 180-day train window (~124 bars) plus ~10 test
+    bars, so they returned no signal on every bar of every fold and the holdout. The live scan
+    passes 400 bars, so it does emit them. **Fix (`8ea57d3` + `DEEP_WARMUP_HELD_BACK`):** on 1d,
+    a strategy needing more than the train window gets every earlier bar of the fetched history
+    as warm-up (never an embargo or test bar). Every other daily strategy needs at most 120 bars
+    and is unchanged (long parity test).
+  - **Only connors gets it.** overnight_drift's backtest exits after one bar (`max_hold_bars=1`),
+    but paper ignores `max_hold_bars` and holds a 1d position until its stop/target or up to
+    `paper_max_hold_days_swing` days, and the eToro copy follows paper. Its evidence would
+    describe a different trade, so it stays without OOS trades until paper honours the hold.
+  - `post_earnings_drift:1d` is inert on every path, live included: nothing ever sets its
+    earnings provider, and the bot stores no earnings-surprise history. It needs an
+    earnings-history source (and an as-of-date provider) before it can be tested.
+  - **Effect:** connors gets real OOS evidence at the next daily gate refresh. If it clears the
+    paper bar, its proposals go to paper on their own; an eToro copy still needs +0.03 R with a
+    24 h streak and 3+ profitable paper trades. Risk limits are unchanged.
+  - `420c803` deployed 13:09 UTC (live 13:14): connors' deep warm-up, overnight_drift held
+    back, the scorecard strip. Full suite 1,880 passed.
+- **Operator 11-07: "yes, build the overnight_drift one-day hold for paper".**
+  `app/automation/max_hold_exit.py`: on every scheduler tick (also while scans are paused), a 1d
+  Alpaca paper position whose entry signal carries `max_hold_bars` = N is closed at market (its
+  bracket legs cancelled first) once the regular session is open and N or more sessions (weekdays)
+  have started since the New York date its entry filled. overnight_drift (N=1) therefore exits at
+  the first tick after the next session's open, as its backtest exits at the open of the bar
+  after its entry bar. The entry timing still differs, as for every daily strategy: paper buys
+  during day T on the unfinished bar, the backtest at T+1's open. Paper only; a strategy exit (no
+  safety marker), so the eToro exit copy follows it once paper reads flat;
+  `paper_max_hold_exit_enabled` turns it off. Only overnight_drift sets `max_hold_bars` among the
+  active daily strategies (post_earnings_drift does too but never signals). With it,
+  overnight_drift is released from `DEEP_WARMUP_HELD_BACK` (now empty) and gets its OOS evidence
+  at the next daily gate refresh; the same paper and eToro bars apply as for connors.
+
+## 2026-11-05 (Thu) — SPY bought 11-04; copying halted by eToro read timeouts; fix
+
+- **Wed 11-04, operator: "the market is open for now" -> deploy now (asked: a mid-session restart
+  of about 2 minutes; answer "Yes, deploy now").** `756708e` pushed 19:19 UTC after 1,861 tests
+  passed; the new container booted about 19:23:40 UTC.
+- **SPY bought 19:24:37 UTC:** eToro position 3626565679 (instrument 3000), 5.614706 units at
+  $767.96, $4,311.87, no fees; AlgoBot cash $2,600 left. eToro set a placeholder stop of 0.0001
+  (no stop). Every reconcile since lists SPY with `closed_unprotected` [] (checked to 07:36 UTC).
+- **Operator added $500 to the copy (about 19:21 UTC):** the copy is $1,000, about 10% of AlgoBot
+  for trades opened since; the positions open before stay at their 5% size.
+- **Scorecard v13-v19:** your-copy share per trade by its open date (5% before 4 Nov 19:20 UTC,
+  10% since), real money first and separate (account value now, since 4 Oct), paper below with its
+  own equity line, refresh every 15 s, SPY labelled and priced, a today's-growth chart (fed by the
+  value history below).
+- **`35acd68` (built 11-04, deployed 11-05):** the guard prices SPY each minute and appends the
+  account value at eToro's prices to `etoro_live:value_history` (display only). The 21:03 UTC
+  deploy task was lost to a session restart.
+- **The mirror halted three times on reconcile READ timeouts** (19:39, 20:41, 22:45 UTC, "Broker
+  request failed: The read operation timed out"; eToro's API was slow all evening, 36 guard read
+  errors overnight). Halted, no copy, SPY top-up or sale can happen; nothing in the account changed.
+  **Fix `8832c11`:** a failed reconcile read is logged (`etoro_live_reconcile_read_failed`) and
+  retried; only 3 in a row (about 90 minutes) halt; a good read resets the count. Operator 11-05
+  08:4x UTC: "Yes, clear and deploy" -> deployed before the open and the halt cleared.
+
+## 2026-11-04 (Wed) — idle cash in SPY (operator: "SPY A"); trades 11-02..04
+
+- **Trades.**
+  - Mon 11-02 17:46 UTC: WMT (ema_trend_stack) hit its target on both accounts. Paper +$1,060.82;
+    eToro +$144.40 on $993.20 (+14.5%, 2.19 R, no fees; the operator's 5% copy about +$7.22).
+  - Tue 11-03: paper stops AAPL -$474.70 (ema_trend_stack) and CRM -$525.36 (rotation), neither on
+    eToro; XOM opened 16:22 UTC as a paper-only entry (eToro: `etoro_live_paper_only`; news positive,
+    analyst target raises; 9 eToro posts, neutral).
+  - Wed 11-04 16:36 UTC: XOM stopped on paper, -$426.16. No eToro trade 11-03..04. 18:30 UTC: AlgoBot
+    $9,896.94 at cost (cash $6,911.87; PYPL, DIS, MSFT open, +$247 at eToro's marks), about +$144
+    overall since 10-04; paper +$751.51 on the day (Alpaca).
+  - The sector limit blocked nothing yet; no strategy passed the copy check (none of 49 passes its
+    backtest: daily average -0.045 R, 5/10/15-minute about -0.10 R a trade over 20,000 trades).
+- **Operator correction:** the operator's real money is a $500 eToro copy of AlgoBot (5% of its
+  $10,000); AlgoBot's figures are not the operator's. The scorecard now shows both.
+- **Scorecard v13-v15** (artifact GHdfkyLvv8ZQqGWfvoV5f9): a closed-trades table (AlgoBot and the
+  operator's copy side by side), "AlgoBot" on the top figures, a Status panel (today, what is
+  live, research results, what waits on the operator), a paper-account section (open, and closed
+  in the last 14 days), and the SPY holding.
+- **Operator: idle cash -> SPY, version A ("SPY A, and buy SPY today").** Options given: A always
+  hold SPY (2007-2026: 10.8% a year, worst fall -55%) or B hold it only above its 10-month average
+  (7.9%, -25%; recommended); risk per trade (0.5%) and leverage (1x) unchanged and not approved
+  to change. Not bought today: deploying in the session would restart the bot, so the first buy is
+  Thu 11-05 at 09:45 New York (14:45 UTC); the operator was told not to buy SPY by hand (reconcile
+  closes any live position without a stop).
+  - `app/broker/etoro_live_spy_reserve.py` (`etoro_live_spy_reserve_enabled`, default on): once a
+    New York trading day between 09:45 and 15:45 New York with Alpaca's clock open, buy SPY with the
+    cash above a $2,500 buffer and the $100 reserve, the holding at most 60% of equity at cost,
+    nothing under $50, the day written before the order. No stop or target (version A); reconcile
+    skips it (by symbol and by its stored instrument id, so a failed name lookup cannot close it).
+    It counts toward neither the 9-position nor the group cap, but toward the 100% exposure cap,
+    where a copy's room is credited with 90% of its cost. A copy short of cash first sells SPY units
+    worth the shortfall plus 1% (partial close, `UnitsToDeduct`; the whole lot if under $20 would
+    be left), waits up to 15 s for eToro's cash; a failed sale refuses that copy only, never halts.
+    Off: no buys or sales, and reconcile closes the stop-less SPY (off means out of SPY).
+  - Expected at the first buy: about $4,300 of SPY (cash $6,912 - $2,500 - $100), about $215 in the
+    operator's copy. To verify on 11-05: eToro accepts the stop-less 1x order, and the copy follows
+    the buy (and later the partial sales) in proportion.
+
+## 2026-11-02 (Mon) — sector limit live; news, momentum and defensive research find no edge; PR #32 merged
+
+- **Later on 11-01 (UTC):**
+  - **Held-stock sentiment** (`app/workflow/sentiment_now.py`, display only, `999866e`, boot
+    10:12 UTC): news and eToro crowd for every stock open on paper or AlgoBot, refreshed every
+    2 h (`sentiment:open`), at most 3 eToro reads a run.
+  - **eToro feed fixes.** The feed answered 200 with no list under the expected keys: the reader now
+    finds the list under any key and tries both documented paths (`5936273`, boot 14:43 UTC). That
+    found about 100 items a stock, but nested (`post.message.text`, `post.created`, ...), so none
+    counted: a breadth-first field finder plus the recorded field layout (`item_paths`), shipped
+    with the news research job (`72a5df1`, boot 20:14:08 UTC).
+  - **Operator: "do all the points"** (the to-build list: 4 news rule, 5 better news scoring,
+    6 sector limit, 7 momentum study, 8 defensive study, 9 Telegram, 10 Railway re-auth,
+    11 merge into main).
+  - **6, sector limit deployed** Sun 20:56 UTC (`b6a60f3`; 1,841 tests pass, CI green; Railway
+    reported it live 21:00:55 UTC). At most 2 open paper positions per GICS sector on a new buy
+    (`max_open_positions_per_sector`; the sector-ETF proxies fold into GICS sectors; index funds
+    and unmapped names are never capped). Paper room only: while eToro's room decides an order the
+    mirror would copy, eToro's own group cap of 4 applies, so paper's holdings never block a
+    real-money copy. Applying it to eToro would be a separate yes. At deploy paper held 4
+    information technology names (MSFT, CRM, AAPL, ADBE) and 2 consumer staples (WMT, COST), so
+    new paper buys in those two sectors wait for a close.
+  - **8, defensive trend study** (`claude/wip-defensive-study` @ `13bb642`,
+    `docs/research/defensive_trend_study.md`, pre-registered): no rule passes. The best, SPY only
+    while its month-end close is above its 10-month average, 2007-2026 after costs: 7.88% a year
+    (SPY 10.78%), worst fall -24.7% (SPY -55.2%), missing the pre-registered return floor (8.08%)
+    by 0.20 points. It held 2008 to -9.9% but lost more than SPY in 2022 (-24.7% vs -24.5%, worse
+    on the way back). No rule earned measurably more per unit of risk than SPY (every bootstrap
+    interval spans zero); a 60/40 SPY/bond mix earned the same 7.9%; 8-, 9- and 12-month averages
+    pass where the planned 10 does not (fragile). A trade of return for a smaller worst case, not
+    an edge.
+  - **7, momentum study** (`claude/wip-momentum-study` @ `56375f3`,
+    `docs/research/momentum_study.md`, pre-registered): buying the 20 strongest of today's S&P 500
+    members monthly passes on paper (M1, M3, M4: 26-31% a year on $10k after costs vs SPY 13.9%),
+    but 43% of M1's holdings were not in the index yet: they are on today's list because they kept
+    rising. On stocks already in the index on each date every variant fails every test (M1 17.2% a
+    year at zero cost, Sharpe 0.77 vs SPY 0.87, over equal weight +5.3% a year, Holm p 0.30). It
+    lost 24% and 21% in July and October 2026 (16 of 20 names in chips and hardware), and $1 fees
+    would take 27-43% a year of a $500 copy. Not a demonstrated edge; no real money.
+- **00:37 UTC:** one `etoro_live_exit_copy_read_failed` (eToro dropped the connection); the next
+  sweeps read normally.
+- **05:08 UTC, news research complete** (`sentiment:backtest:summary`): 3,248 daily walk-forward
+  trades on 1,805 stock-days (May 2025 - Oct 2026), news from the 72 h before each open, scored as
+  at live entries. Positive news 1,837 trades -0.040 R (44.2% won, t -1.92); neutral 380 -0.052 R;
+  negative 384 +0.053 R (51.6%, t 1.25); no stock news 378 +0.058 R; no mood words 269 -0.059 R.
+  Skipping negative news would have blocked better trades (removed +0.053 R, kept -0.030 R).
+  Skipping positive news removes 57% of trades at -0.040 R and keeps +0.005 R, about zero, with
+  t under 2 even before allowing for same-day trades moving together. **Decision: 4 and 5 not
+  built** (no news rule; no AI scorer, which could only sharpen a signal this weak). Recording at
+  live entries continues. Per strategy (small groups, noise): ema_trend_stack positive news 147
+  trades +0.020 R, negative 32 -0.063 R, no news 41 -0.208 R (t -1.86); momentum_breakout positive
+  158 +0.045 R, negative 21 +0.199 R, neutral 19 -0.375 R (t -1.97), no news 21 +0.538 R. Limits:
+  a word-list scorer, 18 months, 25 stocks, backtest (not live) trades.
+- **eToro crowd, 08:38 UTC refresh:** posts now read (MSFT 59 in 24 h, AAPL 45, TSLA 18, WMT 5)
+  with a word mood. `trade_opens` is 0 for every stock: the feed carries users' posts, not their
+  trades (`additionalData` holds only `reliableRecAiAssets`), so there is no BUY share; the crowd
+  reading is post mood only.
+- **Scorecard v12** (artifact GHdfkyLvv8ZQqGWfvoV5f9): the news research verdict with the luck
+  caveat; eToro crowd shown as post mood.
+- **11, PR #32** description refreshed and merged into `main` (`59b0917`, merge commit; no
+  conflicts, `main` was an ancestor). Railway still deploys `claude/repo-audit-962zde`.
+- **Still the operator's:** 9, Telegram (`TELEGRAM_ENABLED=true`, bot token and chat ID in
+  Railway); 10, re-authorise the Railway connector in claude.ai. Parked: intraday fast paths,
+  shorts steps 3-4 (not approved), the database move.
+
 ## 2026-11-01 (Sun) — rotation strategy retired; eToro copies need a paper record
 
 - **Trading 10-27..30:** paper closed AMZN -$501.02 (ema_trend_stack), NVDA -$511.61 and SPY
@@ -1482,9 +1666,11 @@ Convened locally over the 31 unreviewed commits (`0a12efe..2575a1b`) plus the we
 - Evidence bar level: paper keeps `STRATEGY_EVIDENCE_MIN_EXPECTANCY_R` at 0; the eToro copy
   needs +0.03 R in code since 2026-10-16 (operator decision).
 - ~~Stock copy fees~~ closed 2026-11-01: the operator's copy shows $1.20 of fees in all.
-- Branch `claude/repo-audit-962zde` is ~95 commits ahead of `main` and conflicts with
-  it (main last updated by #31); needs a PR + conflict merge when the operator wants
-  main current. Railway deploys from the branch, so production is unaffected.
+- `main` is brought up to date by PR merges from `claude/repo-audit-962zde` (#32 on 11-02,
+  #33 on 11-07). Railway deploys from the branch, so production is unaffected.
+- post_earnings_drift: an earnings-history source (with an as-of-date provider), or leave it
+  inert. The simulated (non-broker) paper ledger still ignores `max_hold_bars`; production has
+  no simulated positions (all 37 rows are Alpaca-backed on 11-07).
 - Turn Telegram on in Railway (`TELEGRAM_ENABLED=true`, `TELEGRAM_BOT_TOKEN`,
   `TELEGRAM_CHAT_ID`); nothing the bot sends reaches the operator until then.
 - Queued builds: "close all live" command; cost

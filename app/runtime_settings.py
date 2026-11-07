@@ -591,6 +591,10 @@ class AppSettings(BaseSettings):
     # Close intraday-timeframe positions this many minutes before the bell (paper);
     # swing (1d+) positions keep their GTC brackets. 0 = off.
     intraday_flatten_minutes_before_close: float = 10.0
+    # Close a 1d paper position once its signal's metadata max_hold_bars sessions have started
+    # since the entry filled, as the backtest does (operator 2026-11-07, overnight_drift's
+    # one-day hold; app/automation/max_hold_exit.py).
+    paper_max_hold_exit_enabled: bool = True
     # New entries allowed per correlation bucket (e.g. tech_complex) per day. 0 = off.
     max_daily_entries_per_correlation_bucket: int = 2
     # Block new intraday longs while SPY (and QQQ for tech) is below today's VWAP
@@ -635,6 +639,13 @@ class AppSettings(BaseSettings):
     # Option 3 (operator 2026-10-06): while the mirror would copy an order, eToro's own room
     # (6 positions, 3 per group, free cash) replaces paper's gross/sector/correlated limits.
     etoro_live_room_authority_enabled: bool = True
+    # Operator 2026-11-04 ("SPY A"): AlgoBot's idle cash held in SPY, always held, sold as copies
+    # need cash (app/broker/etoro_live_spy_reserve.py). Off: no buys or sales, and reconcile then
+    # closes the stop-less SPY like any unprotected position.
+    etoro_live_spy_reserve_enabled: bool = True
+    # Operator 2026-11-07: the Live Scorecard served by the bot at /scorecard?key=<token>
+    # (app/dashboard/scorecard.py). Empty: the page and its data answer 404 (off).
+    scorecard_token: str = ""
     # Live stop-width floor in prior-session ATRs (widens stop and target, keeping
     # R:R; sizing keeps $ risk constant). 0 = off until the intraday walk-forward
     # shows a floor improves out-of-sample expectancy. Backtests use the same value.

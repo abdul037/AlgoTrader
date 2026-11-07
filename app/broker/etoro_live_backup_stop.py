@@ -46,6 +46,12 @@ _POSITION_FIELDS = (
     "pnL",
     "pnl",
 )
+# The AlgoBot account's value at eToro's prices, one point a guard tick, for the scorecard's
+# live view (operator 2026-11-04: "it should be live ... how the portfolio is growing").
+# Display only; nothing trades on it. Points of the current New York date; ``prev_close`` is
+# the last value of the previous date, so today's change is the last point less it.
+VALUE_KEY = "etoro_live:value_history"
+VALUE_MAX_POINTS = 600
 UNSEEN_GRACE_MINUTES = 24 * 60  # never-seen entry (e.g. an order queued before the open) ages out
 CLOSE_RECHECK_SECONDS = 3.0
 
@@ -115,15 +121,18 @@ def portfolio_positions(raw: Any) -> list[dict[str, Any]] | None:
 def _check(mirror: Any) -> list[dict[str, Any]] | None:
     from app.broker.etoro_live_mirror import client_problem
 
+    from app.broker.etoro_live_spy_reserve import RESERVE_SYMBOL, reserve_instrument_id
+
     stops = _load(mirror)
-    if not stops or client_problem(mirror.client):
+    spy_id = reserve_instrument_id(mirror.settings, mirror.state)  # the SPY reserve: priced too
+    if (not stops and spy_id is None) or client_problem(mirror.client):
         return None
     client = mirror.client
     raw = client.fetch_raw_portfolio()
     positions = portfolio_positions(raw)
     if positions is None:
         return None  # malformed/empty read: keep every stop, try again next tick
-    _save_positions(mirror, raw, positions, stops)
+    _save_positions(mirror, raw, positions, stops, spy_id)
     grace = (utc_now() - timedelta(minutes=UNSEEN_GRACE_MINUTES)).isoformat()
     closed: list[dict[str, Any]] = []
     remaining: dict[str, Any] = {}
@@ -191,12 +200,68 @@ def _check(mirror: Any) -> list[dict[str, Any]] | None:
                 if info.get(field):
                     current[symbol][field] = info[field]
     _save(mirror, current)
-    _save_marks(mirror, marks, held_symbols=set(remaining))
+    spy_held = spy_id is not None and any(_instrument(p) == spy_id for p in positions)
+    if spy_held:
+        try:
+            spy_rate = fresh_rate(client, RESERVE_SYMBOL)
+        except Exception:  # noqa: BLE001 - display only; the next tick tries again
+            spy_rate = None
+        if spy_rate is not None:
+            marks[RESERVE_SYMBOL] = {"rate": spy_rate, "at": utc_now().isoformat()}
+    _save_marks(mirror, marks, held_symbols=set(remaining) | ({RESERVE_SYMBOL} if spy_held else set()))
+    _save_value(mirror, raw, positions, stops, spy_id, marks)
     return closed
 
 
+def _instrument(position: Any) -> int:
+    try:
+        return int(position.get("instrumentID") or 0) if isinstance(position, dict) else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _save_value(
+    mirror: Any, raw: dict[str, Any], positions: list[Any], stops: dict[str, Any],
+    spy_id: int | None, marks: dict[str, Any],
+) -> None:
+    """Append the account's value now (cash + each position at this tick's eToro price, or at
+    cost when it has none) to ``VALUE_KEY``; never raises into the guard."""
+
+    try:
+        from zoneinfo import ZoneInfo
+
+        credit = float((raw.get("clientPortfolio") or {}).get("credit"))
+        by_id = {int(info["instrument_id"]): symbol for symbol, info in stops.items() if info.get("instrument_id")}
+        if spy_id is not None:
+            by_id[int(spy_id)] = "SPY"
+        value = credit
+        for position in positions:
+            if not isinstance(position, dict):
+                continue
+            mark = marks.get(by_id.get(_instrument(position), ""))
+            units, amount = float(position.get("units") or 0.0), float(position.get("amount") or 0.0)
+            value += units * float(mark["rate"]) if mark and units > 0 else amount
+        now = utc_now()
+        day = now.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+        try:
+            history = json.loads(mirror.state.get(VALUE_KEY) or "{}")
+        except (TypeError, ValueError):
+            history = {}
+        history = history if isinstance(history, dict) else {}
+        points = history.get("points") if isinstance(history.get("points"), list) else []
+        if history.get("day") != day:
+            prev = points[-1][1] if points else history.get("prev_close")
+            history, points = {"day": day, "prev_close": prev}, []
+        points.append([now.isoformat(), round(value, 2)])
+        history["points"] = points[-VALUE_MAX_POINTS:]
+        mirror.state.set(VALUE_KEY, json.dumps(history))
+    except Exception:  # noqa: BLE001 - display data only
+        return
+
+
 def _save_positions(
-    mirror: Any, raw: dict[str, Any], positions: list[Any], stops: dict[str, Any]
+    mirror: Any, raw: dict[str, Any], positions: list[Any], stops: dict[str, Any],
+    spy_id: int | None = None,
 ) -> None:
     """Snapshot eToro's own view of the live positions; never raises into the guard."""
 
@@ -206,6 +271,8 @@ def _save_positions(
             for symbol, info in stops.items()
             if info.get("instrument_id")
         }
+        if spy_id is not None:
+            by_id[str(spy_id)] = "SPY"
         rows = []
         for position in positions:
             if not isinstance(position, dict):
