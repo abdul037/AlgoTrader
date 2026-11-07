@@ -52,6 +52,21 @@ without explicit operator sign-off recorded here.
   - **Effect:** connors gets real OOS evidence at the next daily gate refresh. If it clears the
     paper bar, its proposals go to paper on their own; an eToro copy still needs +0.03 R with a
     24 h streak and 3+ profitable paper trades. Risk limits are unchanged.
+  - `420c803` deployed 13:09 UTC (live 13:14): connors' deep warm-up, overnight_drift held
+    back, the scorecard strip. Full suite 1,880 passed.
+- **Operator 11-07: "yes, build the overnight_drift one-day hold for paper".**
+  `app/automation/max_hold_exit.py`: on every scheduler tick (also while scans are paused), a 1d
+  Alpaca paper position whose entry signal carries `max_hold_bars` = N is closed at market (its
+  bracket legs cancelled first) once the regular session is open and N or more sessions (weekdays)
+  have started since the New York date its entry filled. overnight_drift (N=1) therefore exits at
+  the first tick after the next session's open, as its backtest exits at the open of the bar
+  after its entry bar. The entry timing still differs, as for every daily strategy: paper buys
+  during day T on the unfinished bar, the backtest at T+1's open. Paper only; a strategy exit (no
+  safety marker), so the eToro exit copy follows it once paper reads flat;
+  `paper_max_hold_exit_enabled` turns it off. Only overnight_drift sets `max_hold_bars` among the
+  active daily strategies (post_earnings_drift does too but never signals). With it,
+  overnight_drift is released from `DEEP_WARMUP_HELD_BACK` (now empty) and gets its OOS evidence
+  at the next daily gate refresh; the same paper and eToro bars apply as for connors.
 
 ## 2026-11-05 (Thu) — SPY bought 11-04; copying halted by eToro read timeouts; fix
 
@@ -1653,8 +1668,9 @@ Convened locally over the 31 unreviewed commits (`0a12efe..2575a1b`) plus the we
 - ~~Stock copy fees~~ closed 2026-11-01: the operator's copy shows $1.20 of fees in all.
 - `main` is brought up to date by PR merges from `claude/repo-audit-962zde` (#32 on 11-02,
   #33 on 11-07). Railway deploys from the branch, so production is unaffected.
-- overnight_drift: make paper honour a signal's `max_hold_bars`, then release it from
-  `DEEP_WARMUP_HELD_BACK`. post_earnings_drift: an earnings-history source, or leave it inert.
+- post_earnings_drift: an earnings-history source (with an as-of-date provider), or leave it
+  inert. The simulated (non-broker) paper ledger still ignores `max_hold_bars`; production has
+  no simulated positions (all 37 rows are Alpaca-backed on 11-07).
 - Turn Telegram on in Railway (`TELEGRAM_ENABLED=true`, `TELEGRAM_BOT_TOKEN`,
   `TELEGRAM_CHAT_ID`); nothing the bot sends reaches the operator until then.
 - Queued builds: "close all live" command; cost
