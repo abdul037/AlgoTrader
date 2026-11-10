@@ -15,11 +15,8 @@ from app.models.workflow import WorkflowBucketStatus, WorkflowStatusResponse, Wo
 from app.universe import resolve_universe
 from app.utils.time import utc_now
 from app.workflow.cadence_budget import (
-    DAILY_SUMMARY_SECONDS,
-    OPEN_SIGNAL_CHECK_SECONDS,
     CadenceBudget,
     acquire_workflow_lock,
-    late_step_fits,
     release_workflow_lock,
     tick_budget,
 )
@@ -111,8 +108,7 @@ class SignalWorkflowService:
 
     def run_scheduled_tasks(self) -> dict[str, int]:
         summary = {"alerts_sent": 0, "closed_signals": 0, "ledger_cycles": 0, "buckets_run": 0}
-        started_at = time.monotonic()  # the soft budget counts maintenance too (10-06 timeouts)
-        self._tick_started_at = started_at  # late maintenance steps check it (cadence_budget)
+        started_at = self._tick_started_at = time.monotonic()  # the budget counts maintenance too
         flatten_intraday_before_close(self)  # risk-reducing, so it runs even while paused
         close_held_past_max_hold(self)  # a strategy's time stop (1d max_hold_bars), also while paused
         if self.automation is not None:
@@ -340,24 +336,13 @@ class SignalWorkflowService:
                     except Exception as exc:  # noqa: BLE001 - RL can never block reconciliation or safety work
                         errors.append(f"rl_policy_proposal:{exc}")
                         self.run_logs.log("rl_policy_proposal_error", {"error": str(exc)})
-            tick_started = getattr(self, "_tick_started_at", None)
-            open_signals_due = self._is_due(
-                "workflow:last_open_signal_check_at", self.settings.open_signal_check_interval_minutes
-            )
-            if open_signals_due and not late_step_fits(self.settings, tick_started, OPEN_SIGNAL_CHECK_SECONDS):
-                open_signals_due = False
-                self.run_logs.log("maintenance_step_deferred", {"step": "open_signal_check"})
-            if open_signals_due:
+            if self._is_due("workflow:last_open_signal_check_at", self.settings.open_signal_check_interval_minutes) and CadenceBudget.late_step_runs(self, "open_signal_check"):
                 result = self.check_open_signals(notify=notify)
                 completed.append("open_signal_check")
                 alerts_sent += result.alerts_sent
                 closed_signals += result.closed_signals
                 errors.extend(result.errors)
-            summary_due = self._daily_summary_due()
-            if summary_due and not late_step_fits(self.settings, tick_started, DAILY_SUMMARY_SECONDS):
-                summary_due = False
-                self.run_logs.log("maintenance_step_deferred", {"step": "daily_summary"})
-            if summary_due:
+            if self._daily_summary_due() and CadenceBudget.late_step_runs(self, "daily_summary"):
                 result = self.send_daily_summary(notify=notify)
                 completed.append("daily_summary")
                 alerts_sent += result.alerts_sent

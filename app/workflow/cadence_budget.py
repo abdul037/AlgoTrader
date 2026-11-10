@@ -41,6 +41,7 @@ POST_SCAN_RESERVE_SECONDS = 75.0  # 60 until 2026-11-10: three scan ticks then r
 # starts only if its run still fits before the cap; otherwise it is due again on the next tick.
 OPEN_SIGNAL_CHECK_SECONDS = 70.0
 DAILY_SUMMARY_SECONDS = 60.0
+LATE_STEP_SECONDS = {"open_signal_check": OPEN_SIGNAL_CHECK_SECONDS, "daily_summary": DAILY_SUMMARY_SECONDS}
 LATE_STEP_MARGIN_SECONDS = 10.0
 
 
@@ -106,6 +107,18 @@ class CadenceBudget:
         ):
             prestart += INTRADAY_PRESTART_SECONDS
         return self.scan_seconds_left(prestart) >= MIN_USEFUL_SCAN_SECONDS
+
+    @staticmethod
+    def late_step_runs(service: Any, step: str) -> bool:
+        """Whether a due late maintenance ``step`` starts in this tick of ``service`` (the
+        workflow sets ``_tick_started_at``); a step that would overrun the cap is logged as
+        ``maintenance_step_deferred`` and stays due for the next tick."""
+
+        started_at = getattr(service, "_tick_started_at", None)
+        if late_step_fits(service.settings, started_at, LATE_STEP_SECONDS[step]):
+            return True
+        service.run_logs.log("maintenance_step_deferred", {"step": step})
+        return False
 
     def scan_fits(self) -> bool:
         """Backstop in run_scan_task, where the bucket's real pre-work is already spent."""

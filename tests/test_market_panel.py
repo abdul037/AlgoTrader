@@ -346,7 +346,9 @@ def test_the_deep_scans_ticks_are_never_shared(tmp_path, monkeypatch) -> None:
     env = _env(tmp_path, monkeypatch)
     job = env.service.settings.scheduler_job_timeout_seconds
     # The deep scan ran until the scan stop: less than the margin is left, no read, no fetch.
-    used = job - 60.0 - panel.MIN_START_SECONDS + 0.1
+    from app.workflow.cadence_budget import POST_SCAN_RESERVE_SECONDS
+
+    used = job - POST_SCAN_RESERVE_SECONDS - panel.MIN_START_SECONDS + 0.1
     assert env.run(started_at=env.mono["t"] - used) is None
     assert env.service.runtime_state.reads == [] and env.provider.calls == []
     assert env.run(deferred=["swing_hourly"]) is None  # a deferred bucket waits for nothing

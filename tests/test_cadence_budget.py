@@ -85,3 +85,19 @@ def test_late_maintenance_steps_start_only_if_they_fit(tmp_path, monkeypatch) ->
     now["t"] = 171.0
     assert not cb.late_step_fits(settings, 0.0, cb.DAILY_SUMMARY_SECONDS)
     assert cb.late_step_fits(settings, None, cb.DAILY_SUMMARY_SECONDS)  # a manual run: no tick cap
+
+
+def test_a_late_step_that_would_overrun_is_logged_and_stays_due(tmp_path, monkeypatch) -> None:
+    now = _clock(monkeypatch)
+    logged: list[tuple[str, dict]] = []
+    service = type("S", (), {})()
+    service.settings = make_settings(tmp_path)
+    service.run_logs = type("L", (), {"log": lambda self, event, payload: logged.append((event, payload))})()
+    service._tick_started_at = 0.0
+    now["t"] = 100.0
+    assert cb.CadenceBudget.late_step_runs(service, "open_signal_check") and logged == []
+    now["t"] = 175.0
+    assert not cb.CadenceBudget.late_step_runs(service, "daily_summary")
+    assert logged == [("maintenance_step_deferred", {"step": "daily_summary"})]
+    del service._tick_started_at  # a manual maintenance run: no tick, no deferral
+    assert cb.CadenceBudget.late_step_runs(service, "open_signal_check")
