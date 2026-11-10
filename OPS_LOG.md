@@ -59,6 +59,24 @@ without explicit operator sign-off recorded here.
     new entries until a good read and never cancels or sells; drift actually seen keeps the full
     emergency stop. `70447bd`: a standalone close pairs with its entry up to the symbol's next
     entry (not 7 days) and books its own fill time, so the 5 rows close on the next ledger sync.
+- **Scheduler timeouts (10 since 11-04):** `1eb1e66`: the open-signal check and the daily summary
+  start only if they fit before the 240 s cap (else due next tick); post-scan reserve 60 -> 75 s.
+- **Monitoring:** the hourly trade watch now also reports safety events (emergency stops, breaker
+  trips, failed reconciliations, unprotected flattens, exit-copy detaches); a new daily safety
+  check runs at 08:41 Dubai every day incl. weekends and says if the bot looks down.
+- **Operator 11-10: roadmap (where we stand vs SPY, no edge in the patterns tried, leverage math,
+  realistic expectations) -> "start phase 1 and test leverage on paper and real money".** Decisions:
+  - Phase 1 exploration lane in the MAIN Alpaca paper account (flat since 11-09): strategies
+    blocked only by evidence trade small on paper, intraday included, tagged paper-only so they
+    never count toward real money; leverage simulated on paper at 1x/2x/5x/10x. Build delegated
+    (branch `claude/wip-phase1-exploration`), to be reviewed and deployed off-hours.
+  - **Real-money leverage approved with limits:** max **5x**; only for a strategy **proven on
+    paper first** (provisional rule: >= 30 closed exploration trades, positive total and mean
+    after simulated costs at that leverage; to be confirmed with the operator before it goes
+    live); at most **$1,000** of AlgoBot's money in leveraged trades; **permanent stop once
+    leveraged trades have lost $200 in total**. The operator's copy follows at ~10%. Per-trade
+    risk for leveraged trades is still the approved 0.5% at the stop unless the operator says
+    otherwise. Not built yet: designed when a strategy nears the proof rule.
 
 ## 2026-11-07 (Sat) — Thursday's drop, SPY kept; scorecard hosted by the bot; connors backtest fix
 
