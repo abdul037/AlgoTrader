@@ -149,6 +149,10 @@ COPY_RULE_REASONS = frozenset(  # none is a room reason: paper keeps its own roo
     }
 )
 PAPER_ONLY_REASON = "etoro_live_paper_only"  # a tagged paper-only order; not a room reason
+# Phase 1 (2026-11-10): an exploration entry (paper-only, app/workflow/exploration.py) is refused
+# exactly as above, but logged under its own name: it was never a copy candidate, and up to 12 a
+# day would crowd the copy rules' refusals out of the scorecard's lists.
+EXPLORATION_NOT_COPIED_EVENT = "etoro_live_exploration_not_copied"
 LEVERAGE_TEST_AFTER_1X_TRADES = 2
 # Operator 2026-10-06 "try the 2x leverage": eToro's Amount is margin, so the 2x test sends
 # half the usual amount -- same $ exposure as a 1x trade ($500 x 2 = $1,000 notional).
@@ -575,10 +579,13 @@ class EtoroLiveMirrorService:
             return None
         symbol = proposal.order.symbol.upper()
         if reasons:
-            self.logs.log(
-                "etoro_live_mirror_blocked",
-                {"symbol": symbol, "proposal_id": proposal.id, "reasons": reasons},
-            )
+            from app.performance.paper_only import is_exploration
+
+            event = "etoro_live_mirror_blocked"
+            metadata = getattr(proposal.order, "metadata", None)
+            if reasons == [PAPER_ONLY_REASON] and is_exploration(metadata):
+                event = EXPLORATION_NOT_COPIED_EVENT
+            self.logs.log(event, {"symbol": symbol, "proposal_id": proposal.id, "reasons": reasons})
             return None
         state = self._state()
         leverage = (

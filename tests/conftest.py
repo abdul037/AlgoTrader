@@ -83,6 +83,10 @@ def make_settings(tmp_path: Path, **overrides) -> AppSettings:
         # Wall-clock dependent (the pre-market window) and Yahoo by default; its own tests
         # enable it with a fake provider and clocks.
         "premarket_market_panel_enabled": False,
+        # Admits evidence-refused candidates as paper-only exploration entries, which changes what
+        # every evidence-gate test expects; its own tests enable it
+        # (tests/test_paper_exploration_lane.py).
+        "paper_exploration_lane_enabled": False,
     }
     defaults.update(overrides)
     return AppSettings(**defaults)

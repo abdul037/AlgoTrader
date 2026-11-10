@@ -208,7 +208,14 @@ class PaperAutoTradingService:
             blockers.append(evidence)
         elif strategy and not blockers:  # option B (2026-10-21): paper-only stands aside for eToro
             blockers.extend(paper_only.blockers(candidate))
-        return blockers
+        # Phase 1 (2026-11-10): refused only for its evidence, it may be a paper-only exploration
+        # entry on the lane's own rules (app/workflow/exploration.py); None: the lane does not apply.
+        lane = getattr(paper_only, "exploration_blockers", None)
+        try:
+            verdict = lane(candidate, blockers) if strategy and evidence and lane else None
+        except Exception:  # noqa: BLE001 - the lane fails closed: the gate's own refusal stands
+            verdict = None
+        return blockers if verdict is None else verdict
 
     def _paper_exploration_strategy_approved(self, strategy: str) -> bool:
         if not strategy or self.strategy_governance is None:
@@ -237,7 +244,13 @@ class PaperAutoTradingService:
     def approve_enqueue_execute(
         self, proposal: Any, candidate: Any, *, funnel: Counter[str] | None = None
     ) -> Any | None:
+        from app.performance.paper_only import is_exploration
+
         blockers = self.candidate_blockers(candidate)
+        if is_exploration(getattr(getattr(proposal, "order", None), "metadata", None)):
+            from app.workflow.exploration import EXECUTION_BYPASS  # what the lane admitted it past
+
+            blockers = [blocker for blocker in blockers if blocker not in EXECUTION_BYPASS]
         if blockers:
             self.logs.log(
                 "paper_auto_candidate_blocked",

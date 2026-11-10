@@ -613,6 +613,19 @@ class AppSettings(BaseSettings):
     # pooled OOS evidence passes may trade though its holdout does not; such entries are
     # paper-only (app/workflow/paper_only.py). eToro keeps the full check. Off = the old gate.
     paper_oos_bar_enabled: bool = True
+    # Paper exploration lane (operator Phase 1, 2026-11-10): on the main paper account a candidate
+    # refused ONLY by evidence-family blockers (missing, failing or stale walk-forward evidence; no
+    # per-symbol backtest validation; too few closed trades for tier 3) may open a paper-only
+    # "exploration" entry; every other gate applies unchanged. Never copied to eToro, never in the
+    # paper record, the evidence or the demotion (app/workflow/exploration.py). Off = the old gate.
+    paper_exploration_lane_enabled: bool = True
+    paper_exploration_lane_risk_pct: float = 0.25  # % of paper equity lost at the stop, per entry
+    paper_exploration_lane_max_open: int = 8  # exploration positions open or unfilled at once
+    paper_exploration_lane_max_new_per_day: int = 12  # new exploration entries a New York day
+    paper_exploration_lane_max_per_pass: int = 1  # exploration proposals an auto-propose pass
+    paper_exploration_lane_timeframes: list[str] = Field(
+        default_factory=lambda: ["5m", "10m", "15m", "1h", "1d"]
+    )
     # Phase 3 go-live readiness bar (see app/performance/go_live_readiness.py).
     go_live_phase3_start_date: str = ""
     go_live_min_closed_trades: int = 50
@@ -860,6 +873,7 @@ class AppSettings(BaseSettings):
         "paper_supervised_weak_valid_allowed_reasons",
         "paper_strategy_weak_signal_allowed_strategies",
         "walk_forward_intraday_variants",
+        "paper_exploration_lane_timeframes",
         mode="before",
     )
     @classmethod
@@ -878,6 +892,7 @@ class AppSettings(BaseSettings):
             "paper_supervised_weak_valid_allowed_reasons",
             "paper_strategy_weak_signal_allowed_strategies",
             "walk_forward_intraday_variants",
+            "paper_exploration_lane_timeframes",
         }
         normalize = str.lower if info.field_name in lowercase_fields else str.upper
         if value is None:

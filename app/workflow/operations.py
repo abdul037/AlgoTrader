@@ -795,6 +795,7 @@ def refresh_phase_gates(service: Any, completed: list[str], errors: list[str]) -
 
     from app.broker.etoro_live_test_order import run_from_maintenance
     from app.performance.go_live_readiness import refresh_readiness
+    from app.performance.leverage_sim import refresh_leaderboard
     from app.performance.strategy_evidence import refresh_verdicts
     from app.workflow.benchmark import refresh_benchmark
     from app.workflow.earnings_calendar import refresh_earnings_cache, warm_memory
@@ -821,6 +822,7 @@ def refresh_phase_gates(service: Any, completed: list[str], errors: list[str]) -
         ("benchmark_refresh", lambda: refresh_benchmark(service) is not None),  # SPY, display only
         ("sentiment_shadow", lambda: refresh_sentiment_shadow(service) is not None),  # record only
         ("sentiment_open", lambda: refresh_open_sentiment(service) is not None),  # display only
+        ("exploration_leaderboard", lambda: refresh_leaderboard(service) is not None),  # hourly
     ):
         try:
             if step():
@@ -917,6 +919,7 @@ def auto_propose_candidates(
                 entry_price=getattr(candidate, "entry_price", None) or getattr(candidate, "current_price", None),
                 stop_price=getattr(candidate, "stop_loss", None),
                 equity_usd=_account_equity_usd(service),
+                risk_pct=paper_only.risk_pct(candidate),  # the exploration lane's 0.25%, else None
             )
             request = service._approval_adapter.build_proposal_request(
                 candidate,

@@ -10,6 +10,10 @@ distance from entry to stop equals ``max_risk_per_trade_pct`` of equity, then
 capped by the per-trade notional caps (so a very tight stop can never turn into
 an oversized position). Any missing/invalid input falls back to the flat
 default, so this can never *block* a proposal — it only changes its size.
+
+An explicit ``risk_pct`` (the paper exploration lane's 0.25%, app/workflow/exploration.py) sizes
+risk-based whatever ``auto_propose_risk_based_sizing`` says, at the lower of it and the gate's
+cap; such an entry is never sized flat, so missing inputs raise instead (no proposal).
 """
 
 from __future__ import annotations
@@ -26,25 +30,32 @@ def risk_based_proposal_notional(
     entry_price: float | None,
     stop_price: float | None,
     equity_usd: float | None,
+    risk_pct: float | None = None,
 ) -> tuple[float, dict[str, Any]]:
     """Return ``(amount_usd, details)`` for a new proposal."""
 
     flat = float(getattr(settings, "default_trade_amount_usd", 1000.0) or 1000.0)
     cap = min(flat, float(getattr(settings, "max_trade_amount_usd", flat) or flat))
     details: dict[str, Any] = {"sizing_mode": "flat_default", "amount_usd": flat}
-    if not bool(getattr(settings, "auto_propose_risk_based_sizing", False)):
+    forced = risk_pct is not None
+    if not forced and not bool(getattr(settings, "auto_propose_risk_based_sizing", False)):
         return flat, details
     try:
         entry = float(entry_price or 0.0)
         stop = float(stop_price or 0.0)
         equity = float(equity_usd or 0.0)
     except (TypeError, ValueError):
+        if forced:
+            raise ValueError("risk-sized entry without a usable entry, stop or equity") from None
         return flat, {**details, "fallback_reason": "unparseable_inputs"}
-    if entry <= 0 or stop <= 0 or entry == stop or equity <= 0:
+    if entry <= 0 or stop <= 0 or entry == stop or equity <= 0 or (forced and not risk_pct > 0):
+        if forced:
+            raise ValueError("risk-sized entry without a usable entry, stop or equity")
         return flat, {**details, "fallback_reason": "missing_entry_stop_or_equity"}
     # Size to the cap the hard gate enforces, not just max_risk_per_trade_pct.
     live = str(getattr(settings, "execution_mode", "paper")) == "live"
-    risk_pct = sizing_risk_pct(settings, live=live)
+    gate_pct = sizing_risk_pct(settings, live=live)
+    risk_pct = gate_pct if risk_pct is None else min(float(risk_pct), gate_pct)
     sized = calculate_position_size(
         account_balance=equity,
         risk_pct=risk_pct,
