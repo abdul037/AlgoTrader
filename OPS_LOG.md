@@ -40,6 +40,25 @@ without explicit operator sign-off recorded here.
   out the embargo session between warm-up and test.
 - AlgoBot 11-10 19:38 UTC: $9,958.76 (SPY $4,201.99, DIS $1,097.33, PYPL $1,062.67, MSFT $996.77,
   cash $2,600), -$41.24 since 4 Oct. No trade since SPY on 11-04.
+- **Incident found 11-10 ~20:05 UTC: the paper book was sold off by a broker read outage.**
+  - Sat 11-07 13:09-13:10 UTC (during the `420c803` restart) every Alpaca reconciliation read
+    returned 500 "internal server error"; read failures counted toward the breaker
+    (`consecutive_failures` 4), which tripped twice with the emergency stop (13:09:52, 13:10:37):
+    all bracket legs of the 5 paper positions cancelled, closes submitted. Auto-recovery cleared
+    the kill switch at 13:14 but nothing re-protected the positions; the unprotected-position
+    flatten queued sells Mon 11-09 09:04 UTC, filled at the open: DIS 74 @ $118.07 (+$772), PYPL
+    157 @ $60.06 (+$813), COST 5 @ $1,048.25 (+$193), MSFT 12 @ $544.25 (+$97), ADBE 24 @
+    $236.97 (-$420): paper money, +$1,454. Alpaca paper flat since ($99,976.06 cash).
+  - The ledger missed them (standalone closes were paired only within 7 days of the entry), so
+    `paper_positions` still showed the 5 open and no paper trades were booked.
+  - **Real money not touched:** the eToro live client has no flatten-all methods (emergency stop:
+    EToroClient 0/0), and at 14:33-14:37 UTC on 11-09 the exit copy detached MSFT, PYPL and DIS
+    (`paper_unprotected_flatten`, marker 09:02 UTC). They stay open on eToro's stop / target and
+    the backup stop. **Operator 11-10: "Keep, stops only".**
+  - **Operator 11-10: "Pause, don't sell".** `f23d15d`: a failure made only of failed reads pauses
+    new entries until a good read and never cancels or sells; drift actually seen keeps the full
+    emergency stop. `70447bd`: a standalone close pairs with its entry up to the symbol's next
+    entry (not 7 days) and books its own fill time, so the 5 rows close on the next ledger sync.
 
 ## 2026-11-07 (Sat) — Thursday's drop, SPY kept; scorecard hosted by the bot; connors backtest fix
 
