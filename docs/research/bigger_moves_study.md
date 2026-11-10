@@ -209,6 +209,144 @@ softened. A "nothing passes" result is a valid outcome.
 * The gap between the two and production's own numbers is explained (fold cut-offs, EMA seeds
   in short fold windows, the data feed, 24 vs 25 names).
 
-## Results
+## Results: main period (committed before the holdout was computed)
 
-(Added after the runs.)
+One run of `research/bigger_moves/cli.py run` (86 seconds on 4 cores): signals 2011-01-03 ..
+2025-10-31, trades cut at 2025-10-31's close, 3.5 million trade rows across the 29 variants and
+both universes. The sealed holdout had not been computed when this section was committed.
+
+### Point-in-time universe, one row per variant
+
+| variant | change | trades | win % | before costs R | after costs R | no-financing R | cost $ spread / fee / financing | median bars | random control R | excess | month-t | Holm p | holdout trades / R |
+|---|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|
+| inside_bar V0 | none (risk_multiple=2.1) | 36497 | 37.2 | +0.108 | -0.040 | +0.046 | 4.12 / 2.00 / 8.59 | 6 | -0.030 | -0.010 | -0.36 | 1.000 | sealed |
+| inside_bar V1 | risk_multiple=4.2 | 28197 | 25.7 | +0.254 | +0.022 | +0.193 | 4.06 / 2.00 / 17.11 | 9 | +0.019 | +0.003 | 0.07 | 1.000 | sealed |
+| inside_bar V2 | risk_multiple=6.3 | 22879 | 20.6 | +0.398 | +0.084 | +0.338 | 4.00 / 2.00 / 25.31 | 11 | +0.049 | +0.036 | 0.65 | 1.000 | sealed |
+| inside_bar V3 | take-profit removed, max_hold_bars=10 (code change) | 39300 | 38.7 | +0.093 | -0.037 | +0.031 | 4.18 / 2.00 / 6.83 | 11 | -0.014 | -0.023 | -0.88 | 1.000 | sealed |
+| inside_bar V4 | take-profit removed, max_hold_bars=20 (code change) | 35530 | 32.8 | +0.160 | -0.012 | +0.099 | 4.14 / 2.00 / 11.03 | 11 | +0.006 | -0.017 | -0.45 | 1.000 | sealed |
+| inside_bar V5 | new StrategySpec(timeframe='1w') with the defaults | 8277 | 42.4 | +0.324 | +0.100 | +0.287 | 1.79 / 2.00 / 18.63 | 7 | +0.109 | -0.009 | -0.17 | 1.000 | sealed |
+| rs_momentum V0 | none (risk_multiple=2.4) | 26866 | 35.7 | +0.175 | -0.022 | +0.125 | 2.99 / 2.00 / 14.72 | 14 | +0.121 | -0.143 | -4.16 | 1.000 | sealed |
+| rs_momentum V1 | risk_multiple=4.8 | 17386 | 25.3 | +0.386 | +0.058 | +0.337 | 2.95 / 2.00 / 27.87 | 20 | +0.246 | -0.188 | -3.92 | 1.000 | sealed |
+| rs_momentum V2 | risk_multiple=7.2 | 13546 | 20.7 | +0.568 | +0.128 | +0.519 | 2.94 / 2.00 / 39.10 | 21 | +0.333 | -0.204 | -3.26 | 1.000 | sealed |
+| rs_momentum V3 | take-profit removed, max_hold_bars=10 (code change) | 40301 | 43.9 | +0.083 | -0.032 | +0.030 | 3.25 / 2.00 / 6.27 | 11 | +0.038 | -0.070 | -3.27 | 1.000 | sealed |
+| rs_momentum V4 | take-profit removed, max_hold_bars=20 (code change) | 29396 | 40.1 | +0.130 | -0.026 | +0.079 | 3.12 / 2.00 / 10.51 | 20 | +0.090 | -0.116 | -3.51 | 1.000 | sealed |
+| rs_momentum V5 | new StrategySpec(timeframe='1w') with the defaults | 7332 | 42.8 | +0.442 | +0.125 | +0.408 | 1.39 / 2.00 / 28.30 | 14 | +0.387 | -0.262 | -6.31 | 1.000 | sealed |
+| connors_rsi2 V0 | none | 30227 | 52.7 | +0.175 | +0.021 | +0.136 | 1.86 / 2.00 / 11.53 | 17 | +0.102 | -0.080 | -2.97 | 1.000 | sealed |
+| connors_rsi2 V1 | target distance x2 (no kwarg: code change) | 15756 | 39.8 | +0.371 | +0.098 | +0.333 | 1.80 / 2.00 / 23.58 | 34 | +0.222 | -0.125 | -2.99 | 1.000 | sealed |
+| connors_rsi2 V2 | target distance x3 (no kwarg: code change) | 11351 | 33.8 | +0.564 | +0.187 | +0.526 | 1.79 / 2.00 / 33.92 | 47 | +0.302 | -0.115 | -2.07 | 1.000 | sealed |
+| connors_rsi2 V3 | take-profit removed, max_hold_bars=10 (code change) | 70080 | 49.6 | +0.083 | -0.006 | +0.043 | 2.04 / 2.00 / 4.88 | 11 | +0.033 | -0.039 | -2.01 | 1.000 | sealed |
+| connors_rsi2 V4 | take-profit removed, max_hold_bars=20 (code change) | 47068 | 47.3 | +0.139 | +0.012 | +0.098 | 2.03 / 2.00 / 8.64 | 21 | +0.070 | -0.058 | -2.09 | 1.000 | sealed |
+| connors_rsi2 V5 | new StrategySpec(timeframe='1w') with the defaults | 7321 | 59.3 | +0.345 | +0.118 | +0.317 | 0.79 / 2.00 / 19.88 | 16 | +0.135 | -0.017 | -0.45 | 1.000 | sealed |
+| overnight_drift V0 | none (target_atr_mult=1.0, max_hold_bars=1) | 304079 | 46.0 | +0.012 | -0.054 | -0.045 | 3.71 / 2.00 / 0.85 | 2 | -0.045 | -0.009 | -2.33 | 1.000 | sealed |
+| overnight_drift V1 | target_atr_mult=2.0 | 286137 | 45.0 | +0.014 | -0.052 | -0.043 | 3.70 / 2.00 / 0.96 | 2 | -0.040 | -0.012 | -2.78 | 1.000 | sealed |
+| overnight_drift V2 | target_atr_mult=3.0 | 284480 | 45.0 | +0.015 | -0.052 | -0.042 | 3.70 / 2.00 / 0.97 | 2 | -0.039 | -0.013 | -2.97 | 1.000 | sealed |
+| overnight_drift V3 | max_hold_bars=10, take-profit removed (code change) | 102237 | 42.6 | +0.103 | -0.022 | +0.047 | 3.65 / 2.00 / 6.91 | 11 | +0.025 | -0.047 | -2.08 | 1.000 | sealed |
+| overnight_drift V4 | max_hold_bars=20, take-profit removed (code change) | 69407 | 36.3 | +0.160 | -0.008 | +0.104 | 3.60 / 2.00 / 11.19 | 14 | +0.051 | -0.059 | -1.72 | 1.000 | sealed |
+| mean_reversion V0 | none | 2720 | 41.1 | +0.038 | -0.079 | -0.044 | 6.26 / 2.00 / 3.43 | 2 | -0.087 | +0.008 | 0.18 | 1.000 | sealed |
+| mean_reversion V1 | target distance x2 (no kwarg: code change) | 2686 | 28.2 | +0.068 | -0.091 | -0.015 | 6.26 / 2.00 / 7.55 | 3 | -0.052 | -0.039 | -0.60 | 1.000 | sealed |
+| mean_reversion V2 | target distance x3 (no kwarg: code change) | 2680 | 22.6 | +0.146 | -0.048 | +0.063 | 6.26 / 2.00 / 11.13 | 4 | +0.003 | -0.051 | -0.63 | 1.000 | sealed |
+| mean_reversion V3 | take-profit removed, max_hold_bars=10 (code change) | 2681 | 29.8 | +0.131 | -0.025 | +0.048 | 6.26 / 2.00 / 7.28 | 4 | -0.041 | +0.016 | 0.24 | 1.000 | sealed |
+| mean_reversion V4 | take-profit removed, max_hold_bars=20 (code change) | 2681 | 23.6 | +0.162 | -0.036 | +0.079 | 6.26 / 2.00 / 11.49 | 4 | +0.077 | -0.112 | -1.29 | 1.000 | sealed |
+| mean_reversion V5 | new StrategySpec(timeframe='1w') with the defaults | 405 | 35.8 | +0.354 | +0.213 | +0.283 | 5.13 / 2.00 / 6.94 | 2 | -0.003 | +0.216 | 1.67 | 1.000 | sealed |
+
+### Stability (rule 3)
+
+| variant | trades: after-cost R (excess) in 2011-15 / 2016-20 / 2021-25 | sub-periods holding | without the best year: R (excess) |
+|---|---|--:|---|
+| inside_bar V0 | 10152: -0.07 (-0.02) / 12486: +0.03 (+0.01) / 13859: -0.08 (-0.01) | 1 | 2020: -0.055 (-0.016) |
+| inside_bar V1 | 7850: +0.00 (+0.02) / 9527: +0.16 (+0.02) / 10820: -0.08 (-0.03) | 1 | 2020: -0.008 (-0.005) |
+| inside_bar V2 | 6501: +0.07 (+0.05) / 7666: +0.27 (+0.05) / 8712: -0.07 (+0.01) | 2 | 2020: +0.035 (+0.018) |
+| inside_bar V3 | 10907: -0.04 (-0.00) / 13482: +0.00 (-0.03) / 14911: -0.07 (-0.03) | 0 | 2013: -0.051 (-0.027) |
+| inside_bar V4 | 9848: -0.04 (-0.03) / 12122: +0.05 (-0.01) / 13560: -0.05 (-0.01) | 0 | 2024: -0.021 (-0.026) |
+| inside_bar V5 | 2277: +0.00 (-0.06) / 2814: +0.26 (+0.00) / 3186: +0.03 (+0.02) | 2 | 2023: +0.078 (-0.033) |
+| rs_momentum V0 | 7890: -0.04 (-0.14) / 8976: +0.04 (-0.15) / 10000: -0.06 (-0.14) | 0 | 2020: -0.035 (-0.150) |
+| rs_momentum V1 | 5067: +0.04 (-0.18) / 5933: +0.19 (-0.19) / 6386: -0.05 (-0.19) | 0 | 2020: +0.024 (-0.206) |
+| rs_momentum V2 | 3959: +0.17 (-0.23) / 4725: +0.27 (-0.19) / 4862: -0.05 (-0.20) | 0 | 2020: +0.059 (-0.230) |
+| rs_momentum V3 | 12064: -0.06 (-0.08) / 13536: -0.02 (-0.08) / 14701: -0.02 (-0.05) | 0 | 2023: -0.036 (-0.075) |
+| rs_momentum V4 | 8783: -0.05 (-0.11) / 9840: -0.02 (-0.15) / 10773: -0.01 (-0.09) | 0 | 2020: -0.030 (-0.122) |
+| rs_momentum V5 | 1898: +0.28 (-0.28) / 2820: +0.14 (-0.23) / 2614: -0.01 (-0.28) | 0 | 2011: +0.120 (-0.259) |
+| connors_rsi2 V0 | 9182: +0.04 (-0.06) / 10183: +0.06 (-0.09) / 10862: -0.02 (-0.09) | 0 | 2011: +0.023 (-0.088) |
+| connors_rsi2 V1 | 4863: +0.15 (-0.06) / 5416: +0.16 (-0.16) / 5477: -0.01 (-0.15) | 0 | 2011: +0.102 (-0.145) |
+| connors_rsi2 V2 | 3514: +0.26 (-0.06) / 3958: +0.29 (-0.14) / 3879: +0.02 (-0.14) | 0 | 2011: +0.191 (-0.147) |
+| connors_rsi2 V3 | 21035: -0.01 (-0.03) / 23362: -0.00 (-0.05) / 25683: -0.01 (-0.04) | 0 | 2021: -0.015 (-0.046) |
+| connors_rsi2 V4 | 13971: +0.02 (-0.02) / 15856: +0.03 (-0.09) / 17241: -0.01 (-0.07) | 0 | 2021: -0.001 (-0.068) |
+| connors_rsi2 V5 | 1298: +0.06 (+0.11) / 3146: +0.21 (-0.03) / 2877: +0.05 (-0.07) | 1 | 2014: +0.099 (-0.033) |
+| overnight_drift V0 | 90335: -0.06 (-0.01) / 103055: -0.06 (-0.01) / 110689: -0.05 (-0.01) | 0 | 2018: -0.054 (-0.011) |
+| overnight_drift V1 | 84914: -0.06 (-0.02) / 97039: -0.05 (-0.01) / 104184: -0.04 (-0.01) | 0 | 2018: -0.053 (-0.014) |
+| overnight_drift V2 | 84421: -0.06 (-0.02) / 96485: -0.05 (-0.01) / 103574: -0.04 (-0.01) | 0 | 2018: -0.053 (-0.016) |
+| overnight_drift V3 | 30108: -0.04 (-0.04) / 34533: +0.01 (-0.05) / 37596: -0.04 (-0.05) | 0 | 2018: -0.017 (-0.052) |
+| overnight_drift V4 | 20584: -0.02 (-0.04) / 23355: +0.03 (-0.07) / 25468: -0.04 (-0.07) | 0 | 2024: -0.021 (-0.069) |
+| mean_reversion V0 | 830: -0.03 (+0.06) / 829: +0.00 (+0.07) / 1061: -0.18 (-0.08) | 0 | 2015: -0.088 (-0.010) |
+| mean_reversion V1 | 814: -0.09 (-0.02) / 818: +0.09 (+0.11) / 1054: -0.23 (-0.17) | 1 | 2020: -0.113 (-0.064) |
+| mean_reversion V2 | 811: -0.12 (-0.05) / 815: +0.20 (+0.13) / 1054: -0.19 (-0.19) | 1 | 2019: -0.102 (-0.088) |
+| mean_reversion V3 | 812: -0.01 (+0.09) / 815: +0.14 (+0.12) / 1054: -0.17 (-0.12) | 1 | 2012: -0.056 (-0.024) |
+| mean_reversion V4 | 812: -0.09 (-0.18) / 815: +0.19 (+0.07) / 1054: -0.16 (-0.20) | 1 | 2019: -0.097 (-0.158) |
+| mean_reversion V5 | 130: +0.38 (+0.43) / 111: +0.22 (+0.23) / 164: +0.08 (+0.03) | 3 | 2012: +0.133 (+0.165) |
+
+### Universes
+
+| variant | point-in-time: trades / R / excess | today's members, no restriction: trades / R / excess | live 24, 2011-2025: trades / R / control R / excess (month-t) |
+|---|---|---|---|
+| inside_bar V0 | 36497 / -0.040 / -0.010 | 45905 / -0.026 / -0.007 | 2401 / -0.018 / +0.048 / -0.066 (-1.51) |
+| inside_bar V1 | 28197 / +0.022 / +0.003 | 35506 / +0.052 / +0.008 | 1873 / +0.114 / +0.141 / -0.028 (-0.37) |
+| inside_bar V2 | 22879 / +0.084 / +0.036 | 28900 / +0.136 / +0.016 | 1513 / +0.270 / +0.296 / -0.026 (-0.26) |
+| inside_bar V3 | 39300 / -0.037 / -0.023 | 49500 / -0.025 / -0.030 | 2575 / +0.021 / +0.050 / -0.029 (-0.69) |
+| inside_bar V4 | 35530 / -0.012 / -0.017 | 44713 / +0.011 / -0.013 | 2297 / +0.112 / +0.131 / -0.019 (-0.27) |
+| inside_bar V5 | 8277 / +0.100 / -0.009 | 10420 / +0.152 / -0.006 | 520 / +0.226 / +0.283 / -0.057 (-0.64) |
+| rs_momentum V0 | 26866 / -0.022 / -0.143 | 34513 / +0.007 / -0.136 | 1945 / +0.086 / +0.191 / -0.104 (-1.78) |
+| rs_momentum V1 | 17386 / +0.058 / -0.188 | 22281 / +0.126 / -0.172 | 1243 / +0.261 / +0.440 / -0.179 (-1.99) |
+| rs_momentum V2 | 13546 / +0.128 / -0.204 | 17316 / +0.229 / -0.211 | 946 / +0.491 / +0.740 / -0.249 (-1.88) |
+| rs_momentum V3 | 40301 / -0.032 / -0.070 | 51659 / -0.025 / -0.081 | 2733 / +0.028 / +0.100 / -0.072 (-2.15) |
+| rs_momentum V4 | 29396 / -0.026 / -0.116 | 37571 / -0.007 / -0.117 | 2013 / +0.053 / +0.202 / -0.149 (-2.76) |
+| rs_momentum V5 | 7332 / +0.125 / -0.262 | 9285 / +0.208 / -0.253 | 534 / +0.418 / +0.682 / -0.265 (-3.10) |
+| connors_rsi2 V0 | 30227 / +0.021 / -0.080 | 38193 / +0.046 / -0.079 | 2216 / +0.101 / +0.176 / -0.075 (-1.66) |
+| connors_rsi2 V1 | 15756 / +0.098 / -0.125 | 19972 / +0.152 / -0.115 | 1138 / +0.285 / +0.374 / -0.089 (-1.30) |
+| connors_rsi2 V2 | 11351 / +0.187 / -0.115 | 14223 / +0.273 / -0.129 | 831 / +0.436 / +0.683 / -0.248 (-2.57) |
+| connors_rsi2 V3 | 70080 / -0.006 / -0.039 | 88840 / +0.007 / -0.035 | 4781 / +0.042 / +0.072 / -0.030 (-1.01) |
+| connors_rsi2 V4 | 47068 / +0.012 / -0.058 | 59530 / +0.030 / -0.053 | 3222 / +0.113 / +0.139 / -0.026 (-0.57) |
+| connors_rsi2 V5 | 7321 / +0.118 / -0.017 | 8811 / +0.149 / -0.016 | 520 / +0.263 / +0.333 / -0.069 (-0.96) |
+| overnight_drift V0 | 304079 / -0.054 / -0.009 | 385472 / -0.050 / -0.007 | 21033 / -0.056 / -0.046 / -0.009 (-1.31) |
+| overnight_drift V1 | 286137 / -0.052 / -0.012 | 362629 / -0.048 / -0.010 | 19669 / -0.048 / -0.037 / -0.011 (-1.40) |
+| overnight_drift V2 | 284480 / -0.052 / -0.013 | 360554 / -0.048 / -0.012 | 19527 / -0.046 / -0.030 / -0.016 (-2.13) |
+| overnight_drift V3 | 102237 / -0.022 / -0.047 | 129229 / -0.005 / -0.042 | 6986 / +0.063 / +0.120 / -0.057 (-1.55) |
+| overnight_drift V4 | 69407 / -0.008 / -0.059 | 87493 / +0.022 / -0.062 | 4688 / +0.148 / +0.178 / -0.030 (-0.51) |
+| mean_reversion V0 | 2720 / -0.079 / +0.008 | 3447 / -0.063 / +0.013 | 163 / -0.077 / -0.069 / -0.008 (-0.07) |
+| mean_reversion V1 | 2686 / -0.091 / -0.039 | 3406 / -0.053 / -0.002 | 161 / +0.075 / +0.120 / -0.044 (-0.23) |
+| mean_reversion V2 | 2680 / -0.048 / -0.051 | 3399 / +0.004 / -0.010 | 161 / +0.296 / +0.021 / +0.276 (1.17) |
+| mean_reversion V3 | 2681 / -0.025 / +0.016 | 3401 / +0.014 / -0.039 | 161 / +0.216 / +0.227 / -0.011 (-0.04) |
+| mean_reversion V4 | 2681 / -0.036 / -0.112 | 3401 / +0.008 / -0.051 | 161 / +0.206 / +0.105 / +0.101 (0.37) |
+| mean_reversion V5 | 405 / +0.213 / +0.216 | 507 / +0.172 / +0.190 | 23 / +1.292 / -0.040 / +1.332 (2.56) |
+
+### Pass rule on the main period
+
+| variant | 1 main >= +0.03R, >= 40 | 1 holdout > 0, >= 10 | 2 beats control (Holm p < 0.05) | 2 at 0.10? | 3a 2 of 3 sub-periods | 3b not one year | 4 point-in-time | verdict |
+|---|---|---|---|---|---|---|---|---|
+| inside_bar V0 | **fail** | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| inside_bar V1 | **fail** | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| inside_bar V2 | pass | sealed | **fail** | no | pass | pass | by construction | pending |
+| inside_bar V3 | **fail** | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| inside_bar V4 | **fail** | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| inside_bar V5 | pass | sealed | **fail** | no | pass | **fail** | by construction | pending |
+| rs_momentum V0 | **fail** | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| rs_momentum V1 | pass | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| rs_momentum V2 | pass | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| rs_momentum V3 | **fail** | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| rs_momentum V4 | **fail** | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| rs_momentum V5 | pass | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| connors_rsi2 V0 | **fail** | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| connors_rsi2 V1 | pass | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| connors_rsi2 V2 | pass | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| connors_rsi2 V3 | **fail** | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| connors_rsi2 V4 | **fail** | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| connors_rsi2 V5 | pass | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| overnight_drift V0 | **fail** | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| overnight_drift V1 | **fail** | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| overnight_drift V2 | **fail** | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| overnight_drift V3 | **fail** | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| overnight_drift V4 | **fail** | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| mean_reversion V0 | **fail** | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| mean_reversion V1 | **fail** | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| mean_reversion V2 | **fail** | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| mean_reversion V3 | **fail** | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| mean_reversion V4 | **fail** | sealed | **fail** | no | **fail** | **fail** | by construction | pending |
+| mean_reversion V5 | pass | sealed | **fail** | no | pass | pass | by construction | pending |
