@@ -63,6 +63,10 @@ def _closing_side(position: Any) -> str:
     return "buy" if quantity < 0 else "sell"
 
 
+READ_ERROR_PREFIX = "reconciliation_error:"
+"""An issue meaning the broker could not be read at all (every retry raised), not drift seen."""
+
+
 class AlpacaReconciliationService:
     """Synchronize Alpaca order state and trip the circuit breaker on unsafe drift."""
 
@@ -138,7 +142,7 @@ class AlpacaReconciliationService:
                 if attempt < attempts and backoff > 0:
                     time.sleep(backoff)
         if result is None:
-            return self._record_failure([f"reconciliation_error:{last_error}"])
+            return self._record_failure([f"{READ_ERROR_PREFIX}{last_error}"])
 
         issues = list(result["issues"])
         if issues:
@@ -613,14 +617,22 @@ class AlpacaReconciliationService:
         )
         if immediate or count >= threshold:
             account_mismatch = any(item.startswith("account_mismatch:") for item in issues)
+            # Operator 2026-11-10 ("Pause, don't sell"): a failure that is only failed reads (the
+            # broker could not be reached, e.g. Alpaca's 500s on Sat 11-07, which cancelled every
+            # bracket and sold the whole paper book at Monday's open) pauses new entries until a
+            # good read, and never cancels orders or closes positions: nothing wrong was seen in
+            # the account. Anything actually seen (a missing bracket, an unknown position, an
+            # account mismatch) keeps the full emergency stop.
+            read_errors_only = all(item.startswith(READ_ERROR_PREFIX) for item in issues)
+            emergency_stop = not account_mismatch and not read_errors_only
             self.automation.trip_circuit_breaker(
                 reason=";".join(issues),
-                emergency_stop=not account_mismatch,
+                emergency_stop=emergency_stop,
             )
             self._send_failure_alert(
                 issues=issues,
                 consecutive_failures=count,
-                emergency_stop=not account_mismatch,
+                emergency_stop=emergency_stop,
             )
         return {"status": "error", "issues": issues, "consecutive_failures": count, **(result or {})}
 

@@ -132,6 +132,43 @@ def test_reconciliation_records_failure_only_after_retry_attempts(tmp_path):
     assert automation.status().kill_switch_enabled is True
 
 
+def test_failed_reads_pause_but_never_cancel_or_sell(tmp_path):
+    """Sat 2026-11-07: Alpaca 500s on every read tripped the breaker, which cancelled every
+    bracket and sold the whole paper book at Monday's open. Operator 11-10: "Pause, don't sell"."""
+
+    service, automation = reconciliation_service(tmp_path, expected="PAPER-1", actual="PAPER-1")
+    service.settings.alpaca_reconciliation_max_attempts = 3
+    service.settings.alpaca_reconciliation_retry_backoff_seconds = 0
+    service.settings.reconciliation_failures_before_kill_switch = 3
+
+    def broker_500():
+        raise RuntimeError('{"code":50010000,"message":"internal server error occurred"}')
+
+    service.alpaca.get_account_identity = broker_500
+    for _ in range(4):  # past the threshold, as on 11-07 (consecutive_failures 4)
+        result = service.reconcile()
+
+    assert result["status"] == "error" and result["consecutive_failures"] == 4
+    assert all(issue.startswith("reconciliation_error:") for issue in result["issues"])
+    status = automation.status()
+    assert status.kill_switch_enabled is True and status.paused is True  # no new entries
+    assert service.alpaca.cancel_calls == 0  # the brackets stay at the broker
+    assert service.alpaca.close_calls == 0  # nothing is sold
+
+
+def test_drift_seen_in_the_account_still_triggers_the_emergency_stop(tmp_path, monkeypatch):
+    service, automation = reconciliation_service(tmp_path, expected="PAPER-1", actual="PAPER-1")
+    seen = {"issues": ["missing_bracket_protection:ADBE"], "account": {}, "orders_seen": 1, "positions_seen": 1}
+    monkeypatch.setattr(service, "_reconcile", lambda: dict(seen))
+
+    result = service.reconcile()
+
+    assert result["status"] == "error"
+    assert automation.status().kill_switch_enabled is True
+    assert service.alpaca.cancel_calls == 1
+    assert service.alpaca.close_calls == 1
+
+
 def test_reconciliation_verifies_expected_paper_account(tmp_path):
     service, automation = reconciliation_service(tmp_path, expected="PAPER-1", actual="PAPER-1")
 

@@ -170,7 +170,9 @@ class EToroDemoReconciliationService:
             self.state.set(self.LAST_RUN_KEY, utc_now().isoformat())
             self.state.set(self.LAST_STATUS_KEY, "error")
             self.logs.log("etoro_demo_reconciliation_failed", {"issues": [issue]})
-            self.automation.trip_circuit_breaker(reason=issue, emergency_stop=True)
+            # A failed read pauses only (operator 2026-11-10, "Pause, don't sell"); drift actually
+            # seen (the issues branch above) keeps the full emergency stop.
+            self.automation.trip_circuit_breaker(reason=issue, emergency_stop=False)
             return {"status": "error", "issues": [issue]}
 
 
