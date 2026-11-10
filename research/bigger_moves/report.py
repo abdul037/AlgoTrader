@@ -164,12 +164,34 @@ def calibration_section(cal: dict) -> str:
             num(100 * rep.get("end_of_data_share", float("nan")), 0), num(rep.get("median_days_held"), 0),
             f"{hold.get('trades', 0)} / {r(hold.get('r_net'))}",
             f"{ours.get('trades', 0)} / {r(ours.get('r_gross'))} / {r(ours.get('r_net'))}",
-            num(ours.get("median_bars_held"), 0), str(cal["replication"][strategy].get("entries_also_in_study")),
+            num(ours.get("median_bars_held"), 0),
+            f"{cal['replication'][strategy].get('entries_with_live_signal')} / "
+            f"{cal['replication'][strategy].get('off_signal_entries_on_test_bars_1_2')} / "
+            f"{cal['replication'][strategy].get('entries_also_in_study')}",
         ])
     return table(["strategy", "production (brief): trades / before / after", "replication: trades / before / after",
                   "replication cost $ spread / fee / financing", "closed at fold end %", "median days held",
                   "replication holdout: trades / R", "study V0, no folds: trades / before / after",
-                  "study median bars", "replicated entries also in study"], rows, "---|---|---|---|--:|--:|---|---|--:|--:")
+                  "study median bars", "replicated entries: on a live-window BUY / off it, on test bar 1-2 / also a study entry"], rows, "---|---|---|---|--:|--:|---|---|--:|--:")
+
+
+def nofin_section(out: Path) -> str:
+    """No-financing sensitivity (point-in-time, main period) from ``trades_main.parquet``."""
+
+    import pandas as pd
+
+    trades = pd.read_parquet(out / "trades_main.parquet",
+                             columns=["strategy", "variant", "universe", "r_net", "fin_r", "ctrl_net", "ctrl_nofin",
+                                      "ctrl_n"])
+    trades = trades[(trades["universe"] == "pit") & (trades["ctrl_n"] > 0)]
+    rows = []
+    for variant in var_mod.VARIANTS:
+        g = trades[(trades["strategy"] == variant.strategy) & (trades["variant"] == variant.name)]
+        nofin = g["r_net"] + g["fin_r"]
+        rows.append([name(variant.key), r(g["r_net"].mean()), r(nofin.mean()), r(g["ctrl_nofin"].mean()),
+                     r((g["r_net"] - g["ctrl_net"]).mean()), r((nofin - g["ctrl_nofin"]).mean())])
+    return table(["variant", "after costs R", "no-financing R", "control no-financing R", "excess",
+                  "excess, no financing"], rows)
 
 
 def main(out: Path) -> None:
@@ -194,6 +216,9 @@ def main(out: Path) -> None:
         print("## holdout\n")
         print(holdout_live_section(holdout) + "\n")
         print("passing:", holdout["passing"], "\n")
+    if (out / "trades_main.parquet").exists():
+        print("## no financing\n")
+        print(nofin_section(out) + "\n")
     if cal_path.exists():
         print("## calibration\n")
         print(calibration_section(json.loads(cal_path.read_text())) + "\n")

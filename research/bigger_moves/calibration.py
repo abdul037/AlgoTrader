@@ -57,16 +57,24 @@ def _production_one(args: tuple[str, str, str]) -> dict[str, object]:
     splitter = splitter_for("1d", SimpleNamespace())
     engine = BacktestEngine(config=EngineConfig(initial_cash=10_000.0, risk_per_trade_pct=1.0,
                                                 cost_model=with_etoro_trade_fees(CostModel(), crypto=False)))
-    oos, spans = [], []
+    oos, spans, early = [], [], []
+    stamps = pd.to_datetime(history["timestamp"])
+    missing_folds = 0
     for window in splitter.split(history):
         result = engine.run(symbol=symbol, strategy=strategy, data=_with_warmup(window, history, warmup),
                             file_path="research", trade_window_start=window.test_start)
         oos.extend(result.trades)
         spans.append((window.test_start, window.test_end))
+        # The fold frame is the warm-up (bars before train_end) plus the test window: a session
+        # in the embargo [train_end, test_start) is in neither, so the test bars' indicators
+        # span a missing session the live bot never skips.
+        missing_folds += int(((stamps >= window.train_end) & (stamps < window.test_start)).any())
+        early += [str(pd.Timestamp(day).date()) for day in pd.to_datetime(window.test_df["timestamp"]).iloc[:2]]
     holdout_window = splitter.holdout_window(history)
     holdout = engine.run(symbol=symbol, strategy=strategy, data=_with_warmup(holdout_window, history, warmup),
                          file_path="research", trade_window_start=holdout_window.test_start).trades
     return {"symbol": symbol, "strategy": name, "oos": oos, "holdout": holdout, "folds": len(spans),
+            "folds_missing_a_session": missing_folds, "first_two_test_days": early,
             "oos_start": str(spans[0][0]) if spans else None, "oos_end": str(spans[-1][1]) if spans else None,
             "holdout_start": str(holdout_window.test_start)}
 
@@ -100,6 +108,9 @@ def production_replication(data_dir: Path) -> tuple[dict[str, object], dict[str,
                      "holdout": _pool([t for row in mine for t in row["holdout"]]),
                      "folds_per_symbol": mine[0]["folds"], "oos_start": mine[0]["oos_start"],
                      "oos_end": mine[0]["oos_end"], "holdout_start": mine[0]["holdout_start"],
+                     "folds_missing_a_session": int(sum(row["folds_missing_a_session"] for row in mine)),
+                     "folds": int(sum(row["folds"] for row in mine)),
+                     "early_days": sorted({(row["symbol"], day) for row in mine for day in row["first_two_test_days"]}),
                      "oos_entries": sorted({(row["symbol"], str(pd.Timestamp(t["entry_time"]).date()))
                                             for row in mine for t in row["oos"]})}
         spans[name] = (mine[0]["oos_start"], mine[0]["oos_end"])
@@ -115,18 +126,21 @@ def study_paths(data_dir: Path, start: str, end: str) -> dict[str, object]:
     out = {}
     for name in var_mod.STRATEGIES:
         variant = next(v for v in var_mod.VARIANTS if v.strategy == name and v.name == "V0")
-        rows = []
+        rows, signal_entries = [], set()
         for symbol in data_mod.LIVE24:
             bars = data_mod.symbol_bars(data_dir, symbol)["1d"][-1]
             signals = sig_mod.compute(name, bars.frame, sig_mod.LIVE_WINDOW["1d"], **variant.signal_kwargs())
             target, max_hold = var_mod.plan(variant, signals)
             segment = paths_mod.Segment(bars, signals, target, last=len(bars.frame) - 1, break_end=False)
             allowed = (bars.close_date >= begin) & (bars.close_date <= finish)
+            for s in np.flatnonzero(signals["buy"] & allowed).tolist():
+                if s + 1 < len(bars.frame):
+                    signal_entries.add((symbol, str(bars.date[s + 1])))
             for trade in paths_mod.chain(segment, allowed, max_hold):
                 rows.append((symbol, str(bars.date[trade[1]])) + trade)
         frame = pd.DataFrame(rows, columns=["symbol", "entry_date"] + list(paths_mod.TRADE_FIELDS))
         if frame.empty:
-            out[name] = {"trades": 0, "entries": []}
+            out[name] = {"trades": 0, "entries": [], "signal_entries": sorted(signal_entries)}
             continue
         month = pd.to_datetime(frame["entry_date"]).dt.to_period("M").astype(str)
         t, _, _ = st.clustered_t(frame["r_net"], month)
@@ -135,7 +149,8 @@ def study_paths(data_dir: Path, start: str, end: str) -> dict[str, object]:
                      "t_month": float(t), "cost_usd": float((frame["spread_r"] + frame["fee_r"] + frame["fin_r"]).mean() * 100),
                      "fin_usd": float(frame["fin_r"].mean() * 100),
                      "median_bars_held": float((frame["exit_idx"] - frame["signal_idx"]).median()),
-                     "entries": sorted(zip(frame["symbol"], frame["entry_date"], strict=True))}
+                     "entries": sorted(zip(frame["symbol"], frame["entry_date"], strict=True)),
+                     "signal_entries": sorted(signal_entries)}
     return out
 
 
@@ -150,7 +165,13 @@ def run(data_dir: Path, out: Path) -> dict[str, object]:
         replicated_entries = {tuple(x) for x in replicated.pop("oos_entries")}
         ours = study[name]
         our_entries = {tuple(x) for x in ours.pop("entries", [])}
+        signal_entries = {tuple(x) for x in ours.pop("signal_entries", [])}
         replicated["entries_also_in_study"] = len(replicated_entries & our_entries)
+        # Replicated entries whose signal bar is also a live-window (400-bar) BUY: the rest come
+        # from indicators seeded in the short fold frames, or the feed.
+        replicated["entries_with_live_signal"] = len(replicated_entries & signal_entries)
+        early_days = {tuple(x) for x in replicated.pop("early_days")}
+        replicated["off_signal_entries_on_test_bars_1_2"] = len((replicated_entries - signal_entries) & early_days)
         results["replication"][name] = replicated
         results["study"][name] = ours
     (out / "calibration.json").write_text(json.dumps(results, indent=1, default=str))
