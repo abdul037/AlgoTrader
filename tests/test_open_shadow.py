@@ -777,7 +777,9 @@ def test_it_never_runs_while_a_live_bucket_waits_or_without_budget(tmp_path, mon
     assert env.run(deferred=["swing_hourly"]) is None
     assert shadow.MIN_START_SECONDS == 55.0  # the cadence backstop's margin: setup + useful scan
     job = env.service.settings.scheduler_job_timeout_seconds
-    late = env.mono["t"] - (job - 60.0 - 55.0 + 0.5)  # 54.5 s of scan budget left
+    from app.workflow.cadence_budget import POST_SCAN_RESERVE_SECONDS
+
+    late = env.mono["t"] - (job - POST_SCAN_RESERVE_SECONDS - 55.0 + 0.5)  # 54.5 s of scan budget left
     assert env.run(started_at=late) is None
     assert env.service.runtime_state.reads == 0 and env.service.market_data.quote_calls == []
     env.run(started_at=late + 1.0)  # 55.5 s left
@@ -1055,7 +1057,7 @@ def test_after_the_cadence_backstop_skipped_a_bucket_it_does_not_run(tmp_path, m
         runtime_state=env.service.runtime_state,
         run_logs=env.service.run_logs,
     )
-    scan_budget = env.service.settings.scheduler_job_timeout_seconds - 60.0
+    scan_budget = env.service.settings.scheduler_job_timeout_seconds - cadence.POST_SCAN_RESERVE_SECONDS
 
     def due(name):
         if name == "swing_hourly":

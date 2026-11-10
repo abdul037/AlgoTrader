@@ -347,17 +347,18 @@ def test_at_most_one_paper_only_proposal_a_pass(tmp_path) -> None:
 def test_no_paper_only_proposal_once_the_cadence_tick_nears_its_scan_stop(
     tmp_path, monkeypatch
 ) -> None:
-    from app.workflow.cadence_budget import CadenceBudget, tick_budget
+    from app.workflow.cadence_budget import POST_SCAN_RESERVE_SECONDS, CadenceBudget, tick_budget
 
     clock = SimpleNamespace(now=1_000.0)
     monkeypatch.setattr(paper_only_module.time, "monotonic", lambda: clock.now)
     auto, _state = _auto(tmp_path)
-    budget = CadenceBudget(started_at=1_000.0, job_timeout=240.0)  # scan stop at 1_180
+    budget = CadenceBudget(started_at=1_000.0, job_timeout=240.0)
+    stop = 1_000.0 + 240.0 - POST_SCAN_RESERVE_SECONDS  # the scan stop (1_165 since 11-10)
     assert PROPOSAL_SECONDS == 35.0  # the pass's reads and one proposal, measured 20-35 s
     with tick_budget(budget):
-        clock.now = 1_180.0 - PROPOSAL_SECONDS - 0.1
+        clock.now = stop - PROPOSAL_SECONDS - 0.1
         assert _blockers(auto, _candidate("UBER", "momentum_breakout")) == []
-        clock.now = 1_180.0 - PROPOSAL_SECONDS  # the reserve is the run's own
+        clock.now = stop - PROPOSAL_SECONDS  # the reserve is the run's own
         assert _blockers(auto, _candidate("UBER", "momentum_breakout")) == [
             "paper_only_cadence_budget_spent"
         ]
