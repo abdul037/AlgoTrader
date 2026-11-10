@@ -34,7 +34,26 @@ from typing import Any
 
 # Scan stop overshoot (<= 10 s) + post-scan alerts/safety blocks/risk-limit rejections
 # (up to 41 s measured without an entry) + guard close and the run tail (~5 s), + margin.
-POST_SCAN_RESERVE_SECONDS = 60.0
+POST_SCAN_RESERVE_SECONDS = 75.0  # 60 until 2026-11-10: three scan ticks then ran 50-59 s after the scan
+# Late maintenance steps (2026-11-10: 6 of 10 cadence timeouts since 11-04 were maintenance
+# ticks: the ledger cycle and reconciliation took ~100-130 s, then the open-signal check (its own
+# 60 s budget + overshoot) and the daily summary started anyway and ran past the 240 s cap). Each
+# starts only if its run still fits before the cap; otherwise it is due again on the next tick.
+OPEN_SIGNAL_CHECK_SECONDS = 70.0
+DAILY_SUMMARY_SECONDS = 60.0
+LATE_STEP_MARGIN_SECONDS = 10.0
+
+
+def late_step_fits(settings, started_at: float | None, step_seconds: float) -> bool:
+    """Whether a late maintenance step started now ends before the job's wall-clock cap
+    (True outside a scheduled tick, ``started_at`` None, or with no cap)."""
+
+    if started_at is None:
+        return True
+    cap = float(getattr(settings, "scheduler_job_timeout_seconds", 0) or 0)
+    if cap <= 0:
+        return True
+    return time.monotonic() - started_at + step_seconds + LATE_STEP_MARGIN_SECONDS <= cap
 # The bucket guard's lock get/set and bucket-state writes (~3 s), spent before
 # run_scan_task; charged at admission only, so admission and the backstop agree.
 GUARD_SETUP_SECONDS = 3.0

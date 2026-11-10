@@ -632,21 +632,22 @@ def test_cadence_budget_keeps_the_post_scan_reserve_inside_the_job_timeout(tmp_p
     assert job_timeout < float(settings.scheduler_self_heal_stale_seconds)
     now = {"t": 0.0}
     monkeypatch.setattr(cb.time, "monotonic", lambda: now["t"])
-    # Swing: 3 s guard + 10 s setup + 45 s useful scan before the stop at 180 s -> up to 122 s.
-    now["t"] = 122.0
+    # Swing: 3 s guard + 10 s setup + 45 s useful scan before the stop at 165 s -> up to 107 s
+    # (180 s / 122 s until the reserve went 60 -> 75 s on 2026-11-10: scan ticks ran 50-59 s after).
+    now["t"] = 107.0
     assert budget.admits("swing_hourly", settings)
-    now["t"] = 122.1
+    now["t"] = 107.1
     assert not budget.admits("swing_hourly", settings)
-    # Intraday also pays the ~30 s active-mover refresh before its guard -> up to 87 s.
-    now["t"] = 87.0
+    # Intraday also pays the ~30 s active-mover refresh before its guard -> up to 72 s.
+    now["t"] = 72.0
     assert budget.admits("intraday_rotation", settings)
-    now["t"] = 87.1
+    now["t"] = 72.1
     assert not budget.admits("intraday_rotation", settings)
     # The backstop in run_scan_task (guard already paid) agrees: a swing admitted at
-    # 122 s still fits when it reaches run_scan_task ~3 s later.
-    now["t"] = 125.0
+    # 107 s still fits when it reaches run_scan_task ~3 s later.
+    now["t"] = 110.0
     assert budget.scan_fits()
-    now["t"] = 125.1
+    now["t"] = 110.1
     assert not budget.scan_fits()
 
 

@@ -21,10 +21,10 @@ def test_admission_windows_follow_bucket_cost(tmp_path, monkeypatch) -> None:
     off = make_settings(tmp_path / "off", intraday_active_mover_shortlist_enabled=False)
     budget = cb.CadenceBudget.for_tick(on, 0.0)
     for t, swing, intraday_on, intraday_off in [
-        (87.0, True, True, True),
-        (87.1, True, False, True),
-        (122.0, True, False, True),
-        (122.1, False, False, False),
+        (72.0, True, True, True),  # 87 / 122 s until the post-scan reserve went 60 -> 75 s (11-10)
+        (72.1, True, False, True),
+        (107.0, True, False, True),
+        (107.1, False, False, False),
     ]:
         now["t"] = t
         assert budget.admits("swing_hourly", on) is swing, t
@@ -48,11 +48,11 @@ def test_scan_stop_reserves_post_scan_time(tmp_path, monkeypatch) -> None:
     now = _clock(monkeypatch)
     settings = make_settings(tmp_path)
     budget = cb.CadenceBudget.for_tick(settings, 0.0)
-    assert budget.scan_stop_at == 180.0
+    assert budget.scan_stop_at == 165.0
     deadline = cb.ScanDeadline(budget.scan_stop_at)
-    now["t"] = 179.9
+    now["t"] = 164.9
     assert not deadline.is_set()
-    now["t"] = 180.0
+    now["t"] = 165.0
     assert deadline.is_set()
     assert cb.POST_SCAN_RESERVE_SECONDS >= 10 + 41 + 5
     assert settings.scheduler_job_timeout_seconds < settings.scheduler_self_heal_stale_seconds
@@ -68,3 +68,20 @@ def test_budget_is_thread_local(tmp_path) -> None:
         worker.join()
     assert seen == [None]  # another thread (manual/API scan) sees no budget
     assert cb.current_budget() is None  # restored after the block
+
+
+def test_late_maintenance_steps_start_only_if_they_fit(tmp_path, monkeypatch) -> None:
+    """11-04..11-10: maintenance ticks ran the open-signal check and the daily summary after
+    ~130 s of ledger cycle and reconciliation and overran the 240 s cap."""
+
+    now = _clock(monkeypatch)
+    settings = make_settings(tmp_path)
+    assert settings.scheduler_job_timeout_seconds == 240
+    now["t"] = 160.0  # 160 + 70 + 10 = 240: the open-signal check still fits
+    assert cb.late_step_fits(settings, 0.0, cb.OPEN_SIGNAL_CHECK_SECONDS)
+    now["t"] = 160.5
+    assert not cb.late_step_fits(settings, 0.0, cb.OPEN_SIGNAL_CHECK_SECONDS)
+    assert cb.late_step_fits(settings, 0.0, cb.DAILY_SUMMARY_SECONDS)  # 160.5 + 60 + 10 <= 240
+    now["t"] = 171.0
+    assert not cb.late_step_fits(settings, 0.0, cb.DAILY_SUMMARY_SECONDS)
+    assert cb.late_step_fits(settings, None, cb.DAILY_SUMMARY_SECONDS)  # a manual run: no tick cap
