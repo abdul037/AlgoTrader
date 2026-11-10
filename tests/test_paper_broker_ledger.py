@@ -190,3 +190,64 @@ def test_unfilled_or_canceled_executions_never_open_positions(tmp_path) -> None:
 
     assert service.sync_broker_backed_positions() == {"scanned": 1, "opened": 0, "closed": 0}
     assert service.positions.list(limit=10) == []
+
+
+def _standalone_sell(order_id: str, *, qty: float, price: float, filled_at: str) -> dict:
+    """A close the bot sent outside the bracket (unprotected / safety flatten): no execution id."""
+
+    return {
+        "broker_order_id": order_id,
+        "execution_id": None,
+        "client_order_id": None,
+        "symbol": "GOOGL",
+        "side": "sell",
+        "order_class": "simple",
+        "status": "filled",
+        "filled_qty": qty,
+        "filled_avg_price": price,
+        "parent_order_id": None,
+        "payload": {"filled_qty": qty, "filled_avg_price": price, "filled_at": filled_at, "created_at": filled_at},
+    }
+
+
+def test_a_standalone_close_weeks_after_the_entry_closes_the_ledger_row(tmp_path) -> None:
+    """2026-11-09: five swing positions (14-32 days old) whose brackets the 11-07 emergency stop had
+    cancelled were sold by the unprotected-position flatten at the open; the pairing only looked
+    7 days past the entry, so their ledger rows stayed open. Pairing now runs to the next entry."""
+
+    app = create_app(make_settings(tmp_path), broker=MockBroker())
+    service = app.state.paper_trading_service
+    service.executions.create(_googl_execution(exit_leg_status="canceled"))
+    service.sync_broker_backed_positions()
+    service.broker_orders.upsert(
+        **_standalone_sell("flatten-googl", qty=1.0, price=351.10, filled_at="2026-09-29T13:30:05+00:00")
+    )
+
+    result = service.sync_broker_backed_positions()
+
+    assert result["closed"] == 1
+    assert service.positions.list(status="open") == []
+    (trade,) = service.trades.list()
+    assert trade.exit_price == 351.10
+    assert trade.outcome == "broker_close"
+    assert trade.closed_at.startswith("2026-09-29T13:30:05")  # the sale's own fill time, 21 days on
+    assert trade.realized_pnl_usd == 12.35
+
+
+def test_a_close_after_the_next_entry_is_never_paired_with_the_earlier_one(tmp_path) -> None:
+    app = create_app(make_settings(tmp_path), broker=MockBroker())
+    service = app.state.paper_trading_service
+    service.executions.create(_googl_execution(exit_leg_status="canceled"))
+    service.sync_broker_backed_positions()
+    service.broker_orders.upsert(  # a later entry in the same symbol...
+        broker_order_id="parent-googl-2", execution_id="exec_googl_2", client_order_id=None,
+        symbol="GOOGL", side="buy", order_class="bracket", status="filled", filled_qty=1.0,
+        filled_avg_price=340.0, parent_order_id=None,
+        payload={"filled_qty": 1.0, "filled_avg_price": 340.0, "filled_at": "2026-09-20T14:00:00+00:00"},
+    )
+    service.broker_orders.upsert(  # ...then a standalone sale, which belongs to that later entry
+        **_standalone_sell("flatten-googl", qty=1.0, price=351.10, filled_at="2026-09-29T13:30:05+00:00")
+    )
+
+    assert service.sync_broker_backed_positions()["closed"] == 0
+    assert len(service.positions.list(status="open")) == 1

@@ -471,6 +471,15 @@ class PaperTradingService:
             if exit_leg is not None
             else self._optional_float((exit_snapshot or {}).get("filled_avg_price"))
         )
+        exit_filled_at = (
+            (str(exit_leg.filled_at) if exit_leg.filled_at else None)
+            if exit_leg is not None
+            else (
+                self._snapshot_timestamp(exit_snapshot).isoformat()
+                if exit_snapshot is not None and self._snapshot_timestamp(exit_snapshot) is not None
+                else None
+            )
+        )
         realized = float(getattr(execution, "realized_pnl_usd", 0.0) or 0.0)
         if realized == 0.0 and entry_price is not None and exit_price is not None and filled_qty > 0:
             realized = round((exit_price - entry_price) * filled_qty, 2)
@@ -496,6 +505,7 @@ class PaperTradingService:
                 else str((exit_snapshot or {}).get("broker_order_id") or "") or None
             ),
             exit_fill_price=exit_price,
+            exit_filled_at=exit_filled_at,
             realized_pnl_usd=realized,
             created_at=execution.created_at,
             updated_at=execution.updated_at,
@@ -611,7 +621,16 @@ class PaperTradingService:
         )
         if parent_time is None:
             return None
-        latest_exit_time = parent_time + timedelta(days=7)
+        # A standalone close can belong to this entry until the symbol's next filled entry, not
+        # for a fixed 7 days: swing positions are held for weeks, and the unprotected-position
+        # flatten of five 14-32-day-old positions at the 2026-11-09 open was never paired, which
+        # left their ledger rows open. The next entry bounds the window, so a later position's
+        # close is never paired with this one.
+        latest_exit_time = PaperTradingService._next_entry_time(
+            symbol_snapshots.get(symbol, []),
+            after=parent_time,
+            parent_order_id=str(parent_payload.get("broker_order_id") or ""),
+        )
         candidates = [
             item
             for item in symbol_snapshots.get(symbol, [])
@@ -632,6 +651,26 @@ class PaperTradingService:
         )
 
     @staticmethod
+    def _next_entry_time(
+        snapshots: list[dict[str, Any]],
+        *,
+        after: datetime,
+        parent_order_id: str,
+    ) -> datetime:
+        """When the symbol's next filled buy after ``after`` filled (far future when none)."""
+
+        later = [
+            stamp
+            for item in snapshots
+            if str(item.get("side") or "").lower() == "buy"
+            and str(item.get("status") or "").lower() == "filled"
+            and str(item.get("broker_order_id") or "") != parent_order_id
+            and (stamp := PaperTradingService._snapshot_timestamp(item)) is not None
+            and stamp > after
+        ]
+        return min(later) if later else datetime.max.replace(tzinfo=after.tzinfo)
+
+    @staticmethod
     def _is_matching_separate_exit_snapshot(
         item: dict[str, Any],
         *,
@@ -646,7 +685,7 @@ class PaperTradingService:
         if str(item.get("status") or "").lower() != "filled":
             return False
         item_time = PaperTradingService._snapshot_timestamp(item)
-        if item_time is None or item_time < parent_time or item_time > latest_exit_time:
+        if item_time is None or item_time < parent_time or item_time >= latest_exit_time:
             return False
         payload = dict(item.get("payload") or {})
         item_qty = PaperTradingService._optional_float(item.get("filled_qty") or payload.get("filled_qty"))

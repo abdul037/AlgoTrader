@@ -100,6 +100,7 @@ class PaperBrokerExecutionRecord(BaseModel):
     entry_fill_price: float | None = None
     exit_order_id: str | None = None
     exit_fill_price: float | None = None
+    exit_filled_at: str | None = None
     realized_pnl_usd: float = 0.0
     created_at: str
     updated_at: str

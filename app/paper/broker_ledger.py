@@ -164,7 +164,7 @@ def _exit_filled_at(execution: PaperBrokerExecutionRecord) -> str | None:
     for leg in execution.legs:
         if str(leg.status or "").lower() == "filled" and str(leg.side or "").lower() == "sell" and leg.filled_at:
             return str(leg.filled_at)
-    return None
+    return execution.exit_filled_at  # a standalone close (no exit leg): its own fill time
 
 
 def _optional_float(value: Any) -> float | None:
