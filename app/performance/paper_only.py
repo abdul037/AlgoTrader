@@ -31,6 +31,13 @@ positions, and those opened in the last ``REPORT_WINDOW_DAYS`` days).
 The paper ledger stores a position's payload with ``json.dumps``, so a tagged one holds exactly
 ``"paper_only": true``; ``TAGGED_PAYLOAD_SQL`` matches that fragment (``_`` escaped) as a
 prefilter, and every reader parses the payload before it counts a row.
+
+Exploration entries (operator Phase 1, 2026-11-10; app/workflow/exploration.py) are paper-only
+with the reason ``EXPLORATION``: a candidate refused only by evidence-family blockers, admitted
+at 0.25% risk to build a live paper record per strategy and timeframe. Every reader above keys
+on ``PAPER_ONLY_FIELD`` alone, so they are left out of every one of those decisions exactly as
+the OOS-only entries are; ``is_exploration`` tells the two apart (the lane's own caps, the
+exploration leaderboard in app/performance/leverage_sim.py).
 """
 
 from __future__ import annotations
@@ -45,6 +52,7 @@ from app.utils.time import utc_now
 PAPER_ONLY_FIELD = "paper_only"
 PAPER_ONLY_REASON_FIELD = "paper_only_reason"
 OOS_ONLY = "oos_only"  # admitted on the pooled OOS evidence alone; the holdout failed
+EXPLORATION = "exploration"  # admitted by the exploration lane: refused only for evidence
 TAGGED_PAYLOAD_SQL = "payload_json LIKE ? ESCAPE '!'"  # with TAGGED_PAYLOAD_PATTERN
 TAGGED_PAYLOAD_PATTERN = '%"paper!_only": true%'  # the tag as json.dumps writes it
 REPORT_WINDOW_DAYS = 90
@@ -58,10 +66,22 @@ def is_paper_only(metadata: Any) -> bool:
     return isinstance(metadata, dict) and bool(metadata.get(PAPER_ONLY_FIELD))
 
 
+def is_exploration(metadata: Any) -> bool:
+    """True for paper-only metadata whose reason is the exploration lane (``EXPLORATION``)."""
+
+    return is_paper_only(metadata) and metadata.get(PAPER_ONLY_REASON_FIELD) == EXPLORATION
+
+
 def request_is_paper_only(request: Any) -> bool:
     """``is_paper_only`` for an execution's request payload (the order dump with ``metadata``)."""
 
     return isinstance(request, dict) and is_paper_only(request.get("metadata"))
+
+
+def request_is_exploration(request: Any) -> bool:
+    """``is_exploration`` for an execution's request payload (the order dump with ``metadata``)."""
+
+    return isinstance(request, dict) and is_exploration(request.get("metadata"))
 
 
 def lifecycle_is_paper_only(lifecycle: Any) -> bool:

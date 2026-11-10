@@ -118,6 +118,8 @@ class PaperTradingService:
             synced = self.sync_broker_backed_positions()
         except Exception as exc:  # noqa: BLE001 - ledger mirroring must never wedge the refresh job
             self.logs.log("paper_broker_ledger_sync_failed", {"error": str(exc)})
+        from app.performance.leverage_sim import track_marks
+
         open_positions = self.positions.list(status="open", limit=500)
         closed = 0
         checked = 0
@@ -128,6 +130,7 @@ class PaperTradingService:
             position.current_price = current_price
             position.updated_at = utc_now().isoformat()
             position.unrealized_pnl_usd = round(self._pnl_usd(position, current_price), 2)
+            track_marks(position, current_price)  # the worst price of the hold, for the leverage sim
             # Broker-backed rows are only marked-to-market here: the bracket at the
             # broker owns the exit, and the sync above records it when it fills.
             outcome = None if is_broker_backed(position) else self._close_outcome(position, current_price)
@@ -413,6 +416,12 @@ class PaperTradingService:
                 "realized_r_multiple": self._realized_r_multiple(position, exit_price),
             },
         )
+        from app.performance.leverage_sim import SIM_FIELD, simulate_position_close
+
+        # Phase 1 (2026-11-10): the trade at 1x/2x/5x/10x, kept with it (display only, never raises).
+        simulated = simulate_position_close(position, exit_price=exit_price, pnl_usd=realized, closed_at=position.closed_at)
+        if simulated is not None:
+            trade.payload[SIM_FIELD] = simulated
         self.trades.create(trade)
         self.logs.log(
             "paper_position_closed",

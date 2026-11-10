@@ -68,6 +68,17 @@ def effective_execution_policy(settings: Any) -> dict[str, Any]:
         # Paper OOS bar (operator option B, 2026-10-21): paper-only entries on pooled OOS evidence
         # alone; off restores the old paper gate. Read as the gate reads it (absent = off).
         "paper_oos_bar_enabled": bool(_get("paper_oos_bar_enabled", False)),
+        # Paper exploration lane (Phase 1, 2026-11-10): paper-only entries refused only for their
+        # evidence, at their own risk and caps (app/workflow/exploration.py; absent = off).
+        "paper_exploration_lane_enabled": bool(_get("paper_exploration_lane_enabled", False)),
+        "paper_exploration_lane_risk_pct": float(_get("paper_exploration_lane_risk_pct", 0.0) or 0.0),
+        "paper_exploration_lane_max_open": int(_get("paper_exploration_lane_max_open", 0) or 0),
+        "paper_exploration_lane_max_new_per_day": int(
+            _get("paper_exploration_lane_max_new_per_day", 0) or 0
+        ),
+        "paper_exploration_lane_timeframes": [
+            str(tf) for tf in _get("paper_exploration_lane_timeframes", []) or []
+        ],
         "screener_batch_deadline_seconds": float(_get("screener_batch_deadline_seconds", 0.0) or 0.0),
         "market_universe_limit": int(_get("market_universe_limit", 0) or 0),
         "alpaca_data_feed": str(_get("alpaca_data_feed", "")),

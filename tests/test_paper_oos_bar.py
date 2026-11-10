@@ -233,7 +233,12 @@ def test_only_the_main_paper_gate_asks_for_the_paper_path() -> None:
                     "(paper=)" if any(k.arg == "paper" for k in node.keywords) else ""
                 )
                 callers.setdefault(kind, set()).add(path.relative_to(app.parent).as_posix())
-    assert callers["evidence_blocker(paper=)"] == {"app/automation/unattended.py"}
+    # The exploration lane (Phase 1, 2026-11-10) reads the same main-paper gate only to order the
+    # pass's candidates (app/workflow/exploration.py ``likely``); it never admits anything by it.
+    assert callers["evidence_blocker(paper=)"] == {
+        "app/automation/unattended.py",
+        "app/workflow/exploration.py",
+    }
     assert callers["paper_oos_only"] == {
         "app/workflow/paper_only.py",
         "app/workflow/swing_focus.py",

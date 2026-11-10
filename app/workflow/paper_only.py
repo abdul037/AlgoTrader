@@ -74,6 +74,12 @@ pass) gives a paper-only entry these rules:
    the strategy-name switches, the auto-approval bootstrap and the go-live and weekly-target
    readiness (app/performance/paper_only.py); its notices say it is not copied (``notice``).
 
+Exploration entries (operator Phase 1, 2026-11-10): the pass also owns the exploration lane
+(app/workflow/exploration.py: candidates the evidence gate refuses, admitted on its own caps and on
+rules 3 to 6 above, read from the same reads; the OOS-only cap of rule 5 does not count them, the
+lane has its own). They are ordered after the paper-only ones and tagged ``paper_only_reason:
+"exploration"``.
+
 With ``paper_oos_bar_enabled`` or ``require_strategy_oos_evidence`` off (or outside the main
 paper account) nothing is paper-only and the pass reads nothing: the gate reads the runtime
 state itself, exactly as before option B. A focused swing run's paper-only specs ride on its
@@ -106,6 +112,8 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.utils.time import utc_now
+from app.workflow.exploration import PREFIX as EXPLORATION_PREFIX
+from app.workflow.exploration import ExplorationLane
 
 LEAVE_FOR_ETORO = 2  # paper trades a day, and open-position room, a paper-only entry must leave
 LEAVE_IN_GROUP = 1  # entries in its correlation group that day a paper-only entry must leave
@@ -132,6 +140,7 @@ class PaperOnlyPass:
         self.created_count = 0  # every proposal the pass created (even if it then raised)
         self._reads: dict[str, Any] = {}
         self._paper_only_created = 0
+        self.exploration = ExplorationLane(self)  # Phase 1 (2026-11-10): app/workflow/exploration.py
 
     def enabled(self) -> bool:
         """Settings alone: whether anything can be paper-only on this account."""
@@ -154,7 +163,7 @@ class PaperOnlyPass:
         from app.performance.strategy_evidence import VERDICTS_KEY
 
         runtime_state = getattr(self.auto, "runtime_state", None)
-        if not self.enabled():
+        if not self.enabled() and not self.exploration.enabled():
             return runtime_state
         if "verdicts" not in self._reads:  # a failed read raises, as the gate's own read did
             self._reads["verdicts"] = runtime_state.get(VERDICTS_KEY)
@@ -181,12 +190,32 @@ class PaperOnlyPass:
         return paper_oos_only(self.auto.settings, verdict, timeframe)
 
     def order(self, candidates: list[Any]) -> list[Any]:
-        """The pass's candidates, every paper-only one after all the others, ranks kept; in a
-        paper-only pass, its paper-only candidates alone (by this pass's verdicts read)."""
+        """The pass's candidates, every paper-only one after all the others and every likely
+        exploration one after those, ranks kept; in a paper-only pass, its paper-only candidates
+        alone (by this pass's verdicts read)."""
 
         if self.only:
             return [candidate for candidate in candidates if self.is_paper_only(candidate)]
-        return sorted(candidates, key=self.is_paper_only)
+        return sorted(
+            candidates,
+            key=lambda c: 2 if self.exploration.likely(c) else int(self.is_paper_only(c)),
+        )
+
+    def exploration_blockers(self, candidate: Any, refused: list[str]) -> list[str] | None:
+        """The exploration lane's verdict on a candidate the evidence gate refused (``refused``:
+        its proposal blockers): None when the lane does not apply, else its own blockers
+        ([]: admitted, and tagged as an exploration entry)."""
+
+        return self.exploration.blockers(candidate, refused)
+
+    def risk_pct(self, candidate: Any) -> float | None:
+        """The risk per entry an exploration entry is sized at (% of equity), else None."""
+
+        from app.workflow.exploration import risk_pct
+
+        if self.exploration.admitted(candidate) is None:
+            return None
+        return risk_pct(self.auto.settings)
 
     def blockers(self, candidate: Any) -> list[str]:
         """Why a paper-only candidate must stand aside; [] for any other, and without a read
@@ -286,6 +315,8 @@ class PaperOnlyPass:
 
         from app.performance.paper_only import OOS_ONLY, PAPER_ONLY_FIELD, PAPER_ONLY_REASON_FIELD
 
+        if self.exploration.admitted(candidate) is not None:
+            return self.exploration.tags(candidate)
         if not self.is_paper_only(candidate):
             return {}
         return {PAPER_ONLY_FIELD: True, PAPER_ONLY_REASON_FIELD: OOS_ONLY}
@@ -293,6 +324,11 @@ class PaperOnlyPass:
     def notice(self, candidate: Any) -> list[str]:
         """The proposal notice's extra line for a paper-only candidate, else []."""
 
+        if self.exploration.admitted(candidate) is not None:
+            return [
+                "Paper-only exploration (not copied to eToro)",
+                "Automatic only: /approve is refused for it",
+            ]
         if not self.is_paper_only(candidate):
             return []
         return ["Paper-only (not copied to eToro)", "Automatic only: /approve is refused for it"]
@@ -300,9 +336,11 @@ class PaperOnlyPass:
     def log_blocked(self, candidate: Any, blockers: list[str]) -> bool:
         """Whether the loop logs this safety block: always for an entry that is not paper-only,
         and once a UTC day (in this process) per symbol, key and blockers for one that is: a
-        paper-only candidate refused for room comes back every scan."""
+        paper-only candidate refused for room comes back every scan (an exploration candidate
+        refused by the lane's own rules likewise)."""
 
-        if not self.is_paper_only(candidate):
+        lane = any(str(blocker).startswith(EXPLORATION_PREFIX) for blocker in blockers)
+        if not self.is_paper_only(candidate) and not lane:
             return True
         day = utc_now().date().isoformat()
         for other in [key for key in _LOGGED if key != day]:
@@ -324,7 +362,9 @@ class PaperOnlyPass:
         book again (by then the entry, if it was placed, is one of today's execution rows)."""
 
         self.created_count += 1
-        if self.is_paper_only(candidate):
+        if self.exploration.admitted(candidate) is not None:
+            self.exploration.created += 1
+        elif self.is_paper_only(candidate):
             self._paper_only_created += 1
         self._reads.pop("paper", None)
 
@@ -352,7 +392,7 @@ class PaperOnlyPass:
         ``entries_today_by_bucket`` counts them for paper's group check), today's entries not
         yet filled and which of those and the open positions are paper-only."""
 
-        from app.performance.paper_only import request_is_paper_only
+        from app.performance.paper_only import request_is_exploration, request_is_paper_only
         from app.risk.context import build_risk_context, entries_today_by_bucket
 
         broker = getattr(getattr(self.auto, "proposals", None), "broker", None)
@@ -374,11 +414,26 @@ class PaperOnlyPass:
             and str(execution.status or "").lower() in _UNFILLED
             and str(execution.created_at or "") >= since
         }
-        paper_only = {
+        # A held position whose entry is not among the rows read counts for both caps.
+        unknown = {symbol for symbol in held | unfilled if symbol not in latest}
+        exploration = unknown | {
             symbol
-            for symbol in held | unfilled
-            if symbol not in latest or request_is_paper_only(latest[symbol].request_payload)
+            for symbol in (held | unfilled) - unknown
+            if request_is_exploration(latest[symbol].request_payload)
         }
+        paper_only = unknown | {  # the OOS-only entries (rule 5's cap): exploration has its own
+            symbol
+            for symbol in (held | unfilled) - unknown - exploration
+            if request_is_paper_only(latest[symbol].request_payload)
+        }
+        new_york_day = _new_york_start_of_day().isoformat()
+        exploration_today = sum(  # the lane's daily cap: entries placed or filled this NY day
+            1
+            for execution in rows
+            if str(execution.created_at or "") >= new_york_day
+            and str(execution.status or "").lower() in _ENTRY_STATUSES
+            and request_is_exploration(execution.request_payload)
+        )
         return SimpleNamespace(
             trades=int(context.trades_today),
             by_bucket=by_bucket,
@@ -386,6 +441,8 @@ class PaperOnlyPass:
             held=held,
             unfilled=unfilled,
             paper_only=paper_only,
+            exploration=exploration,
+            exploration_today=exploration_today,
         )
 
 
@@ -402,12 +459,18 @@ def _headroom(settings: Any, day: tuple[int, dict[str, int]], symbol: str) -> st
     return None
 
 
-def _book_headroom(settings: Any, book: SimpleNamespace, symbol: str) -> str | None:
+def _book_headroom(
+    settings: Any, book: SimpleNamespace, symbol: str, *, lane: Any = None, cap: int | None = None
+) -> str | None:
+    """Rule 5 for ``symbol``; ``lane`` and ``cap`` name the positions cap to apply (the OOS-only
+    entries' ``MAX_OPEN_PAPER_ONLY`` by default; the exploration lane passes its own)."""
+
     from app.risk.rules import effective_max_risk_per_trade_pct
 
     if symbol in book.held or symbol in book.unfilled:
         return "paper_symbol_held"
-    if len(book.paper_only) >= MAX_OPEN_PAPER_ONLY:
+    lane = book.paper_only if lane is None else lane
+    if len(lane) >= (MAX_OPEN_PAPER_ONLY if cap is None else cap):
         return "positions_cap"
     after = book.open + len(book.unfilled) + 1 + LEAVE_FOR_ETORO
     if after > int(getattr(settings, "max_open_positions", 0) or 0):
@@ -504,3 +567,14 @@ def _bare(symbol: Any) -> str:
 
 def _start_of_day() -> Any:
     return utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _new_york_start_of_day() -> Any:
+    """Midnight of the current New York day, in UTC (execution rows are stamped in UTC)."""
+
+    from datetime import UTC
+
+    from app.workflow.exploration import NEW_YORK
+
+    now = utc_now().astimezone(NEW_YORK)
+    return now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)

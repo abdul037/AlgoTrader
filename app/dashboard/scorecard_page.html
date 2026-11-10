@@ -100,6 +100,7 @@ table.pl td.n, table.pl th.n { white-space: nowrap; }
 table.cc { min-width: 0; }
 table.cc .sub { font-size: 0.75rem; font-family: var(--font-data); font-variant-numeric: tabular-nums; margin-top: 3px; }
 table.cc .pill { white-space: nowrap; }
+table.lev td.n .sub { white-space: nowrap; }
 table.cc tr.can td:first-child { box-shadow: inset 3px 0 0 var(--gain); }
 table.pm { min-width: 0; }
 table.pm .sub { font-size: 0.75rem; }
@@ -208,6 +209,25 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
       </table>
     </div>
     <div class="muted small" id="paper-note"></div>
+  </section>
+
+  <section>
+    <h2>Paper exploration: each strategy at 1x, 2x, 5x and 10x</h2>
+    <div class="pm-sub">Practice money only. Since 10 Nov the paper account also takes small trades (0.25% of the account at risk) from strategies that have not passed their backtests, so each one builds a live record; eToro never copies them. Every closed paper trade is replayed with the same money at 2x, 5x and 10x: its result times the leverage, less eToro's overnight fee on the bigger position, and closed out with the whole stake lost if the price ever moved that far against it.</div>
+    <div class="notice" id="explore-summary" style="margin: 10px 0 12px;"><span class="muted">The exploration results appear once the bot has computed them (hourly).</span></div>
+    <div class="table-wrap">
+      <table class="cc lev">
+        <thead><tr><th>Exploration trades</th><th class="n">Closed</th><th class="n">1x</th><th class="n">2x</th><th class="n">5x</th><th class="n">10x</th></tr></thead>
+        <tbody id="explore"><tr><td colspan="6" class="muted">Strategies appear here after their first closed exploration trade.</td></tr></tbody>
+      </table>
+    </div>
+    <div class="table-wrap" style="margin-top: 12px;">
+      <table class="cc lev">
+        <thead><tr><th>Other paper trades</th><th class="n">Closed</th><th class="n">1x</th><th class="n">2x</th><th class="n">5x</th><th class="n">10x</th></tr></thead>
+        <tbody id="explore-others"><tr><td colspan="6" class="muted">The paper account's other closed trades, replayed the same way.</td></tr></tbody>
+      </table>
+    </div>
+    <div class="muted small" id="explore-note"></div>
   </section>
 
   <section>
@@ -411,6 +431,10 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     "'evaluated_runs', v->'evaluated_runs', 'symbols', jsonb_array_length(case when jsonb_typeof(v->'universe') = 'array' then v->'universe' else '[]'::jsonb end), 'specs', jsonb_array_length(case when jsonb_typeof(v->'specs') = 'array' then v->'specs' else '[]'::jsonb end), " +
     "'cursor', v->'cursor', 'signals', jsonb_array_length(case when jsonb_typeof(v->'signals') = 'array' then v->'signals' else '[]'::jsonb end), 'errors', jsonb_array_length(case when jsonb_typeof(v->'errors') = 'array' then v->'errors' else '[]'::jsonb end), " +
     "'items', v->'items', 'shadow_items', v->'shadow_items', 'paused_reason', v->'paused_reason', 'failed_symbols', v->'failed_symbols') from (select state_value::jsonb as v from runtime_state where state_key like 'premarket:watchlist:%' and state_value like '{%' order by state_key desc limit 1) w), " +
+    "'exploration', (select jsonb_build_object('computed_at', v->'computed_at', 'leverages', v->'leverages', 'proof_rule', v->'proof_rule', 'cost_basis', v->'cost_basis', " +
+    "'rows', v->'lanes'->'exploration', 'others', coalesce(v->'lanes'->'normal', '[]'::jsonb) || coalesce(v->'lanes'->'oos_only', '[]'::jsonb)) from (select case when state_value like '{%' and state_value not like '%NaN%' and state_value not like '%Infinity%' then state_value::jsonb end as v " +
+    "from runtime_state where state_key='paper_exploration:leaderboard') x where v is not null), " +
+    "'exploration_open', (select count(*) from paper_positions where status = 'open' and coalesce(payload_json, '') like '%\"paper_only_reason\": \"exploration\"%'), " +
     "'events', (select json_agg(e) from (select created_at, event_type, left(payload_json, 400) as payload from run_logs where event_type in ('etoro_live_mirror_submitted','etoro_live_scorecard_closed','etoro_live_backup_stop_closed','etoro_live_mirror_rejected','etoro_live_mirror_halted','etoro_live_test_order_closed','etoro_live_mirror_blocked') order by created_at desc limit 10) e)) as d;";
   const INPUT = { project_id: "lwnxmzonaxdrrkruxqiu", query: SQL };
 
@@ -1270,6 +1294,50 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     $("paper-note").textContent = "Paper-only = a trade taken on paper on weaker evidence to build a record; eToro never copies it. Retired = the rotation strategy, retired on 1 Nov: its open paper trades run to their stop or target.";
   }
 
+  // Paper exploration (Phase 1, 10 Nov): the bot's hourly leaderboard (app/performance/leverage_sim.py).
+  function renderExploration(d) {
+    const x = d.exploration, summary = $("explore-summary");
+    const leverages = (x && Array.isArray(x.leverages) && x.leverages.length) ? x.leverages : [1, 2, 5, 10];
+    const fill = (body, rows, proof, empty) => {
+      body.replaceChildren();
+      if (!rows.length) { body.append(el("tr", {}, el("td", { colspan: String(2 + leverages.length), class: "muted", text: empty }))); return; }
+      for (const row of rows) {
+        const cells = leverages.map((lev) => {
+          const s = (row.by_leverage || {})[String(lev)] || {};
+          const total = num(s.total_usd), meanR = num(s.mean_r), forced = num(s.forced_closes) || 0;
+          const won = `${s.win_rate == null ? "—" : Math.round(num(s.win_rate)) + "% won"}${forced ? ` · ${forced} wiped out` : ""}`;
+          return el("td", { class: "n" },
+            el("div", { class: "strong " + cls(total), text: signedMoney(total, 0) }),
+            el("div", { class: "sub muted", text: `${rFmt(meanR)} a trade` }),
+            el("div", { class: "sub muted", text: won }),
+            proof && s.meets_proof_rule ? pill("ok", "meets rule") : null);
+        });
+        const approx = num(row.approximate_trades) || 0;
+        body.append(el("tr", { class: proof && (row.proven_leverages || []).length ? "can" : "" },
+          el("td", {}, el("div", {}, el("strong", { text: words(row.strategy) })), el("div", { class: "muted sub", text: `${row.timeframe || "—"}${row.lane === "oos_only" ? " · paper-only" : ""}${approx ? ` · ${approx} approximate` : ""}` })),
+          el("td", { class: "n", text: String(num(row.trades) ?? 0) }),
+          ...cells));
+      }
+    };
+    if (!x) {
+      summary.replaceChildren(el("span", { class: "muted", text: "No exploration results yet: the bot computes them hourly from closed paper trades." }));
+      fill($("explore"), [], true, "Strategies appear here after their first closed exploration trade.");
+      fill($("explore-others"), [], false, "No other closed paper trades read yet.");
+      $("explore-note").textContent = "";
+      return;
+    }
+    const rows = Array.isArray(x.rows) ? x.rows : [], others = Array.isArray(x.others) ? x.others : [];
+    const rule = x.proof_rule || {}, cost = x.cost_basis || {};
+    const closed = rows.reduce((n, r) => n + (num(r.trades) || 0), 0), proven = rows.filter((r) => (r.proven_leverages || []).length);
+    summary.replaceChildren(el("span", {},
+      el("strong", { text: `Exploration positions open: ${num(d.exploration_open) ?? 0}. Closed: ${closed}, across ${rows.length} strategy and timeframe pairs. ` }),
+      proven.length ? `Meeting the provisional rule at some leverage: ${proven.length}.` : `None meets the provisional rule yet (${rule.min_closed_trades || 30} closed exploration trades with a positive total and a positive average R at that leverage).`,
+      ` Updated ${x.computed_at ? dubai(x.computed_at) : "—"}.`));
+    fill($("explore"), rows, true, "Strategies appear here after their first closed exploration trade.");
+    fill($("explore-others"), others, false, "No other closed paper trades read yet.");
+    $("explore-note").textContent = `Each cell: total result after costs, then the average R per trade, the win rate and how many trades a forced close would have wiped out. Overnight fee ${num(cost.financing_daily_pct) ?? 0.015}% a night on the leveraged amount (a Friday night counts ${num(cost.weekend_multiplier) ?? 3}), none at 1x. The worst price comes from the bot's minute-by-minute paper prices, so a quick dip between two readings can be missed; "approximate" counts trades without readings for the whole hold. The rule is provisional until you confirm it. Display only: nothing trades on this table.`;
+  }
+
   function renderClosed(d, trades) {
     const body = $("closedpl");
     body.replaceChildren();
@@ -1314,6 +1382,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     renderBenchmark(d, renderStrip(d, renderOpenPl(d, trades), copyable, closedTotals));
     renderStatus(d, copyable);
     renderPaper(d);
+    renderExploration(d);
     renderSkipped(d);
     renderSentiment(d);
     renderMood(d.panel);
