@@ -12,6 +12,35 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-11-10 (Tue) — connors / overnight_drift evidence in: both negative; bigger-moves study: nothing passes
+
+- **Sun 11-08 / Mon 11-09:** the weekly summary (06:17 UTC Sunday) and Monday's hourly trade
+  watches fired but were not answered: the agent's session restarted repeatedly. A check on 11-10
+  covering 11-08 to 11-10 found no copy, no paper entry or close, no eToro close, no SPY reserve
+  failure and no halt. The operator was told.
+- **Gate refresh 11-10 14:44 UTC, the first with the deep daily warm-up and the one-day hold:**
+  `connors_rsi2_reversion:1d` -0.0325 R on 361 OOS trades, `overnight_drift:1d` -0.0168 R on 1,101
+  (both holdouts negative). The fix works (they are measured now); neither has an edge. No daily
+  strategy passes; mean_reversion's +0.18 R is 6 trades.
+- **Why nothing passes (production OOS trades, per $100 risked):** the best strategies are only
+  +$1 to +$5 before costs; costs average ~$6.2 a trade (spread $2.43, eToro $1/leg $2.00,
+  financing $1.76). Without the financing a real 1x stock does not pay, every strategy is still
+  negative (best -$0.90). No change made.
+- **Operator: "yes please, start the research".** Bigger-moves study (research only, branch
+  `claude/wip-bigger-moves-study`, head `d285a95`, report `docs/research/bigger_moves_study.md`):
+  inside_bar, relative_strength_momentum, connors, overnight_drift and mean_reversion, each as is,
+  target x2 / x3, 10- and 20-bar time exits, weekly; point-in-time S&P 500 2011-2025, sealed
+  holdout to 2026-10-30, production costs. Pre-registered (`3521ecd`) before any result.
+  **0 of 29 pass.** Bigger targets raise R but random entries in the same stocks with the same
+  exits rise as much or more (connors x3 +0.187 R vs random +0.302 R); 24 of 29 trail random;
+  financing grows with the hold. mean_reversion on 2,720 trades: -0.079 R (holdout -0.29 R).
+  Signal and engine parity verified (0 mismatches). Nothing live changed.
+- Noted by the study, not changed: the 14-day test folds close 60-82% of daily trades at the
+  fold end, so long-hold variants cannot be measured as they would trade; `_with_warmup` leaves
+  out the embargo session between warm-up and test.
+- AlgoBot 11-10 19:38 UTC: $9,958.76 (SPY $4,201.99, DIS $1,097.33, PYPL $1,062.67, MSFT $996.77,
+  cash $2,600), -$41.24 since 4 Oct. No trade since SPY on 11-04.
+
 ## 2026-11-07 (Sat) — Thursday's drop, SPY kept; scorecard hosted by the bot; connors backtest fix
 
 - **Thu 11-05:** the S&P 500 fell about 4.4% (AI and chip selloff). AlgoBot lost about $290 that
