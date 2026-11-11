@@ -12,6 +12,27 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-11-11 (Wed) — 11-10 fixes verified; Phase 1 exploration lane deployed
+
+- **`f7f1ef3` live 11-10 21:06 UTC** (pushed 21:01, 297 s to serve): the 5 paper rows closed on
+  the first ledger sync with Monday's fills (ADBE -$419.98, COST +$192.55, DIS +$771.75, MSFT
+  +$97.08, PYPL +$812.95; outcome `broker_close`, closed_at 11-09 14:31-14:35 UTC). Since: no
+  scheduler timeout (4 `maintenance_step_deferred`), one eToro exit-copy read blip (23:43),
+  eToro positions unchanged (DIS, MSFT, PYPL, SPY). Daily safety check 11-11 04:41 UTC: quiet.
+- **Phase 1 (`63d5f29`, cherry-picked onto `f7f1ef3`):** `app/workflow/exploration.py` lets a
+  candidate refused ONLY by evidence blockers (`strategy_lacks_oos_evidence`,
+  `strategy_evidence_stale`; at execution `candidate_not_backtest_validated`,
+  `insufficient_strategy_closed_trade_evidence`) open a paper-only entry tagged
+  `paper_only_reason: exploration`: 0.25% risk at the stop, <= 8 open, <= 12 new a New York day,
+  1 proposal a pass, no intraday entry after 15:30 NY, timeframes 5m/10m/15m/1h/1d, equities;
+  every hard gate, health, demotion, retirement and governance still refuse. eToro refuses it
+  (logged `etoro_live_exploration_not_copied`); the paper record, verdicts, demotion and readiness
+  leave it out. `app/performance/leverage_sim.py` scores every closed paper trade at 1x/2x/5x/10x
+  (overnight financing on the leveraged notional, forced close at a 1/L adverse move from the
+  worst mark) and writes `paper_exploration:leaderboard` hourly with the provisional proof rule
+  (30 exploration trades, total $ > 0 and mean R > 0); the hosted scorecard shows it. Switch:
+  `paper_exploration_lane_enabled`.
+
 ## 2026-11-10 (Tue) — connors / overnight_drift evidence in: both negative; bigger-moves study: nothing passes
 
 - **Sun 11-08 / Mon 11-09:** the weekly summary (06:17 UTC Sunday) and Monday's hourly trade
