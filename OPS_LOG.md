@@ -37,6 +37,11 @@ without explicit operator sign-off recorded here.
   `exploration_deferred`) at the start of the next tick, after the pause check and before
   maintenance and the scans. Every gate runs again on that pass's reads; no cap, gate or bypass
   changed. Funnel: `exploration_deferred_kept`; failure: `exploration_deferred_failed`.
+- **Independent review of `fdb1df7`: no blockers; fixed in `dcdc5a0`:** the store kept a pass's
+  worst-ranked late candidates (now its first three, i.e. best-ranked); the offering pass now
+  takes only candidates its own verdicts read still makes exploration candidates, so one can
+  never become an eToro-copyable entry if a verdict changes within the 300 s; a tick whose
+  ledger cycle is due leaves them for the next tick.
 - Bot-side Supabase reads from background agents stall on approval prompts; use
   `/dashboard/data` and `/scorecard/data` for production reads.
 
