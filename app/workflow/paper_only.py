@@ -355,8 +355,8 @@ class PaperOnlyPass:
         if blockers == [f"{EXPLORATION_PREFIX}cadence_budget_spent"]:  # next tick, at its start
             from app.workflow.exploration_deferred import keep
 
-            keep(candidate, origin)
-            funnel["exploration_deferred_kept"] += 1
+            if keep(candidate, origin):
+                funnel["exploration_deferred_kept"] += 1
         if self.log_blocked(candidate, blockers):  # paper-only: once a day
             payload: dict[str, Any] = {"origin": origin, "symbol": symbol, "blockers": blockers}
             if not_ready:
