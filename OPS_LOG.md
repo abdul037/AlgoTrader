@@ -12,7 +12,7 @@ without explicit operator sign-off recorded here.
 
 ---
 
-## 2026-11-13 (Fri) — exploration volume: drop points found; why-skipped tracking
+## 2026-11-13 (Fri) — exploration volume: drop points found; why-skipped tracking; late entries kept
 
 - **Paper exploration so far:** NFLX 5m +$74.88 (11-11), GOOGL 15m -$24.14 (11-12), META 5m
   proposed 11-13 14:43 UTC and refused at execution by the intraday market-direction filter
@@ -29,6 +29,14 @@ without explicit operator sign-off recorded here.
   other_blockers, error_<type>); the safety-blocked log carries `not_ready` /
   `exploration_skipped` when set. No gate, cap or bypass changed. 2,001 tests pass. Read it
   from `/dashboard/data` -> `scan_funnel` (public GET; Supabase prompts stall agents).
+- **By 16:53 UTC 11-13:** 4 of 5 refusals were `exploration_lane_cadence_budget_spent`: the
+  scan core stops at tick start + 165 s and the lane wants 35 s before that, so after a full scan
+  it never has time; the 3 lane proposals since 11-11 all followed short scans.
+- **`fdb1df7` (paper only):** such a candidate is kept in memory (<= 3, <= 300 s, newest copy
+  per symbol/strategy/timeframe) and offered to one normal auto-propose pass (origin
+  `exploration_deferred`) at the start of the next tick, after the pause check and before
+  maintenance and the scans. Every gate runs again on that pass's reads; no cap, gate or bypass
+  changed. Funnel: `exploration_deferred_kept`; failure: `exploration_deferred_failed`.
 - Bot-side Supabase reads from background agents stall on approval prompts; use
   `/dashboard/data` and `/scorecard/data` for production reads.
 
