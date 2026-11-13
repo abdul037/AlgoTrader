@@ -21,6 +21,7 @@ from app.workflow.cadence_budget import (
     tick_budget,
 )
 from app.workflow.crypto_scan import crypto_bucket_enabled, crypto_scan_due, run_crypto_scan
+from app.workflow.exploration_deferred import run_deferred_exploration
 from app.workflow.open_shadow import run_open_shadow
 from app.workflow.operations import (
     candidate_with_ledger_outcome,
@@ -121,6 +122,7 @@ class SignalWorkflowService:
                     self._record_bucket_state(bucket_name, status="paused", error=",".join(blockers))
                 return summary
 
+        run_deferred_exploration(self)  # paper exploration a full scan left no time for (11-13)
         if self._bucket_due("maintenance"):
             result = self.run_maintenance(notify=True)
             if result.status == "ok":
@@ -132,9 +134,7 @@ class SignalWorkflowService:
         if not self.settings.screener_scheduler_enabled:
             return summary
 
-        # Budget-aware dispatch (app/workflow/cadence_budget.py): a bucket starts only if its
-        # pre-work, a useful scan and the post-scan reserve fit inside the job's wall-clock
-        # cap, and its scan then stops in time for that reserve (10-07..10-09 timeouts).
+        # Budget-aware dispatch: app/workflow/cadence_budget.py (the 10-07..10-09 timeouts).
         budget = CadenceBudget.for_tick(self.settings, started_at)
         deferred: list[str] = []
         for bucket_name in self.SCAN_BUCKETS:
