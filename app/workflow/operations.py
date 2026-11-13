@@ -894,13 +894,7 @@ def auto_propose_candidates(
         if service.auto_trading is not None:
             proposal_blockers = service.auto_trading.candidate_proposal_blockers(candidate, paper_only=paper_only)
             if proposal_blockers:
-                funnel["safety_blocked"] += 1
-                funnel.update(f"safety_blocked:{blocker}" for blocker in proposal_blockers)
-                if paper_only.log_blocked(candidate, proposal_blockers):  # paper-only: once a day
-                    service.run_logs.log(
-                        "auto_proposal_safety_blocked",
-                        {"origin": origin, "symbol": symbol, "blockers": proposal_blockers},
-                    )
+                paper_only.record_blocked(service, funnel, candidate, origin=origin, blockers=proposal_blockers)
                 continue
         drop_reason = candidate_propose_drop_reason(candidate)
         if drop_reason is not None:

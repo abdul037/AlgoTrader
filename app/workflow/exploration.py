@@ -133,6 +133,7 @@ class ExplorationLane:
         self.checks = 0  # candidate_blockers reads spent on the lane
         self._admitted: dict[int, tuple[Any, list[str]]] = {}  # id -> (candidate, bypassed)
         self._likely: dict[tuple[str, str], bool] = {}
+        self.skip: str | None = None  # why the lane stood aside for the last refusal it saw
 
     @property
     def settings(self) -> Any:
@@ -147,19 +148,26 @@ class ExplorationLane:
         """Rule 1 without the blockers: the lane on, an equity, a lane timeframe, and a candidate
         the auto-propose loop would not drop anyway."""
 
+        return self.ineligible(candidate) is None
+
+    def ineligible(self, candidate: Any) -> str | None:
+        """Why rule 1 (without the blockers) rules ``candidate`` out, else None."""
+
         from app.automation.reliability import candidate_propose_drop_reason
         from app.broker import crypto as crypto_symbols
 
         symbol = str(getattr(candidate, "symbol", "") or "").upper()
         timeframe = str(getattr(candidate, "timeframe", "") or "").lower()
-        return (
-            self.enabled()
-            and bool(symbol)
-            and bool(str(getattr(candidate, "strategy_name", "") or ""))
-            and not crypto_symbols.is_crypto_symbol(symbol)
-            and timeframe in lane_timeframes(self.settings)
-            and candidate_propose_drop_reason(candidate) is None
-        )
+        if not self.enabled():
+            return "lane_off"
+        if not symbol or not str(getattr(candidate, "strategy_name", "") or ""):
+            return "no_symbol_or_strategy"
+        if crypto_symbols.is_crypto_symbol(symbol):
+            return "crypto"
+        if timeframe not in lane_timeframes(self.settings):
+            return f"timeframe_{timeframe or 'none'}"
+        drop = candidate_propose_drop_reason(candidate)
+        return f"not_ready_{drop}" if drop else None
 
     def likely(self, candidate: Any) -> bool:
         """For the pass's order (rule 2): an eligible candidate the evidence gate refuses for a
@@ -185,10 +193,21 @@ class ExplorationLane:
     def blockers(self, candidate: Any, refused: list[str]) -> list[str] | None:
         """For a candidate the evidence gate refused (``refused``: every proposal blocker it met):
         None when the lane does not apply (the caller keeps ``refused``), else the lane's own
-        blockers, [] when admitted (then ``admitted`` names what it bypassed)."""
+        blockers, [] when admitted (then ``admitted`` names what it bypassed). When it returns
+        None, ``skip`` says why (observability only, 2026-11-13)."""
 
-        if not refused or not set(refused) <= PROPOSAL_BYPASS or not self.eligible(candidate):
+        self.skip = None
+        try:
+            if not refused or not set(refused) <= PROPOSAL_BYPASS:
+                self.skip = "other_blockers"
+            else:
+                self.skip = self.ineligible(candidate)
+            return None if self.skip else self._verdict(candidate, refused)
+        except Exception as exc:  # noqa: BLE001 - fails closed: the gate's own refusal stands
+            self.skip = f"error_{type(exc).__name__}"
             return None
+
+    def _verdict(self, candidate: Any, refused: list[str]) -> list[str]:
         reason = self._room(candidate)
         if reason:
             return [PREFIX + reason]

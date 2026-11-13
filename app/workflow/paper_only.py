@@ -333,6 +333,33 @@ class PaperOnlyPass:
             return []
         return ["Paper-only (not copied to eToro)", "Automatic only: /approve is refused for it"]
 
+    def record_blocked(
+        self, service: Any, funnel: Any, candidate: Any, *, origin: str, blockers: list[str]
+    ) -> None:
+        """Count (and log, per ``log_blocked``) a candidate the proposal gate refused. Observability
+        only (2026-11-13): ``not_ready`` names the readiness drop the loop would apply next, and
+        ``exploration_skipped`` why the exploration lane stood aside, so an evidence refusal of a
+        tradeable candidate is told apart from one the loop would have dropped anyway."""
+
+        from app.automation.reliability import candidate_propose_drop_reason
+
+        symbol = str(getattr(candidate, "symbol", "") or "").upper()
+        skipped, self.exploration.skip = self.exploration.skip, None
+        not_ready = candidate_propose_drop_reason(candidate)
+        funnel["safety_blocked"] += 1
+        funnel.update(f"safety_blocked:{blocker}" for blocker in blockers)
+        if not_ready:
+            funnel[f"safety_blocked_not_ready:{not_ready}"] += 1
+        if skipped:
+            funnel[f"exploration_lane_skipped:{skipped}"] += 1
+        if self.log_blocked(candidate, blockers):  # paper-only: once a day
+            payload: dict[str, Any] = {"origin": origin, "symbol": symbol, "blockers": blockers}
+            if not_ready:
+                payload["not_ready"] = not_ready
+            if skipped:
+                payload["exploration_skipped"] = skipped
+            service.run_logs.log("auto_proposal_safety_blocked", payload)
+
     def log_blocked(self, candidate: Any, blockers: list[str]) -> bool:
         """Whether the loop logs this safety block: always for an entry that is not paper-only,
         and once a UTC day (in this process) per symbol, key and blockers for one that is: a

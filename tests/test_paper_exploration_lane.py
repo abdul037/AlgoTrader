@@ -212,15 +212,21 @@ def test_a_candidate_refused_for_anything_else_keeps_its_refusal(tmp_path) -> No
 
 
 @pytest.mark.parametrize(
-    ("symbol", "timeframe", "ready"),
-    [("BTCUSD", "1d", True), ("UBER", "1m", True), ("UBER", "1w", True), ("UBER", "1d", False)],
+    ("symbol", "timeframe", "ready", "skip"),
+    [
+        ("BTCUSD", "1d", True, "crypto"),
+        ("UBER", "1m", True, "timeframe_1m"),
+        ("UBER", "1w", True, "timeframe_1w"),
+        ("UBER", "1d", False, "not_ready_not_execution_ready"),
+    ],
 )
-def test_outside_the_lane_the_evidence_refusal_stands(tmp_path, symbol, timeframe, ready) -> None:
+def test_outside_the_lane_the_evidence_refusal_stands(tmp_path, symbol, timeframe, ready, skip) -> None:
     auto, state = _lane(tmp_path, eto=_etoro())
     paper_pass = PaperOnlyPass(auto)
     candidate = _candidate(symbol, EXPLORE, timeframe=timeframe, ready=ready)
     assert _blockers(auto, candidate, paper_pass) == ["strategy_lacks_oos_evidence"]
     assert paper_pass.tags(candidate) == {}
+    assert paper_pass.exploration.skip == skip  # why, for the funnel (2026-11-13)
     assert state.many == [] and auto.executions.counts == []  # nothing else was read
 
 
@@ -951,6 +957,7 @@ def test_a_failing_lane_fails_closed_to_the_gate_s_own_refusal(tmp_path, monkeyp
     candidate = _candidate("UBER", EXPLORE)
     assert _blockers(auto, candidate, paper_pass) == ["strategy_lacks_oos_evidence"]
     assert paper_pass.tags(candidate) == {}
+    assert paper_pass.exploration.skip == "error_RuntimeError"  # counted in the funnel
 
 
 def test_the_lane_is_never_on_outside_paper_and_reads_nothing_when_off(tmp_path) -> None:
@@ -961,3 +968,58 @@ def test_the_lane_is_never_on_outside_paper_and_reads_nothing_when_off(tmp_path)
     assert paper_pass.exploration_blockers(candidate, ["strategy_lacks_oos_evidence"]) is None
     assert state.many == [] and auto.executions.counts == []
     assert not PaperOnlyPass(None).exploration.enabled()
+
+
+def test_a_refusal_the_lane_stood_aside_from_says_why(tmp_path) -> None:
+    """2026-11-13: 86 evidence-only refusals in two sessions, 2 exploration entries. The safety
+    check runs before the readiness drop, so the funnel and log now say whether a refused
+    candidate was tradeable at all and why the lane stood aside (observability only)."""
+
+    auto, _ = _lane(tmp_path)
+    workflow, proposals = _lane_workflow(tmp_path, auto)
+    watch = _scan_candidate("UBER", EXPLORE, 95.0).model_copy(
+        update={"metadata": {"alert_eligible": False, "timeframe": "1d"}}
+    )
+    off_lane = _scan_candidate("ADP", EXPLORE, 90.0).model_copy(
+        update={"timeframe": "30m", "metadata": {"alert_eligible": True, "timeframe": "30m"}}
+    )
+    response = _response(watch, off_lane)
+    assert auto_propose_candidates(workflow, response, origin="intraday_scan", notify=False) == 0
+    assert proposals.created == []
+    blocked = [p for e, p in workflow.run_logs.items if e == "auto_proposal_safety_blocked"]
+    refused = ["strategy_lacks_oos_evidence"]
+    assert blocked == [
+        {
+            "origin": "intraday_scan",
+            "symbol": "UBER",
+            "blockers": refused,
+            "not_ready": "not_alert_eligible",
+            "exploration_skipped": "not_ready_not_alert_eligible",
+        },
+        {
+            "origin": "intraday_scan",
+            "symbol": "ADP",
+            "blockers": refused,
+            "exploration_skipped": "timeframe_30m",
+        },
+    ]
+    funnel = [p for e, p in workflow.run_logs.items if e == "auto_propose_funnel"][0]
+    assert funnel["safety_blocked"] == 2
+    assert funnel["safety_blocked:strategy_lacks_oos_evidence"] == 2
+    assert funnel["safety_blocked_not_ready:not_alert_eligible"] == 1
+    assert funnel["exploration_lane_skipped:not_ready_not_alert_eligible"] == 1
+    assert funnel["exploration_lane_skipped:timeframe_30m"] == 1
+
+
+def test_the_lane_names_each_reason_it_stands_aside(tmp_path) -> None:
+    auto, _ = _lane(tmp_path)
+    lane = PaperOnlyPass(auto).exploration
+    candidate = _candidate("UBER", EXPLORE)
+    assert lane.blockers(candidate, ["strategy_lacks_oos_evidence", "x"]) is None
+    assert lane.skip == "other_blockers"
+    assert lane.blockers(candidate, []) is None and lane.skip == "other_blockers"
+    assert lane.ineligible(candidate) is None and lane.eligible(candidate)
+    assert lane.blockers(candidate, ["strategy_lacks_oos_evidence"]) is not None
+    assert lane.skip is None  # the lane applied: its own verdict, no skip
+    off, _ = _auto(tmp_path)  # the tests' default: lane off
+    assert PaperOnlyPass(off).exploration.ineligible(candidate) == "lane_off"
