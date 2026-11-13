@@ -12,6 +12,26 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-11-13 (Fri) — exploration volume: drop points found; why-skipped tracking
+
+- **Paper exploration so far:** NFLX 5m +$74.88 (11-11), GOOGL 15m -$24.14 (11-12), META 5m
+  proposed 11-13 14:43 UTC and refused at execution by the intraday market-direction filter
+  (`market_direction_down:QQQ:-0.66%`; kept: added after the 2026-09-28 down-day losses).
+- **86 evidence-only refusals on 11-11/12** (`auto_proposal_safety_blocked` with only
+  `strategy_lacks_oos_evidence`): the lane returned None for each, i.e. not eligible (a lane
+  timeframe, an equity, and not dropped by `candidate_propose_drop_reason`) or a swallowed error.
+  The safety check runs before the readiness drop, so those counts include candidates the loop
+  would have dropped anyway; the logs could not tell which.
+- **11-13 swing_scan:** 2 eligible candidates refused `exploration_lane_cadence_budget_spent`
+  (the lane needs `PROPOSAL_SECONDS` = 35 s before the tick's scan stop; scans run up to it).
+- **`5503006` (observability only):** the funnel now counts `safety_blocked_not_ready:<drop>`
+  and `exploration_lane_skipped:<why>` (lane_off, crypto, timeframe_<tf>, not_ready_<drop>,
+  other_blockers, error_<type>); the safety-blocked log carries `not_ready` /
+  `exploration_skipped` when set. No gate, cap or bypass changed. 2,001 tests pass. Read it
+  from `/dashboard/data` -> `scan_funnel` (public GET; Supabase prompts stall agents).
+- Bot-side Supabase reads from background agents stall on approval prompts; use
+  `/dashboard/data` and `/scorecard/data` for production reads.
+
 ## 2026-11-11 (Wed) — 11-10 fixes verified; Phase 1 exploration lane deployed
 
 - **`f7f1ef3` live 11-10 21:06 UTC** (pushed 21:01, 297 s to serve): the 5 paper rows closed on
