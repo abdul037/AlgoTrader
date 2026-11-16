@@ -40,7 +40,7 @@ def build_risk_context(settings: Any, broker: Any, executions_repo: Any) -> Risk
         )
 
     portfolio = broker.get_portfolio()
-    account_balance = max(portfolio.account.equity, portfolio.account.cash_balance, 1.0)
+    account_balance = account_risk_base(portfolio.account.equity, portfolio.account.cash_balance)
     # Broker position objects don't carry their protective stop (it lives on the
     # bracket legs), so exact entry->stop risk isn't recoverable here. Use a
     # conservative proxy: assume each open position still carries its full initial
@@ -94,6 +94,19 @@ def build_risk_context(settings: Any, broker: Any, executions_repo: Any) -> Risk
         open_trade_risks_usd=[per_position_risk_usd] * len(portfolio.positions),
         mode="paper" if settings.execution_mode == "paper" else settings.etoro_account_mode,
     )
+
+
+def account_risk_base(equity: Any, cash: Any) -> float:
+    """The account value every per-trade and portfolio cap is a share of.
+
+    Paper shorts (2026-11-16): a short's sale proceeds sit in cash, so a net-short book's cash is
+    above its equity and ``max(equity, cash)`` overstated the base. Equity when it is positive;
+    otherwise the old ``max(equity, cash, 1)``. A long-only book has equity >= cash (positions
+    are worth >= 0), so its base is exactly what it was.
+    """
+
+    equity, cash = float(equity or 0.0), float(cash or 0.0)
+    return max(equity, 1.0) if equity > 0 else max(equity, cash, 1.0)
 
 
 def recently_stopped_symbols(settings: Any, executions_repo: Any) -> list[str]:
