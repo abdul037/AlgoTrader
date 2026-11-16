@@ -94,11 +94,40 @@ def test_tech_names_also_check_qqq() -> None:
     assert data.asked == ["SPY", "QQQ"]
 
 
-def test_swing_entries_and_sells_are_exempt() -> None:
-    data = _Data({"SPY": FALLING})
+def test_swing_entries_are_exempt() -> None:
+    data = _Data({"SPY": FALLING, "QQQ": RISING})
     assert _check(data, timeframe="1d") == []
-    assert _check(data, side="sell") == []
+    assert _check(data, timeframe="1d", side="sell", symbol="NVDA") == []
     assert data.asked == []
+
+
+# Paper shorts (2026-11-16): the mirror image for a new intraday short.
+UP_BUT_FADING = _day(100.0, [102.0, 101.5, 100.8, 100.4])  # +0.4% but below VWAP
+
+
+def test_blocks_an_intraday_short_on_a_rising_market() -> None:
+    assert _check(_Data({"SPY": RISING}), side="sell") == ["market_direction_up:SPY:+0.80%"]
+
+
+def test_allows_a_short_on_a_falling_or_fading_market() -> None:
+    assert _check(_Data({"SPY": FALLING}), side="sell") == []
+    assert _check(_Data({"SPY": UP_BUT_FADING}), side="sell") == []
+
+
+def test_tech_shorts_also_check_qqq() -> None:
+    data = _Data({"SPY": FALLING, "QQQ": RISING})
+    assert _check(data, symbol="NVDA", side="sell") == ["market_direction_up:QQQ:+0.80%"]
+    assert data.asked == ["SPY", "QQQ"]
+
+
+def test_missing_data_never_blocks_a_short_and_a_buy_is_unchanged() -> None:
+    logs = _Logs()
+    assert _check(_Data({"SPY": RuntimeError("feed down")}), side="sell", logs=logs) == []
+    assert logs.events == ["market_direction_check_unavailable"]
+    for frame in (FALLING, RISING, DOWN_BUT_RECOVERING, UP_BUT_FADING):  # a buy: as before
+        expected = ["market_direction_down:SPY:-0.60%"] if frame is FALLING else []
+        assert _check(_Data({"SPY": frame})) == expected
+    assert _check(_Data({"SPY": RISING}), side="close") == []  # not an entry side
 
 
 def test_missing_or_stale_data_never_blocks() -> None:

@@ -10,6 +10,12 @@ the prior session's close.
 Daily/weekly (swing) entries are exempt: some of them buy dips on purpose.
 Missing or stale benchmark data never blocks (logged instead); the other risk
 gates still apply.
+
+Paper shorts (2026-11-16): the mirror image for a new intraday short (a SELL entry): blocked
+while the same benchmarks are both ABOVE today's session VWAP and UP at least
+``market_direction_min_drop_pct`` from the prior close (``market_direction_up:QQQ:+0.66%``).
+Daily/swing shorts are exempt and missing data never blocks, as for longs. A buy is checked
+exactly as before.
 """
 
 from __future__ import annotations
@@ -64,12 +70,14 @@ def market_direction_reasons(
     logs: Any | None = None,
     now: Any = None,
 ) -> list[str]:
-    """Blocker reasons for a new entry, or [] when the market is not falling."""
+    """Blocker reasons for a new entry, or [] when the market is not moving against it (falling
+    for a buy, rising for a short)."""
 
     min_drop = float(getattr(settings, "market_direction_min_drop_pct", 0.0) or 0.0)
+    side = str(side).lower()
     if (
         min_drop <= 0
-        or str(side).lower() != "buy"
+        or side not in {"buy", "sell"}
         or str(timeframe or "").lower() not in INTRADAY_TIMEFRAMES
     ):
         return []
@@ -93,6 +101,8 @@ def market_direction_reasons(
                     {"symbol": symbol, "benchmark": benchmark, "error": error},
                 )
             continue
-        if state["last"] < state["vwap"] and state["change_pct"] <= -min_drop:
+        if side == "buy" and state["last"] < state["vwap"] and state["change_pct"] <= -min_drop:
             reasons.append(f"market_direction_down:{benchmark}:{state['change_pct']:.2f}%")
+        if side == "sell" and state["last"] > state["vwap"] and state["change_pct"] >= min_drop:
+            reasons.append(f"market_direction_up:{benchmark}:{state['change_pct']:+.2f}%")
     return reasons
