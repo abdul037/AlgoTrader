@@ -114,3 +114,7 @@ counter-trend entries, narrow the allowed reasons or the gap. That applies to bo
   - a short with only the long's rows is not validated;
   - a short near-miss is promoted as its mirrored long is, and with the switch off it is
     blocked, as before.
+
+Full suite on `3d8e695`: 2132 passed, 5 skipped (Postgres-only), 0 failed (10 min 46 s); ruff
+clean on every changed Python file; architecture fitness green (service_scan.py still 999 lines,
+service.py 428, operations.py and workflow/service.py untouched).
