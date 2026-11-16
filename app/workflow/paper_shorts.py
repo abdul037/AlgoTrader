@@ -25,10 +25,13 @@ one. ``short_evidence_blocker`` judges it as the paper gate judges a long: admit
 Both: equities only; Alpaca's asset and account are read (once per symbol a pass) and a name that
 is not tradable, shortable, easy to borrow, marginable, with a maintenance margin, on an account
 with shorting on, is refused before any proposal (``short_*`` blockers; the risk gate checks the
-same facts again at proposal and at execution time). The evidence-family execution blockers
-judged on the LONG (``EXECUTION_BYPASS``: the screener's per-symbol long backtest and the tier-3
-count of closed long trades) say nothing about a short and are bypassed for one, recorded on the
-order (``SHORT_BYPASSED_FIELD``); every other execution blocker still refuses. Every short is
+same facts again at proposal and at execution time). The one evidence-family execution blocker
+judged on the LONG (``SHORT_EXECUTION_BYPASS``: the tier-3 count of closed long trades) says
+nothing about a short and is bypassed for a verdict short, recorded on the order
+(``SHORT_BYPASSED_FIELD``); every other execution blocker still refuses. Review 2026-11-16: since
+the screener reads a short's own ``<strategy>:short`` backtest rows, its per-symbol
+``candidate_not_backtest_validated`` speaks about the short and refuses it as it refuses the
+mirrored long. An exploration short is past the lane's ``EXECUTION_BYPASS``, as exploration longs. Every short is
 tagged paper-only with ``position_side: "short"`` and ``opens_short: true``, so the eToro live
 mirror refuses it twice over (``etoro_live_paper_only`` and ``etoro_live_short_not_enabled``).
 """
@@ -50,6 +53,8 @@ from app.risk.short_side import (
 )
 
 SHORT_BYPASSED_FIELD = "paper_short_bypassed"  # the long-evidence execution blockers a short bypassed
+# A verdict short's execution blockers judged on the long side only (review 2026-11-16).
+SHORT_EXECUTION_BYPASS = frozenset({"insufficient_strategy_closed_trade_evidence"})
 _UNREADABLE = object()
 
 
@@ -167,11 +172,9 @@ class ShortLane:
     def bypass(self, candidate: Any, reasons: list[str]) -> list[str]:
         """The execution blockers left once the long-evidence family is set aside (recorded)."""
 
-        from app.workflow.exploration import EXECUTION_BYPASS
-
-        bypassed = sorted(reason for reason in reasons if reason in EXECUTION_BYPASS)
+        bypassed = sorted(reason for reason in reasons if reason in SHORT_EXECUTION_BYPASS)
         self._bypassed[id(candidate)] = (candidate, bypassed)
-        return [reason for reason in reasons if reason not in EXECUTION_BYPASS]
+        return [reason for reason in reasons if reason not in SHORT_EXECUTION_BYPASS]
 
     def order_tags(self, candidate: Any) -> dict[str, Any]:
         """The short markers and Alpaca's facts for a short's proposal and order, else {}."""

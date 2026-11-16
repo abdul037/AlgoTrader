@@ -299,15 +299,18 @@ def test_unreadable_alpaca_facts_refuse_and_are_read_once_a_pass(tmp_path) -> No
 
 
 def test_the_long_evidence_execution_blockers_are_bypassed_for_a_short_and_no_others(tmp_path) -> None:
-    auto, _ = _shorts(tmp_path, auto_blockers=["candidate_not_backtest_validated", "insufficient_strategy_closed_trade_evidence"])
+    auto, _ = _shorts(tmp_path, auto_blockers=["insufficient_strategy_closed_trade_evidence"])
     paper_pass = PaperOnlyPass(auto)
     short = _short()
     assert _blockers(auto, short, paper_pass) == []
-    assert paper_pass.tags(short)[SHORT_BYPASSED_FIELD] == [
-        "candidate_not_backtest_validated",
-        "insufficient_strategy_closed_trade_evidence",
+    assert paper_pass.tags(short)[SHORT_BYPASSED_FIELD] == ["insufficient_strategy_closed_trade_evidence"]
+    # Review 2026-11-16: the per-symbol backtest is the short's own rows now; it refuses a short.
+    unvalidated, _ = _shorts(tmp_path / "unvalidated", auto_blockers=["candidate_not_backtest_validated"])
+    assert _blockers(unvalidated, _short()) == [
+        "paper_only_not_automatic",
+        "paper_only_auto_candidate_not_backtest_validated",
     ]
-    hours, _ = _shorts(tmp_path / "hours", auto_blockers=["outside_regular_market_hours", "candidate_not_backtest_validated"])
+    hours, _ = _shorts(tmp_path / "hours", auto_blockers=["outside_regular_market_hours", "insufficient_strategy_closed_trade_evidence"])
     assert _blockers(hours, _short()) == [
         "paper_only_not_automatic",
         "paper_only_auto_outside_regular_market_hours",
@@ -485,15 +488,19 @@ def test_the_real_unattended_checks_run_on_a_short_end_to_end(tmp_path) -> None:
     auto = unattended(tmp_path)
     reasons = auto.candidate_blockers(short)
     assert set(reasons) <= EXECUTION_BYPASS and "candidate_not_backtest_validated" in reasons
-    paper_pass = PaperOnlyPass(auto)
-    assert _blockers(auto, short, paper_pass) == []  # admitted: only the long-evidence family set aside
-    assert paper_pass.tags(short)[SHORT_BYPASSED_FIELD] == ["candidate_not_backtest_validated"]
+    # Review 2026-11-16: a short without its own validated per-symbol backtest is refused, as its
+    # mirrored long is; only the long-only closed-trade count is set aside for a verdict short.
+    assert _blockers(auto, short, PaperOnlyPass(auto)) == [
+        "paper_only_not_automatic",
+        "paper_only_auto_candidate_not_backtest_validated",
+    ]
     closed = unattended(tmp_path / "closed")
     closed.alpaca.is_regular_market_open = lambda: False
-    assert _blockers(closed, short) == [
+    assert set(_blockers(closed, short)) == {
         "paper_only_not_automatic",
         "paper_only_auto_outside_regular_market_hours",
-    ]
+        "paper_only_auto_candidate_not_backtest_validated",
+    }
     off = unattended(tmp_path / "off", paper_short_entries_enabled=False)
     assert {"short_entries_disabled", "proposal_quality_not_tradeable"} <= set(off.candidate_blockers(short))
 
@@ -508,7 +515,7 @@ def test_an_exploration_short_through_the_loop(tmp_path) -> None:
 
 
 def test_approve_enqueue_execute_sets_aside_only_the_long_evidence_family_for_a_short(tmp_path) -> None:
-    auto, _ = _shorts(tmp_path, auto_blockers=["candidate_not_backtest_validated"])
+    auto, _ = _shorts(tmp_path, auto_blockers=["insufficient_strategy_closed_trade_evidence"])
     calls = []
     auto.logs = SimpleNamespace(log=lambda *a, **k: None)
     auto.proposals = SimpleNamespace(approve_proposal=lambda pid, decision: calls.append(pid) or SimpleNamespace(id=pid, order=SimpleNamespace(metadata={})))
@@ -523,7 +530,13 @@ def test_approve_enqueue_execute_sets_aside_only_the_long_evidence_family_for_a_
     assert auto.approve_enqueue_execute(proposal, _short(), funnel=funnel) is not None and calls == ["p1"]
     plain = SimpleNamespace(id="p2", order=SimpleNamespace(symbol="TSLA", metadata={}))
     assert auto.approve_enqueue_execute(plain, _short(), funnel=funnel) is None  # not a tagged short
-    assert funnel["exec_blocked:candidate_not_backtest_validated"] == 1
+    assert funnel["exec_blocked:insufficient_strategy_closed_trade_evidence"] == 1
+    # Review 2026-11-16: a verdict short is not past the per-symbol backtest; an exploration short is.
+    auto.candidate_blockers = lambda candidate: ["candidate_not_backtest_validated"]
+    assert auto.approve_enqueue_execute(proposal, _short(), funnel=funnel) is None
+    explore_meta = {**short_meta, "paper_only_reason": "exploration"}
+    explore = SimpleNamespace(id="p3", order=SimpleNamespace(symbol="TSLA", metadata=explore_meta))
+    assert auto.approve_enqueue_execute(explore, _short(), funnel=funnel) is not None and calls == ["p1", "p3"]
 
 
 def test_a_short_without_a_strategy_name_is_refused_never_proposed_untagged(tmp_path) -> None:

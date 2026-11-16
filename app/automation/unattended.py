@@ -259,12 +259,16 @@ class PaperAutoTradingService:
 
         blockers = self.candidate_blockers(candidate)
         metadata = getattr(getattr(proposal, "order", None), "metadata", None)
-        # An exploration entry, and a paper short (2026-11-16: the long-evidence family says
-        # nothing about it), were admitted past these (app/workflow/paper_shorts.py).
-        if is_exploration(metadata) or (is_paper_only(metadata) and metadata_is_short(metadata)):
+        # An exploration entry (either side) was admitted past the lane's EXECUTION_BYPASS; a verdict
+        # paper short past the long-only SHORT_EXECUTION_BYPASS (app/workflow/paper_shorts.py).
+        if is_exploration(metadata):
             from app.workflow.exploration import EXECUTION_BYPASS  # what the lane admitted it past
 
             blockers = [blocker for blocker in blockers if blocker not in EXECUTION_BYPASS]
+        elif is_paper_only(metadata) and metadata_is_short(metadata):
+            from app.workflow.paper_shorts import SHORT_EXECUTION_BYPASS
+
+            blockers = [blocker for blocker in blockers if blocker not in SHORT_EXECUTION_BYPASS]
         if blockers:
             self.logs.log(
                 "paper_auto_candidate_blocked",
