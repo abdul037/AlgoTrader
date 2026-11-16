@@ -455,6 +455,47 @@ def test_a_scanned_short_becomes_a_tagged_sell_proposal_sized_from_its_stop(tmp_
     assert shares == pytest.approx(sizing["risk_budget_usd"] / (104.0 - 100.0))  # risk $ / (stop - entry)
     (funnel,) = [p for e, p in workflow.run_logs.items if e == "auto_propose_funnel"]
     assert funnel["proposals_created"] == 1 and "dropped:entry_short" not in funnel
+    (logged,) = [p for e, p in workflow.run_logs.items if e == "auto_proposal_created"]
+    assert logged["proposal_quality"] == STRICT_VALID  # review nit: not "not_tradeable"
+
+
+def test_the_real_unattended_checks_run_on_a_short_end_to_end(tmp_path) -> None:
+    """Review nit: the unattended path's own ``candidate_blockers`` (not stubbed) on a short."""
+
+    from app.workflow.exploration import EXECUTION_BYPASS
+
+    def unattended(path, **settings):
+        values = dict(
+            paper_auto_operation_mode="unattended", paper_auto_approve_proposals=True,
+            auto_execution_worker_enabled=True, alpaca_expected_account_number="PA1",
+            paper_auto_approval_tier="tier2_strict_valid", paper_auto_min_clean_supervised_lifecycles=0,
+            market_universe_symbols=["TSLA"], auto_execution_min_score=60.0, **settings,
+        )
+        auto, _ = _shorts(path, **values)
+        del auto.candidate_blockers  # the real PaperAutoTradingService.candidate_blockers
+        auto.automation = SimpleNamespace(execution_blockers=lambda: [])
+        auto.reconciliation = SimpleNamespace(account_verified=lambda: True)
+        auto.paper_trading = SimpleNamespace(lifecycles=lambda limit=1000: [])
+        auto.alpaca.is_regular_market_open = lambda: True
+        auto.alpaca.is_supported_equity = lambda symbol: True
+        return auto
+
+    short = _short()
+    short.score = 90.0
+    auto = unattended(tmp_path)
+    reasons = auto.candidate_blockers(short)
+    assert set(reasons) <= EXECUTION_BYPASS and "candidate_not_backtest_validated" in reasons
+    paper_pass = PaperOnlyPass(auto)
+    assert _blockers(auto, short, paper_pass) == []  # admitted: only the long-evidence family set aside
+    assert paper_pass.tags(short)[SHORT_BYPASSED_FIELD] == ["candidate_not_backtest_validated"]
+    closed = unattended(tmp_path / "closed")
+    closed.alpaca.is_regular_market_open = lambda: False
+    assert _blockers(closed, short) == [
+        "paper_only_not_automatic",
+        "paper_only_auto_outside_regular_market_hours",
+    ]
+    off = unattended(tmp_path / "off", paper_short_entries_enabled=False)
+    assert {"short_entries_disabled", "proposal_quality_not_tradeable"} <= set(off.candidate_blockers(short))
 
 
 def test_an_exploration_short_through_the_loop(tmp_path) -> None:

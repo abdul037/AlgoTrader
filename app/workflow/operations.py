@@ -920,7 +920,7 @@ def auto_propose_candidates(
                 amount_usd=amount_usd,
                 notes=notes,
             )
-            proposal_quality = proposal_quality_label(candidate)
+            proposal_quality = proposal_quality_label(candidate, allow_short=paper_only.shorts.applies(candidate))
             request.metadata = {
                 **dict(getattr(request, "metadata", {}) or {}),
                 **candidate_metadata,
