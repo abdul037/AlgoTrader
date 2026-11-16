@@ -179,5 +179,19 @@ marginable, no maintenance margin, account shorting disabled, or unreadable.
 
 ## 8. Tests
 
-See the test files named `tests/test_paper_shorts_*.py` and the results recorded in the final
-report.
+New: `tests/test_paper_shorts_etoro.py` (switch, short controls, "no short ever reaches the
+eToro mirror", including a bypassed gate), `tests/test_paper_shorts_execution.py` (Alpaca
+sell-to-open bracket, facts, coordinator), `tests/test_paper_shorts_lifecycle.py` (ledger,
+reconciliation, flatten, max hold, auto-recover, leverage sim, reports),
+`tests/test_paper_shorts_admission.py` (switch off = identical and nothing read, own verdict,
+paths a and b with every rule and cap, end-to-end SELL proposal sized from the stop).
+
+Existing tests changed on purpose: three mirror tests used a SELL incidentally (now a BUY, or the
+d2c7faf parity test checks that a SELL is refused as a short first); the paper-only report test
+expects the new `side` field; the steps 1-2 isolation fences list the two new readers
+(`app/workflow/paper_shorts.py`: the short verdicts only; `app/risk/short_side.py`: the cost
+model's ETB rate).
+
+Full suite on `ce0b27e`: 2097 passed, 5 skipped (Postgres-only), 0 failed (11 min 19 s);
+architecture fitness green (operations.py 989 lines, service.py untouched at 1039); ruff clean
+on every changed Python file.
