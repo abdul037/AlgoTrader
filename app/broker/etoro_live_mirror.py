@@ -48,6 +48,9 @@ Real money. The mirror only acts when ALL of these hold:
   below the entry;
 * the four 2026-10-18 rules above hold (planner, per-signal backtest, evidence streak,
   no chase);
+* the order does not open a short (shorts step 3, operator 2026-11-16: paper shorts exist, eToro
+  short CFDs are Phase B), refused as ``etoro_live_short_not_enabled`` before anything else is
+  read, tagged or not, and re-checked in ``mirror()`` before anything is sent;
 * the order is not tagged paper-only (operator option B, 2026-10-21: admitted on paper's
   OOS bar alone; app/performance/paper_only.py), refused as ``etoro_live_paper_only``;
 * the mirror is not halted.
@@ -149,6 +152,10 @@ COPY_RULE_REASONS = frozenset(  # none is a room reason: paper keeps its own roo
     }
 )
 PAPER_ONLY_REASON = "etoro_live_paper_only"  # a tagged paper-only order; not a room reason
+# Shorts step 3 (operator 2026-11-16): any order that opens a short, until Phase B ships; logged
+# under SHORT_NOT_COPIED_EVENT so paper shorts never crowd the scorecard's skipped list.
+SHORT_NOT_ENABLED_REASON = "etoro_live_short_not_enabled"
+SHORT_NOT_COPIED_EVENT = "etoro_live_short_not_copied"
 # Phase 1 (2026-11-10): an exploration entry (paper-only, app/workflow/exploration.py) is refused
 # exactly as above, but logged under its own name: it was never a copy candidate, and up to 12 a
 # day would crowd the copy rules' refusals out of the scorecard's lists.
@@ -409,6 +416,14 @@ class EtoroLiveMirrorService:
         if not bool(getattr(settings, "etoro_live_mirror_enabled", False)):
             return ["etoro_live_mirror_disabled"]
         from app.performance.paper_only import is_paper_only
+        from app.risk.short_side import order_opens_short, side_value
+
+        # Shorts step 3 (operator 2026-11-16): until Phase B (eToro short CFDs) ships, an order
+        # that opens a short is never copied, tagged paper-only or not, and nothing else is read.
+        # Not a room reason: room_verdict is None for it and paper's own room rules decide it.
+        if order_opens_short(getattr(proposal, "order", None)):
+            sell = side_value(getattr(proposal.order, "side", "")) == "sell"
+            return [SHORT_NOT_ENABLED_REASON, *(["mirror_long_only"] if sell else [])]
 
         # Option B (2026-10-21): an entry admitted on paper's OOS bar alone is never copied,
         # whatever the other checks would say, so they are not read. Not a room reason:
@@ -577,6 +592,10 @@ class EtoroLiveMirrorService:
             reasons = [f"etoro_live_gate_error:{exc}"]
         if reasons == ["etoro_live_mirror_disabled"]:
             return None
+        from app.risk.short_side import order_opens_short
+
+        if order_opens_short(proposal.order) and SHORT_NOT_ENABLED_REASON not in reasons:
+            reasons = [SHORT_NOT_ENABLED_REASON, *reasons]  # backstop: never a short, whatever
         symbol = proposal.order.symbol.upper()
         if reasons:
             from app.performance.paper_only import is_exploration
@@ -585,6 +604,8 @@ class EtoroLiveMirrorService:
             metadata = getattr(proposal.order, "metadata", None)
             if reasons == [PAPER_ONLY_REASON] and is_exploration(metadata):
                 event = EXPLORATION_NOT_COPIED_EVENT
+            elif SHORT_NOT_ENABLED_REASON in reasons:
+                event = SHORT_NOT_COPIED_EVENT
             self.logs.log(event, {"symbol": symbol, "proposal_id": proposal.id, "reasons": reasons})
             return None
         state = self._state()

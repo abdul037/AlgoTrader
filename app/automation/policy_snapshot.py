@@ -79,6 +79,9 @@ def effective_execution_policy(settings: Any) -> dict[str, Any]:
         "paper_exploration_lane_timeframes": [
             str(tf) for tf in _get("paper_exploration_lane_timeframes", []) or []
         ],
+        # Shorts step 3 (2026-11-16): paper short entries on Alpaca paper (absent = off; never
+        # copied to eToro). app/workflow/paper_shorts.py.
+        "paper_short_entries_enabled": bool(_get("paper_short_entries_enabled", False)),
         "screener_batch_deadline_seconds": float(_get("screener_batch_deadline_seconds", 0.0) or 0.0),
         "market_universe_limit": int(_get("market_universe_limit", 0) or 0),
         "alpaca_data_feed": str(_get("alpaca_data_feed", "")),

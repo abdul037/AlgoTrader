@@ -474,6 +474,13 @@ class AppSettings(BaseSettings):
     short_max_borrow_cost_annual_pct: float = 5.0
     short_require_easy_to_borrow: bool = True
     short_require_margin_requirement: bool = True
+    # Shorts step 3 (operator 2026-11-16): PAPER short entries on the Alpaca paper account. Off by
+    # default; effective only in paper mode with real trading off and Alpaca as the paper and
+    # equities broker. A short whose own short verdict admits it is a paper-only short; one refused
+    # only for its evidence may be a paper-only exploration short. Every short is tagged paper-only
+    # and the eToro live mirror refuses any short (etoro_live_short_not_enabled). Off = no change.
+    # See docs/notes/paper_shorts.md and app/workflow/paper_shorts.py.
+    paper_short_entries_enabled: bool = False
     kill_switch_enabled: bool = False
     automation_paused_default: bool = False
     auto_propose_enabled: bool = False

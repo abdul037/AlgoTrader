@@ -853,7 +853,9 @@ def test_the_etoro_live_mirror_never_submits_an_exploration_entry(tmp_path) -> N
     reads: list[str] = []
     get = mirror.state.get
     mirror.state.get = lambda key, *a: reads.append(key) or get(key, *a)
-    order = _order("JPM", side="sell", stop=None)  # would fail several other checks too
+    # Would fail several other checks too. A BUY: since shorts step 3 (2026-11-16) any SELL is
+    # refused first as a short (etoro_live_short_not_enabled; tests/test_paper_shorts_etoro.py).
+    order = _order("JPM", stop=None)
     order.metadata.update(EXPLORATION_TAGS)
     gate = SimpleNamespace(id=None, order=order, signal=None)
     assert mirror.blockers(gate, "etoro") == [PAPER_ONLY_REASON] and reads == []  # read nothing
