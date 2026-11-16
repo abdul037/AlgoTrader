@@ -26,8 +26,12 @@ def proposal_quality_label(
     signal_role: str | None = None,
     stop_loss: Any = None,
     take_profit: Any = None,
+    allow_short: bool = False,
 ) -> str:
-    """Classify proposal quality without making an ineligible trade eligible."""
+    """Classify proposal quality without making an ineligible trade eligible.
+
+    ``allow_short`` (paper shorts, 2026-11-16: the caller passes the paper switch) classifies a
+    bracketed short like a long instead of as not tradeable."""
 
     payload = dict(metadata or getattr(candidate, "metadata", {}) or {})
     ready = bool(getattr(candidate, "execution_ready", False)) if execution_ready is None else bool(execution_ready)
@@ -36,7 +40,8 @@ def proposal_quality_label(
     stop = stop_loss if stop_loss is not None else getattr(candidate, "stop_loss", None)
     target = take_profit if take_profit is not None else getattr(candidate, "take_profit", None)
     classification = str(payload.get("signal_classification") or payload.get("source") or "").lower()
-    if not ready or not eligible or role == "entry_short" or stop is None or target is None:
+    short_blocked = role == "entry_short" and not allow_short
+    if not ready or not eligible or short_blocked or stop is None or target is None:
         return NOT_TRADEABLE
     if classification == SUPERVISED_WEAK_VALID:
         return SUPERVISED_WEAK_VALID
@@ -45,7 +50,7 @@ def proposal_quality_label(
     return STRICT_VALID
 
 
-def candidate_propose_drop_reason(candidate: Any) -> str | None:
+def candidate_propose_drop_reason(candidate: Any, *, allow_short: bool = False) -> str | None:
     """Classify why a scan candidate is not eligible to become an auto-proposal.
 
     Pure, side-effect-free mirror of the pre-proposal ``continue`` checks in the
@@ -54,13 +59,16 @@ def candidate_propose_drop_reason(candidate: Any) -> str | None:
     funnel can attribute silent drops without duplicating the loop's logic, and
     so the mapping is unit-testable. It does NOT gate anything on its own — the
     caller still enforces every check — it only names the reason for diagnostics.
+
+    ``allow_short`` (paper shorts, 2026-11-16): the auto-propose pass passes the paper switch
+    (``PaperOnlyPass.drop_reason``), so with it off a short is dropped exactly as before.
     """
 
     if not bool(getattr(candidate, "execution_ready", False)):
         return "not_execution_ready"
     if not bool((getattr(candidate, "metadata", {}) or {}).get("alert_eligible", False)):
         return "not_alert_eligible"
-    if str(getattr(candidate, "signal_role", "") or "").lower() == "entry_short":
+    if str(getattr(candidate, "signal_role", "") or "").lower() == "entry_short" and not allow_short:
         return "entry_short"
     if getattr(candidate, "stop_loss", None) is None:
         return "missing_stop"
@@ -138,8 +146,10 @@ def auto_approval_tier_blockers(
 ) -> list[str]:
     """Policy blockers for paper auto-approval tiers."""
 
+    from app.risk.short_side import paper_shorts_enabled
+
     tier = str(getattr(settings, "paper_auto_approval_tier", AUTO_TIER_SUPERVISED_ONLY) or "").lower()
-    quality = proposal_quality_label(candidate)
+    quality = proposal_quality_label(candidate, allow_short=paper_shorts_enabled(settings))
     blockers: list[str] = []
     # PAPER-ONLY explicit opt-in: fully autonomous near-miss trading. When on,
     # the approval-tier POLICY and the clean-lifecycle bootstrap are bypassed for

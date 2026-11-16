@@ -60,9 +60,12 @@ class PaperAutoTradingService:
     def candidate_blockers(self, candidate: Any) -> list[str]:
         blockers = list(self.automation.execution_blockers())
         metadata = dict(getattr(candidate, "metadata", {}) or {})
+        from app.risk.short_side import is_short_candidate, paper_shorts_enabled
+
         symbol = str(getattr(candidate, "symbol", "") or "").upper()
         strategy = str(getattr(candidate, "strategy_name", "") or "")
-        quality = proposal_quality_label(candidate)
+        shorts = paper_shorts_enabled(self.settings)  # paper shorts (2026-11-16)
+        quality = proposal_quality_label(candidate, allow_short=shorts)
         paper_exploration = self._paper_exploration_strategy_approved(strategy)
         paper_near_miss = (
             paper_exploration
@@ -139,8 +142,10 @@ class PaperAutoTradingService:
             and not paper_exploration
         ):
             blockers.append("strategy_not_production_approved")
-        if str(getattr(candidate, "signal_role", "") or "").lower() == "entry_short":
+        if is_short_candidate(candidate) and not shorts:
             blockers.append("short_entries_disabled")
+        if is_short_candidate(candidate) and crypto_symbols.is_crypto_symbol(symbol):
+            blockers.append("short_equities_only")
         if getattr(candidate, "stop_loss", None) is None or getattr(candidate, "take_profit", None) is None:
             blockers.append("bracket_prices_missing")
         blockers.extend(
@@ -197,14 +202,19 @@ class PaperAutoTradingService:
             and not bool(getattr(self.settings, "enable_real_trading", False))
             and not crypto_symbols.is_crypto_symbol(symbol)
         )
-        evidence = evidence_blocker(
-            self.settings,
-            paper_only.state,  # the verdicts as the pass read them
-            strategy=strategy,
-            timeframe=getattr(candidate, "timeframe", None),
-            paper=paper,
-        )
-        if strategy and evidence:
+        shorts = getattr(paper_only, "shorts", None)  # paper shorts (2026-11-16): own verdict
+        short = shorts is not None and shorts.applies(candidate)
+        if short:
+            evidence = shorts.evidence(candidate)
+        else:
+            evidence = evidence_blocker(
+                self.settings,
+                paper_only.state,  # the verdicts as the pass read them
+                strategy=strategy,
+                timeframe=getattr(candidate, "timeframe", None),
+                paper=paper,
+            )
+        if (strategy or short) and evidence:  # a short without a verdict is refused, named or not
             blockers.append(evidence)
         elif strategy and not blockers:  # option B (2026-10-21): paper-only stands aside for eToro
             blockers.extend(paper_only.blockers(candidate))
@@ -244,10 +254,14 @@ class PaperAutoTradingService:
     def approve_enqueue_execute(
         self, proposal: Any, candidate: Any, *, funnel: Counter[str] | None = None
     ) -> Any | None:
-        from app.performance.paper_only import is_exploration
+        from app.performance.paper_only import is_exploration, is_paper_only
+        from app.risk.short_side import metadata_is_short
 
         blockers = self.candidate_blockers(candidate)
-        if is_exploration(getattr(getattr(proposal, "order", None), "metadata", None)):
+        metadata = getattr(getattr(proposal, "order", None), "metadata", None)
+        # An exploration entry, and a paper short (2026-11-16: the long-evidence family says
+        # nothing about it), were admitted past these (app/workflow/paper_shorts.py).
+        if is_exploration(metadata) or (is_paper_only(metadata) and metadata_is_short(metadata)):
             from app.workflow.exploration import EXECUTION_BYPASS  # what the lane admitted it past
 
             blockers = [blocker for blocker in blockers if blocker not in EXECUTION_BYPASS]

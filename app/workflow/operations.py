@@ -8,7 +8,7 @@ from collections import Counter
 from contextlib import suppress
 from typing import Any
 
-from app.automation.reliability import candidate_propose_drop_reason, proposal_quality_label
+from app.automation.reliability import proposal_quality_label
 from app.models.approval import ApprovalStatus
 from app.models.execution_queue import ExecutionQueueStatus
 from app.models.workflow import WorkflowTaskResponse
@@ -896,7 +896,7 @@ def auto_propose_candidates(
             if proposal_blockers:
                 paper_only.record_blocked(service, funnel, candidate, origin=origin, blockers=proposal_blockers)
                 continue
-        drop_reason = candidate_propose_drop_reason(candidate)
+        drop_reason = paper_only.drop_reason(candidate)  # a short only with the paper short switch
         if drop_reason is not None:
             funnel[f"dropped:{drop_reason}"] += 1
             continue

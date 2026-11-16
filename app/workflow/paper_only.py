@@ -114,6 +114,7 @@ from typing import Any
 from app.utils.time import utc_now
 from app.workflow.exploration import PREFIX as EXPLORATION_PREFIX
 from app.workflow.exploration import ExplorationLane
+from app.workflow.paper_shorts import ShortLane
 
 LEAVE_FOR_ETORO = 2  # paper trades a day, and open-position room, a paper-only entry must leave
 LEAVE_IN_GROUP = 1  # entries in its correlation group that day a paper-only entry must leave
@@ -141,6 +142,7 @@ class PaperOnlyPass:
         self._reads: dict[str, Any] = {}
         self._paper_only_created = 0
         self.exploration = ExplorationLane(self)  # Phase 1 (2026-11-10): app/workflow/exploration.py
+        self.shorts = ShortLane(self)  # shorts step 3 (2026-11-16): app/workflow/paper_shorts.py
 
     def enabled(self) -> bool:
         """Settings alone: whether anything can be paper-only on this account."""
@@ -175,6 +177,8 @@ class PaperOnlyPass:
         from app.broker import crypto as crypto_symbols
         from app.performance.strategy_evidence import VERDICTS_KEY, paper_oos_only
 
+        if self.shorts.applies(candidate):  # a short its own short verdict admits (path a)
+            return self.shorts.admitted(candidate)
         symbol = str(getattr(candidate, "symbol", "") or "").upper()
         if not self.enabled() or crypto_symbols.is_crypto_symbol(symbol):
             return False
@@ -209,21 +213,32 @@ class PaperOnlyPass:
         return self.exploration.blockers(candidate, refused)
 
     def risk_pct(self, candidate: Any) -> float | None:
-        """The risk per entry an exploration entry is sized at (% of equity), else None."""
+        """The risk per entry an exploration entry is sized at (% of equity); a short its verdict
+        admits at the risk gate's budget (always risk-sized: shares = risk / (stop - entry));
+        else None."""
 
         from app.workflow.exploration import risk_pct
 
-        if self.exploration.admitted(candidate) is None:
-            return None
-        return risk_pct(self.auto.settings)
+        if self.exploration.admitted(candidate) is not None:
+            return risk_pct(self.auto.settings)
+        if self.shorts.applies(candidate) and self.is_paper_only(candidate):
+            from app.risk.rules import sizing_risk_pct
+
+            return sizing_risk_pct(self.auto.settings, live=False)
+        return None
+
+    def drop_reason(self, candidate: Any) -> str | None:
+        """``candidate_propose_drop_reason``, a short allowed only with the paper short switch."""
+
+        from app.automation.reliability import candidate_propose_drop_reason
+
+        return candidate_propose_drop_reason(candidate, allow_short=self.shorts.enabled())
 
     def blockers(self, candidate: Any) -> list[str]:
         """Why a paper-only candidate must stand aside; [] for any other, and without a read
         for one the auto-propose loop drops next anyway (``candidate_propose_drop_reason``)."""
 
-        from app.automation.reliability import candidate_propose_drop_reason
-
-        if not self.is_paper_only(candidate) or candidate_propose_drop_reason(candidate):
+        if not self.is_paper_only(candidate) or self.drop_reason(candidate):
             return []
         if self._paper_only_created >= MAX_PER_PASS:
             return [PREFIX + "pass_limit"]
@@ -242,6 +257,10 @@ class PaperOnlyPass:
         reason = reason or _book_headroom(self.auto.settings, book, _bare(symbol))
         if reason:
             return [PREFIX + reason]
+        if self.shorts.applies(candidate):  # a short: Alpaca's borrow and margin facts
+            facts = self.shorts.fact_blockers(candidate)
+            if facts:
+                return [PREFIX + fact for fact in facts]
         return self._automatic(candidate)
 
     def room(self) -> str | None:
@@ -288,6 +307,8 @@ class PaperOnlyPass:
             reasons = list(self.auto.candidate_blockers(candidate))
         except Exception:  # noqa: BLE001 - unknown is refused
             reasons = ["candidate_blockers_unreadable"]
+        if self.shorts.applies(candidate):  # the long-evidence family says nothing about a short
+            reasons = self.shorts.bypass(candidate, reasons)
         if not reasons:
             return []
         return [PREFIX + "not_automatic", *(f"{PREFIX}auto_{reason}" for reason in reasons)]
@@ -319,18 +340,23 @@ class PaperOnlyPass:
             return self.exploration.tags(candidate)
         if not self.is_paper_only(candidate):
             return {}
+        if self.shorts.applies(candidate):
+            return self.shorts.tags(candidate)
         return {PAPER_ONLY_FIELD: True, PAPER_ONLY_REASON_FIELD: OOS_ONLY}
 
     def notice(self, candidate: Any) -> list[str]:
         """The proposal notice's extra line for a paper-only candidate, else []."""
 
+        short = self.shorts.applies(candidate)
         if self.exploration.admitted(candidate) is not None:
             return [
-                "Paper-only exploration (not copied to eToro)",
+                "Paper-only exploration" + (" SHORT (sell to open)" if short else "") + " (not copied to eToro)",
                 "Automatic only: /approve is refused for it",
             ]
         if not self.is_paper_only(candidate):
             return []
+        if short:
+            return ["Paper-only SHORT (sell to open; not copied to eToro)", "Automatic only: /approve is refused for it"]
         return ["Paper-only (not copied to eToro)", "Automatic only: /approve is refused for it"]
 
     def record_blocked(
@@ -341,11 +367,9 @@ class PaperOnlyPass:
         ``exploration_skipped`` why the exploration lane stood aside, so an evidence refusal of a
         tradeable candidate is told apart from one the loop would have dropped anyway."""
 
-        from app.automation.reliability import candidate_propose_drop_reason
-
         symbol = str(getattr(candidate, "symbol", "") or "").upper()
         skipped, self.exploration.skip = self.exploration.skip, None
-        not_ready = candidate_propose_drop_reason(candidate)
+        not_ready = self.drop_reason(candidate)
         funnel["safety_blocked"] += 1
         funnel.update(f"safety_blocked:{blocker}" for blocker in blockers)
         if not_ready:

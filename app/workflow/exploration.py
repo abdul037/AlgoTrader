@@ -132,7 +132,7 @@ class ExplorationLane:
         self.created = 0  # exploration proposals the pass created
         self.checks = 0  # candidate_blockers reads spent on the lane
         self._admitted: dict[int, tuple[Any, list[str]]] = {}  # id -> (candidate, bypassed)
-        self._likely: dict[tuple[str, str], bool] = {}
+        self._likely: dict[tuple[str, str, bool], bool] = {}
         self.skip: str | None = None  # why the lane stood aside for the last refusal it saw
 
     @property
@@ -153,7 +153,6 @@ class ExplorationLane:
     def ineligible(self, candidate: Any) -> str | None:
         """Why rule 1 (without the blockers) rules ``candidate`` out, else None."""
 
-        from app.automation.reliability import candidate_propose_drop_reason
         from app.broker import crypto as crypto_symbols
 
         symbol = str(getattr(candidate, "symbol", "") or "").upper()
@@ -166,7 +165,7 @@ class ExplorationLane:
             return "crypto"
         if timeframe not in lane_timeframes(self.settings):
             return f"timeframe_{timeframe or 'none'}"
-        drop = candidate_propose_drop_reason(candidate)
+        drop = self.paper.drop_reason(candidate)  # a short only with the paper short switch
         return f"not_ready_{drop}" if drop else None
 
     def likely(self, candidate: Any) -> bool:
@@ -179,11 +178,16 @@ class ExplorationLane:
 
         strategy = str(getattr(candidate, "strategy_name", "") or "")
         timeframe = str(getattr(candidate, "timeframe", "") or "").lower()
-        key = (strategy, timeframe)
+        short = self.paper.shorts.applies(candidate)  # paper shorts: its own short verdict
+        key = (strategy, timeframe, short)
         if key not in self._likely:
             try:
-                blocker = evidence_blocker(
-                    self.settings, self.paper.state, strategy=strategy, timeframe=timeframe, paper=True
+                blocker = (
+                    self.paper.shorts.evidence(candidate)
+                    if short
+                    else evidence_blocker(
+                        self.settings, self.paper.state, strategy=strategy, timeframe=timeframe, paper=True
+                    )
                 )
             except Exception:  # noqa: BLE001 - the gate itself refuses an unreadable state
                 blocker = None
@@ -211,6 +215,10 @@ class ExplorationLane:
         reason = self._room(candidate)
         if reason:
             return [PREFIX + reason]
+        if self.paper.shorts.applies(candidate):  # a short: Alpaca's borrow and margin facts
+            facts = self.paper.shorts.fact_blockers(candidate)
+            if facts:
+                return [PREFIX + fact for fact in facts]
         if self.checks >= CHECKS_PER_PASS:
             return [PREFIX + "check_limit"]
         self.checks += 1
@@ -284,7 +292,7 @@ class ExplorationLane:
         if not (getattr(candidate, "metadata", None) or {}).get("timeframe"):
             # The intraday flatten and the ledger read the order's timeframe from its metadata.
             tags["timeframe"] = str(getattr(candidate, "timeframe", "") or "").lower()
-        return tags
+        return {**tags, **self.paper.shorts.order_tags(candidate)}  # a short's markers and facts
 
 
 def _intraday(candidate: Any) -> bool:
