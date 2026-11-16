@@ -40,7 +40,11 @@ def build_risk_context(settings: Any, broker: Any, executions_repo: Any) -> Risk
         )
 
     portfolio = broker.get_portfolio()
-    account_balance = account_risk_base(portfolio.account.equity, portfolio.account.cash_balance)
+    account_balance = account_risk_base(
+        portfolio.account.equity,
+        portfolio.account.cash_balance,
+        holds_short=any(float(getattr(p, "quantity", 0.0) or 0.0) < 0 for p in portfolio.positions),
+    )
     # Broker position objects don't carry their protective stop (it lives on the
     # bracket legs), so exact entry->stop risk isn't recoverable here. Use a
     # conservative proxy: assume each open position still carries its full initial
@@ -96,17 +100,22 @@ def build_risk_context(settings: Any, broker: Any, executions_repo: Any) -> Risk
     )
 
 
-def account_risk_base(equity: Any, cash: Any) -> float:
+def account_risk_base(equity: Any, cash: Any, *, holds_short: bool = False) -> float:
     """The account value every per-trade and portfolio cap is a share of.
 
-    Paper shorts (2026-11-16): a short's sale proceeds sit in cash, so a net-short book's cash is
-    above its equity and ``max(equity, cash)`` overstated the base. Equity when it is positive;
-    otherwise the old ``max(equity, cash, 1)``. A long-only book has equity >= cash (positions
-    are worth >= 0), so its base is exactly what it was.
+    Paper shorts (2026-11-16): a short's sale proceeds sit in cash, so a book holding a short has
+    cash above its equity and ``max(equity, cash)`` overstated the base. While the book holds a
+    short (a position with a negative quantity), the base is its equity when that is positive.
+    Otherwise it is exactly the old ``max(equity, cash, 1)``: a book with no short, on any
+    broker, is untouched. (The eToro client reports equity as credit + unrealized P/L, which is
+    below its cash whenever the open P/L is negative, so "equity when positive" alone would have
+    changed the base on that path; review 2026-11-16.)
     """
 
     equity, cash = float(equity or 0.0), float(cash or 0.0)
-    return max(equity, 1.0) if equity > 0 else max(equity, cash, 1.0)
+    if holds_short and equity > 0:
+        return max(equity, 1.0)
+    return max(equity, cash, 1.0)
 
 
 def recently_stopped_symbols(settings: Any, executions_repo: Any) -> list[str]:

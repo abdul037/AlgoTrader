@@ -121,19 +121,24 @@ def test_a_net_short_book_is_sized_on_its_equity_not_its_short_proceeds(tmp_path
     # $100k equity, short $50k of AAPL: the sale's $50k proceeds sit in cash ($150k).
     short_book = _Book([("AAPL", -500.0)], equity=100_000.0, cash=150_000.0)
     assert build_risk_context(settings, short_book, _Executions()).account_balance == 100_000.0
-    assert account_risk_base(-5.0, 20.0) == 20.0 and account_risk_base(0.0, 0.0) == 1.0  # as before
+    assert account_risk_base(100_000.0, 150_000.0, holds_short=True) == 100_000.0
+    assert account_risk_base(-5.0, 20.0, holds_short=True) == 20.0  # as before
+    assert account_risk_base(0.0, 0.0, holds_short=True) == 1.0
 
 
 def test_a_long_only_book_s_risk_base_is_exactly_the_old_one(tmp_path) -> None:
     from app.risk.context import account_risk_base
 
     old = lambda equity, cash: max(equity, cash, 1.0)  # noqa: E731 - the pre-fix rule
-    for equity, cash in [(100_000.0, 100_000.0), (100_000.0, 40_000.0), (100_000.0, -20_000.0),
-                         (0.5, 0.2), (1.0, 0.0), (0.0, 0.0), (-10.0, -20.0), (250_000.0, 250_000.0)]:
-        assert equity >= cash  # a long-only book: its positions are worth >= 0
+    grid = [(100_000.0, 100_000.0), (100_000.0, 40_000.0), (100_000.0, -20_000.0), (0.5, 0.2),
+            (1.0, 0.0), (0.0, 0.0), (-10.0, -20.0), (250_000.0, 250_000.0),
+            (2_521.0, 2_600.0)]  # the eToro client: equity = credit + a negative open P/L
+    for equity, cash in grid:
         assert account_risk_base(equity, cash) == old(equity, cash), (equity, cash)
     long_book = _Book([("AAPL", 400.0), ("WMT", 100.0)], equity=100_000.0, cash=50_000.0)
     assert build_risk_context(_settings(tmp_path), long_book, _Executions()).account_balance == 100_000.0
+    etoro_like = _Book([("DIS", 9.2), ("SPY", 5.6)], equity=2_521.0, cash=2_600.0)
+    assert build_risk_context(_settings(tmp_path), etoro_like, _Executions()).account_balance == 2_600.0
 
 
 # --- 6. an unprotected position held by its live take-profit is flattened ---------------------
