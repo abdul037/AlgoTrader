@@ -217,6 +217,10 @@ expects the new `side` field; the steps 1-2 isolation fences list the two new re
 (`app/workflow/paper_shorts.py`: the short verdicts only; `app/risk/short_side.py`: the cost
 model's ETB rate).
 
+After the review fixes (section 8, `tests/test_paper_shorts_review.py` plus updates to the sector
+cap, market-direction and admission tests): full suite on `4206cdb`: 2114 passed, 5 skipped
+(Postgres-only), 0 failed (12 min 1 s); ruff clean on every changed Python file.
+
 Full suite on `ce0b27e`: 2097 passed, 5 skipped (Postgres-only), 0 failed (11 min 19 s);
 architecture fitness green (operations.py 989 lines, service.py untouched at 1039); ruff clean
 on every changed Python file.
