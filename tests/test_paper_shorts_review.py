@@ -111,8 +111,6 @@ def test_a_paper_short_must_be_an_equity_the_router_sends_to_alpaca(tmp_path) ->
     assert not routes_to_alpaca_equity(etoro, _short()) and not paper_short_order(etoro, _short())
 
 
-
-
 # --- 5. the risk base of a net-short book ------------------------------------------------------
 
 
@@ -136,3 +134,82 @@ def test_a_long_only_book_s_risk_base_is_exactly_the_old_one(tmp_path) -> None:
         assert account_risk_base(equity, cash) == old(equity, cash), (equity, cash)
     long_book = _Book([("AAPL", 400.0), ("WMT", 100.0)], equity=100_000.0, cash=50_000.0)
     assert build_risk_context(_settings(tmp_path), long_book, _Executions()).account_balance == 100_000.0
+
+
+# --- 6. an unprotected position held by its live take-profit is flattened ---------------------
+
+
+def _held_by_target(base, *, settles=True, legs=("new", "canceled"), **kw):
+    """``base`` (a long or a short Alpaca double) whose stop leg is gone and whose take-profit
+    leg is live: Alpaca refuses the close while that leg holds the shares."""
+
+    from tests.test_reconciliation_unprotected_positions import QTY_HELD_ERROR
+
+    class Broker(base):
+        def __init__(self):
+            super().__init__(leg_statuses=legs, **kw)
+            self.cancelled: list[str] = []
+
+        def cancel_order(self, order_id):
+            self.cancelled.append(order_id)
+            if settles and order_id == "leg-tp":
+                self.leg_statuses = ("canceled", self.leg_statuses[1])
+            return True
+
+        def close_position(self, symbol):
+            if self.leg_statuses[0] == "new":
+                raise RuntimeError(QTY_HELD_ERROR)
+            return super().close_position(symbol)
+
+    return Broker()
+
+
+def _bases():
+    from tests.test_paper_shorts_lifecycle import ShortBroker
+    from tests.test_reconciliation_unprotected_positions import BrokerWithDeadBracket
+
+    return {"long": (BrokerWithDeadBracket, "GOOGL"), "short": (ShortBroker, "TSLA")}
+
+
+def test_a_live_take_profit_no_longer_keeps_an_unprotected_position_open(tmp_path) -> None:
+    from tests.test_reconciliation_unprotected_positions import _events, _service
+
+    for side, (base, symbol) in _bases().items():
+        broker = _held_by_target(base)
+        service, automation, logs = _service(tmp_path / side, broker)
+        result = service.reconcile()
+        assert broker.cancelled == ["leg-tp"], side  # the take-profit only, never the stop
+        assert broker.closed == [symbol] and result["issues"] == [], side
+        events = _events(logs)
+        assert "unprotected_position_legs_cancelled" in events and "unprotected_position_flattened" in events
+        assert automation.status().kill_switch_enabled is False
+
+
+def test_a_cancel_that_has_not_settled_is_closed_on_the_next_sweep(tmp_path) -> None:
+    from tests.test_reconciliation_unprotected_positions import _events, _service
+
+    for side, (base, symbol) in _bases().items():
+        broker = _held_by_target(base, settles=False)
+        service, _, logs = _service(tmp_path / side, broker)
+        service.reconcile()
+        assert broker.cancelled == ["leg-tp"] and broker.closed == [], side
+        assert "unprotected_position_flatten_deferred" in _events(logs)
+        broker.leg_statuses = ("canceled", "canceled")  # Alpaca has cancelled it since
+        service.reconcile()
+        assert broker.cancelled == ["leg-tp"] and broker.closed == [symbol], side  # no new cancel
+
+
+def test_a_live_stop_is_never_cancelled_and_a_close_in_flight_is_left_alone(tmp_path) -> None:
+    from tests.test_reconciliation_unprotected_positions import BrokerWithDeadBracket, _service
+
+    for side, (base, _symbol) in _bases().items():
+        protected = _held_by_target(base, legs=("new", "held"))  # both legs live: protected
+        service, _, _ = _service(tmp_path / f"{side}-p", protected)
+        assert service.reconcile()["issues"] == []
+        assert protected.cancelled == [] and protected.closed == []
+    in_flight = {"broker_order_id": "close-pending", "symbol": "GOOGL", "side": "sell", "type": "market",
+                 "qty": 1.0, "status": "pending_new"}
+    closing = _held_by_target(BrokerWithDeadBracket, extra_orders=[in_flight])
+    service, _, _ = _service(tmp_path / "flight", closing)
+    assert service.reconcile()["issues"] == []
+    assert closing.cancelled == [] and closing.closed == []  # the genuine in-flight case: deferred

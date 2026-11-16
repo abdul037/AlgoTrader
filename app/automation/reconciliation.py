@@ -322,6 +322,10 @@ class AlpacaReconciliationService:
         # reducing order. Crypto has no native bracket, so its stop-limit sell is
         # what protects the position; a live one means "protected".
         live_protective_sides: dict[str, set[str]] = {}
+        # symbol -> the live non-stop legs (a take-profit limit) of its owned brackets: they hold
+        # the shares, so while the stop is gone Alpaca refuses the flatten ("insufficient qty")
+        # until they are cancelled (review 2026-11-16: such a position was deferred forever).
+        live_unprotecting_legs: dict[str, list[dict[str, Any]]] = {}
 
         for order in orders:
             payload = dict(order.response_payload or {})
@@ -346,6 +350,10 @@ class AlpacaReconciliationService:
             live_legs = [leg for leg in legs if _leg_is_live(leg) and "stop" in str(leg.get("type") or "").lower()]
             if execution is not None and payload.get("order_class") == "bracket" and live_legs:
                 protected_symbols.add(symbol)
+            if execution is not None:  # live legs that hold the shares but cap no loss
+                live_unprotecting_legs.setdefault(symbol, []).extend(
+                    leg for leg in legs if _leg_is_live(leg) and "stop" not in str(leg.get("type") or "").lower()
+                )
             if symbol and _leg_is_live(payload):
                 side = str(payload.get("side") or "").lower()
                 order_type = str(payload.get("order_type") or payload.get("type") or "").lower()
@@ -382,7 +390,12 @@ class AlpacaReconciliationService:
                         {"symbol": symbol, "quantity": float(getattr(position, "quantity", 0.0) or 0.0)},
                     )
                     continue
-                if symbol in owned_symbols and self._flatten_unprotected(symbol, position):
+                release = [
+                    leg
+                    for leg in live_unprotecting_legs.get(symbol, [])
+                    if str(leg.get("side") or "").lower() == closing_side
+                ]
+                if symbol in owned_symbols and self._flatten_unprotected(symbol, position, release=release):
                     continue
                 issues.append(f"missing_bracket_protection:{symbol}")
 
@@ -393,13 +406,22 @@ class AlpacaReconciliationService:
             "issues": sorted(set(issues)),
         }
 
-    def _flatten_unprotected(self, symbol: str, position: Any) -> bool:
+    def _flatten_unprotected(
+        self, symbol: str, position: Any, *, release: list[dict[str, Any]] | None = None
+    ) -> bool:
         """Close an owned position whose protective legs are gone (paper only).
 
         An unattended bot must never hold a position without a working stop.
         Rather than tripping the circuit breaker (which halts everything), close
         the bare position at market and record it; the ledger sync then books the
         exit from the broker fill. Returns True when the close was submitted.
+
+        ``release``: the position's live NON-stop bracket legs (a take-profit limit on its closing
+        side). They hold its shares, so Alpaca refused the close ("insufficient qty") and the
+        position was deferred every sweep with no stop at all (review 2026-11-16). They are
+        cancelled first; a stop leg is never in it (a live stop leg makes the position protected,
+        and it never reaches here). If the cancels have not settled, the close is deferred and the
+        next sweep, finding no live leg, closes it.
         """
 
         if not bool(getattr(self.settings, "reconciliation_flatten_unprotected_positions", True)):
@@ -414,6 +436,7 @@ class AlpacaReconciliationService:
 
         # Before closing: eToro live must not copy this as a strategy exit.
         mark_paper_safety_flatten(self.state, symbol=symbol, reason="unprotected_position")
+        self._release_legs(symbol, release or [])
         try:
             response = self.alpaca.close_position(symbol)
         except Exception as exc:  # noqa: BLE001 - broker SDK errors must surface as an issue, not crash reconciliation
@@ -446,6 +469,28 @@ class AlpacaReconciliationService:
             },
         )
         return True
+
+    def _release_legs(self, symbol: str, legs: list[dict[str, Any]]) -> None:
+        """Cancel an unprotected position's live non-stop legs (never a stop; never raises)."""
+
+        cancel = getattr(self.alpaca, "cancel_order", None)
+        targets = [
+            str(leg.get("broker_order_id") or "")
+            for leg in legs
+            if "stop" not in str(leg.get("type") or "").lower() and leg.get("broker_order_id")
+        ]
+        if not targets or not callable(cancel):
+            return
+        results: dict[str, Any] = {}
+        for order_id in targets:
+            try:
+                results[order_id] = bool(cancel(order_id))
+            except Exception as exc:  # noqa: BLE001 - the close below reports what is still held
+                results[order_id] = str(exc)[:200]
+        self.logs.log(
+            "unprotected_position_legs_cancelled",
+            {"symbol": symbol, "legs": results, "reason": "release_shares_for_flatten"},
+        )
 
     def _changed(self, key: str, fingerprint: str) -> bool:
         """True unless this exact state was already written. Callers record the fingerprint
