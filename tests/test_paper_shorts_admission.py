@@ -473,3 +473,17 @@ def test_a_short_without_a_strategy_name_is_refused_never_proposed_untagged(tmp_
     nameless = _short("TSLA", "")
     assert _blockers(auto, nameless, paper_pass) == ["strategy_lacks_oos_evidence"]
     assert paper_pass.tags(nameless) == {}
+
+
+def test_the_short_lane_reads_the_short_verdicts_and_never_the_shadow_data() -> None:
+    """The fences of steps 1-2 (tests/test_short_shadow.py, tests/test_backtest_short_research.py)
+    admit app/workflow/paper_shorts.py as a reader of the short VERDICTS only."""
+
+    from pathlib import Path
+
+    import app.workflow.paper_shorts as lane
+
+    text = Path(lane.__file__).read_text()
+    assert "SHORT_VERDICTS_KEY" in text
+    for token in ("short_signals", "shadow_ledger:short", "SHORT_LEDGER_KEY", "walk_forward_oos_short"):
+        assert token not in text, token

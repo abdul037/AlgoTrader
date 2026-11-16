@@ -329,6 +329,9 @@ def test_only_the_reporting_path_reads_the_short_verdicts() -> None:
         "app/performance/routes.py",
         "app/backtesting/short_research.py",
         "app/workflow/premarket_deep_scan.py",  # step 2: shadow only
+        # Step 3 (operator 2026-11-16): the evidence of PAPER shorts, read only behind
+        # paper_short_entries_enabled (tests/test_paper_shorts_admission.py).
+        "app/workflow/paper_shorts.py",
     }
     assert readers <= allowed and "app/performance/routes.py" in readers
 
@@ -369,6 +372,9 @@ def test_only_the_research_path_names_any_short_research_artefact() -> None:
         "app/backtesting/cost_model.py",  # the short-only cost legs
         "app/performance/strategy_evidence.py",  # the short verdicts
         "app/runtime_settings.py",  # its two settings
+        # Step 3 (operator 2026-11-16): a paper short's easy-to-borrow rate is the cost model's
+        # own ETB borrow fee (Alpaca publishes none); read only, never written.
+        "app/risk/short_side.py",
     }
     hits = {}
     for file, text in _sources([APP]):

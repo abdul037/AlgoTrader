@@ -8,7 +8,7 @@ gate in it. No new signal is made. Off: nothing here is read and every short is 
 as before. Design: docs/notes/paper_shorts.md.
 
 A short's evidence is its OWN short verdict (``SHORT_VERDICTS_KEY``, key
-``<strategy>:short:<timeframe>``, written by app/backtesting/short_research.py), never the long
+``<strategy>:short:<timeframe>``, written by the off-hours short research pass), never the long
 one. ``short_evidence_blocker`` judges it as the paper gate judges a long: admitted when it
 ``passed``, or when ``paper_oos_bar_enabled`` and its ``paper_oos_passed``; refused as
 ``strategy_lacks_oos_evidence`` (missing or failing) or ``strategy_evidence_stale`` (older than

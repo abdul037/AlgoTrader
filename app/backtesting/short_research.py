@@ -4,8 +4,9 @@ Six daily strategies emit bracketed ``entry_short`` SELLs (target < entry < stop
 long engine only ever treats as exits. This pass backtests them as shorts with
 ``EngineConfig(short_entries=True)``: the same walk-forward folds, sealed holdout, $10,000
 account, risk per trade and eToro cost model as the long 1d pass, so R is comparable.
-Nothing here trades: ``short_trading_enabled`` stays off, the eToro live mirror stays
-long-only, and no proposal, risk gate or sizing reads what it writes.
+Nothing here trades: ``short_trading_enabled`` stays off and the eToro live mirror refuses any
+short. Since shorts step 3 (operator 2026-11-16) the verdicts it writes are the evidence of PAPER
+short entries, read only behind ``paper_short_entries_enabled`` (app/workflow/paper_shorts.py).
 
 Kept out of the live long evidence:
 

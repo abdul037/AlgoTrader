@@ -559,6 +559,9 @@ def test_nothing_on_the_trading_path_reads_short_shadow_data() -> None:
         "performance/strategy_evidence.py",
         "performance/routes.py",
         "backtesting/short_research.py",
+        # Step 3 (operator 2026-11-16): the paper short lane reads the short VERDICTS (never the
+        # shadow signals or ledger), behind paper_short_entries_enabled.
+        "workflow/paper_shorts.py",
     }
     trading = ("broker/", "automation/", "risk/", "execution/", "approvals/", "screener/")
     trading += ("signals/", "paper/", "workflow/service.py", "workflow/operations.py")

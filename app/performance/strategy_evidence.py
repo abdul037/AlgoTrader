@@ -327,8 +327,9 @@ def _parse_time(value: Any) -> datetime | None:
 
 # Short research (app/backtesting/short_research.py): rows are named "<strategy>:short" and
 # end ":walk_forward_oos_short", so the long pattern never matches them. Their verdicts keep
-# the native "<strategy>:short:<tf>" keys under their own key. Research only: evidence_blocker,
-# VERDICTS_KEY and the trading path never read it; only the live-scorecard report does.
+# the native "<strategy>:short:<tf>" keys under their own key. evidence_blocker and VERDICTS_KEY
+# never read it; the live-scorecard report does, and since shorts step 3 (2026-11-16) the paper
+# short lane does, behind paper_short_entries_enabled (app/workflow/paper_shorts.py).
 SHORT_OOS_PATTERN = "%:walk_forward_oos_short"
 SHORT_VERDICTS_KEY = "strategy_evidence:short_verdicts"
 
