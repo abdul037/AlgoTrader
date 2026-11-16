@@ -26,7 +26,7 @@ from app.main import create_app
 from app.models.approval import ApprovalDecisionRequest, TradeProposalCreate
 from app.models.execution import ExecutionStatus
 from app.models.execution_queue import ExecutionQueueStatus
-from app.models.trade import TradeOrder
+from app.models.trade import AssetClass, TradeOrder
 from app.performance.paper_only import AUTO_REVIEWER
 from app.risk.short_side import BORROW_COST_SOURCE, short_asset_facts, short_fact_blockers
 from tests.conftest import MockBroker, make_settings
@@ -161,7 +161,7 @@ def test_borrow_and_margin_facts_come_from_alpaca() -> None:
 def _short_order(**metadata):
     return TradeOrder(
         symbol="NVDA", side="sell", amount_usd=10_000.0, proposed_price=120.0,
-        stop_loss=126.0, take_profit=108.0, strategy_name="trend_following",
+        stop_loss=126.0, take_profit=108.0, strategy_name="trend_following", asset_class=AssetClass.EQUITY,
         metadata={**PAPER_SHORT, "timeframe": "1d", **metadata},
     )
 
@@ -184,7 +184,8 @@ def test_the_short_bracket_rules_at_the_quote(tmp_path) -> None:
     untagged = SimpleNamespace(order=_short_order(paper_only=False))
     assert reasons(untagged, 120.0, 0.0, settings=settings) == ["long_entries_only"]
     crypto = SimpleNamespace(order=_short_order().model_copy(update={"symbol": "BTCUSD"}))
-    assert reasons(crypto, 120.0, 0.0, settings=settings) == ["short_equities_only"]
+    # A crypto SELL is not a paper short at all (review fix 3: equities routed to Alpaca only).
+    assert reasons(crypto, 120.0, 0.0, settings=settings) == ["long_entries_only"]
     assert bracket_kwargs(settings, proposal.order) == {"opens_short": True}
     assert bracket_kwargs(settings, untagged.order) == {} and bracket_kwargs(off, proposal.order) == {}
 

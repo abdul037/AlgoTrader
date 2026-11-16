@@ -68,6 +68,7 @@ def paper_short_order(settings: Any, order: Any) -> bool:
     paper-only and marked ``opens_short``. What the risk gate reads as "shorting switched on"
     for this one order; every other short control still applies."""
 
+    from app.broker import crypto as crypto_symbols
     from app.performance.paper_only import is_paper_only
 
     metadata = getattr(order, "metadata", None)
@@ -77,7 +78,17 @@ def paper_short_order(settings: Any, order: Any) -> bool:
         and is_paper_only(metadata)
         and isinstance(metadata, dict)
         and bool(metadata.get(OPENS_SHORT_FIELD))
+        and routes_to_alpaca_equity(settings, order)
+        and not crypto_symbols.is_crypto_symbol(str(getattr(order, "symbol", "") or ""))
     )
+
+
+def routes_to_alpaca_equity(settings: Any, order: Any) -> bool:
+    """The order is an equity the broker router sends to Alpaca: asset class ``equity`` (an
+    ``unknown`` one routes as a non-equity, to eToro by default) and Alpaca the equities broker."""
+
+    asset_class = side_value(getattr(order, "asset_class", ""))  # the enum's value, lower-cased
+    return asset_class == "equity" and str(getattr(settings, "broker_for_equities", "") or "") == "alpaca"
 
 
 def closing_side(entry_side: Any) -> str:

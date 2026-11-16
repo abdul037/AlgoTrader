@@ -5,6 +5,8 @@ Each fix only tightens or corrects what a short meets; every long path is shown 
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from app.models.execution import AccountSummary, PortfolioPosition, PortfolioSummary
 from app.models.trade import TradeOrder
 from app.risk.context import build_risk_context
@@ -87,5 +89,25 @@ def test_while_etoro_decides_the_room_the_cap_is_not_paper_s(tmp_path) -> None:
     context = build_risk_context(manager.settings, _Book([("AAPL", -10.0), ("CRM", -5.0)]), _Executions())
     reasons = manager.validate_order(_order("NVDA"), context, etoro_room=[]).reasons
     assert not [r for r in reasons if r.startswith("Open-position cap")]
+
+
+# --- 3. a paper short is an equity routed to Alpaca --------------------------------------------
+
+
+def test_a_paper_short_must_be_an_equity_the_router_sends_to_alpaca(tmp_path) -> None:
+    from app.models.trade import AssetClass
+    from app.risk.short_side import paper_short_order, routes_to_alpaca_equity
+    from app.risk.shorting import ShortTradePolicy
+    from tests.test_paper_shorts_etoro import ON, _short
+
+    on = make_settings(tmp_path, **ON)
+    assert paper_short_order(on, _short())
+    for asset_class in (AssetClass.UNKNOWN, AssetClass.GOLD, AssetClass.CRYPTO):  # unknown: eToro
+        order = _short().model_copy(update={"asset_class": asset_class})
+        assert not paper_short_order(on, order) and not routes_to_alpaca_equity(on, order)
+        assert ShortTradePolicy(on).blockers(order, account_equity_usd=1e5) == ["short_trading_disabled"]
+    assert not paper_short_order(on, _short(symbol="BTCUSD"))
+    etoro = SimpleNamespace(**{**ON, "broker_for_equities": "etoro"})
+    assert not routes_to_alpaca_equity(etoro, _short()) and not paper_short_order(etoro, _short())
 
 

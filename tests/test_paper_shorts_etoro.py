@@ -24,7 +24,7 @@ from app.broker.etoro_live_mirror import (
     SHORT_NOT_ENABLED_REASON,
 )
 from app.broker.etoro_live_room import room_verdict
-from app.models.trade import OrderSide, TradeOrder
+from app.models.trade import AssetClass, OrderSide, TradeOrder
 from app.risk.guardrails import RiskContext, RiskManager
 from app.risk.short_side import (
     closing_side,
@@ -68,6 +68,7 @@ def _short(metadata=None, *, side=OrderSide.SELL, symbol="NVDA"):
         proposed_price=100.0,
         stop_loss=104.0,
         take_profit=92.0,
+        asset_class=AssetClass.EQUITY,  # what the proposal service resolves for a stock
         metadata=dict(PAPER_SHORT if metadata is None else metadata),
     )
 
