@@ -1,4 +1,4 @@
-"""Shorts step 3, review fixes of fa9b7d3 (docs/notes/paper_shorts.md, section 9).
+"""Shorts step 3, review fixes of fa9b7d3 (docs/notes/paper_shorts.md, section 8).
 
 Each fix only tightens or corrects what a short meets; every long path is shown unchanged.
 """
@@ -213,3 +213,18 @@ def test_a_live_stop_is_never_cancelled_and_a_close_in_flight_is_left_alone(tmp_
     service, _, _ = _service(tmp_path / "flight", closing)
     assert service.reconcile()["issues"] == []
     assert closing.cancelled == [] and closing.closed == []  # the genuine in-flight case: deferred
+
+
+# --- 7. a paper short gets no learning label ---------------------------------------------------
+
+
+def test_a_closed_paper_short_gets_no_learning_label_and_a_long_still_does() -> None:
+    from app.learning.service import LearningService
+    from tests.test_paper_shorts_lifecycle import _short_execution
+
+    short = _short_execution(stop_status="filled", stop_fill=206.5, target_status="canceled")
+    assert LearningService._closed(short) is False  # its filled exit leg is a BUY: no label
+    long = SimpleNamespace(
+        response_payload={"broker_execution": {"legs": [{"status": "filled", "side": "sell"}]}}
+    )
+    assert LearningService._closed(long) is True

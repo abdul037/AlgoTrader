@@ -653,6 +653,13 @@ class LearningService:
 
     @staticmethod
     def _closed(execution: Any) -> bool:
+        """A long closed by a filled SELL bracket leg: it gets a real outcome label.
+
+        Deliberately SELL legs only (paper shorts, 2026-11-16): a paper short closes on a BUY leg,
+        so it never gets a label and stays out of the meta-model, which can lower or veto the
+        score of eToro-eligible LONG candidates. Do not widen this to the closing side without
+        the operator's decision (docs/notes/paper_shorts.md)."""
+
         broker = dict((execution.response_payload or {}).get("broker_execution") or {})
         return any(
             str(leg.get("status") or "").lower() == "filled"

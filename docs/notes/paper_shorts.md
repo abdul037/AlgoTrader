@@ -87,7 +87,10 @@ marginable, no maintenance margin, account shorting disabled, or unreadable.
 * `ShortTradePolicy` passes on real Alpaca asset data, written into the order metadata at
   proposal time and RE-READ by the coordinator just before the risk check:
   `shortable`, `easy_to_borrow`, `marginable`, `margin_requirement_pct` =
-  Alpaca's `maintenance_margin_requirement`, account `shorting_enabled`.
+  Alpaca's `maintenance_margin_requirement`, account `shorting_enabled`. Alpaca marks
+  `maintenance_margin_requirement` as deprecated: if it goes missing (None or 0), every short
+  fails safe (`short_margin_requirement_missing` at the risk gate, `*_short_margin_requirement_missing`
+  in the pass), so no short opens until another margin field is read in its place.
 * Borrow cost: Alpaca's asset API publishes no borrow rate (`borrow_cost_available: false`) and
   Alpaca only opens shorts in easy-to-borrow names. An ETB name is given the repo's own ETB
   general-collateral assumption, 0.30 %/year (`CostModel.alpaca_equities().short_borrow_fee_daily_pct
@@ -135,13 +138,16 @@ marginable, no maintenance margin, account shorting disabled, or unreadable.
 | `leverage_sim` | 1x pays no financing, no forced close at 1x | a short (an eToro CFD) pays overnight at 1x and is force-closed at a 100 % adverse move |
 | leverage leaderboard / `paper_only_report` | rows keyed by strategy:tf | shorts keyed `<strategy>:short:<tf>` with `side`; verdict shorts in their own `short` lane |
 | scorecard page | no side | `side` in paper rows; "short" shown |
-| `guardrails` sector cap | `is_buy` only | listed: a new short is not sector-capped; open shorts do count against a new long (conservative) |
-| `market_direction_reasons` | buy only | listed: no "rising market" filter for intraday shorts (open question) |
+| `guardrails` sector cap | `is_buy` only | review fix 1: a new short meets the cap; open shorts count toward the sector's open positions with longs |
+| `market_direction_reasons` | buy only | review fix 2: the mirror image for an intraday short (`market_direction_up:QQQ:+0.66%`) |
+| `risk/context` account base | max(equity, cash) | review fix 5: equity when positive (a short's proceeds sit in cash); identical for a long-only book |
+| reconciliation `_flatten_unprotected` | "insufficient qty" = protected | review fix 6: a live take-profit leg holding the shares is cancelled first (never a stop); long and short |
 | eToro exit copy | follows paper by symbol | a short never opens on an eToro-held symbol (rule 3 + coordinator re-check) and paper holds one position a symbol |
 | self-simulated paper broker | - | already side-aware; not used (switch needs Alpaca) |
 | coordinator plain market order / simulated fallback | a SELL could go out without a stop or become a simulated position | a short is never sent without its bracket (`short_requires_bracket_order`) and never falls back to a simulated short |
 | `performance/routes._r_multiple` (weekly readiness) | SELL stop legs, entry - stop | closing-side stop legs; |stop - entry| (shorts are paper-only, so left out there anyway) |
-| `learning/service.generate_counterfactuals` | low <= stop / high >= target, (exit - entry) / (entry - stop) | LISTED, not changed: it labels REFUSED scan decisions; short setups have always been refused and labelled with long rules (pre-existing; changing it would change behaviour with the switch off). Follow-up: mirror the rules for `entry_short`. Real labels use the signed realized P/L, so a paper short's own label is right |
+| `learning/service._closed` (real labels) | a filled SELL leg closes a trade | DELIBERATE, kept: a paper short closes on a BUY leg, so it gets NO real learning label and stays out of the meta-model, which can lower or veto eToro-eligible LONG candidates (docstring and test say so). Opening it is an operator decision |
+| `learning/service.generate_counterfactuals` | low <= stop / high >= target, (exit - entry) / (entry - stop) | LISTED, not changed: it labels REFUSED scan decisions; short setups have always been refused and labelled with long rules (pre-existing; changing it would change behaviour with the switch off). Follow-up: mirror the rules for `entry_short`, or leave short setups out |
 | `sentiment_shadow` / `sentiment_now` | records BUY positions only | listed: paper shorts get no sentiment record (record-only feature) |
 | scorecard page R of eToro-skipped rows | entry > stop | listed: shorts are logged under their own event and never appear in that list |
 | screener / approval adapter | a SELL whose role is not `entry_short` becomes a BUY proposal | listed (pre-existing): such signals (exits, watches) carry no bracket and are dropped as `missing_stop` |
@@ -172,12 +178,31 @@ marginable, no maintenance margin, account shorting disabled, or unreadable.
    30 closed LONG trades for tier 3). Keep, or require a per-symbol short check?
 3. Negative live evidence of the strategy's LONGS (`strategy_inactive`, tier-3 expectancy) also
    refuses its shorts. Keep (conservative) or judge shorts on their own record?
-4. Intraday shorts have no market-direction filter (longs are blocked while SPY falls). Add the
-   mirror image (no intraday shorts while SPY is above VWAP and up >= 0.3 %)?
-5. The sector cap ignores a new short. Count shorts per sector separately?
+4. (Done in review: intraday shorts meet the mirrored market-direction filter.)
+5. (Done in review: shorts count toward the sector cap with longs.) Count them separately?
 6. Borrow cost: 0.30 %/yr ETB assumption (not 0). OK?
+7. Paper shorts get no learning label (deliberate). Give them one, or a short-only model?
+8. Fix or drop the counterfactual labels of refused short setups (long rules today)?
 
-## 8. Tests
+## 8. Review fixes of fa9b7d3 (2026-11-16)
+
+Two reviews found no blocker; these only tighten or correct what a short meets, and every long
+path is shown unchanged by a test (`tests/test_paper_shorts_review.py`):
+
+1. Sector cap: a new short meets the open-positions-per-sector cap; open shorts count with longs.
+2. Mirrored intraday market-direction filter for a short (SPY, plus QQQ for tech; swing exempt;
+   missing data never blocks).
+3. `paper_short_order` also needs asset class `equity` routed to Alpaca and a non-crypto symbol.
+4. `PaperOnlyPass.drop_reason` lets a short through only where the short lane judges it, so a
+   crypto short is dropped as `entry_short` (it used to fail at the risk gate every scan).
+5. The risk base is equity when positive (a net-short book's cash holds its sale proceeds).
+6. An unprotected position whose take-profit leg still holds its shares is flattened (the leg is
+   cancelled first; a stop never is); the genuine in-flight close is still deferred.
+7. Learning: shorts deliberately get no label (documented in code, tested).
+8. Nits: the `auto_proposal_created` log's quality reads `allow_short`; an end-to-end admission
+   test runs the real unattended `candidate_blockers` on a short; the deprecation note above.
+
+## 9. Tests
 
 New: `tests/test_paper_shorts_etoro.py` (switch, short controls, "no short ever reaches the
 eToro mirror", including a bypassed gate), `tests/test_paper_shorts_execution.py` (Alpaca
