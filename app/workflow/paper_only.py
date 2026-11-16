@@ -74,6 +74,12 @@ pass) gives a paper-only entry these rules:
    the strategy-name switches, the auto-approval bootstrap and the go-live and weekly-target
    readiness (app/performance/paper_only.py); its notices say it is not copied (``notice``).
 
+Paper shorts (shorts step 3, operator 2026-11-16; app/workflow/paper_shorts.py): the pass also
+owns the short lane (``shorts``). A short its own short verdict admits is a paper-only entry with
+the reason ``"short"``: rules 1 to 7 apply to it as written, and it counts toward
+``MAX_OPEN_PAPER_ONLY`` and ``MAX_PER_PASS`` with the OOS-only entries; one refused only for its
+evidence may be an exploration short. Off: nothing about shorts is read and they are dropped.
+
 Exploration entries (operator Phase 1, 2026-11-10): the pass also owns the exploration lane
 (app/workflow/exploration.py: candidates the evidence gate refuses, admitted on its own caps and on
 rules 3 to 6 above, read from the same reads; the OOS-only cap of rule 5 does not count them, the

@@ -34,8 +34,10 @@ the long evidence gate, the pass order and the tags are unchanged (regression te
 The live swing and intraday scans already return bracketed `entry_short` candidates
 (`response.candidates`; the screener scores and filters shorts with mirrored rules). Today the
 loop drops them (`candidate_propose_drop_reason` -> `entry_short`). With the switch on they are
-routed into the same loop; no new signal is invented. The pre-market deep scan's
-`short_signals` list stays shadow-only (pre-market, not tradeable).
+routed into the same loop (`PaperOnlyPass.drop_reason`, also used by the exploration lane, the
+deferred exploration offers and the paper-only riders, which all run that loop); no new signal
+is invented. The pre-market deep scan's `short_signals` list and the short shadow ledger stay
+shadow-only (pre-market, never routed to any loop), as before.
 
 Evidence for a short is its OWN short verdict, never the long one:
 `strategy_evidence:short_verdicts` key `<strategy>:short:<tf>` (`short_research.py`).
@@ -137,6 +139,13 @@ marginable, no maintenance margin, account shorting disabled, or unreadable.
 | `market_direction_reasons` | buy only | listed: no "rising market" filter for intraday shorts (open question) |
 | eToro exit copy | follows paper by symbol | a short never opens on an eToro-held symbol (rule 3 + coordinator re-check) and paper holds one position a symbol |
 | self-simulated paper broker | - | already side-aware; not used (switch needs Alpaca) |
+| coordinator plain market order / simulated fallback | a SELL could go out without a stop or become a simulated position | a short is never sent without its bracket (`short_requires_bracket_order`) and never falls back to a simulated short |
+| `performance/routes._r_multiple` (weekly readiness) | SELL stop legs, entry - stop | closing-side stop legs; |stop - entry| (shorts are paper-only, so left out there anyway) |
+| `learning/service.generate_counterfactuals` | low <= stop / high >= target, (exit - entry) / (entry - stop) | LISTED, not changed: it labels REFUSED scan decisions; short setups have always been refused and labelled with long rules (pre-existing; changing it would change behaviour with the switch off). Follow-up: mirror the rules for `entry_short`. Real labels use the signed realized P/L, so a paper short's own label is right |
+| `sentiment_shadow` / `sentiment_now` | records BUY positions only | listed: paper shorts get no sentiment record (record-only feature) |
+| scorecard page R of eToro-skipped rows | entry > stop | listed: shorts are logged under their own event and never appear in that list |
+| screener / approval adapter | a SELL whose role is not `entry_short` becomes a BUY proposal | listed (pre-existing): such signals (exits, watches) carry no bracket and are dropped as `missing_stop` |
+| strategies' `risk = entry - stop` | long sizing of long signals | not touched: each short signal computes its own (stop - entry) |
 
 ## 6. What Phase B (eToro short CFDs) will need
 

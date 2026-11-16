@@ -36,6 +36,9 @@ order, each read once a pass and shared with the OOS-only paper-only entries' ru
 1. Eligible: the lane on (``paper_exploration_lane_enabled``, paper mode, real trading off), an
    equity (never crypto), a timeframe in ``paper_exploration_lane_timeframes`` and a candidate the
    auto-propose loop would not drop anyway (execution-ready, alert-eligible, long, with a stop).
+   Shorts step 3 (2026-11-16): with ``paper_short_entries_enabled`` a short is not dropped; it is
+   judged on its OWN short verdict and needs Alpaca's borrow and margin facts
+   (app/workflow/paper_shorts.py); it shares every rule and cap here with the exploration longs.
 2. Order: considered after every eToro-eligible and OOS-only candidate of the pass.
 3. Bounded work: at most ``paper_exploration_lane_max_per_pass`` (1) exploration proposal a pass,
    none within ``paper_only.PROPOSAL_SECONDS`` of a cadence tick's scan stop, and at most

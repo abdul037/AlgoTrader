@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from hmac import compare_digest
 from typing import Any
 
@@ -133,7 +133,7 @@ def live_daily_report(request: Request):
     mirror = getattr(coordinator, "etoro_live_mirror", None)
     if mirror is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="eToro live mirror off")
-    since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    since = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
     return {"text": build_report(mirror, since=since)}
 
 
@@ -146,7 +146,7 @@ def weekly_target_readiness(request: Request):
     min_trades = max(int(getattr(settings, "weekly_target_min_closed_autonomous_trades", 100) or 100), 1)
     min_sessions = max(int(getattr(settings, "weekly_target_min_clean_sessions", 20) or 20), 1)
     paper_equity = max(float(getattr(settings, "paper_account_balance_usd", 100000.0) or 100000.0), 1.0)
-    window_start = datetime.now(timezone.utc) - timedelta(weeks=window_weeks)
+    window_start = datetime.now(UTC) - timedelta(weeks=window_weeks)
 
     from app.performance.paper_only import lifecycle_is_paper_only
 
@@ -223,7 +223,7 @@ def weekly_target_readiness(request: Request):
         "blockers": sorted(set(blockers)),
         "window": {
             "start_at": window_start.isoformat(),
-            "end_at": datetime.now(timezone.utc).isoformat(),
+            "end_at": datetime.now(UTC).isoformat(),
         },
         "evidence": {
             "autonomous_lifecycle_count": len(lifecycles),
@@ -372,16 +372,22 @@ def _entry_notional(item: Any) -> float:
 
 
 def _r_multiple(item: Any) -> float | None:
+    from app.risk.short_side import closing_side
+
     entry = float(item.entry_fill_price or 0.0)
     qty = float(item.execution.quantity or item.execution.filled_qty or 0.0)
+    exit_side = closing_side(getattr(item.execution, "side", None))  # a short's stop is a BUY above
     stop_prices = [
         float(leg.stop_price)
         for leg in item.execution.legs
-        if leg.stop_price is not None and str(leg.side or "").lower() == "sell"
+        if leg.stop_price is not None and str(leg.side or "").lower() == exit_side
     ]
     if entry <= 0.0 or qty <= 0.0 or not stop_prices:
         return None
-    risk_per_share = max(entry - min(stop_prices), 0.0)
+    if exit_side == "buy":
+        risk_per_share = max(max(stop_prices) - entry, 0.0)
+    else:
+        risk_per_share = max(entry - min(stop_prices), 0.0)
     risk_usd = risk_per_share * qty
     if risk_usd <= 0.0:
         return None
@@ -390,14 +396,14 @@ def _r_multiple(item: Any) -> float | None:
 
 def _timestamp(value: str | None) -> datetime:
     if not value:
-        return datetime.min.replace(tzinfo=timezone.utc)
+        return datetime.min.replace(tzinfo=UTC)
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError:
-        return datetime.min.replace(tzinfo=timezone.utc)
+        return datetime.min.replace(tzinfo=UTC)
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _date_part(timestamp: str | None) -> str | None:

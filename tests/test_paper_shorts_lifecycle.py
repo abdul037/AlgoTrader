@@ -434,3 +434,16 @@ def test_the_paper_only_report_shows_shorts_on_their_own(tmp_path) -> None:
         "trend_following:1d": {"side": "long", "entries": 1, "open": 0, "closed": 1, "mean_r": 2.0},
         "trend_following:short:1d": {"side": "short", "entries": 1, "open": 0, "closed": 1, "mean_r": 2.0},
     }
+
+
+def test_the_lifecycle_r_of_a_short_uses_its_buy_stop_above() -> None:
+    from app.performance.routes import _r_multiple
+
+    def item(side, stop_side, stop, pnl):
+        legs = [SimpleNamespace(stop_price=stop, side=stop_side), SimpleNamespace(stop_price=None, side=stop_side)]
+        execution = SimpleNamespace(quantity=10.0, filled_qty=10.0, side=side, legs=legs)
+        return SimpleNamespace(entry_fill_price=200.0, realized_pnl_usd=pnl, execution=execution)
+
+    assert _r_multiple(item("sell", "buy", 206.0, -60.0)) == -1.0
+    assert _r_multiple(item("sell", "sell", 206.0, -60.0)) is None  # a sell-stop is not a short's stop
+    assert _r_multiple(item("buy", "sell", 194.0, 60.0)) == 1.0  # a long, unchanged
