@@ -47,11 +47,20 @@ def test_a_third_open_position_in_one_sector_is_refused(tmp_path) -> None:
     assert _capped(manager.validate_order(_order("NVDA"), _context("AAPL", "WMT"))) == []
 
 
-def test_index_funds_unmapped_names_and_sells_are_never_capped(tmp_path) -> None:
+def test_index_funds_and_unmapped_names_are_never_capped(tmp_path) -> None:
+    manager = _manager(tmp_path)
+    assert _capped(manager.validate_order(_order("SPY"), _context("SPY", "QQQ", "IWM"))) == []
+
+
+def test_a_new_short_meets_the_sector_cap_like_a_buy(tmp_path) -> None:
+    """Paper shorts (2026-11-16): a SELL entry opens a short; it is capped as a buy is (it was
+    exempt while every SELL was refused anyway)."""
+
     manager = _manager(tmp_path)
     held = _context("AAPL", "CRM", "SPY")
-    assert _capped(manager.validate_order(_order("SPY"), _context("SPY", "QQQ", "IWM"))) == []
-    assert _capped(manager.validate_order(_order("NVDA", side="sell"), held)) == []
+    short = _order("NVDA", side="sell")  # other short controls refuse it too; only the cap is read
+    assert _capped(manager.validate_order(short, held)) == [f"{CAP} information technology sector"]
+    assert _capped(manager.validate_order(short, _context("AAPL", "WMT"))) == []
 
 
 def test_while_etoro_decides_the_room_paper_holdings_do_not_block_the_copy(tmp_path) -> None:

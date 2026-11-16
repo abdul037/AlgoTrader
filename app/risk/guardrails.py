@@ -8,7 +8,12 @@ from app.broker.instrument_resolver import InstrumentResolver
 from app.config import AppSettings
 from app.models.trade import TradeOrder
 from app.risk.rules import RiskValidationResult, estimate_risk_amount, leverage_cap_for_asset
-from app.risk.sectors import UNKNOWN_SECTOR, correlation_bucket_for_symbol, gics_sector_for_symbol, sector_for_symbol
+from app.risk.sectors import (
+    UNKNOWN_SECTOR,
+    correlation_bucket_for_symbol,
+    gics_sector_for_symbol,
+    sector_for_symbol,
+)
 from app.risk.shorting import ShortTradePolicy
 from app.risk.volatility_target import fits_within_heat, portfolio_heat_pct
 
@@ -107,10 +112,13 @@ class RiskManager:
         # standard (GICS) sector on a new buy. A paper-room rule: while eToro's room decides (an
         # order the live mirror would copy) eToro's own group cap applies instead, so paper's
         # holdings never block a real-money copy (the 10-06 lesson, app/broker/etoro_live_room.py).
+        # Paper shorts (2026-11-16): every order this gate sees is an entry, so a new short (a SELL)
+        # meets the cap like a buy, and the open positions counted are the broker's of either side
+        # (positions_by_symbol counts a short as one position too). Longs: unchanged.
         sector_cap = int(getattr(self.settings, "max_open_positions_per_sector", 0) or 0)
         gics = gics_sector_for_symbol(order.symbol)
-        is_buy = str(getattr(order.side, "value", order.side) or "").lower() == "buy"
-        if paper_room and sector_cap > 0 and is_buy and gics != UNKNOWN_SECTOR:
+        is_entry = str(getattr(order.side, "value", order.side) or "").lower() in {"buy", "sell"}
+        if paper_room and sector_cap > 0 and is_entry and gics != UNKNOWN_SECTOR:
             held = sum(
                 count
                 for symbol, count in context.positions_by_symbol.items()
