@@ -14,6 +14,7 @@ from app.models.institutional import (
     BrokerCapability,
     BrokerReconciliationResult,
 )
+from app.risk.short_side import closing_side, signed_pnl
 from app.utils.time import utc_now
 
 _LIVE_LEG_STATUSES = {
@@ -293,16 +294,18 @@ class AlpacaReconciliationService:
             for item in self.executions.list(limit=2000)
             if item.broker_order_id
         }
-        # Filled standalone sells (reconciliation flattens, manual closes) that
+        # Filled standalone closes (reconciliation flattens, manual closes) that
         # close an execution whose bracket legs never filled. Without them the
         # loss never reaches realized_pnl_usd, so the daily-loss cap and the
-        # loss-streak cooldown can't see it (QA review 2026-09-27).
+        # loss-streak cooldown can't see it (QA review 2026-09-27). Both sides
+        # (paper shorts, 2026-11-16: a short is closed by a BUY); each entry
+        # takes only its own closing side (_standalone_exit).
         standalone_exits: dict[str, list[dict[str, Any]]] = {}
         for order in orders:
             exit_payload = dict(order.response_payload or {})
             if (
                 str(order.broker_order_id or "") not in executions_by_order
-                and str(exit_payload.get("side") or "").lower() == "sell"
+                and str(exit_payload.get("side") or "").lower() in {"buy", "sell"}
                 and str(exit_payload.get("status") or "").lower() == "filled"
                 and not exit_payload.get("legs")
                 and exit_payload.get("filled_at")
@@ -469,8 +472,10 @@ class AlpacaReconciliationService:
         # otherwise.
         fill_price = float(payload.get("filled_avg_price") or 0.0) or None
         proposed_price = float((execution.request_payload or {}).get("proposed_price") or 0.0)
+        # A short's entry is a sale: a fill BELOW the decision price is the worse one.
+        direction = -1.0 if str(payload.get("side") or "").lower() == "sell" else 1.0
         signed_slippage_bps = (
-            round(((fill_price - proposed_price) / proposed_price) * 10_000.0, 3)
+            round(direction * ((fill_price - proposed_price) / proposed_price) * 10_000.0, 3)
             if fill_price is not None and proposed_price > 0
             else None
         )
@@ -495,7 +500,9 @@ class AlpacaReconciliationService:
             entry_qty = float(payload.get("filled_qty") or 0.0)
             exit_qty = min(entry_qty, float(exit_fill.get("filled_qty") or 0.0))
             entry_price = float(payload.get("filled_avg_price") or 0.0)
-            execution.realized_pnl_usd = round((float(exit_fill["filled_avg_price"]) - entry_price) * exit_qty, 2)
+            execution.realized_pnl_usd = round(
+                signed_pnl(payload.get("side"), entry_price, float(exit_fill["filled_avg_price"]), exit_qty), 2
+            )
             execution.response_payload["exit_fill"] = {**exit_fill, "legs": [], "status": "filled"}
         execution.updated_at = utc_now().isoformat()
         self.executions.update(execution)
@@ -515,9 +522,10 @@ class AlpacaReconciliationService:
     @staticmethod
     def _learning_event_type(payload: dict[str, Any]) -> str:
         legs = list(payload.get("legs") or [])
+        exit_side = closing_side(payload.get("side"))  # a short's exit leg is a BUY
         if any(
             str(leg.get("status") or "").lower() == "filled"
-            and str(leg.get("side") or "").lower() == "sell"
+            and str(leg.get("side") or "").lower() == exit_side
             for leg in legs
         ):
             return "closure"
@@ -529,17 +537,22 @@ class AlpacaReconciliationService:
 
     @staticmethod
     def _standalone_exit(payload: dict[str, Any], exit_orders: list[dict[str, Any]] | None) -> dict[str, Any] | None:
-        """Earliest filled standalone sell after a filled long entry with no filled leg."""
+        """Earliest filled standalone close after a filled entry with no filled leg: a sell after a
+        long entry, a buy after a short one (paper shorts, 2026-11-16)."""
 
         entry_at = str(payload.get("filled_at") or "")
         if not exit_orders or not entry_at or float(payload.get("filled_qty") or 0.0) <= 0:
             return None
-        if str(payload.get("side") or "").lower() != "buy" or float(payload.get("filled_avg_price") or 0.0) <= 0:
+        side = str(payload.get("side") or "").lower()
+        if side not in {"buy", "sell"} or float(payload.get("filled_avg_price") or 0.0) <= 0:
             return None
+        exit_side = closing_side(side)
         candidates = [
             item
             for item in exit_orders
-            if str(item.get("filled_at") or "") > entry_at and float(item.get("filled_avg_price") or 0.0) > 0
+            if str(item.get("side") or "").lower() == exit_side
+            and str(item.get("filled_at") or "") > entry_at
+            and float(item.get("filled_avg_price") or 0.0) > 0
         ]
         return min(candidates, key=lambda item: str(item.get("filled_at"))) if candidates else None
 
@@ -554,8 +567,8 @@ class AlpacaReconciliationService:
                 continue
             exit_price = float(leg.get("filled_avg_price") or 0.0)
             exit_qty = float(leg.get("filled_qty") or 0.0)
-            if exit_price > 0 and exit_qty > 0:
-                return round((exit_price - entry_price) * min(entry_qty, exit_qty), 2)
+            if exit_price > 0 and exit_qty > 0:  # signed by the entry side: a short gains on a fall
+                return round(signed_pnl(payload.get("side"), entry_price, exit_price, min(entry_qty, exit_qty)), 2)
         return 0.0
 
     def _upsert_order(

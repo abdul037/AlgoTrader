@@ -403,9 +403,9 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     "from (select * from paper_trades order by closed_at desc limit 2000) t where coalesce(payload_json, '') not like '%\"paper_only\": true%' and coalesce(trim(strategy_name), '') <> '' group by 1) r), " +
     "'paper_equity', (select case when payload_json like '{%' and payload_json not like '%Infinity%' and payload_json not like '%NaN%' then payload_json::jsonb->'account'->>'equity' end " +
     "from run_logs where event_type='alpaca_reconciliation_ok' order by created_at desc limit 1), " +
-    "'paper_open', (select json_agg(json_build_object('symbol', symbol, 'strategy', strategy_name, 'tf', timeframe, 'qty', quantity, 'entry', entry_price, 'now', current_price, 'stop', stop_loss, 'pnl', unrealized_pnl_usd, 'opened_at', opened_at, " +
+    "'paper_open', (select json_agg(json_build_object('symbol', symbol, 'strategy', strategy_name, 'tf', timeframe, 'side', side, 'qty', quantity, 'entry', entry_price, 'now', current_price, 'stop', stop_loss, 'pnl', unrealized_pnl_usd, 'opened_at', opened_at, " +
     "'paper_only', coalesce(payload_json, '') like '%\"paper_only\": true%') order by opened_at) from paper_positions where status = 'open'), " +
-    "'paper_closed', (select json_agg(json_build_object('symbol', symbol, 'strategy', strategy_name, 'tf', timeframe, 'qty', quantity, 'entry', entry_price, 'pnl', realized_pnl_usd, 'opened_at', opened_at, 'closed_at', closed_at, " +
+    "'paper_closed', (select json_agg(json_build_object('symbol', symbol, 'strategy', strategy_name, 'tf', timeframe, 'side', side, 'qty', quantity, 'entry', entry_price, 'pnl', realized_pnl_usd, 'opened_at', opened_at, 'closed_at', closed_at, " +
     "'paper_only', coalesce(payload_json, '') like '%\"paper_only\": true%') order by closed_at desc) from paper_positions where status = 'closed' and nullif(closed_at, '')::timestamptz >= now() - interval '14 days'), " +
     "'skipped', (select json_agg(json_build_object('at', b.created_at, 'symbol', b.payload_json::jsonb->>'symbol', 'reasons', b.payload_json::jsonb->'reasons', " +
     "'closed', (select json_build_object('strategy', t.strategy_name, 'tf', t.timeframe, 'pnl', t.realized_pnl_usd, 'r', t.payload_json::jsonb->>'realized_r_multiple') " +
@@ -432,7 +432,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     "'cursor', v->'cursor', 'signals', jsonb_array_length(case when jsonb_typeof(v->'signals') = 'array' then v->'signals' else '[]'::jsonb end), 'errors', jsonb_array_length(case when jsonb_typeof(v->'errors') = 'array' then v->'errors' else '[]'::jsonb end), " +
     "'items', v->'items', 'shadow_items', v->'shadow_items', 'paused_reason', v->'paused_reason', 'failed_symbols', v->'failed_symbols') from (select state_value::jsonb as v from runtime_state where state_key like 'premarket:watchlist:%' and state_value like '{%' order by state_key desc limit 1) w), " +
     "'exploration', (select jsonb_build_object('computed_at', v->'computed_at', 'leverages', v->'leverages', 'proof_rule', v->'proof_rule', 'cost_basis', v->'cost_basis', " +
-    "'rows', v->'lanes'->'exploration', 'others', coalesce(v->'lanes'->'normal', '[]'::jsonb) || coalesce(v->'lanes'->'oos_only', '[]'::jsonb)) from (select case when state_value like '{%' and state_value not like '%NaN%' and state_value not like '%Infinity%' then state_value::jsonb end as v " +
+    "'rows', v->'lanes'->'exploration', 'others', coalesce(v->'lanes'->'normal', '[]'::jsonb) || coalesce(v->'lanes'->'oos_only', '[]'::jsonb) || coalesce(v->'lanes'->'short', '[]'::jsonb)) from (select case when state_value like '{%' and state_value not like '%NaN%' and state_value not like '%Infinity%' then state_value::jsonb end as v " +
     "from runtime_state where state_key='paper_exploration:leaderboard') x where v is not null), " +
     "'exploration_open', (select count(*) from paper_positions where status = 'open' and coalesce(payload_json, '') like '%\"paper_only_reason\": \"exploration\"%'), " +
     "'events', (select json_agg(e) from (select created_at, event_type, left(payload_json, 400) as payload from run_logs where event_type in ('etoro_live_mirror_submitted','etoro_live_scorecard_closed','etoro_live_backup_stop_closed','etoro_live_mirror_rejected','etoro_live_mirror_halted','etoro_live_test_order_closed','etoro_live_mirror_blocked') order by created_at desc limit 10) e)) as d;";
@@ -1216,7 +1216,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     const todayItems = [
       `US market: ${market}.`,
       `Real money (eToro): ${live.trades_today ?? 0} of 3 new copies today. Opened: ${list(etoroOpened.map((t) => t.symbol))}. Closed: ${list(etoroClosed.map((t) => `${t.symbol} ${signedMoney(num(t.etoro_net_profit_usd) ?? num(t.pnl_usd))}`))}.`,
-      `Paper: opened ${list(paperOpened.map((p) => p.symbol + (p.paper_only ? " (paper-only)" : "")))}; closed ${list(paperClosed.map((p) => `${p.symbol} ${signedMoney(num(p.pnl))}`))}.`,
+      `Paper: opened ${list(paperOpened.map((p) => p.symbol + (p.side === "sell" ? " short" : "") + (p.paper_only ? " (paper-only)" : "")))}; closed ${list(paperClosed.map((p) => `${p.symbol} ${signedMoney(num(p.pnl))}`))}.`,
       `Today's setup scan: ${scan}.`,
       `Strategies eToro may copy now: ${copyable == null ? "—" : copyable || "none"}.`,
       spyLine(d.spy_reserve),
@@ -1263,7 +1263,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     openBody.replaceChildren();
     closedBody.replaceChildren();
     const open = d.paper_open || [], closed = d.paper_closed || [];
-    const tag = (p) => words(p.strategy) + (p.paper_only ? " · paper-only" : "") + (RETIRED[p.strategy] ? " · retired" : "");
+    const tag = (p) => words(p.strategy) + (p.side === "sell" ? " · short" : "") + (p.paper_only ? " · paper-only" : "") + (RETIRED[p.strategy] ? " · retired" : "");
     let openSum = 0;
     if (!open.length) openBody.append(el("tr", {}, el("td", { colspan: "5", class: "muted", text: "No open paper positions." })));
     for (const p of open) {
@@ -1291,7 +1291,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     }
     if (closed.length) closedBody.append(el("tr", { class: "total" }, el("td", { text: `${closed.length} closed · ${wins} won` }), el("td", { class: "hide-sm" }),
       el("td", { class: "hide-sm" }), el("td", { class: "n " + cls(closedSum), text: signedMoney(closedSum) })));
-    $("paper-note").textContent = "Paper-only = a trade taken on paper on weaker evidence to build a record; eToro never copies it. Retired = the rotation strategy, retired on 1 Nov: its open paper trades run to their stop or target.";
+    $("paper-note").textContent = "Paper-only = a trade taken on paper on weaker evidence to build a record; eToro never copies it. Short = a paper short (sold first, bought back to close); every short is paper-only. Retired = the rotation strategy, retired on 1 Nov: its open paper trades run to their stop or target.";
   }
 
   // Paper exploration (Phase 1, 10 Nov): the bot's hourly leaderboard (app/performance/leverage_sim.py).
@@ -1314,7 +1314,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
         });
         const approx = num(row.approximate_trades) || 0;
         body.append(el("tr", { class: proof && (row.proven_leverages || []).length ? "can" : "" },
-          el("td", {}, el("div", {}, el("strong", { text: words(row.strategy) })), el("div", { class: "muted sub", text: `${row.timeframe || "—"}${row.lane === "oos_only" ? " · paper-only" : ""}${approx ? ` · ${approx} approximate` : ""}` })),
+          el("td", {}, el("div", {}, el("strong", { text: words(row.strategy) })), el("div", { class: "muted sub", text: `${row.timeframe || "—"}${row.side === "short" ? " · short" : ""}${row.lane === "oos_only" || row.lane === "short" ? " · paper-only" : ""}${approx ? ` · ${approx} approximate` : ""}` })),
           el("td", { class: "n", text: String(num(row.trades) ?? 0) }),
           ...cells));
       }

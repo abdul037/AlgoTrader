@@ -22,6 +22,13 @@ open (``track_marks``: no extra market-data reads), with the entry and exit pric
 marks is missed, a pre- or after-market print is counted, and a trade closed before the marks
 existed (or opened before them) has only its entry and exit ("entry_exit", "partial_marks").
 
+Shorts (paper shorts, 2026-11-16): a short on eToro is always a CFD, so a short pays the overnight
+financing at 1x too and is force-closed at 1x when the price has doubled against it (an adverse
+move of 100 %: the margin is gone; a long at 1x can never lose more than its margin). Its rows are
+keyed ``<strategy>:short:<timeframe>`` with ``side`` "short" (a long's row has ``side`` "long"),
+and a short its own short verdict admitted has its own lane (``short``); an exploration short
+is in the exploration lane.
+
 Not modelled (approximations, stated): eToro's own spread (paper's Alpaca fills are used), eToro's
 $1 a leg on a real 1x stock, financing rates other than the cost model's, the margin call before a
 full stop-out, and the order in which a stop and a forced close would have been hit within a bar.
@@ -56,7 +63,7 @@ REFRESHED_KEY = "paper_exploration:leaderboard_refreshed_at"
 LEADERBOARD_REFRESH_MINUTES = 60
 TRADE_ROWS = 2000  # the newest closed paper trades, as the paper ledger's own summary reads them
 PROOF_MIN_TRADES = 30
-LANES = ("exploration", "oos_only", "normal")
+LANES = ("exploration", "oos_only", "normal", "short")
 # Marks the paper refresh keeps in an open position's payload (they ride into its closed trade).
 WORST_PRICE_FIELD = "worst_price"
 WORST_AT_FIELD = "worst_at"
@@ -153,12 +160,13 @@ def simulate(
     nights = financing_nights(opened, closed, weekend_multiplier=weekend)
     by_leverage: dict[str, dict[str, Any]] = {}
     for leverage in LEVERAGES:
-        forced = leverage > 1 and adverse >= 1.0 / leverage
+        cfd = leverage > 1 or short  # a leveraged position, or any short, is a CFD on eToro
+        forced = cfd and adverse >= 1.0 / leverage
         gross = -margin if forced else pnl * leverage
         held = nights
         if forced and worst_time is not None:
             held = financing_nights(opened, worst_time, weekend_multiplier=weekend)
-        financing = margin * leverage * rate * held if leverage > 1 else 0.0
+        financing = margin * leverage * rate * held if cfd else 0.0
         net = gross - financing
         by_leverage[str(leverage)] = {
             "pnl_usd": round(net, 2),
@@ -231,11 +239,20 @@ def trade_simulation(trade: Any) -> dict[str, Any] | None:
 
 
 def lane_of(payload: Any) -> str:
-    from app.performance.paper_only import is_exploration, is_paper_only
+    from app.performance.paper_only import PAPER_ONLY_REASON_FIELD, is_exploration, is_paper_only
+    from app.risk.short_side import SHORT_REASON
 
     if is_exploration(payload):
         return "exploration"
+    if is_paper_only(payload) and payload.get(PAPER_ONLY_REASON_FIELD) == SHORT_REASON:
+        return "short"  # a paper short its own short verdict admitted (2026-11-16)
     return "oos_only" if is_paper_only(payload) else "normal"
+
+
+def side_of(trade: Any) -> str:
+    """"short" for a trade that sold to open, else "long"."""
+
+    return "short" if str(getattr(trade, "side", "") or "").strip().lower() == "sell" else "long"
 
 
 def compute_leaderboard(trades: Any, *, now: datetime | None = None) -> dict[str, Any]:
@@ -243,7 +260,7 @@ def compute_leaderboard(trades: Any, *, now: datetime | None = None) -> dict[str
 
     from app.backtesting.cost_model import CostModel
 
-    groups: dict[tuple[str, str], list[tuple[str, dict[str, Any]]]] = {}
+    groups: dict[tuple[str, str, str], list[tuple[str, dict[str, Any]]]] = {}
     read = skipped = 0
     for trade in trades:
         read += 1
@@ -255,13 +272,15 @@ def compute_leaderboard(trades: Any, *, now: datetime | None = None) -> dict[str
         if sim is None:
             skipped += 1
             continue
-        key = f"{strategy}:{str(getattr(trade, 'timeframe', '') or '').strip().lower()}"
+        timeframe = str(getattr(trade, "timeframe", "") or "").strip().lower()
+        side = side_of(trade)
+        key = f"{strategy}:short:{timeframe}" if side == "short" else f"{strategy}:{timeframe}"
         lane = lane_of(getattr(trade, "payload", None))
-        groups.setdefault((lane, key), []).append((str(getattr(trade, "closed_at", "") or ""), sim))
+        groups.setdefault((lane, key, side), []).append((str(getattr(trade, "closed_at", "") or ""), sim))
     lanes: dict[str, list[dict[str, Any]]] = {lane: [] for lane in LANES}
-    for (lane, key), items in groups.items():
+    for (lane, key, side), items in groups.items():
         items.sort(key=lambda item: item[0])
-        lanes[lane].append(_row(lane, key, items))
+        lanes[lane].append(_row(lane, key, items, side=side))
     for rows in lanes.values():
         rows.sort(key=_rank)
     model = CostModel()
@@ -306,8 +325,10 @@ def refresh_leaderboard(service: Any, *, force: bool = False) -> dict[str, Any] 
     return board
 
 
-def _row(lane: str, key: str, items: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
+def _row(lane: str, key: str, items: list[tuple[str, dict[str, Any]]], *, side: str = "long") -> dict[str, Any]:
     strategy, _, timeframe = key.rpartition(":")
+    if side == "short":
+        strategy = strategy.removesuffix(":short")
     by_leverage: dict[str, dict[str, Any]] = {}
     proof: dict[str, bool | None] = {}
     for leverage in LEVERAGES:
@@ -340,6 +361,7 @@ def _row(lane: str, key: str, items: list[tuple[str, dict[str, Any]]]) -> dict[s
         "key": key,
         "strategy": strategy,
         "timeframe": timeframe,
+        "side": side,
         "lane": lane,
         "trades": len(items),
         "approximate_trades": sum(1 for _, sim in items if sim.get("approximate")),

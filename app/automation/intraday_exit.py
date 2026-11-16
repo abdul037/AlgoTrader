@@ -6,7 +6,11 @@ gap risk those strategies never priced. In the last minutes of the session the
 scheduler cancels the bracket of every open position whose entry came from an
 intraday timeframe and closes it at market. Daily-or-longer (swing) positions
 keep their GTC brackets. Reconciliation books the exit through the standalone
-sell path, so the loss gates see it.
+close path, so the loss gates see it.
+
+Paper shorts (2026-11-16): side-agnostic. ``close_position`` buys a short back to cover, the
+entry's ``filled_qty`` is positive for a sell-to-open too, and reconciliation books the cover
+through its standalone close path on the short's closing side (a BUY).
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ def _minutes_to_close(alpaca: Any, now: datetime) -> float | None:
 
 
 def _open_intraday_executions(executions: Any) -> dict[str, Any]:
-    """Symbol -> newest filled long entry from an intraday timeframe with no filled exit."""
+    """Symbol -> newest filled entry (long or short) from an intraday timeframe with no filled exit."""
 
     found: dict[str, Any] = {}
     for execution in executions.list(limit=200):

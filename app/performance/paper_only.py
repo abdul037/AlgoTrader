@@ -26,7 +26,12 @@ They are also left out of the auto-approval clean-lifecycle bootstrap (``reliabi
 unlocks auto-approval of eToro-copyable entries) and ``GET /performance/weekly-target-readiness``.
 
 ``paper_only_report`` shows them on their own in ``GET /performance/live-scorecard`` (open
-positions, and those opened in the last ``REPORT_WINDOW_DAYS`` days).
+positions, and those opened in the last ``REPORT_WINDOW_DAYS`` days), a short on its own card
+(``<strategy>:short:<timeframe>``, ``side`` "short").
+
+Paper shorts (shorts step 3, 2026-11-16; app/workflow/paper_shorts.py) are all paper-only: a short
+its own short verdict admits has the reason ``"short"`` (``app.risk.short_side.SHORT_REASON``), an
+exploration short the reason ``EXPLORATION``; both also carry ``position_side: "short"``.
 
 The paper ledger stores a position's payload with ``json.dumps``, so a tagged one holds exactly
 ``"paper_only": true``; ``TAGGED_PAYLOAD_SQL`` matches that fragment (``_`` escaped) as a
@@ -127,9 +132,10 @@ def paper_only_report(db: Any, *, now: Any = None) -> dict[str, Any]:
             continue
         if not is_paper_only(payload):
             continue
+        short = str(row["side"] or "").lower() == "sell"  # paper shorts (2026-11-16): own cards
+        key = f"{row['strategy_name']}:short:{row['timeframe']}" if short else f"{row['strategy_name']}:{row['timeframe']}"
         card = cards.setdefault(
-            f"{row['strategy_name']}:{row['timeframe']}",
-            {"entries": 0, "open": 0, "closed": 0, "r": []},
+            key, {"side": "short" if short else "long", "entries": 0, "open": 0, "closed": 0, "r": []}
         )
         card["entries"] += 1
         if str(row["status"] or "").lower() == "open":

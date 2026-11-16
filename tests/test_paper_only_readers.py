@@ -468,7 +468,13 @@ def test_the_live_scorecard_lists_paper_only_entries_on_their_own(tmp_path, monk
         "open": 1,
         "closed": 2,
         "by_strategy": {
-            "momentum_breakout:1d": {"entries": 3, "open": 1, "closed": 2, "mean_r": 0.5}
+            "momentum_breakout:1d": {
+                "side": "long",  # paper shorts (2026-11-16) get their own ":short:" cards
+                "entries": 3,
+                "open": 1,
+                "closed": 2,
+                "mean_r": 0.5,
+            }
         },
     }
     assert paper_only_report(db) == expected
@@ -489,7 +495,9 @@ def test_a_tagged_order_is_refused_before_any_other_mirror_check_and_untagged_on
     def blockers(order, broker="alpaca"):
         return mirror.blockers(SimpleNamespace(id=None, order=order, signal=None), broker)
 
-    tagged = _order("JPM", side="sell", stop=None)  # would fail several other checks too
+    # Would fail several other checks too. A BUY: since shorts step 3 (2026-11-16) any SELL is
+    # refused first as a short (etoro_live_short_not_enabled; tests/test_paper_shorts_etoro.py).
+    tagged = _order("JPM", stop=None)
     tagged.metadata.update(TAGS)
     assert blockers(tagged, broker="etoro") == [PAPER_ONLY_REASON]
     assert reads == []  # nothing else is read for it

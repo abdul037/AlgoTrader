@@ -19,6 +19,7 @@ from app.models.paper import (
     PaperTradeRecord,
 )
 from app.paper.broker_ledger import is_broker_backed, sync_broker_backed_positions
+from app.risk.short_side import closing_side, signed_pnl
 from app.utils.time import utc_now
 
 
@@ -325,13 +326,14 @@ class PaperTradingService:
     def _bracket_legs_verified(execution: PaperBrokerExecutionRecord) -> bool:
         if str(execution.order_class or "").lower() != "bracket":
             return False
-        sell_legs = [
+        exit_side = closing_side(execution.side)  # a short's protective legs are BUYs
+        exit_legs = [
             leg
             for leg in execution.legs
-            if str(leg.side or "").lower() == "sell"
+            if str(leg.side or "").lower() == exit_side
         ]
-        has_stop = any(leg.stop_price is not None or str(leg.order_type or "").lower() == "stop" for leg in sell_legs)
-        has_target = any(leg.limit_price is not None or str(leg.order_type or "").lower() == "limit" for leg in sell_legs)
+        has_stop = any(leg.stop_price is not None or str(leg.order_type or "").lower() == "stop" for leg in exit_legs)
+        has_target = any(leg.limit_price is not None or str(leg.order_type or "").lower() == "limit" for leg in exit_legs)
         return has_stop and has_target
 
     def _latest_reconciliation(self) -> dict[str, Any]:
@@ -454,6 +456,8 @@ class PaperTradingService:
             or self._payload_strategy_name(getattr(queue, "payload", None))
         )
         side = str(payload.get("side") or request_payload.get("side") or "")
+        # Paper shorts (2026-11-16): a short's exit legs and closes are BUYs (closing_side).
+        exit_side = closing_side(side)
         entry_price = self._optional_float(payload.get("filled_avg_price") or parent.get("filled_avg_price"))
         filled_qty = float(payload.get("filled_qty") or parent.get("filled_qty") or 0.0)
         legs = self._broker_legs(payload=payload, snapshots=snapshots, parent_order_id=execution.broker_order_id)
@@ -462,18 +466,19 @@ class PaperTradingService:
                 leg
                 for leg in legs
                 if str(leg.status or "").lower() == "filled"
-                and str(leg.side or "").lower() == "sell"
+                and str(leg.side or "").lower() == exit_side
                 and leg.filled_avg_price is not None
             ),
             None,
         )
         exit_snapshot = None
-        if exit_leg is None and side.lower() == "buy" and filled_qty > 0 and entry_price is not None:
+        if exit_leg is None and side.lower() in {"buy", "sell"} and filled_qty > 0 and entry_price is not None:
             exit_snapshot = self._nearest_exit_snapshot(
                 symbol=symbol,
                 parent_payload=payload,
                 symbol_snapshots=symbol_snapshots,
                 filled_qty=filled_qty,
+                entry_side=side.lower(),
             )
         exit_price = (
             exit_leg.filled_avg_price
@@ -491,7 +496,7 @@ class PaperTradingService:
         )
         realized = float(getattr(execution, "realized_pnl_usd", 0.0) or 0.0)
         if realized == 0.0 and entry_price is not None and exit_price is not None and filled_qty > 0:
-            realized = round((exit_price - entry_price) * filled_qty, 2)
+            realized = round(signed_pnl(side, entry_price, exit_price, filled_qty), 2)
         return PaperBrokerExecutionRecord(
             execution_id=execution.id,
             proposal_id=execution.proposal_id,
@@ -624,6 +629,7 @@ class PaperTradingService:
         parent_payload: dict[str, Any],
         symbol_snapshots: dict[str, list[dict[str, Any]]],
         filled_qty: float,
+        entry_side: str = "buy",
     ) -> dict[str, Any] | None:
         parent_time = PaperTradingService._parse_timestamp(
             parent_payload.get("filled_at") or parent_payload.get("created_at")
@@ -639,6 +645,7 @@ class PaperTradingService:
             symbol_snapshots.get(symbol, []),
             after=parent_time,
             parent_order_id=str(parent_payload.get("broker_order_id") or ""),
+            entry_side=entry_side,
         )
         candidates = [
             item
@@ -648,6 +655,7 @@ class PaperTradingService:
                 filled_qty=filled_qty,
                 parent_time=parent_time,
                 latest_exit_time=latest_exit_time,
+                exit_side=closing_side(entry_side),
             )
         ]
         return (
@@ -665,13 +673,15 @@ class PaperTradingService:
         *,
         after: datetime,
         parent_order_id: str,
+        entry_side: str = "buy",
     ) -> datetime:
-        """When the symbol's next filled buy after ``after`` filled (far future when none)."""
+        """When the symbol's next filled entry (an order on ``entry_side``: a buy for a long, a sell
+        for a short) after ``after`` filled (far future when none)."""
 
         later = [
             stamp
             for item in snapshots
-            if str(item.get("side") or "").lower() == "buy"
+            if str(item.get("side") or "").lower() == entry_side
             and str(item.get("status") or "").lower() == "filled"
             and str(item.get("broker_order_id") or "") != parent_order_id
             and (stamp := PaperTradingService._snapshot_timestamp(item)) is not None
@@ -686,10 +696,11 @@ class PaperTradingService:
         filled_qty: float,
         parent_time: datetime,
         latest_exit_time: datetime,
+        exit_side: str = "sell",
     ) -> bool:
         if item.get("execution_id"):
             return False
-        if str(item.get("side") or "").lower() != "sell":
+        if str(item.get("side") or "").lower() != exit_side:
             return False
         if str(item.get("status") or "").lower() != "filled":
             return False

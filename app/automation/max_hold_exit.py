@@ -17,7 +17,8 @@ longer hold counts as a session.
 Paper only (``execution_mode=paper``, real trading off), like the intraday close. It is a
 strategy exit, not a safety flatten, so it writes no ``paper_safety_flatten`` marker: the eToro
 exit copy follows it once paper reads flat. Reconciliation books the exit through the standalone
-sell path. ``paper_max_hold_exit_enabled`` turns it off.
+close path (a paper short, 2026-11-16, is bought back: its closing side). ``paper_max_hold_exit_enabled``
+turns it off.
 """
 
 from __future__ import annotations

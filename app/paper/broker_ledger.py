@@ -141,12 +141,15 @@ def _open_position(service: Any, execution: PaperBrokerExecutionRecord) -> Paper
 
 
 def _exit_outcome(execution: PaperBrokerExecutionRecord) -> str:
+    from app.risk.short_side import closing_side
+
+    exit_side = closing_side(execution.side)  # a short's stop and target legs are BUYs
     exit_leg = next(
         (
             leg
             for leg in execution.legs
             if str(leg.status or "").lower() == "filled"
-            and str(leg.side or "").lower() == "sell"
+            and str(leg.side or "").lower() == exit_side
             and leg.filled_avg_price is not None
         ),
         None,
@@ -161,8 +164,11 @@ def _exit_outcome(execution: PaperBrokerExecutionRecord) -> str:
 
 
 def _exit_filled_at(execution: PaperBrokerExecutionRecord) -> str | None:
+    from app.risk.short_side import closing_side
+
+    exit_side = closing_side(execution.side)
     for leg in execution.legs:
-        if str(leg.status or "").lower() == "filled" and str(leg.side or "").lower() == "sell" and leg.filled_at:
+        if str(leg.status or "").lower() == "filled" and str(leg.side or "").lower() == exit_side and leg.filled_at:
             return str(leg.filled_at)
     return execution.exit_filled_at  # a standalone close (no exit leg): its own fill time
 
