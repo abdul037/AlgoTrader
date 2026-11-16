@@ -12,6 +12,38 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-11-16 (Mon) — shorts step 3 (paper shorts) built and reviewed; step 4 approved with caps
+
+- **Operator decisions 11-16 ~10:00 UTC** (asked "is the bear market, can we do the short
+  method"; SPY was 3.2% below its 6 Oct high, not a bear market):
+  - Shorts step 3 (paper shorts on Alpaca paper) approved.
+  - Shorts step 4 (real-money eToro short CFDs) approved under the SAME qualification rules as
+    longs (passed short verdict, +0.03 R, a 24 h streak, 3+ profitable closed paper shorts) and
+    caps: at most $1,000 of AlgoBot in shorts, 1x, a stop above every entry, and a permanent stop
+    once real-money shorts have lost $200. Not built yet; until it is, the eToro mirror refuses
+    every short.
+- **Short research (step 1) at 11-16 09:53 UTC, daily, 25 symbols, after costs:** ema_trend_stack
+  short -0.11 R (216 OOS trades), momentum_breakout short -0.11 R (155), trend_following short
+  +0.065 R (138; `paper_oos_passed`, holdout 9 trades, slightly negative); mean_reversion,
+  rsi_trend_continuation, rsi_vwap_ema_confluence shorts have 5-10 trades.
+- **Step 3 build (`claude/wip-paper-shorts`, notes `docs/notes/paper_shorts.md`):** switch
+  `paper_short_entries_enabled` (default off; paper mode, real trading off, Alpaca as the paper
+  and equities broker). A short is judged on its own short verdict only; (a) a verdict short is
+  paper-only reason `short`, sized at the risk gate's budget, sharing the paper-only cap of 5;
+  (b) a short refused only for its evidence is an exploration short under the lane's shared caps.
+  Sell-to-open bracket on Alpaca (buy-stop above, buy-limit target below), borrow/margin facts
+  read from Alpaca (hard-to-borrow refused; easy-to-borrow at the cost model's 0.30%/yr). The
+  eToro mirror refuses any order that opens a short first (`etoro_live_short_not_enabled`). Two
+  independent reviews: no blockers; fixes: the sector cap counts shorts, a mirrored intraday
+  market-direction filter (no intraday short while SPY/QQQ is above VWAP and up), a paper short
+  must be an equity routed to Alpaca, crypto shorts dropped, the risk base is equity only while
+  the book holds a short (`7ab9fd5`; the eToro client's equity is credit + open P/L, so long books
+  stay on the old rule), an unprotected position held by its live take-profit is now flattened
+  (cancel the non-stop legs first; pre-existing for longs too), shorts deliberately get no
+  learning label (kept out of the meta-model that can veto eToro longs).
+- Manual `POST /proposals` with side=sell is now refused by ShortTradePolicy at creation (it was
+  an eToro close route); nobody uses it.
+
 ## 2026-11-13 (Fri) — exploration volume: drop points found; why-skipped tracking; late entries kept
 
 - **Paper exploration so far:** NFLX 5m +$74.88 (11-11), GOOGL 15m -$24.14 (11-12), META 5m
