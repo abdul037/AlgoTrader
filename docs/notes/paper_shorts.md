@@ -146,6 +146,8 @@ marginable, no maintenance margin, account shorting disabled, or unreadable.
 | scorecard page R of eToro-skipped rows | entry > stop | listed: shorts are logged under their own event and never appear in that list |
 | screener / approval adapter | a SELL whose role is not `entry_short` becomes a BUY proposal | listed (pre-existing): such signals (exits, watches) carry no bracket and are dropped as `missing_stop` |
 | strategies' `risk = entry - stop` | long sizing of long signals | not touched: each short signal computes its own (stop - entry) |
+| Telegram `/propose`, the RL policy proposer | refuse `entry_short` | kept: paper shorts are automatic only (the auto-propose loop); a hand-made short would be untagged and refused by the risk gate anyway |
+| eToro live room / exit copy / comparison | long copies | a short is never copied (refusal + tag); the exit copy follows paper by symbol, and a short never opens on an eToro-held symbol |
 
 ## 6. What Phase B (eToro short CFDs) will need
 

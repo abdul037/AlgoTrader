@@ -30,7 +30,6 @@ from app.broker.etoro_live_mirror import (
     HARD_MAX_TRADE_PCT_OF_EQUITY,
     HARD_MAX_TRADE_USD,
     HARD_MAX_TRADES_PER_DAY,
-    MIN_TRADE_USD,
     STATE_KEY,
     fit_to_room,
 )
@@ -417,6 +416,13 @@ def test_parity_with_d2c7faf_on_seeded_orders(tmp_path) -> None:
             run_logs=new.logs,
         )
         before, after = old.blockers(proposal, "alpaca"), new.blockers(proposal, "alpaca")
+        if str(getattr(proposal.order.side, "value", proposal.order.side)) == "sell":
+            # Shorts step 3 (2026-11-16): a SELL opens a short; it is refused first, before any
+            # other rule is read (tests/test_paper_shorts_etoro.py). Refused at d2c7faf too.
+            assert after == [live.SHORT_NOT_ENABLED_REASON, "mirror_long_only"], index
+            assert "mirror_long_only" in before or before == ["etoro_live_paper_only"], index
+            assert room_verdict(new, proposal.order) is None, index
+            continue
         # 1. Every rule but the stake's and the daily cap's decides exactly as at d2c7faf.
         other = STAKE_REASONS | {"etoro_live_daily_trade_cap", "etoro_live_day_start_unknown"}
         start = data["day_start_equity"]
