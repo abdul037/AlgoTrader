@@ -381,12 +381,30 @@ def test_an_exploration_short_takes_the_lane_s_rules_and_shared_caps(tmp_path) -
         ]
     finally:
         exploration_module.utc_now = lambda: NOW
-    for symbol, timeframe, skip in (("TSLA", "1m", "timeframe_1m"), ("BTCUSD", "1d", "crypto")):
-        auto, _ = _shorts(tmp_path / skip, short_verdicts={}, **LANE)
-        paper_pass = PaperOnlyPass(auto)
-        assert _blockers(auto, _short(symbol, "momentum_breakout", timeframe=timeframe), paper_pass) == [
-            "strategy_lacks_oos_evidence"
-        ]
+    minute, _ = _shorts(tmp_path / "1m", short_verdicts={}, **LANE)
+    assert _blockers(minute, _short("TSLA", "momentum_breakout", timeframe="1m")) == [
+        "strategy_lacks_oos_evidence"
+    ]
+
+
+def test_a_crypto_short_is_dropped_as_a_short_whatever_its_long_verdict(tmp_path) -> None:
+    """Review fix 4: with the switch on, a crypto short whose LONG verdict passes used to pass the
+    drop check and fail at the risk gate (auto_proposal_failed) every scan."""
+
+    auto, _ = _shorts(tmp_path, **LANE)
+    paper_pass = PaperOnlyPass(auto)
+    crypto = _short("BTCUSD", "inside_bar_narrow_range_breakout")  # its LONG verdict passes
+    assert not paper_pass.shorts.applies(crypto)
+    assert _blockers(auto, crypto, paper_pass) == []  # judged as a long would be ...
+    assert paper_pass.drop_reason(crypto) == "entry_short"  # ... and dropped as a short
+    assert paper_pass.drop_reason(_short()) is None  # an equity short is not
+    workflow, proposals = _workflow(tmp_path, auto)
+    scanned = _scan_short("BTCUSD", "inside_bar_narrow_range_breakout")
+    assert auto_propose_candidates(workflow, _response(scanned), origin="swing_scan", notify=False) == 0
+    assert proposals.created == []
+    (funnel,) = [p for e, p in workflow.run_logs.items if e == "auto_propose_funnel"]
+    assert funnel["dropped:entry_short"] == 1 and "proposal_failed" not in funnel
+    assert not [e for e, _ in workflow.run_logs.items if e == "auto_proposal_failed"]
 
 
 def test_a_stale_short_verdict_goes_to_the_lane_too(tmp_path) -> None:

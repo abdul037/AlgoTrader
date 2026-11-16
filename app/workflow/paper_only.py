@@ -234,11 +234,12 @@ class PaperOnlyPass:
         return None
 
     def drop_reason(self, candidate: Any) -> str | None:
-        """``candidate_propose_drop_reason``, a short allowed only with the paper short switch."""
+        """``candidate_propose_drop_reason``, a short allowed only where the short lane judges it
+        (the paper short switch on, an equity): a crypto short is dropped as ``entry_short``."""
 
         from app.automation.reliability import candidate_propose_drop_reason
 
-        return candidate_propose_drop_reason(candidate, allow_short=self.shorts.enabled())
+        return candidate_propose_drop_reason(candidate, allow_short=self.shorts.applies(candidate))
 
     def blockers(self, candidate: Any) -> list[str]:
         """Why a paper-only candidate must stand aside; [] for any other, and without a read
