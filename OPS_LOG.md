@@ -43,6 +43,20 @@ without explicit operator sign-off recorded here.
   learning label (kept out of the meta-model that can veto eToro longs).
 - Manual `POST /proposals` with side=sell is now refused by ShortTradePolicy at creation (it was
   an eToro close route); nobody uses it.
+- **Live 11-16:** `91d0a6d` deployed 12:00 UTC (switch off), `PAPER_SHORT_ENTRIES_ENABLED=true` set in
+  Railway, live 12:31 UTC (deployment 3fde0973). Exploration-deferred entries worked (NVDA 15m,
+  COST 1d; INTC and IWM refused at execution by the market-direction filter / entry drift).
+- **No short traded on 11-16:** 42 `entry_short` scan decisions after 14:30 UTC were all rejected by
+  the screener. The intelligence gates were already side-aware; the blocks were the paper near-miss
+  promotion closed to shorts, shorts read on the long strategy's backtest rows, and RSI bands
+  stricter than the long mirror. `claude/wip-paper-shorts-screener` (`3d8e695`, notes
+  `docs/notes/paper_shorts_screener.md`) mirrors them for shorts while the switch is on, longs
+  byte-identical (parity references pinned to 91d0a6d). Independent review: no blockers; fixed: a
+  verdict short now meets its own per-symbol backtest (only the long-only closed-trade count is set
+  aside). Left as is: ema_trend_stack / rsi_trend_continuation / rsi_vwap_ema_confluence write their
+  own confluence with the old (stricter) band; `/propose_top` has no short guard (fails safe).
+  With `PAPER_NEAR_MISS_MAX_SCORE_GAP` 10, near-miss counter-trend entries pass for longs and now
+  equally for shorts; the intraday market-direction filter still blocks both sides intraday.
 
 ## 2026-11-13 (Fri) — exploration volume: drop points found; why-skipped tracking; late entries kept
 
