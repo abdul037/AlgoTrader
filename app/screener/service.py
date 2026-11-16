@@ -200,6 +200,15 @@ class MarketScreenerService:
     def _backtest_validation(self, symbol: str, strategy_name: str, timeframe: str | None = None) -> dict[str, Any]:
         return backtest_validation(self, symbol, strategy_name, timeframe)
 
+    def _backtest_name(self, signal: Any) -> str:
+        """The strategy name whose per-symbol backtest judges ``signal``: a paper short's own
+        short rows, never the long strategy's (app/screener/short_mirror.py); a long's, or any
+        signal while paper shorts are off, its own name exactly as before."""
+
+        from app.screener.short_mirror import backtest_strategy_name
+
+        return backtest_strategy_name(self.settings, signal, signal.strategy_name)
+
     def _strategy_specs_for_timeframe(self, timeframe: str, strategy_spec_keys: list[str] | set[str] | None = None) -> list[Any]:
         specs = list(_strategy_specs(self.settings, timeframe=timeframe, regime=self._current_regime()))
         if self.strategy_lab is not None:

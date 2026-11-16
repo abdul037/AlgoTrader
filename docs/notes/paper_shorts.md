@@ -224,3 +224,11 @@ cap, market-direction and admission tests): full suite on `4206cdb`: 2114 passed
 Full suite on `ce0b27e`: 2097 passed, 5 skipped (Postgres-only), 0 failed (11 min 19 s);
 architecture fitness green (operations.py 989 lines, service.py untouched at 1039); ruff clean
 on every changed Python file.
+
+## 10. The screener mirror (production finding, 2026-11-16)
+
+Zero shorts traded after the switch went on: the screener judged a short on the long strategy's
+backtest rows, slightly stricter RSI bands, and kept the paper near-miss promotion closed to it.
+Every screener quality gate is now mirrored for a short while the switch is on, longs
+byte-identical: see `docs/notes/paper_shorts_screener.md` (branch
+`claude/wip-paper-shorts-screener`).

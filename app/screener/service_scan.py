@@ -359,13 +359,13 @@ def scan_universe(
                     continue
                 signal.metadata.setdefault("timeframe", timeframe)
                 signal.metadata.setdefault("strategy_style", spec.style)
-                backtest = service._backtest_validation(signal.symbol, signal.strategy_name, timeframe)
+                backtest = service._backtest_validation(signal.symbol, service._backtest_name(signal), timeframe)
                 backtest_snapshot = build_backtest_snapshot(
                     backtest["summary"],
                     validated=backtest["passes"],
                     validation_reason=backtest["reason"],
                 )
-                context = build_market_context(history, quote=quote, signal=signal)
+                context = build_market_context(history, quote=quote, signal=signal, settings=service.settings)
                 signal.metadata.setdefault(
                     "indicator_confluence_score",
                     float(context.measurements.get("indicator_confluence_score") or 0.0),

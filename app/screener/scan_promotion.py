@@ -25,6 +25,7 @@ from app.screener.profiles import (
     effective_auto_execution_min_score,
     paper_exploration_profile_enabled,
 )
+from app.screener.short_mirror import mirrors_short
 from app.utils.time import utc_now
 
 _logger = logging.getLogger(__name__)
@@ -341,9 +342,12 @@ def _paper_near_miss_blockers(
     if not paper_exploration_profile_enabled(settings):
         blockers.append("paper_exploration_profile_inactive")
     action_value = getattr(getattr(signal, "action", None), "value", getattr(signal, "action", ""))
-    if str(action_value).lower() != "buy":
+    # Paper shorts (2026-11-16): with the switch on, a bracketed short SELL is promoted on the
+    # same rules as a long, its bracket mirrored (app/screener/short_mirror.py). Off: as before.
+    short = mirrors_short(settings, signal) and str(action_value).lower() == "sell"
+    if str(action_value).lower() != "buy" and not short:
         blockers.append("paper_near_miss_long_only")
-    if str(getattr(signal, "metadata", {}).get("signal_role") or "entry_long").lower() == "entry_short":
+    if str(getattr(signal, "metadata", {}).get("signal_role") or "entry_long").lower() == "entry_short" and not short:
         blockers.append("paper_near_miss_short_blocked")
     try:
         entry = float(getattr(signal, "price", None) or getattr(context, "current_price", 0.0) or 0.0)
@@ -355,7 +359,8 @@ def _paper_near_miss_blockers(
         blockers.append("paper_near_miss_bracket_missing")
     else:
         try:
-            if not (float(stop) < entry < float(target)):
+            low, high = (float(target), float(stop)) if short else (float(stop), float(target))
+            if not (low < entry < high):
                 blockers.append("paper_near_miss_invalid_bracket")
         except (TypeError, ValueError):
             blockers.append("paper_near_miss_invalid_bracket")
@@ -477,7 +482,8 @@ def _maybe_promote_paper_near_miss(
         update={
             "execution_ready": True,
             "tradable": True,
-            "direction_label": "buy",
+            # A promoted paper short (switch on) keeps its side; a long is "buy" as before.
+            "direction_label": "sell" if mirrors_short(service.settings, signal) else "buy",
             "metadata": metadata,
             "reject_reasons": list(dict.fromkeys(reasons)),
         }

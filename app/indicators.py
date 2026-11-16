@@ -172,13 +172,18 @@ def _enrich(data: pd.DataFrame, *, timeframe: str) -> pd.DataFrame:
     return frame
 
 
-def compute_confluence_score(row: pd.Series, *, is_short: bool = False) -> float:
-    """Score how many useful technical conditions align on the latest bar."""
+def compute_confluence_score(row: pd.Series, *, is_short: bool = False, mirror_short: bool = False) -> float:
+    """Score how many useful technical conditions align on the latest bar.
 
+    ``mirror_short`` (the screener, for a paper short; app/screener/short_mirror.py): a short's
+    RSI band is the long's exact mirror, 32-48 (RSI -> 100 - RSI), instead of 35-48. Strategies
+    and the short research call it without, so their signals are unchanged."""
+
+    short_rsi_low = 32 if mirror_short else 35
     checks = [
         _bool_score(row.get("ema_9") < row.get("ema_20") < row.get("ema_50")) if is_short else _bool_score(row.get("ema_9") > row.get("ema_20") > row.get("ema_50")),
         _bool_score(row.get("close", 0.0) < row.get("vwap", 0.0)) if is_short else _bool_score(row.get("close", 0.0) > row.get("vwap", 0.0)),
-        _bool_score(row.get("rsi_14", 0.0) >= 35 and row.get("rsi_14", 0.0) <= 48) if is_short else _bool_score(row.get("rsi_14", 0.0) >= 52 and row.get("rsi_14", 0.0) <= 68),
+        _bool_score(row.get("rsi_14", 0.0) >= short_rsi_low and row.get("rsi_14", 0.0) <= 48) if is_short else _bool_score(row.get("rsi_14", 0.0) >= 52 and row.get("rsi_14", 0.0) <= 68),
         _bool_score(row.get("macd_hist", 0.0) < 0.0) if is_short else _bool_score(row.get("macd_hist", 0.0) > 0.0),
         _bool_score(row.get("relative_volume", 0.0) >= 1.1),
         _bool_score(row.get("adx_14", 0.0) >= 18.0),

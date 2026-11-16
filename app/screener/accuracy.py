@@ -13,6 +13,7 @@ from typing import Any
 import pandas as pd
 
 from app.indicators import compute_confluence_score, enrich_technical_indicators
+from app.screener.short_mirror import SHORT_CONSTRUCTIVE_RSI, SHORT_EXHAUSTED_RSI, mirrors_short
 
 
 @dataclass(slots=True)
@@ -63,9 +64,10 @@ def build_accuracy_profile(
     adx = values["adx_14"]
     macd_hist = values["macd_hist"]
     relative_volume = _safe_float(getattr(context, "relative_volume", None)) or values["relative_volume"]
+    mirror = mirrors_short(settings, signal)  # paper shorts: the long's exact mirror bands
     confluence = _safe_float(metadata.get("indicator_confluence_score"))
     if confluence <= 0:
-        confluence = compute_confluence_score(last, is_short=is_short)
+        confluence = compute_confluence_score(last, is_short=is_short, mirror_short=mirror)
 
     max_late_entry_atr = max(float(settings.screener_max_late_entry_atr_multiple), 0.5)
     min_barrier_distance_atr = max(float(settings.screener_min_resistance_atr_distance), 0.05)
@@ -80,8 +82,12 @@ def build_accuracy_profile(
         breakout_confirmed = price <= min(swing_low, range_low) + (atr * min_barrier_distance_atr)
         aligned_vwap = price < vwap
         ema_stack = ema_9 < ema_20 < ema_50
-        rsi_constructive = 30.0 <= rsi <= 52.0
-        exhausted = rsi < 24.0
+        if mirror:  # RSI -> 100 - RSI: the long's 48-72 and > 78, mirrored
+            rsi_constructive = SHORT_CONSTRUCTIVE_RSI[0] <= rsi <= SHORT_CONSTRUCTIVE_RSI[1]
+            exhausted = rsi < SHORT_EXHAUSTED_RSI
+        else:
+            rsi_constructive = 30.0 <= rsi <= 52.0
+            exhausted = rsi < 24.0
         macd_confirmed = macd_hist < 0
     else:
         anchor_distance = _nearest_distance_atr(price, [swing_low, range_low, ema_20, vwap], atr, above=False)

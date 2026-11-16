@@ -9,6 +9,7 @@ import pandas as pd
 
 from app.indicators import compute_confluence_score, enrich_technical_indicators
 from app.screener.extension import entry_extension
+from app.screener.short_mirror import mirrors_short
 
 
 @dataclass(slots=True)
@@ -44,8 +45,13 @@ class FilterOutcome:
     watchlist_only: bool = False
 
 
-def build_market_context(history: pd.DataFrame, *, quote: Any, signal: Any) -> MarketContext:
-    """Build reusable market context from normalized OHLCV data."""
+def build_market_context(
+    history: pd.DataFrame, *, quote: Any, signal: Any, settings: Any = None
+) -> MarketContext:
+    """Build reusable market context from normalized OHLCV data.
+
+    ``settings`` (the scan's): with paper shorts on, a short's confluence uses the long's exact
+    mirror band (app/screener/short_mirror.py); without it, or for a long, nothing changes."""
 
     timeframe = str(signal.metadata.get("timeframe") or "1d").lower()
     frame = enrich_technical_indicators(history, timeframe=timeframe)
@@ -106,7 +112,9 @@ def build_market_context(history: pd.DataFrame, *, quote: Any, signal: Any) -> M
         "efficiency_ratio": round(efficiency_ratio, 4),
         "momentum_pct": round(momentum_pct, 4),
         "regime_alignment_score": round(regime_alignment_score, 4),
-        "indicator_confluence_score": round(compute_confluence_score(last, is_short=is_short), 4),
+        "indicator_confluence_score": round(
+            compute_confluence_score(last, is_short=is_short, mirror_short=mirrors_short(settings, signal)), 4
+        ),
         "execution_quality": round(
             _execution_quality_score(
                 spread_bps=spread_bps,
