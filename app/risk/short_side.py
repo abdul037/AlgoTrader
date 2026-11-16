@@ -107,3 +107,51 @@ def etb_borrow_cost_annual_pct() -> float:
     from app.backtesting.cost_model import CostModel
 
     return round(float(CostModel.alpaca_equities().short_borrow_fee_daily_pct) * 360.0 * 100.0, 6)
+
+
+def short_asset_facts(alpaca: Any, symbol: str) -> dict[str, Any]:
+    """The short-sale facts of ``symbol`` from Alpaca's asset and account data, as order metadata
+    (what ``ShortTradePolicy`` reads). Raises when either read fails: the caller refuses."""
+
+    from app.utils.time import utc_now
+
+    caps = dict(alpaca.get_asset_capabilities(str(symbol).upper()) or {})
+    account = dict(alpaca.get_account_identity() or {})
+    etb = bool(caps.get("easy_to_borrow"))
+    margin = caps.get("maintenance_margin_requirement")
+    try:
+        margin_pct = float(margin) if margin not in (None, "") else None
+    except (TypeError, ValueError):
+        margin_pct = None
+    return {
+        OPENS_SHORT_FIELD: True,
+        POSITION_SIDE_FIELD: SHORT_SIDE,
+        "tradable": bool(caps.get("tradable")),
+        "shortable": bool(caps.get("shortable")),
+        "easy_to_borrow": etb,
+        "marginable": bool(caps.get("marginable")),
+        "margin_requirement_pct": margin_pct if margin_pct is not None and margin_pct > 0 else None,
+        "borrow_cost_annual_pct": etb_borrow_cost_annual_pct() if etb else None,
+        "borrow_cost_source": BORROW_COST_SOURCE if etb else None,
+        "account_shorting_enabled": bool(account.get("shorting_enabled")),
+        "short_facts_read_at": utc_now().isoformat(),
+    }
+
+
+def short_fact_blockers(facts: dict[str, Any]) -> list[str]:
+    """Why these facts rule a short out before any proposal (the risk gate checks them again)."""
+
+    blockers: list[str] = []
+    if not facts.get("tradable"):
+        blockers.append("asset_not_tradable")
+    if not facts.get("shortable"):
+        blockers.append("not_shortable")
+    if not facts.get("easy_to_borrow"):
+        blockers.append("hard_to_borrow")
+    if facts.get("marginable") is False:
+        blockers.append("not_marginable")
+    if facts.get("margin_requirement_pct") is None:
+        blockers.append("margin_requirement_missing")
+    if not facts.get("account_shorting_enabled"):
+        blockers.append("account_shorting_disabled")
+    return blockers

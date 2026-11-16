@@ -114,9 +114,9 @@ class AlpacaClient(BrokerClient):
                     symbol=str(getattr(item, "symbol", "")).upper(),
                     position_id=None,
                     instrument_id=None,
-                    is_buy=_to_float(getattr(item, "qty", 0.0)) >= 0,
+                    is_buy=_signed_qty(item) >= 0,
                     leverage=1,
-                    quantity=_to_float(getattr(item, "qty", 0.0)),
+                    quantity=_signed_qty(item),
                     average_price=_to_float(getattr(item, "avg_entry_price", 0.0)),
                     market_value=_to_float(getattr(item, "market_value", 0.0)),
                     unrealized_pnl=_to_float(getattr(item, "unrealized_pl", 0.0)),
@@ -139,6 +139,8 @@ class AlpacaClient(BrokerClient):
             "account_number": str(getattr(account, "account_number", "") or ""),
             "status": _enum_value(getattr(account, "status", "")),
             "trading_blocked": bool(getattr(account, "trading_blocked", False)),
+            # Paper shorts (2026-11-16): a short sell needs a margin account with shorting on.
+            "shorting_enabled": bool(getattr(account, "shorting_enabled", False)),
             "equity": _to_float(getattr(account, "equity", 0.0)),
             "last_equity": _to_float(getattr(account, "last_equity", 0.0)),
             "cash": _to_float(getattr(account, "cash", 0.0)),
@@ -222,7 +224,12 @@ class AlpacaClient(BrokerClient):
             "shortable": bool(getattr(asset, "shortable", False)),
             "easy_to_borrow": bool(getattr(asset, "easy_to_borrow", False)),
             "fractionable": bool(getattr(asset, "fractionable", False)),
-            "borrow_cost_available": False,
+            # Alpaca's % maintenance margin for the name (None when it publishes none).
+            "maintenance_margin_requirement": _optional_float(
+                getattr(asset, "maintenance_margin_requirement", None)
+            ),
+            "status": _enum_value(getattr(asset, "status", "")).lower(),
+            "borrow_cost_available": False,  # Alpaca's asset API publishes no borrow rate
         }
 
     def get_capabilities(self) -> dict[str, Any]:
@@ -381,19 +388,27 @@ class AlpacaClient(BrokerClient):
         time_in_force: str = "day",
         client_order_id: str | None = None,
         extended_hours: bool = False,
+        opens_short: bool = False,
     ) -> ExecutionRecord:
-        """Submit a broker-native protected market entry."""
+        """Submit a broker-native protected market entry.
+
+        A SELL is accepted only with ``opens_short`` (paper shorts, 2026-11-16: a sell-to-open
+        whose stop leg is a buy-stop ABOVE the entry and whose target is a buy-limit BELOW it);
+        the caller passes it only for a tagged paper short (app/execution/short_orders.py)."""
 
         if extended_hours:
             raise ValueError("Alpaca bracket orders cannot be submitted for extended hours")
         normalized_side = _to_order_side(side)
-        if normalized_side != OrderSide.BUY:
+        short = normalized_side == OrderSide.SELL and bool(opens_short)
+        if normalized_side != OrderSide.BUY and not short:
             raise ValueError("Unattended Alpaca bracket execution currently supports long entries only")
         if int(qty) < 1:
             raise ValueError("Bracket order quantity must be at least one whole share")
         if float(stop_loss_price) <= 0 or float(take_profit_price) <= 0:
             raise ValueError("Bracket stop-loss and take-profit prices must be positive")
-        if float(stop_loss_price) >= float(take_profit_price):
+        if short and float(stop_loss_price) <= float(take_profit_price):
+            raise ValueError("Bracket stop-loss must be above take-profit for a short entry")
+        if not short and float(stop_loss_price) >= float(take_profit_price):
             raise ValueError("Bracket stop-loss must be below take-profit for a long entry")
 
         request = MarketOrderRequest(
@@ -780,6 +795,15 @@ def _bars_to_frame(response: Any, symbol: str) -> pd.DataFrame:
     for column in ["open", "high", "low", "close", "volume", "vwap"]:
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
     return frame.sort_values("timestamp").reset_index(drop=True)
+
+
+def _signed_qty(position: Any) -> float:
+    """A position's quantity, negative for a short (Alpaca reports ``side`` "short"; its ``qty``
+    is negative too, but a positive one is never read as a long)."""
+
+    qty = _to_float(getattr(position, "qty", 0.0))
+    side = _enum_value(getattr(position, "side", "")).lower()
+    return -abs(qty) if side == "short" else qty
 
 
 def _execution_record(

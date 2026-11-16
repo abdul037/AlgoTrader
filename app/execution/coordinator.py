@@ -15,6 +15,12 @@ from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
 from app.broker import crypto as crypto_symbols
 from app.broker.etoro_live_room import paper_only_held_reasons, room_verdict
 from app.broker.router import BrokerRouter, NoBrokerForAssetClass
+from app.execution.short_orders import (
+    bracket_kwargs,
+    is_sell,
+    refresh_short_facts,
+    short_bracket_reasons,
+)
 from app.models.approval import ApprovalStatus
 from app.models.execution import ExecutionRecord, ExecutionStatus
 from app.models.execution_queue import ExecutionQueueRecord, ExecutionQueueStatus
@@ -225,6 +231,7 @@ class ExecutionCoordinator:
             )
             return record
 
+        refresh_short_facts(self.settings, broker, proposal.order, self.logs)  # paper shorts only
         risk_context = self.risk_context_factory(self.settings, broker, self.executions)
         room = room_verdict(getattr(self, "etoro_live_mirror", None), proposal.order, signal=proposal.signal, primary_broker=broker_name)
         risk = self.risk_manager.validate_order(proposal.order, risk_context, etoro_room=room)
@@ -252,7 +259,7 @@ class ExecutionCoordinator:
             min_rr = 0.0 if self._can_bypass_entry_drift_for_smoke(proposal) else float(
                 getattr(self.settings, "execution_min_reward_to_risk_at_quote", 0.0) or 0.0
             )
-            bracket_reasons = self._alpaca_bracket_reasons(proposal, quote_price, min_rr)
+            bracket_reasons = self._alpaca_bracket_reasons(proposal, quote_price, min_rr, settings=self.settings)
             if bracket_reasons:
                 record.status = ExecutionQueueStatus.BLOCKED
                 record.ready_for_execution = False
@@ -300,7 +307,8 @@ class ExecutionCoordinator:
                 )
             except Exception as exc:
                 # A simulated fallback is never copied, so it may not use eToro's room.
-                if self.settings.execution_mode == "paper" and bool(getattr(self.settings, "paper_simulated_fallback_enabled", False)) and risk.room_authority == "paper":
+                # Nor is a short: a refused sell-to-open must not become a simulated short.
+                if self.settings.execution_mode == "paper" and bool(getattr(self.settings, "paper_simulated_fallback_enabled", False)) and risk.room_authority == "paper" and not is_sell(proposal.order):
                     paper_position = self.paper.open_from_approved_proposal(proposal, live_quote=quote)
                     execution = ExecutionRecord(
                         proposal_id=proposal.id,
@@ -529,8 +537,11 @@ class ExecutionCoordinator:
                     # -> its stop was cancelled and the TP expired at 20:00 UTC).
                     time_in_force="gtc",
                     client_order_id=client_order_id,
+                    **bracket_kwargs(self.settings, proposal.order),  # a paper short: sell-to-open
                 )
             else:
+                if is_sell(proposal.order):  # never a short without its broker-native stop
+                    raise ValueError("short_requires_bracket_order")
                 broker_execution = broker.submit_order(
                     symbol=proposal.order.symbol,
                     side=proposal.order.side.value,
@@ -663,8 +674,12 @@ class ExecutionCoordinator:
         )
 
     @staticmethod
-    def _alpaca_bracket_reasons(proposal: Any, quote_price: float, min_reward_to_risk: float = 0.0) -> list[str]:
+    def _alpaca_bracket_reasons(
+        proposal: Any, quote_price: float, min_reward_to_risk: float = 0.0, *, settings: Any = None
+    ) -> list[str]:
         order = proposal.order
+        if is_sell(order):  # only a tagged paper short passes (app/execution/short_orders.py)
+            return short_bracket_reasons(settings, proposal, quote_price, min_reward_to_risk)
         reasons: list[str] = []
         if str(getattr(order.side, "value", order.side)).lower() != "buy":
             reasons.append("long_entries_only")

@@ -42,6 +42,8 @@ class ShortTradePolicy:
             blockers.append("short_not_shortable")
         if metadata.get("marginable") is False:
             blockers.append("short_not_marginable")
+        if metadata.get("account_shorting_enabled") is False:
+            blockers.append("short_account_shorting_disabled")
         if self.settings.short_require_easy_to_borrow and not bool(metadata.get("easy_to_borrow")):
             blockers.append("short_not_easy_to_borrow")
         borrow_cost = metadata.get("borrow_cost_annual_pct")
