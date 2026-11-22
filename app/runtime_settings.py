@@ -46,6 +46,26 @@ DEFAULT_PAPER_NEAR_MISS_ALLOWED_REASONS: tuple[str, ...] = (
 )
 
 
+# List settings read from a comma-separated variable in lower case (the others: upper case).
+_LOWERCASE_CSV_FIELDS = (
+    "screener_default_timeframes",
+    "screener_intraday_timeframes",
+    "intelligent_scan_timeframes",
+    "single_symbol_analysis_timeframes",
+    "swing_scan_timeframes",
+    "screener_active_strategy_names",
+    "live_signal_strategy_names",
+    "backtest_scheduler_timeframes",
+    "paper_scanner_allowed_strategies",
+    "paper_near_miss_allowed_reasons",
+    "paper_supervised_weak_valid_allowed_reasons",
+    "paper_strategy_weak_signal_allowed_strategies",
+    "walk_forward_intraday_variants",
+    "paper_exploration_lane_timeframes",
+    "paper_exploration_lane_focus",
+)
+
+
 class AppSettings(BaseSettings):
     """Runtime settings loaded from environment variables."""
 
@@ -639,13 +659,8 @@ class AppSettings(BaseSettings):
     # 4 of the lane's open places (app/workflow/exploration.py). Empty = no focus, the old lane.
     paper_exploration_lane_focus: list[str] = Field(
         default_factory=lambda: [
-            "gap_continuation_fade:15m",
-            "vwap_reclaim:short:5m",
-            "vwap_reclaim:short:10m",
-            "vwap_reclaim:short:15m",
-            "intraday_vwap_trend:short:5m",
-            "intraday_vwap_trend:short:10m",
-            "intraday_vwap_trend:short:15m",
+            "gap_continuation_fade:15m",  # then the vwap_reclaim and intraday_vwap_trend shorts
+            *(f"{s}:short:{tf}" for s in ("vwap_reclaim", "intraday_vwap_trend") for tf in ("5m", "10m", "15m")),
         ]
     )
     # Phase 3 go-live readiness bar (see app/performance/go_live_readiness.py).
@@ -882,43 +897,12 @@ class AppSettings(BaseSettings):
         "signal_scan_universe",
         "telegram_alert_symbols",
         "market_universe_symbols",
-        "screener_default_timeframes",
-        "screener_intraday_timeframes",
-        "intelligent_scan_timeframes",
-        "single_symbol_analysis_timeframes",
-        "swing_scan_timeframes",
-        "screener_active_strategy_names",
-        "live_signal_strategy_names",
-        "backtest_scheduler_timeframes",
-        "paper_scanner_allowed_strategies",
-        "paper_near_miss_allowed_reasons",
-        "paper_supervised_weak_valid_allowed_reasons",
-        "paper_strategy_weak_signal_allowed_strategies",
-        "walk_forward_intraday_variants",
-        "paper_exploration_lane_timeframes",
-        "paper_exploration_lane_focus",
+        *_LOWERCASE_CSV_FIELDS,
         mode="before",
     )
     @classmethod
     def _parse_csv_list(cls, value: Any, info: ValidationInfo) -> list[str]:
-        lowercase_fields = {
-            "screener_default_timeframes",
-            "screener_intraday_timeframes",
-            "intelligent_scan_timeframes",
-            "single_symbol_analysis_timeframes",
-            "swing_scan_timeframes",
-            "screener_active_strategy_names",
-            "live_signal_strategy_names",
-            "backtest_scheduler_timeframes",
-            "paper_scanner_allowed_strategies",
-            "paper_near_miss_allowed_reasons",
-            "paper_supervised_weak_valid_allowed_reasons",
-            "paper_strategy_weak_signal_allowed_strategies",
-            "walk_forward_intraday_variants",
-            "paper_exploration_lane_timeframes",
-            "paper_exploration_lane_focus",
-        }
-        normalize = str.lower if info.field_name in lowercase_fields else str.upper
+        normalize = str.lower if info.field_name in _LOWERCASE_CSV_FIELDS else str.upper
         if value is None:
             return []
         if isinstance(value, str):
