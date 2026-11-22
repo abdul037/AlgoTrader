@@ -47,6 +47,24 @@ def ledger_cycle_due(service: Any) -> bool:
     )
 
 
+def ledger_cycle_due_in(service: Any) -> float | None:
+    """Seconds until the ledger cycle is due (<= 0: due now); None when it never runs."""
+
+    if service.ledger_service is None or not bool(getattr(service.settings, "ledger_enabled", False)):
+        return None
+    if not bool(getattr(service.settings, "ledger_cycle_enabled", False)):
+        return None
+    last = service.runtime_state.get("workflow:last_ledger_cycle_at")
+    try:
+        elapsed = (utc_now() - datetime.fromisoformat(last)).total_seconds() if last else None
+    except ValueError:
+        elapsed = None
+    if elapsed is None:
+        return 0.0  # never run, or unreadable: due, as ``is_due`` reads it
+    interval = max(int(getattr(service.settings, "ledger_cycle_interval_minutes", 15)), 1) * 60
+    return interval - elapsed
+
+
 def last_successful_screener_run_at(service: Any) -> str | None:
     values = [
         service.runtime_state.get(key)

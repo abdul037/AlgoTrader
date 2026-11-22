@@ -12,6 +12,60 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-11-22 (Sun) — exploration focus: intraday shorts first, two entries a pass (paper only)
+
+- **Week of 11-16 (paper exploration):** 12 entries closed, -$1,463.43: 3 shorts +$192.00 (all
+  profitable), 9 longs -$1,655.43 (every one stopped out) in a week SPY fell 8.4%. Since the lane
+  opened (11-11): 15 closed over 11 strategy/timeframe keys, at most 2 a key, so no key was on
+  course for the 30 closed trades of the leverage proof rule. Real money: no copy qualified; DIS
+  target +$136.08 and MSFT stop -$72.29 on 11-17; the SPY reserve topped up $1,663.37 on 11-18
+  14:45 UTC (missed in that day's report; the hourly watch now reports top-ups). AlgoBot $9,398.88
+  at the 11-20 close (-6.0% since 10-04; SPY -10.3%).
+- **Operator decision 11-22 ~11:30 UTC (question card):** "Focus practice on intraday": point the
+  lane at gap_continuation_fade 15m and the vwap_reclaim and intraday_vwap_trend shorts, and allow
+  2 entries a pass; the caps on risk and open trades stay. Paper only.
+- **What the data showed (tracked_signals and run_logs, 11-16..20):** the focus shorts gave 18
+  signals and 3 entries. Every one was refused for the spent cadence budget in its scan pass, so
+  all entries came from the next-tick pass, which placed 1 a pass and kept 3 of a cluster (5
+  symbols in one scan on 11-17 15:52 and 11-20 19:28 UTC); 5 were refused by the correlation
+  group's daily entry (`headroom_correlation_bucket`), 3 of them after an entry of another key had
+  taken it that day (AMD and INTC longs); 1 by the 15:30 cut-off, 1 by entry drift.
+  gap_continuation_fade gave no live signal since 10-01 (220 scan decisions that week, all
+  `no_signal`): it stays in the focus as the operator chose it, the shorts are the real focus.
+- **Built (`claude/wip-exploration-focus`):**
+  - `paper_exploration_lane_focus` (default `gap_continuation_fade:15m`,
+    `vwap_reclaim:short:5m/10m/15m`, `intraday_vwap_trend:short:15m`; keys as the leaderboard
+    writes them). With a focus set, a key outside it is admitted only from 15:30 New York
+    (`exploration_lane_focus_only`), so it cannot take a symbol, a group's daily entry or a place a
+    focus signal might need, and never into the lane's last 4 open places
+    (`exploration_lane_focus_reserve`); a pass considers focus candidates first. Consequence: an
+    intraday key outside the focus opens no exploration entry at all, and a daily key only between
+    15:30 and the close. An empty focus is the lane as it was.
+  - `paper_exploration_lane_max_per_pass` 1 -> 2, with one unattended check more than that a pass.
+  - The next-tick pass keeps 5 (was 3), starts no entry later than 60 s into the tick
+    (`exploration_lane_pass_time_spent`) and none within 45 s of the ledger cycle falling due.
+  - The boot snapshot shows `paper_exploration_lane_focus` and `paper_exploration_lane_max_per_pass`.
+  - Unchanged: 0.25% risk an entry, 8 open, 12 new a New York day, paper's day and book headroom,
+    the correlation-group rule, the scan-stop rule, the 15:30 intraday cut-off, every hard gate,
+    the bypass sets and the paper-only tag (never copied to eToro).
+- **Review (independent, on `b912d32`):** no blocker. Fixed: the ledger cycle could fall due while
+  a two-entry pass ran and then run in the same tick (up to ~230 s of the 240 s cap; the
+  one-entry pass had the same race at ~175 s), now closed by the 45 s look-ahead; a committed test
+  now judges a pass's second entry against a book that holds the first (group entry, open cap,
+  daily cap, trades a day); the default focus lost two keys no strategy spec can produce. Left as
+  is: a five-symbol cluster still yields at most 2 entries (the rest are not kept again); focus
+  keys are not validated (a typo matches nothing, which fails closed).
+- **Tests:** full suite green before the review fixes (2,145 passed); 32 of 34 seeded faults in
+  the new rules are caught (the 2 others change only which refusal is logged).
+- **Known limits (stated to the operator):** at last week's rate the busiest focus key gave 7
+  signals a week, so 30 closed trades for one key is weeks even if most are placed; the
+  correlation group's one paper-only entry a day is the next limiter (a paper risk rule, not
+  changed); exploration losses still count toward paper's daily and weekly loss limits and the
+  loss-streak cooldown.
+- **Also 11-22:** the operator's Release Metrics dashboard (claude.ai) failed to load all 11 sources:
+  the Supabase SQL tool's answer now names its data marker in the opening sentence, and the
+  page's reader took the first mention. Fixed in the page's reader (no bot change).
+
 ## 2026-11-16 (Mon) — shorts step 3 (paper shorts) built and reviewed; step 4 approved with caps
 
 - **Operator decisions 11-16 ~10:00 UTC** (asked "is the bear market, can we do the short

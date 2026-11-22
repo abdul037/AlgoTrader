@@ -33,6 +33,12 @@ reconciliation and the scans with no scan stop of its own, so it gets one:
 no exploration entry of the pass starts later than ``ENTRY_WINDOW_SECONDS`` into the tick
 (``pass_time_spent``), which bounds the pass at about 100 s; a second entry then leaves the
 intraday scan (93 s of pre-work and useful scan before the scan stop) to the next tick.
+
+Review 2026-11-22: the ledger cycle (every 15 minutes, 100 to 130 s with reconciliation, not
+budgeted) could fall due while a pass of that length ran, and maintenance then ran it in the same
+tick, up to about 230 s of the 240 s cap. So no entry starts within ``ENTRY_SECONDS`` of the
+ledger cycle falling due: a pass that close to it leaves the candidates for the next tick (as a
+tick with the cycle due always did), and the cycle's due time caps the pass's entry deadline.
 """
 
 from __future__ import annotations
@@ -46,6 +52,7 @@ from typing import Any
 MAX_AGE_SECONDS = 300.0
 MAX_KEPT = 5  # 3 until 2026-11-22: a focus cluster is 5 symbols in one scan
 ENTRY_WINDOW_SECONDS = 60.0  # into the tick; no exploration entry of this pass starts later
+ENTRY_SECONDS = 45.0  # one entry, proposal to fill (36 to 41 s measured), with a margin
 ORIGIN = "exploration_deferred"
 
 _LOCK = threading.Lock()
@@ -87,8 +94,9 @@ def run_deferred_exploration(service: Any) -> int:
     """Offer the kept candidates to one auto-propose pass at the start of a tick (the proposals
     it created); never raises."""
 
-    if not kept_count() or _ledger_cycle_due(service):
-        return 0
+    ledger_in = _ledger_due_in(service) if kept_count() else None
+    if not kept_count() or (ledger_in is not None and ledger_in <= ENTRY_SECONDS):
+        return 0  # the ledger cycle is due or nearly: they stay kept for the next tick
     with _LOCK:
         kept, _KEPT[:] = list(_KEPT), []
     now = time.monotonic()
@@ -100,7 +108,10 @@ def run_deferred_exploration(service: Any) -> int:
 
     try:
         started = getattr(service, "_tick_started_at", None)  # None outside a scheduled tick
-        deadline = None if started is None else float(started) + ENTRY_WINDOW_SECONDS
+        deadlines = [] if started is None else [float(started) + ENTRY_WINDOW_SECONDS]
+        if ledger_in is not None:  # an entry started later would still run when the cycle is due
+            deadlines.append(now + ledger_in - ENTRY_SECONDS)
+        deadline = min(deadlines) if deadlines else None
         paper_only = PaperOnlyPass(getattr(service, "auto_trading", None), entry_deadline=deadline)
         fresh = [candidate for candidate in fresh if paper_only.exploration.likely(candidate)]
         if not fresh:
@@ -115,9 +126,16 @@ def run_deferred_exploration(service: Any) -> int:
         return 0
 
 
-def _ledger_cycle_due(service: Any) -> bool:
+def _ledger_due_in(service: Any) -> float | None:
+    """Seconds until the tick's ledger cycle is due (<= 0: due now); None when it never runs or
+    cannot be told (then they are offered now, as before)."""
+
     due = getattr(service, "_ledger_cycle_due", None)
     try:
-        return bool(callable(due) and due())
+        if callable(due) and due():
+            return 0.0
+        from app.workflow.schedule import ledger_cycle_due_in
+
+        return ledger_cycle_due_in(service)
     except Exception:  # noqa: BLE001 - unknown: offer them now, as before
-        return False
+        return None

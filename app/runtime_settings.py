@@ -654,13 +654,13 @@ class AppSettings(BaseSettings):
         default_factory=lambda: ["5m", "10m", "15m", "1h", "1d"]
     )
     # The lane's focus (operator 2026-11-22): keys "<strategy>:<timeframe>", a short
-    # "<strategy>:short:<timeframe>". With a focus set, any other exploration candidate is admitted
-    # only from 15:30 New York (when the day's intraday entries are over) and never into the last
-    # 4 of the lane's open places (app/workflow/exploration.py). Empty = no focus, the old lane.
+    # "<strategy>:short:<timeframe>". With one set, any other exploration candidate is admitted only
+    # from 15:30 New York and never into the lane's last 4 open places. Empty = the old lane.
     paper_exploration_lane_focus: list[str] = Field(
         default_factory=lambda: [
-            "gap_continuation_fade:15m",  # then the vwap_reclaim and intraday_vwap_trend shorts
-            *(f"{s}:short:{tf}" for s in ("vwap_reclaim", "intraday_vwap_trend") for tf in ("5m", "10m", "15m")),
+            "gap_continuation_fade:15m",
+            *(f"vwap_reclaim:short:{tf}" for tf in ("5m", "10m", "15m")),
+            "intraday_vwap_trend:short:15m",  # that strategy's one timeframe
         ]
     )
     # Phase 3 go-live readiness bar (see app/performance/go_live_readiness.py).

@@ -63,8 +63,6 @@ PRODUCTION_FOCUS = [
     "vwap_reclaim:short:5m",
     "vwap_reclaim:short:10m",
     "vwap_reclaim:short:15m",
-    "intraday_vwap_trend:short:5m",
-    "intraday_vwap_trend:short:10m",
     "intraday_vwap_trend:short:15m",
 ]
 
@@ -106,7 +104,12 @@ def test_the_production_defaults(tmp_path) -> None:
     assert settings.paper_exploration_lane_focus == PRODUCTION_FOCUS
     assert lane_focus(settings) == frozenset(PRODUCTION_FOCUS)
     assert (FOCUS_RESERVED_OPEN, SPARE_CHECKS) == (4, 1)
-    assert (deferred.MAX_KEPT, deferred.ENTRY_WINDOW_SECONDS) == (5, 60.0)
+    assert (deferred.MAX_KEPT, deferred.ENTRY_WINDOW_SECONDS, deferred.ENTRY_SECONDS) == (5, 60.0, 45.0)
+    # Every focus key is one a registered strategy spec can produce (review 2026-11-22).
+    from app.strategies import STRATEGY_SPECS
+
+    specs = {(spec.name, spec.timeframe) for spec in STRATEGY_SPECS}
+    assert all((key.split(":")[0], key.split(":")[-1]) in specs for key in PRODUCTION_FOCUS)
     # The caps on risk and on open and daily entries are the lane's old ones.
     assert settings.paper_exploration_lane_risk_pct == 0.25
     assert settings.paper_exploration_lane_max_open == 8
@@ -122,6 +125,10 @@ def test_the_focus_is_a_comma_separated_setting_read_in_lower_case(tmp_path) -> 
     assert settings.paper_exploration_lane_focus == ["vwap_reclaim:short:5m", "x:1d"]
     assert make_settings(tmp_path, paper_exploration_lane_focus="").paper_exploration_lane_focus == []
     assert lane_focus(SimpleNamespace()) == frozenset()  # absent: no focus
+    # A candidate's key is matched in lower case too.
+    auto, _ = _focus(tmp_path / "case", focus="Trend_Following:1D")
+    mixed = _candidate("UBER", "Trend_Following", timeframe="1D")
+    assert PaperOnlyPass(auto).exploration.focused(mixed)
 
 
 # --- a key outside the focus ---------------------------------------------------------------------
@@ -247,6 +254,62 @@ def test_a_pass_makes_two_exploration_entries_its_focus_candidates_first(
     ]
 
 
+def _recording(tmp_path, symbols, *, held=(), **settings):
+    """One pass over ``symbols`` (focus keys, best first) on a book that records each entry it
+    places, as paper's execution rows do: (created, proposed symbols, logged refusals)."""
+
+    executions = _Executions(rows=[_xrow(s, created_at=NOW - timedelta(days=3)) for s in held])
+    auto, _ = _focus(tmp_path, executions=executions, broker=_Broker(list(held)), **BOOK, **settings)
+    workflow, proposals = _lane_workflow(tmp_path, auto)
+
+    def place(_proposal, candidate, **_k):
+        executions.rows.insert(0, _xrow(candidate.symbol, status="submitted"))
+        return EXECUTED
+
+    auto.approve_enqueue_execute = place
+    response = _response(*(_scan_candidate(s, EXPLORE, 99.0 - i) for i, s in enumerate(symbols)))
+    created = auto_propose_candidates(workflow, response, origin="swing_scan", notify=False)
+    blocked = {
+        p["symbol"]: p["blockers"]
+        for e, p in workflow.run_logs.items
+        if e == "auto_proposal_safety_blocked"
+    }
+    return created, [r.symbol for r in proposals.created], blocked
+
+
+def test_a_pass_s_second_entry_meets_every_cap_with_the_first_counted(tmp_path) -> None:
+    """Review 2026-11-22: two entries a pass loosen no cap: the second is judged on a fresh read
+    of paper's book and day, which then hold the first."""
+
+    # The correlation group's daily entry: MSFT is refused once AAPL is in, JPM takes the second.
+    assert _recording(tmp_path / "group", ["AAPL", "MSFT", "JPM", "XOM"]) == (
+        2,
+        ["AAPL", "JPM"],
+        {
+            "MSFT": ["exploration_lane_headroom_correlation_bucket"],
+            "XOM": ["exploration_lane_pass_limit"],
+        },
+    )
+    # The lane's eight open places: the first entry is the eighth, the second is over the cap.
+    held = ["V", "MA", "HD", "KO", "PEP", "UBER", "ADP"]
+    assert _recording(tmp_path / "open", ["JPM", "XOM"], held=held) == (
+        1,
+        ["JPM"],
+        {"XOM": ["exploration_lane_positions_cap"]},
+    )
+    # Its twelve entries a New York day, and paper's trades a day less the two it leaves.
+    assert _recording(tmp_path / "day", ["JPM", "XOM"], paper_exploration_lane_max_new_per_day=1) == (
+        1,
+        ["JPM"],
+        {"XOM": ["exploration_lane_daily_cap"]},
+    )
+    assert _recording(tmp_path / "trades", ["JPM", "XOM"], max_trades_per_day=3) == (
+        1,
+        ["JPM"],
+        {"XOM": ["exploration_lane_headroom_trades_per_day"]},
+    )
+
+
 def test_the_order_puts_focus_candidates_before_the_lane_s_others(tmp_path) -> None:
     auto, _ = _focus(tmp_path)
     paper_pass = PaperOnlyPass(auto)
@@ -334,3 +397,71 @@ def test_a_scan_s_own_pass_has_no_entry_window(tmp_path) -> None:
     auto, _ = _focus(tmp_path)
     assert PaperOnlyPass(auto).past_entry_deadline() is False
     assert PaperOnlyPass(auto, entry_deadline=0.0).past_entry_deadline() is True
+
+
+# --- the ledger cycle (review 2026-11-22) ----------------------------------------------------------
+
+
+def _ledger(workflow, monkeypatch, *, due_in):
+    """The workflow's ledger cycle (every 15 minutes) falling due in ``due_in`` seconds."""
+
+    import app.workflow.schedule as schedule
+
+    monkeypatch.setattr(schedule, "utc_now", lambda: NOW)
+    workflow.ledger_service = object()
+    workflow.settings.ledger_enabled = workflow.settings.ledger_cycle_enabled = True
+    workflow.settings.ledger_cycle_interval_minutes = 15
+    last = NOW - timedelta(seconds=15 * 60 - due_in)
+    workflow.runtime_state.set("workflow:last_ledger_cycle_at", last.isoformat())
+
+
+def test_seconds_until_the_ledger_cycle_is_due(tmp_path, monkeypatch) -> None:
+    from app.workflow.schedule import ledger_cycle_due_in
+
+    auto, _ = _focus(tmp_path)
+    workflow, _proposals = _lane_workflow(tmp_path, auto)
+    assert ledger_cycle_due_in(workflow) is None  # no ledger service: it never runs
+    _ledger(workflow, monkeypatch, due_in=70.0)
+    assert ledger_cycle_due_in(workflow) == pytest.approx(70.0)
+    assert workflow._ledger_cycle_due() is False
+    _ledger(workflow, monkeypatch, due_in=-5.0)
+    assert ledger_cycle_due_in(workflow) == pytest.approx(-5.0) and workflow._ledger_cycle_due() is True
+    for unknown in ("", "not a time"):  # never run, or unreadable: due now, as ``is_due`` reads it
+        workflow.runtime_state.set("workflow:last_ledger_cycle_at", unknown)
+        assert ledger_cycle_due_in(workflow) == 0.0 and workflow._ledger_cycle_due() is True
+    workflow.settings.ledger_cycle_enabled = False
+    assert ledger_cycle_due_in(workflow) is None
+
+
+def test_no_entry_starts_within_one_entry_of_the_ledger_cycle(tmp_path, monkeypatch) -> None:
+    clock = SimpleNamespace(now=1_000.0)
+    monkeypatch.setattr(deferred.time, "monotonic", lambda: clock.now)
+    auto, _ = _focus(tmp_path)
+    workflow, proposals = _lane_workflow(tmp_path, auto)
+
+    def place(*_a, **_k):
+        clock.now += 40.0
+        return EXECUTED
+
+    auto.approve_enqueue_execute = place
+    kept = [_scan_candidate(symbol, EXPLORE, 90.0) for symbol in ("UBER", "V")]
+
+    def offer(due_in):
+        deferred._KEPT.clear()
+        proposals.created.clear()
+        for candidate in kept:
+            assert deferred.keep(candidate, "intraday_scan")
+        _ledger(workflow, monkeypatch, due_in=due_in)
+        workflow._tick_started_at = clock.now - 5.0
+        return deferred.run_deferred_exploration(workflow), deferred.kept_count()
+
+    # Due within one entry (45 s): the pass stands aside and they stay kept for the next tick.
+    assert offer(deferred.ENTRY_SECONDS) == (0, 2) and proposals.created == []
+    assert offer(-1.0) == (0, 2)  # due now: as before
+    # Due in 70 s: the first entry (40 s) ends before it; a second would still run when it is due.
+    assert offer(70.0) == (1, 0)
+    assert [r.symbol for r in proposals.created] == ["UBER"]
+    assert offer(85.0) == (1, 0)  # the second would start exactly 45 s before the cycle: too late
+    # Later than that: both (the second starts at 40 s, more than 45 s before the cycle is due).
+    assert offer(86.0) == (2, 0)
+    assert offer(600.0) == (2, 0)
