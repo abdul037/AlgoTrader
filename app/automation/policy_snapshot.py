@@ -79,6 +79,9 @@ def effective_execution_policy(settings: Any) -> dict[str, Any]:
         "paper_exploration_lane_timeframes": [
             str(tf) for tf in _get("paper_exploration_lane_timeframes", []) or []
         ],
+        # The lane's focus and entries a pass (operator 2026-11-22; absent = no focus, none).
+        "paper_exploration_lane_max_per_pass": int(_get("paper_exploration_lane_max_per_pass", 0) or 0),
+        "paper_exploration_lane_focus": [str(key) for key in _get("paper_exploration_lane_focus", []) or []],
         # Shorts step 3 (2026-11-16): paper short entries on Alpaca paper (absent = off; never
         # copied to eToro). app/workflow/paper_shorts.py.
         "paper_short_entries_enabled": bool(_get("paper_short_entries_enabled", False)),

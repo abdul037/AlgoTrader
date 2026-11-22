@@ -96,17 +96,17 @@ def test_the_store_keeps_a_pass_s_best_fresh_candidates_once(monkeypatch) -> Non
 
     assert deferred.keep(c("AAA"), "intraday_scan")
     clock.now += deferred.MAX_AGE_SECONDS + 1  # AAA is stale by the next keep
-    assert [deferred.keep(c(s), "swing") for s in ("BBB", "CCC", "DDD", "EEE")] == [
-        True, True, True, False  # a pass runs best-first: EEE ranked below the three kept
+    assert [deferred.keep(c(s), "swing") for s in ("BBB", "CCC", "DDD", "EEE", "FFF", "GGG")] == [
+        True, True, True, True, True, False  # a pass runs best-first: GGG ranked below the five kept
     ]
     newer = c("CCC", price=2)
     assert deferred.keep(newer, "swing")  # the newer copy, in its place
-    assert not deferred.keep(c("FFF"), deferred.ORIGIN)  # the offering pass keeps nothing
-    assert deferred.kept_count() == deferred.MAX_KEPT == 3
+    assert not deferred.keep(c("HHH"), deferred.ORIGIN)  # the offering pass keeps nothing
+    assert deferred.kept_count() == deferred.MAX_KEPT == 5  # 3 until 2026-11-22: a focus cluster is 5
     service = SimpleNamespace(run_logs=None, auto_trading=None)
     deferred.run_deferred_exploration(service)
     ((symbols, kw),) = seen
-    assert symbols == ["BBB", "CCC", "DDD"] and kw["origin"] == deferred.ORIGIN
+    assert symbols == ["BBB", "CCC", "DDD", "EEE", "FFF"] and kw["origin"] == deferred.ORIGIN
     assert kw["notify"] is True and kw["paper_only"] is not None
 
     deferred.keep(c("AAA"), "intraday_scan")
@@ -115,15 +115,18 @@ def test_the_store_keeps_a_pass_s_best_fresh_candidates_once(monkeypatch) -> Non
     assert len(seen) == 1 and deferred.kept_count() == 0
 
 
-def test_one_pass_keeps_its_three_best_ranked_late_candidates(tmp_path, monkeypatch) -> None:
+def test_one_pass_keeps_its_five_best_ranked_late_candidates(tmp_path, monkeypatch) -> None:
     auto, _ = _lane(tmp_path)
     workflow, _proposals = _lane_workflow(tmp_path, auto)
     _spent(monkeypatch, True)
-    ranked = [_scan_candidate(s, EXPLORE, score) for s, score in zip("ABCDE", (99, 95, 90, 85, 80), strict=True)]
+    ranked = [
+        _scan_candidate(s, EXPLORE, score)
+        for s, score in zip("ABCDEFG", (99, 95, 90, 85, 80, 75, 70), strict=True)
+    ]
     auto_propose_candidates(workflow, _response(*ranked), origin="swing_scan", notify=False)
     funnel = [p for e, p in workflow.run_logs.items if e == "auto_propose_funnel"][0]
-    assert funnel["exploration_deferred_kept"] == 3
-    assert [entry[1].symbol for entry in deferred._KEPT] == ["A", "B", "C"]
+    assert funnel["exploration_deferred_kept"] == 5
+    assert [entry[1].symbol for entry in deferred._KEPT] == ["A", "B", "C", "D", "E"]
 
 
 def test_a_kept_candidate_never_becomes_an_etoro_copyable_entry(tmp_path, monkeypatch) -> None:

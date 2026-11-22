@@ -9,7 +9,7 @@ three proposals since 11-11 all came from short scans.
 Such a candidate is kept here (in memory, this process only) and offered again at the start of
 the next cadence tick, after the pause check and before maintenance and the scans spend that
 tick's budget, through the normal auto-propose loop with every gate in it: the safety check, the
-lane's rules (one entry a pass, its open and daily caps, the 15:30 New York cut-off, the eToro
+lane's rules (its entries a pass, its open and daily caps, the 15:30 New York cut-off, the eToro
 symbol check), the unattended checks and the execution checks all run again on that pass's own
 reads. Paper only, as the lane is; no cap, gate or bypass changes. A candidate older than
 ``MAX_AGE_SECONDS`` is dropped (the cadence job runs every 60 s); at most ``MAX_KEPT`` are kept,
@@ -21,6 +21,18 @@ exploration candidates (``ExplorationLane.likely``), and the auto-propose loop t
 same verdicts, so a kept candidate can only become a tagged paper-only exploration entry, never
 an eToro-copyable one, even if a verdict changed meanwhile. A tick whose ledger cycle is due
 (maintenance's long ungated step) leaves them for the next tick, within ``MAX_AGE_SECONDS``.
+
+Focus (operator 2026-11-22). The lane's focus signals come in clusters (5 symbols in one scan on
+11-17 and on 11-20), and that week every one of them was refused for the spent budget first, so
+this pass placed all the focus entries there were: 3 of 18 signals. The lane now makes up to 2
+entries a pass (``paper_exploration_lane_max_per_pass``) and ``MAX_KEPT`` is 5 (was 3), so a
+cluster is kept whole; before 15:30 New York the lane refuses a key outside its focus ahead of
+its budget rule, so only focus candidates are kept then. An entry takes about 40 s from its
+proposal to its fill (measured 36 to 41 s, 11-19 and 11-20), and this pass runs ahead of
+reconciliation and the scans with no scan stop of its own, so it gets one:
+no exploration entry of the pass starts later than ``ENTRY_WINDOW_SECONDS`` into the tick
+(``pass_time_spent``), which bounds the pass at about 100 s; a second entry then leaves the
+intraday scan (93 s of pre-work and useful scan before the scan stop) to the next tick.
 """
 
 from __future__ import annotations
@@ -32,7 +44,8 @@ from types import SimpleNamespace
 from typing import Any
 
 MAX_AGE_SECONDS = 300.0
-MAX_KEPT = 3
+MAX_KEPT = 5  # 3 until 2026-11-22: a focus cluster is 5 symbols in one scan
+ENTRY_WINDOW_SECONDS = 60.0  # into the tick; no exploration entry of this pass starts later
 ORIGIN = "exploration_deferred"
 
 _LOCK = threading.Lock()
@@ -86,7 +99,9 @@ def run_deferred_exploration(service: Any) -> int:
     from app.workflow.paper_only import PaperOnlyPass
 
     try:
-        paper_only = PaperOnlyPass(getattr(service, "auto_trading", None))
+        started = getattr(service, "_tick_started_at", None)  # None outside a scheduled tick
+        deadline = None if started is None else float(started) + ENTRY_WINDOW_SECONDS
+        paper_only = PaperOnlyPass(getattr(service, "auto_trading", None), entry_deadline=deadline)
         fresh = [candidate for candidate in fresh if paper_only.exploration.likely(candidate)]
         if not fresh:
             return 0

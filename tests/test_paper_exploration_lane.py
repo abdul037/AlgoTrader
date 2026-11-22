@@ -36,7 +36,7 @@ from app.models.approval import ApprovalStatus
 from app.performance.paper_only import EXPLORATION, is_exploration, is_paper_only
 from app.performance.strategy_evidence import VERDICTS_KEY
 from app.risk.proposal_sizing import risk_based_proposal_notional
-from app.workflow.exploration import CHECKS_PER_PASS, EXECUTION_BYPASS, PROPOSAL_BYPASS
+from app.workflow.exploration import EXECUTION_BYPASS, PROPOSAL_BYPASS, SPARE_CHECKS
 from app.workflow.operations import auto_propose_candidates
 from app.workflow.paper_only import PaperOnlyPass
 from app.workflow.service import SignalWorkflowService
@@ -68,7 +68,13 @@ from tests.test_workflow_service import (
     FakeTrackedSignals,
 )
 
-LANE = {"paper_exploration_lane_enabled": True}
+# The lane without a focus and at one entry a pass, as these tests describe it; the focus and the
+# two entries a pass of 2026-11-22 are in tests/test_exploration_focus.py.
+LANE = {
+    "paper_exploration_lane_enabled": True,
+    "paper_exploration_lane_focus": [],
+    "paper_exploration_lane_max_per_pass": 1,
+}
 EXPLORATION_TAGS = {"paper_only": True, "paper_only_reason": EXPLORATION}
 EXPLORE = "trend_following"  # fails both bars in VERDICTS: refused by the evidence gate
 OOS = "momentum_breakout"  # paper-only on the OOS bar alone
@@ -254,7 +260,7 @@ def test_the_production_defaults(tmp_path) -> None:
     assert fields["paper_exploration_lane_risk_pct"].default == 0.25
     assert fields["paper_exploration_lane_max_open"].default == 8
     assert fields["paper_exploration_lane_max_new_per_day"].default == 12
-    assert fields["paper_exploration_lane_max_per_pass"].default == 1
+    assert fields["paper_exploration_lane_max_per_pass"].default == 2  # 1 until 2026-11-22
     for real in ({"enable_real_trading": True}, {"execution_mode": "live"}):
         auto, _ = _lane(tmp_path / str(real), **real)
         assert _blockers(auto, _candidate("UBER", EXPLORE)) == ["strategy_lacks_oos_evidence"]
@@ -660,7 +666,7 @@ def test_no_exploration_proposal_once_the_cadence_tick_nears_its_scan_stop(
 
 
 def test_the_lane_spends_at_most_two_unattended_checks_a_pass(tmp_path) -> None:
-    assert CHECKS_PER_PASS == 2
+    assert SPARE_CHECKS == 1  # one more check than the pass may make entries (1 here)
     calls = []
     auto, _ = _lane(tmp_path, auto_blockers=["outside_regular_market_hours"])
     stub = auto.candidate_blockers

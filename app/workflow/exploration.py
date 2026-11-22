@@ -30,6 +30,24 @@ auto-approval tier and its clean-lifecycle bootstrap). A candidate with any of t
 exactly as before. Only a candidate the evidence gate refused is considered at all, so an
 eToro-eligible entry never becomes an exploration one.
 
+Focus (operator 2026-11-22: "Focus practice on intraday"). In its first full week the lane
+spread 15 closed entries over 11 strategy/timeframe keys, at most 2 a key, so no key was on course
+for the 30 closed trades the leverage proof rule needs; and entries of other keys took the day's
+one paper-only entry of a correlation group before a focus signal came (3 of the 5 group refusals
+of focus shorts that week). ``paper_exploration_lane_focus`` names the keys to concentrate on
+(``<strategy>:<timeframe>``; a short ``<strategy>:short:<timeframe>``, as the leaderboard keys
+them). With a focus set, a candidate of any other key is still an exploration candidate, but:
+
+* it is admitted only from ``INTRADAY_LAST_ENTRY`` New York, when the day's intraday entries are
+  over (``focus_only`` before that), so it cannot take a symbol, a correlation group's daily
+  entry, a place or a trade of the day a focus signal might need; an intraday key outside the
+  focus therefore opens nothing (rule 4 refuses it from that same minute); and
+* it never takes the last ``FOCUS_RESERVED_OPEN`` (4) of the lane's open places
+  (``focus_reserve``), which positions held for days would otherwise fill.
+
+No cap, gate or bypass changes for a focus key, and nothing is loosened for any key: the focus
+only orders and withholds. An empty focus is the lane as it was.
+
 Its rules (``ExplorationLane``, one per auto-propose pass, owned by its ``PaperOnlyPass``), in
 order, each read once a pass and shared with the OOS-only paper-only entries' rules:
 
@@ -39,10 +57,13 @@ order, each read once a pass and shared with the OOS-only paper-only entries' ru
    Shorts step 3 (2026-11-16): with ``paper_short_entries_enabled`` a short is not dropped; it is
    judged on its OWN short verdict and needs Alpaca's borrow and margin facts
    (app/workflow/paper_shorts.py); it shares every rule and cap here with the exploration longs.
-2. Order: considered after every eToro-eligible and OOS-only candidate of the pass.
-3. Bounded work: at most ``paper_exploration_lane_max_per_pass`` (1) exploration proposal a pass,
-   none within ``paper_only.PROPOSAL_SECONDS`` of a cadence tick's scan stop, and at most
-   ``CHECKS_PER_PASS`` unattended-path checks (``candidate_blockers``) a pass.
+2. Order: considered after every eToro-eligible and OOS-only candidate of the pass, the focus
+   keys (below) before the others.
+3. Bounded work: at most ``paper_exploration_lane_max_per_pass`` (2; 1 until 2026-11-22)
+   exploration proposals a pass, none within ``paper_only.PROPOSAL_SECONDS`` of a cadence tick's
+   scan stop or after the pass's own entry deadline (the next-tick pass of
+   app/workflow/exploration_deferred.py sets one), and at most one unattended-path check
+   (``candidate_blockers``) more than that (``SPARE_CHECKS``) a pass.
 4. An intraday (5m to 1h) entry only before ``INTRADAY_LAST_ENTRY`` New York: the intraday
    flatten closes those positions 10 minutes before the bell (half days are not known here).
 5. The OOS-only entries' guards: never a symbol the real eToro account holds or has in flight
@@ -93,7 +114,8 @@ EXECUTION_BYPASS = frozenset(
     {"candidate_not_backtest_validated", "insufficient_strategy_closed_trade_evidence"}
 )
 EXPLORATION_BYPASSED_FIELD = "paper_exploration_bypassed"  # the blockers an entry bypassed
-CHECKS_PER_PASS = 2  # unattended-path checks (candidate_blockers) a pass may spend on the lane
+SPARE_CHECKS = 1  # unattended-path checks (candidate_blockers) a pass may spend beyond its entries
+FOCUS_RESERVED_OPEN = 4  # of the lane's open places, never taken by a key outside a set focus
 INTRADAY_LAST_ENTRY = clock(15, 30)  # New York; the flatten closes intraday positions at 15:50
 NEW_YORK = ZoneInfo("America/New_York")
 
@@ -114,6 +136,21 @@ def lane_timeframes(settings: Any) -> frozenset[str]:
         for item in (getattr(settings, "paper_exploration_lane_timeframes", None) or [])
         if str(item).strip()
     )
+
+
+def lane_focus(settings: Any) -> frozenset[str]:
+    """The focus keys (``<strategy>:<timeframe>``, a short ``<strategy>:short:<timeframe>``);
+    empty: no focus."""
+
+    return frozenset(
+        str(item).strip().lower()
+        for item in (getattr(settings, "paper_exploration_lane_focus", None) or [])
+        if str(item).strip()
+    )
+
+
+def max_per_pass(settings: Any) -> int:
+    return max(int(getattr(settings, "paper_exploration_lane_max_per_pass", 1) or 0), 0)
 
 
 def risk_pct(settings: Any) -> float:
@@ -171,6 +208,25 @@ class ExplorationLane:
         drop = self.paper.drop_reason(candidate)  # a short only with the paper short switch
         return f"not_ready_{drop}" if drop else None
 
+    def key(self, candidate: Any) -> str:
+        """The candidate's leaderboard key: ``<strategy>:<timeframe>``, a short
+        ``<strategy>:short:<timeframe>``."""
+
+        from app.workflow.paper_shorts import short_verdict_key
+
+        strategy = str(getattr(candidate, "strategy_name", "") or "")
+        timeframe = str(getattr(candidate, "timeframe", "") or "").lower()
+        if self.paper.shorts.applies(candidate):
+            return short_verdict_key(strategy, timeframe)
+        return f"{strategy}:{timeframe}"
+
+    def focused(self, candidate: Any) -> bool:
+        """Whether the lane's focus, when one is set, names the candidate's key (no focus: every
+        candidate)."""
+
+        focus = lane_focus(self.settings)
+        return not focus or self.key(candidate).lower() in focus
+
     def likely(self, candidate: Any) -> bool:
         """For the pass's order (rule 2): an eligible candidate the evidence gate refuses for a
         reason the lane bypasses, from the pass's own verdicts read (cached per key)."""
@@ -222,7 +278,7 @@ class ExplorationLane:
             facts = self.paper.shorts.fact_blockers(candidate)
             if facts:
                 return [PREFIX + fact for fact in facts]
-        if self.checks >= CHECKS_PER_PASS:
+        if self.checks >= max_per_pass(self.settings) + SPARE_CHECKS:
             return [PREFIX + "check_limit"]
         self.checks += 1
         try:
@@ -237,18 +293,24 @@ class ExplorationLane:
         return []
 
     def _room(self, candidate: Any) -> str | None:
-        """Rules 3 to 6 (the pass limit, the clock, the cadence budget, the eToro account, paper's
-        day and book, the lane's caps), from the pass's shared reads."""
+        """The focus and rules 3 to 6 (the pass limit, the clock, the cadence budget, the eToro
+        account, paper's day and book, the lane's caps), from the pass's shared reads."""
 
         from app.workflow import paper_only as rules
 
         settings = self.settings
-        if self.created >= max(int(getattr(settings, "paper_exploration_lane_max_per_pass", 1) or 0), 0):
+        focused = self.focused(candidate)
+        late = _new_york_now().time() >= INTRADAY_LAST_ENTRY
+        if not focused and not late:
+            return "focus_only"  # until the day's intraday (focus) entries are over
+        if self.created >= max_per_pass(settings):
             return "pass_limit"
-        if _intraday(candidate) and _new_york_now().time() >= INTRADAY_LAST_ENTRY:
+        if _intraday(candidate) and late:
             return "intraday_entry_too_late"
         if rules._budget_spent():
             return "cadence_budget_spent"
+        if self.paper.past_entry_deadline():
+            return "pass_time_spent"
         symbol = str(getattr(candidate, "symbol", "") or "").upper()
         held = self.paper._read("held", self.paper._etoro_held)
         if held is rules._UNREADABLE:
@@ -265,6 +327,8 @@ class ExplorationLane:
         if book.exploration_today >= daily:
             return "daily_cap"
         cap = int(getattr(settings, "paper_exploration_lane_max_open", 0) or 0)
+        if not focused and len(book.exploration) >= cap - FOCUS_RESERVED_OPEN:
+            return "focus_reserve"  # the lane's last open places stay free for the focus keys
         return rules._book_headroom(
             settings, book, rules._bare(symbol), lane=book.exploration, cap=cap
         )

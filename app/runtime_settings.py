@@ -629,9 +629,24 @@ class AppSettings(BaseSettings):
     paper_exploration_lane_risk_pct: float = 0.25  # % of paper equity lost at the stop, per entry
     paper_exploration_lane_max_open: int = 8  # exploration positions open or unfilled at once
     paper_exploration_lane_max_new_per_day: int = 12  # new exploration entries a New York day
-    paper_exploration_lane_max_per_pass: int = 1  # exploration proposals an auto-propose pass
+    paper_exploration_lane_max_per_pass: int = 2  # exploration proposals an auto-propose pass (1 until 11-22)
     paper_exploration_lane_timeframes: list[str] = Field(
         default_factory=lambda: ["5m", "10m", "15m", "1h", "1d"]
+    )
+    # The lane's focus (operator 2026-11-22): keys "<strategy>:<timeframe>", a short
+    # "<strategy>:short:<timeframe>". With a focus set, any other exploration candidate is admitted
+    # only from 15:30 New York (when the day's intraday entries are over) and never into the last
+    # 4 of the lane's open places (app/workflow/exploration.py). Empty = no focus, the old lane.
+    paper_exploration_lane_focus: list[str] = Field(
+        default_factory=lambda: [
+            "gap_continuation_fade:15m",
+            "vwap_reclaim:short:5m",
+            "vwap_reclaim:short:10m",
+            "vwap_reclaim:short:15m",
+            "intraday_vwap_trend:short:5m",
+            "intraday_vwap_trend:short:10m",
+            "intraday_vwap_trend:short:15m",
+        ]
     )
     # Phase 3 go-live readiness bar (see app/performance/go_live_readiness.py).
     go_live_phase3_start_date: str = ""
@@ -881,6 +896,7 @@ class AppSettings(BaseSettings):
         "paper_strategy_weak_signal_allowed_strategies",
         "walk_forward_intraday_variants",
         "paper_exploration_lane_timeframes",
+        "paper_exploration_lane_focus",
         mode="before",
     )
     @classmethod
@@ -900,6 +916,7 @@ class AppSettings(BaseSettings):
             "paper_strategy_weak_signal_allowed_strategies",
             "walk_forward_intraday_variants",
             "paper_exploration_lane_timeframes",
+            "paper_exploration_lane_focus",
         }
         normalize = str.lower if info.field_name in lowercase_fields else str.upper
         if value is None:

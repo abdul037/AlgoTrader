@@ -66,7 +66,12 @@ SWITCH = dict(
     broker_for_equities="alpaca",
     paper_oos_bar_enabled=True,
 )
-LANE = {"paper_exploration_lane_enabled": True}
+# The lane without a focus and at one entry a pass (the focus of 2026-11-22 has its own tests).
+LANE = {
+    "paper_exploration_lane_enabled": True,
+    "paper_exploration_lane_focus": [],
+    "paper_exploration_lane_max_per_pass": 1,
+}
 SHORT_OOS = {"passed": False, "paper_oos_passed": True, "oos_expectancy_r": 0.065, "oos_trades": 138}
 SHORT_FULL = {"passed": True, "paper_oos_passed": True, "oos_expectancy_r": 0.05}
 

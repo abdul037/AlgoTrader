@@ -141,14 +141,21 @@ class PaperOnlyPass:
     """One auto-propose pass's paper-only decisions; ``auto_trading`` is the
     ``PaperAutoTradingService`` (None: no gate, so nothing is paper-only)."""
 
-    def __init__(self, auto_trading: Any, *, only: bool = False):
+    def __init__(self, auto_trading: Any, *, only: bool = False, entry_deadline: float | None = None):
         self.auto = auto_trading
         self.only = only  # the riders' pass: nothing but paper-only candidates is considered
+        self.entry_deadline = entry_deadline  # time.monotonic(): no exploration entry starts later
         self.created_count = 0  # every proposal the pass created (even if it then raised)
         self._reads: dict[str, Any] = {}
         self._paper_only_created = 0
         self.exploration = ExplorationLane(self)  # Phase 1 (2026-11-10): app/workflow/exploration.py
         self.shorts = ShortLane(self)  # shorts step 3 (2026-11-16): app/workflow/paper_shorts.py
+
+    def past_entry_deadline(self) -> bool:
+        """Whether the pass's own entry deadline (the next-tick exploration pass sets one) has
+        passed; a pass without one: never."""
+
+        return self.entry_deadline is not None and time.monotonic() >= self.entry_deadline
 
     def enabled(self) -> bool:
         """Settings alone: whether anything can be paper-only on this account."""
@@ -201,15 +208,18 @@ class PaperOnlyPass:
 
     def order(self, candidates: list[Any]) -> list[Any]:
         """The pass's candidates, every paper-only one after all the others and every likely
-        exploration one after those, ranks kept; in a paper-only pass, its paper-only candidates
-        alone (by this pass's verdicts read)."""
+        exploration one after those (the lane's focus keys before its other keys), ranks kept; in
+        a paper-only pass, its paper-only candidates alone (by this pass's verdicts read)."""
 
         if self.only:
             return [candidate for candidate in candidates if self.is_paper_only(candidate)]
-        return sorted(
-            candidates,
-            key=lambda c: 2 if self.exploration.likely(c) else int(self.is_paper_only(c)),
-        )
+
+        def group(candidate: Any) -> int:
+            if self.exploration.likely(candidate):
+                return 2 if self.exploration.focused(candidate) else 3
+            return int(self.is_paper_only(candidate))
+
+        return sorted(candidates, key=group)
 
     def exploration_blockers(self, candidate: Any, refused: list[str]) -> list[str] | None:
         """The exploration lane's verdict on a candidate the evidence gate refused (``refused``:
