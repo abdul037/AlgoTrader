@@ -28,7 +28,14 @@ without explicit operator sign-off recorded here.
   data then answered 200 in 1.8-2.4 s on 3 of 3 tries. Additive and reversible (`DROP INDEX`); no
   trading code or setting touched. The same statement is now in `POSTGRES_UPGRADES`
   (app/storage/pg_upgrades.py), a no-op on production and the index's source for any other database.
-- **Full suite on `4bb8d41`:** 2,148 passed, 5 skipped.
+- **Full suite on `4bb8d41`:** 2,148 passed, 5 skipped; on `db36373` (with the index upgrade):
+  2,149 passed, 5 skipped.
+- **Deployed 05:24 UTC, live 05:30 UTC (09:30 Dubai):** `4aef802..db36373` (fast-forward; Railway
+  `3c4f437d`). Verified: boot snapshot 05:29:31 UTC shows paper mode, real trading off,
+  `paper_exploration_lane_focus` = gap_continuation_fade:15m, vwap_reclaim:short:5m/10m/15m,
+  intraday_vwap_trend:short:15m, `paper_exploration_lane_max_per_pass` 2, risk 0.25%, 8 open,
+  12 new a day, paper shorts on; scheduler and guard heartbeats fresh, reconciliation ok, no
+  halt; scorecard data 200 in 2.1 s. First market test: the 11-23 US session.
 - **Operator 11-23 ~04:55 UTC** sent eToro's "Connect to Claude Code" screen (eToro's own MCP
   connector to a personal account: market data, portfolio, orders). Advice given: connect it
   through claude.ai connectors (the terminal command does not reach a cloud session), start
