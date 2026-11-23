@@ -12,6 +12,29 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-11-23 (Mon) — Live Scorecard timing out: run_logs indexed; exploration focus deployed
+
+- **Daily safety check 04:41 UTC:** bot alive (scheduler and guard heartbeats fresh, reconciliation
+  ok, no halt, no breaker, paper mode, real trading off), nothing traded over the weekend. One
+  fault: `GET /scorecard/data` answered 502 `canceling statement due to statement timeout` on 7 of
+  7 tries (13-17 s on 11-22, when the operator reported "I cannot see any data on the shared link").
+- **Cause:** `run_logs` (about 400,000 rows, 167 MB) had only its primary key, and the scorecard's
+  query reads it three times by event type (the latest `alpaca_reconciliation_ok`, the last 20
+  `etoro_live_mirror_blocked`, the last 10 mirror events): three full scans, about 7 s each
+  (`EXPLAIN ANALYZE`: parallel seq scan, 204,994 rows removed by the filter per worker), past the
+  route's 20 s statement timeout as the table grew.
+- **Fix 05:12 UTC (database):** `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_run_logs_event_created
+  ON run_logs(event_type, created_at)` on production (no write lock; valid, 35 MB). The scorecard
+  data then answered 200 in 1.8-2.4 s on 3 of 3 tries. Additive and reversible (`DROP INDEX`); no
+  trading code or setting touched. The same statement is now in `POSTGRES_UPGRADES`
+  (app/storage/pg_upgrades.py), a no-op on production and the index's source for any other database.
+- **Full suite on `4bb8d41`:** 2,148 passed, 5 skipped.
+- **Operator 11-23 ~04:55 UTC** sent eToro's "Connect to Claude Code" screen (eToro's own MCP
+  connector to a personal account: market data, portfolio, orders). Advice given: connect it
+  through claude.ai connectors (the terminal command does not reach a cloud session), start
+  read-only and on the virtual account, confirm every real-money trade, never on the AlgoBot
+  account. Nothing connected or changed by this session.
+
 ## 2026-11-22 (Sun) — exploration focus: intraday shorts first, two entries a pass (paper only)
 
 - **Week of 11-16 (paper exploration):** 12 entries closed, -$1,463.43: 3 shorts +$192.00 (all
