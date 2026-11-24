@@ -42,6 +42,12 @@ without explicit operator sign-off recorded here.
 - **Tests:** tests/test_exploration_entry_drift.py (12 cases); with the lane, pass, deferred,
   focus, coordinator-routing and architecture tests, 169 passed. Full suite on `0df4249`: 2,160
   passed, 6 skipped (5 need a Postgres URL; 1 needs a commit a shallow clone does not have).
+- **Deployed 21:46 UTC, live 21:53 UTC (01:53 Dubai on 11-25), after the US close:**
+  `db36373..b7bf67c` (fast-forward; Railway `d59e1821`). Verified 21:53 UTC: `/version`
+  b7bf67c, `/health/ready` ready (database ok, scheduler ok), paper mode, real trading off,
+  worker running with 0 restarts, reconciliation ok, no halt; paper's 4 positions (AMZN, COST,
+  WMT, DIS) and eToro's PYPL and SPY unchanged; scorecard data 200 in 1.9 s. First market
+  test: the 11-25 US session (`exploration_lane_entry_drifted` is now an expected refusal).
 - **Still open (operator):** the drifted signals themselves stay lost. Options: (A) read the
   signal again on fresh bars just before the entry (a one-symbol scan of the kept key; no gate
   changes; needs tick-time work), (B) let a late entry through when reward to risk at the fresh
