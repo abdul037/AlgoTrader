@@ -76,6 +76,17 @@ order, each read once a pass and shared with the OOS-only paper-only entries' ru
 7. Automatic only: made only when the unattended path would approve and execute it at once
    (``candidate_blockers`` empty but for ``EXECUTION_BYPASS``); one not placed in its pass is
    rejected at once, and a person cannot approve one (as for every paper-only entry).
+   Fail fast (2026-11-24): just before that check the lane reads one fresh quote, as the
+   execution check will, and refuses a candidate the quote has already left by more than that
+   check's own limit (``entry_drifted``; ``execution_max_entry_drift_bps``). Such a candidate was
+   refused anyway, but about 33 s later (``entry_drift_too_large``), which spent the next-tick
+   pass's whole entry window: on 11-24 AMD's price had run 150 bps in the 6 minutes since its
+   scan, and the pass's 3 other focus candidates were then out of time. 6 of the 25 exploration
+   proposals of 11-16 to 11-24 met that refusal (4 of the 8 shorts); their prices were 91 to
+   363 s old when they were proposed. No gate is loosened: the limit is the check's own, the
+   check still judges every proposal on its own later quote (so an entry must now be within the
+   limit twice), and a quote that cannot be read or judged refuses nothing here. At most
+   ``MAX_DRIFT_READS`` such reads a pass.
 8. Sized at ``paper_exploration_lane_risk_pct`` (0.25%) of paper equity lost at the stop, never
    above the per-trade cap the risk gate enforces (``risk_based_proposal_notional``).
 9. Tagged ``paper_only: true`` with ``paper_only_reason: "exploration"`` and the blockers it
@@ -102,6 +113,7 @@ together never take paper's last two places or trades of the day.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from datetime import time as clock
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -115,6 +127,7 @@ EXECUTION_BYPASS = frozenset(
 )
 EXPLORATION_BYPASSED_FIELD = "paper_exploration_bypassed"  # the blockers an entry bypassed
 SPARE_CHECKS = 1  # unattended-path checks (candidate_blockers) a pass may spend beyond its entries
+MAX_DRIFT_READS = 5  # fresh quotes a pass may read to fail fast on a drifted entry (a kept cluster)
 FOCUS_RESERVED_OPEN = 4  # of the lane's open places, never taken by a key outside a set focus
 INTRADAY_LAST_ENTRY = clock(15, 30)  # New York; the flatten closes intraday positions at 15:50
 NEW_YORK = ZoneInfo("America/New_York")
@@ -171,6 +184,7 @@ class ExplorationLane:
         self.paper = paper
         self.created = 0  # exploration proposals the pass created
         self.checks = 0  # candidate_blockers reads spent on the lane
+        self.drift_reads = 0  # fresh quotes read to fail fast on a drifted entry
         self._admitted: dict[int, tuple[Any, list[str]]] = {}  # id -> (candidate, bypassed)
         self._likely: dict[tuple[str, str, bool], bool] = {}
         self.skip: str | None = None  # why the lane stood aside for the last refusal it saw
@@ -280,6 +294,8 @@ class ExplorationLane:
                 return [PREFIX + fact for fact in facts]
         if self.checks >= max_per_pass(self.settings) + SPARE_CHECKS:
             return [PREFIX + "check_limit"]
+        if self._entry_drifted(candidate):
+            return [PREFIX + "entry_drifted"]
         self.checks += 1
         try:
             reasons = list(self.paper.auto.candidate_blockers(candidate))
@@ -291,6 +307,37 @@ class ExplorationLane:
         bypassed = sorted({*refused, *(reason for reason in reasons if reason in EXECUTION_BYPASS)})
         self._admitted[id(candidate)] = (candidate, bypassed)
         return []
+
+    def _entry_drifted(self, candidate: Any) -> bool:
+        """Fail fast (rule 7): whether a fresh quote, read as the execution check reads it, is
+        already further from the candidate's planned entry than that check allows. False when it
+        cannot be told (no coordinator, no limit, an unreadable or unusable quote) and once the
+        pass has spent its reads: the execution check then decides, as before."""
+
+        if self.drift_reads >= MAX_DRIFT_READS:
+            return False
+        read = getattr(getattr(self.paper.auto, "execution", None), "planned_entry_drift_bps", None)
+        limit = getattr(self.settings, "execution_max_entry_drift_bps", None)
+        if not callable(read) or not isinstance(limit, int | float) or limit <= 0:
+            return False
+        self.drift_reads += 1
+        try:
+            drift = read(candidate)
+        except Exception:  # noqa: BLE001 - unknown: not refused here
+            return False
+        if not isinstance(drift, int | float) or drift <= float(limit):
+            return False
+        with suppress(Exception):  # a log line never fails the pass
+            self.paper.auto.logs.log(
+                "exploration_entry_drifted",
+                {
+                    "symbol": str(getattr(candidate, "symbol", "") or "").upper(),
+                    "key": self.key(candidate),
+                    "drift_bps": round(float(drift), 1),
+                    "limit_bps": float(limit),
+                },
+            )
+        return True
 
     def _room(self, candidate: Any) -> str | None:
         """The focus and rules 3 to 6 (the pass limit, the clock, the cadence budget, the eToro

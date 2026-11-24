@@ -8,6 +8,7 @@ import sqlite3
 import threading
 from collections.abc import Callable
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError as SQLAlchemyIntegrityError
@@ -176,8 +177,7 @@ class ExecutionCoordinator:
         timeframe = record.timeframe or _proposal_timeframe(proposal) or "1d"
         quote_provider = broker_name if broker_name in {"alpaca", "etoro"} else None
         quote = self.market_data.get_quote(proposal.order.symbol, timeframe=timeframe, provider=quote_provider, force_refresh=True)
-        quote_price = float(quote.last_execution or quote.ask or quote.bid or proposal.order.proposed_price)
-        quote_drift_bps = abs((quote_price - float(proposal.order.proposed_price)) / max(float(proposal.order.proposed_price), 0.01)) * 10_000.0
+        quote_price, quote_drift_bps = quote_entry_drift(quote, proposal.order.proposed_price)
         validation_reasons = [
             *automation_blockers,
             *self._account_validation_reasons(
@@ -456,6 +456,40 @@ class ExecutionCoordinator:
             and str(getattr(proposal.order, "strategy_name", "") or "").lower() == "manual_smoke"
         )
 
+    def planned_entry_drift_bps(self, candidate: Any) -> float | None:
+        """How far (bps) a fresh quote is from a scan candidate's planned entry, read and measured
+        as ``_process_queue_item`` will for its proposal (its broker's own quote, forced fresh;
+        ``quote_entry_drift``); None when it cannot be told (no planned price, no broker, a quote
+        the check would not judge an entry on, a failed read). A read only: the exploration lane
+        asks before it proposes (fail fast 2026-11-24, app/workflow/exploration.py); the
+        entry-drift check above still judges every proposal on its own fresh quote."""
+
+        try:
+            planned = float(
+                getattr(candidate, "entry_price", None)
+                or getattr(candidate, "current_price", None)
+                or 0.0
+            )
+            if planned <= 0:
+                return None
+            metadata = getattr(candidate, "metadata", None) or {}
+            timeframe = getattr(candidate, "timeframe", None) or metadata.get("timeframe") or "1d"
+            # The asset class its proposal gets (SignalApprovalAdapter.build_proposal_request).
+            commodity = getattr(candidate, "asset_class", None) == "commodity"
+            order = SimpleNamespace(asset_class=AssetClass.GOLD if commodity else AssetClass.EQUITY)
+            _broker, broker_name = self._select_broker(SimpleNamespace(order=order))
+            quote = self.market_data.get_quote(
+                str(getattr(candidate, "symbol", "") or ""),
+                timeframe=str(timeframe),
+                provider=broker_name if broker_name in {"alpaca", "etoro"} else None,
+                force_refresh=True,
+            )
+            if self._quote_validation_reasons(quote, expected_broker=broker_name):
+                return None
+            return quote_entry_drift(quote, planned)[1]
+        except Exception:  # noqa: BLE001 - unknown: the execution check itself decides
+            return None
+
     def _select_broker(self, proposal: Any) -> tuple[Any, str]:
         if self.broker_router is None:
             return self.trader.broker, "etoro"
@@ -705,6 +739,15 @@ class ExecutionCoordinator:
         if normalized == ExecutionStatus.BLOCKED:
             return ExecutionStatus.BLOCKED
         return ExecutionStatus.SUBMITTED
+
+
+def quote_entry_drift(quote: Any, proposed_price: Any) -> tuple[float, float]:
+    """The price an entry is judged at on ``quote`` (its last trade, else its ask, else its bid,
+    else the planned price itself) and how far that is from the planned price, in basis points."""
+
+    planned = float(proposed_price)
+    price = float(quote.last_execution or quote.ask or quote.bid or planned)
+    return price, abs((price - planned) / max(planned, 0.01)) * 10_000.0
 
 
 def _proposal_timeframe(proposal: Any) -> str | None:

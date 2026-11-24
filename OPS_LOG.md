@@ -12,6 +12,44 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-11-24 (Tue) — exploration lane: fail fast on an entry the market has already left
+
+- **11-23 session (the focus's first):** no exploration entry. Before 15:30 New York all 52
+  candidates were outside the focus and refused `exploration_lane_focus_only`, as designed; no
+  fault. The IWM 1d momentum_breakout short of 11-20 closed 14:36 UTC, -$216.32.
+- **11-24 16:04 UTC, the first focus signal:** AMD `vwap_reclaim` short 15m, planned 404.69, stop
+  419.76, target 373.04, from the next-tick pass. The execution check refused it 33 s later
+  (`entry_drift_too_large`): AMD was near 398.5, about 150 bps past the plan, and the scan had
+  read that price 363 s before the proposal (kept for the next tick, then a tick with the ledger
+  cycle due). The pass's 3 other kept focus candidates were refused
+  `exploration_lane_pass_time_spent`. No position. AMD was back at 404.95 by 16:53 UTC, so the
+  refusal was right; the lost time was the cost.
+- **Measured on the dashboard's 25 exploration proposals of 11-16 to 11-24:** 23 came from the
+  next-tick pass. The scan's price was 65 to 384 s old when the proposal was made (91 to 165 s
+  after one tick; 290 to 385 s when a ledger cycle came between), and the execution check judged
+  it about 30 s after that. 6 met `entry_drift_too_large`: 4 of the 8 shorts (CRM 11-17, AMD and
+  NVDA 11-20, AMD 11-24) and 2 longs that market direction also refused; their prices were 91 to
+  363 s old. Each took about 33 s of a pass whose entry window is 60 s.
+- **Change (paper exploration lane only):** rule 7 fails fast. Just before the unattended-path
+  check the lane reads one fresh quote through `ExecutionCoordinator.planned_entry_drift_bps`
+  (the execution check's own quote source, its formula, now shared as `quote_entry_drift`, and
+  its limit `execution_max_entry_drift_bps`, 35 bps) and refuses a drifted candidate itself:
+  `exploration_lane_entry_drifted` in the funnel, run log `exploration_entry_drifted` with the
+  bps. The pass then goes on to its next candidate. At most 5 such reads a pass; a quote that
+  cannot be read or judged refuses nothing. No gate is loosened: the execution check is
+  unchanged and still judges every proposal on its own later quote, so an entry must now be
+  within the limit at both reads. No setting changed.
+- **Tests:** tests/test_exploration_entry_drift.py (12 cases); with the lane, pass, deferred,
+  focus, coordinator-routing and architecture tests, 169 passed. The full suite's result is in
+  the deploy line.
+- **Still open (operator):** the drifted signals themselves stay lost. Options: (A) read the
+  signal again on fresh bars just before the entry (a one-symbol scan of the kept key; no gate
+  changes; needs tick-time work), (B) let a late entry through when reward to risk at the fresh
+  price still meets the minimum (changes the drift guard: operator yes needed), (C) leave it.
+- **Also 11-24:** DIS `inside_bar_narrow_range_breakout` 1d exploration long opened 20:40 UTC
+  (60 shares at 122.04, stop 117.86, target 130.44), after the 15:30 New York cut-off, as
+  designed. No eToro trade; no safety event.
+
 ## 2026-11-23 (Mon) — Live Scorecard timing out: run_logs indexed; exploration focus deployed
 
 - **Daily safety check 04:41 UTC:** bot alive (scheduler and guard heartbeats fresh, reconciliation
