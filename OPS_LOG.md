@@ -40,8 +40,8 @@ without explicit operator sign-off recorded here.
   unchanged and still judges every proposal on its own later quote, so an entry must now be
   within the limit at both reads. No setting changed.
 - **Tests:** tests/test_exploration_entry_drift.py (12 cases); with the lane, pass, deferred,
-  focus, coordinator-routing and architecture tests, 169 passed. The full suite's result is in
-  the deploy line.
+  focus, coordinator-routing and architecture tests, 169 passed. Full suite on `0df4249`: 2,160
+  passed, 6 skipped (5 need a Postgres URL; 1 needs a commit a shallow clone does not have).
 - **Still open (operator):** the drifted signals themselves stay lost. Options: (A) read the
   signal again on fresh bars just before the entry (a one-symbol scan of the kept key; no gate
   changes; needs tick-time work), (B) let a late entry through when reward to risk at the fresh
