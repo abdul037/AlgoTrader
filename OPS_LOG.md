@@ -59,7 +59,7 @@ without explicit operator sign-off recorded here.
   runs the intraday scan with the same scan stop; a tick at 97.5 s defers it and still runs
   swing; the backstop passes a late intraday scan and stops a swing scan; a paused tick; real
   maintenance names its steps) and the window tests in `tests/test_cadence_budget.py` and
-  `tests/test_workflow_service.py` moved from 72 to 97 s. Full suite: still running when this was committed; result in the follow-up commit.
+  `tests/test_workflow_service.py` moved from 72 to 97 s. Full suite: 2,171 passed, 6 skipped (5 need a Postgres URL, 1 a commit missing from the shallow clone).
 - **Next:** Thursday 11-26 is Thanksgiving (no session); Friday 11-27 closes 18:00 UTC. Read the
   `cadence_tick` lines then: whether the intraday scan starts, and which maintenance step is
   slow. If quiet ticks still reach it after 97 s, the next change is to that step, not to the
