@@ -68,10 +68,28 @@ without explicit operator sign-off recorded here.
   running with no error, `/workflow/health` ok with no blocker. The first tick's line is in the
   Railway log: `cadence_tick total=5.9s deferred=- steps=flatten@0.0+0.2 max_hold@0.2+0.1
   deferred_exploration@1.5+0.0 open_shadow@5.9+0.0`.
+- **What the new lines showed in the first 45 minutes (after hours):**
+  - Maintenance was skipped ("a prior run is still active") on every tick from 21:23 to 21:29
+    UTC: the old container was stopped during a maintenance run it began at 21:19:47 and its
+    lock stayed. Maintenance resumed with the tick that began 21:30:26, about 10.7 minutes
+    later. No reconciliation, ledger cycle or open-signal check ran in between (market closed).
+  - That first run took 351.4 s: ledger cycle 63.8 s, Alpaca reconciliation 185.6 s, demote
+    refresh 65.0 s, the rest as usual. The worker recorded a 240 s `workflow_cadence` timeout at
+    21:34:26 UTC; the thread finished at 21:36:17; no restart, no safety event. The 11-24
+    timeout (22:07:38, tick begun 22:03:38, 10 minutes after that boot) has the same shape, so
+    the one timeout after each of the last two deploys is the first maintenance run after the
+    lock left by the stopped container, not the fail-fast read and not a scan.
+  - Steady state, 10 maintenance ticks 21:36 to 22:06 UTC: Alpaca reconciliation 30.7 to 47.1 s
+    (60.5 s once), strategy health 7.4 to 7.8 s, RL proposal check 8.0 to 8.1 s, demote refresh
+    4.8 to 5.4 s (29.7 s once), execution queue 3.0 to 3.8 s, learning 1.8 s, open-signal check
+    17.1 to 38.5 s when due, ledger cycle 31.6 to 31.7 s when due; about 5 s before the first
+    step and 6 s after the last. A quiet tick ends maintenance 71 to 78 s in.
+  - So the Alpaca reconciliation (96 orders, 3 positions seen) is the slow step: about half of
+    a quiet maintenance run, on every tick that runs maintenance.
 - **Next:** Thursday 11-26 is Thanksgiving (no session); Friday 11-27 closes 18:00 UTC. Read the
-  `cadence_tick` lines then: whether the intraday scan starts, and which maintenance step is
-  slow. If quiet ticks still reach it after 97 s, the next change is to that step, not to the
-  window.
+  `cadence_tick` lines then: whether the intraday scan starts on the quiet ticks. Before
+  that: find why one reconciliation takes 30 to 47 s (and 185 s on the first run after a
+  boot), since that step decides how many ticks are quiet enough.
 
 ## 2026-11-24 (Tue) — exploration lane: fail fast on an entry the market has already left
 
