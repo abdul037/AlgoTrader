@@ -86,6 +86,23 @@ without explicit operator sign-off recorded here.
     step and 6 s after the last. A quiet tick ends maintenance 71 to 78 s in.
   - So the Alpaca reconciliation (96 orders, 3 positions seen) is the slow step: about half of
     a quiet maintenance run, on every tick that runs maintenance.
+- **Why every step is slow (22:15 UTC):** the Railway service runs in `sfo` (US West) and the
+  Supabase database is in `ap-southeast-2` (Sydney). Each repository call is a pool pre-ping,
+  a begin, the statement and a commit, four trips across the Pacific: `/health/ready` (one
+  database check) answers about 0.6 s later than `/version` (none), measured 4 times
+  (0.62 to 0.70 s against 0.06 to 0.10 s after TLS). The step times are multiples of that and
+  barely vary (learning jobs 0.6 s, learning schedule 1.2 s, execution queue 3.0 s, RL check
+  8.0 s every tick), which is latency, not load. In the reconciliation the rolling refresh
+  (1/12 of about 300 order and execution rows per sweep, one call each) is about half of the
+  30 to 47 s; after a boot the 150 unknown-row writes are the 185 s.
+  `WORKFLOW_LOCK_TIMEOUT_MINUTES` is set in Railway, which is why the lock left by a stopped
+  container clears after about 10 minutes and not the 45-minute default.
+- **Not changed:** no infrastructure or database-layer change was made. Options put to the
+  operator: (A) move the database to a US region next to the bot (a new Supabase project and a
+  data copy; Supabase cannot move a project in place), which would take a call from about
+  0.6 s to a few hundredths; (B) fewer trips per call in code (reconciliation writes in one
+  transaction, pre-ping only on idle connections), untestable here against Postgres; (C) a
+  slower rolling refresh, which thins a safety net and needs the operator's yes.
 - **Next:** Thursday 11-26 is Thanksgiving (no session); Friday 11-27 closes 18:00 UTC. Read the
   `cadence_tick` lines then: whether the intraday scan starts on the quiet ticks. Before
   that: find why one reconciliation takes 30 to 47 s (and 185 s on the first run after a
@@ -2044,6 +2061,9 @@ Convened locally over the 31 unreviewed commits (`0a12efe..2575a1b`) plus the we
 - post_earnings_drift: an earnings-history source (with an as-of-date provider), or leave it
   inert. The simulated (non-broker) paper ledger still ignores `max_hold_bars`; production has
   no simulated positions (all 37 rows are Alpaca-backed on 11-07).
+- Decide where the database lives: the bot is in Railway `sfo`, the database in Supabase
+  `ap-southeast-2` (Sydney); every database call costs about 0.6 s (found 2026-11-25). A US
+  region next to the bot needs a new Supabase project and a data copy.
 - Turn Telegram on in Railway (`TELEGRAM_ENABLED=true`, `TELEGRAM_BOT_TOKEN`,
   `TELEGRAM_CHAT_ID`); nothing the bot sends reaches the operator until then.
 - Queued builds: "close all live" command; cost
