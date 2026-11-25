@@ -1,7 +1,7 @@
 """One log line per cadence tick (app/workflow/tick_trace.py) and the intraday scan's later
 start (app/workflow/cadence_budget.py), both 2026-11-25.
 
-On 11-25 the intraday scan did not run once: it had to start by 72 s into the tick and the quiet
+On 11-25 the intraday scan ran once in 3 hours: it had to start by 72 s into the tick and the quiet
 ticks reached it at 78-81 s, after 64-68 s of maintenance whose slow step the schedule endpoints
 could not name. The scan may now start up to 97 s in, and every tick logs where its time went.
 """

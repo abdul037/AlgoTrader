@@ -12,7 +12,7 @@ without explicit operator sign-off recorded here.
 
 ---
 
-## 2026-11-25 (Wed) — one cadence timeout after the 11-24 deploy; intraday scan starved all session
+## 2026-11-25 (Wed) — one cadence timeout after the 11-24 deploy; intraday scan ran once in 3 hours
 
 - **Daily safety check 04:42 UTC:** bot alive on `b7bf67c` (ready, scheduler heartbeat fresh,
   reconciliation ok 04:40, no halt, no breaker, paper mode, real trading off); no safety event
@@ -24,11 +24,13 @@ without explicit operator sign-off recorded here.
   focus key is intraday (`intraday_entry_too_late`) and, with 4 exploration positions open, every
   other key meets `focus_reserve`; both are refused before the read. Read as the restart's
   first long maintenance pass. Watch the 11-25 session for a repeat.
-- **The intraday scan did not run once in the 11-25 session.** `intraday_rotation` last ran
-  11-24 20:18:55 UTC (27 s for the whole bucket); the active-mover shortlist is from 20:18:53;
-  `/workflow/health` reports `scheduler_bucket_stale:intraday_rotation`. So the exploration
-  focus (intraday 5m/10m/15m keys) had no candidate all day. No safety event, no cadence
-  timeout in the session, worker running, reconciliation ok.
+- **The intraday scan ran once in the first 3 hours of its 11-25 window** (15:00 to 20:30
+  UTC, a slot every 15 minutes): at 17:12:09 UTC, 57 s for the whole bucket, no proposal.
+  Until then `intraday_rotation` had last run 11-24 20:18:55 UTC (27 s), the active-mover
+  shortlist was from 20:18:53, and `/workflow/health` reported
+  `scheduler_bucket_stale:intraday_rotation` (clear at 17:53). So the exploration focus
+  (intraday 5m/10m/15m keys) had one scan's candidates in that time. No safety event, no
+  cadence timeout in the session, worker running, reconciliation ok.
 - **Why (read from `/workflow/schedule` and `/health/ready`, 15:57 to 16:06 UTC):** a tick
   admits the intraday scan only while 3 s guard + 10 s setup + 35 s shortlist refresh + a 45 s
   minimum scan still fit before the scan stop at 165 s, that is up to 72 s into the tick (87 s

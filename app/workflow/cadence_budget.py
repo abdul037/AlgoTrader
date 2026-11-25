@@ -66,8 +66,8 @@ INTRADAY_PRESTART_SECONDS = 35.0
 MIN_USEFUL_SCAN_SECONDS = 45.0
 # The intraday scan is one short explicit batch (its whole bucket ran in 27 s on 11-24), so a
 # shorter window is still worth starting. 2026-11-25: with 45 s it had to start by 72 s into the
-# tick, the quiet ticks reached it at 78-81 s (maintenance alone 64-68 s), and it did not run once
-# all session. With 20 s it may start up to 97 s in; the scan stop and the reserve do not move.
+# tick, the quiet ticks reached it at 78-81 s (maintenance alone 64-68 s), and it ran once in 3
+# hours. With 20 s it may start up to 97 s in; the scan stop and the reserve do not move.
 INTRADAY_MIN_SCAN_SECONDS = 20.0
 _INTRADAY = {"intraday_rotation", "intraday_scan"}  # the bucket's name and its task's
 

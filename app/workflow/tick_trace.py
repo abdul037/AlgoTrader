@@ -1,7 +1,7 @@
 """Where one ``workflow_cadence`` tick spent its seconds: one log line per tick (2026-11-25).
 
-On 11-25 the intraday scan did not run once: every tick reached it after its admission window
-had closed. The schedule endpoints showed that maintenance took 64-68 s on a quiet tick, but not
+On 11-25 the intraday scan ran once in 3 hours: almost every tick reached it after its admission
+window had closed. The schedule endpoints showed maintenance taking 64-68 s on a quiet tick, not
 which of its steps did, because the per-step events go to the run-log table only. This writes
 one line to the process log per tick, for example::
 

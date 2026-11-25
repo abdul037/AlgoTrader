@@ -639,7 +639,7 @@ def test_cadence_budget_keeps_the_post_scan_reserve_inside_the_job_timeout(tmp_p
     now["t"] = 107.1
     assert not budget.admits("swing_hourly", settings)
     # Intraday also pays the ~30 s active-mover refresh before its guard, but its short batch
-    # needs only a 20 s scan (11-25: with 45 s the limit was 72 s and it never ran) -> up to 97 s.
+    # needs only a 20 s scan (11-25: with 45 s the limit was 72 s, one run in 3 hours) -> up to 97 s.
     now["t"] = 97.0
     assert budget.admits("intraday_rotation", settings)
     now["t"] = 97.1

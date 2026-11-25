@@ -108,7 +108,7 @@ def test_a_late_step_that_would_overrun_is_logged_and_stays_due(tmp_path, monkey
 
 
 def test_the_intraday_minimum_is_shorter_and_the_backstop_agrees(tmp_path, monkeypatch) -> None:
-    """11-25: the intraday scan never started (72 s limit, reached at 78-81 s). Only its minimum
+    """11-25: the intraday scan ran once in 3 hours (72 s limit, reached at 78-81 s). Only its minimum
     scan changed: the scan stop and the post-scan reserve are where they were."""
 
     now = _clock(monkeypatch)
