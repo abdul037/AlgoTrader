@@ -12,7 +12,7 @@ without explicit operator sign-off recorded here.
 
 ---
 
-## 2026-11-25 (Wed) — one cadence timeout after the 11-24 deploy; intraday scan ran once in 3 hours
+## 2026-11-25 (Wed) — one cadence timeout after the 11-24 deploy; intraday scan ran twice all session
 
 - **Daily safety check 04:42 UTC:** bot alive on `b7bf67c` (ready, scheduler heartbeat fresh,
   reconciliation ok 04:40, no halt, no breaker, paper mode, real trading off); no safety event
@@ -24,12 +24,13 @@ without explicit operator sign-off recorded here.
   focus key is intraday (`intraday_entry_too_late`) and, with 4 exploration positions open, every
   other key meets `focus_reserve`; both are refused before the read. Read as the restart's
   first long maintenance pass. Watch the 11-25 session for a repeat.
-- **The intraday scan ran once in the first 3 hours of its 11-25 window** (15:00 to 20:30
-  UTC, a slot every 15 minutes): at 17:12:09 UTC, 57 s for the whole bucket, no proposal.
-  Until then `intraday_rotation` had last run 11-24 20:18:55 UTC (27 s), the active-mover
+- **The intraday scan ran twice in its 11-25 window** (15:00 to 20:30 UTC, a slot every 15
+  minutes, 22 slots): at 17:12:09 UTC (57 s for the whole bucket) and 18:55:43 (64 s), no
+  proposal; once in the first 3 hours. Until 17:12 `intraday_rotation` had last run 11-24
+  20:18:55 UTC (27 s), the active-mover
   shortlist was from 20:18:53, and `/workflow/health` reported
   `scheduler_bucket_stale:intraday_rotation` (clear at 17:53). So the exploration focus
-  (intraday 5m/10m/15m keys) had one scan's candidates in that time. No safety event, no
+  (intraday 5m/10m/15m keys) had two scans' candidates all day. No safety event, no
   cadence timeout in the session, worker running, reconciliation ok.
 - **Why (read from `/workflow/schedule` and `/health/ready`, 15:57 to 16:06 UTC):** a tick
   admits the intraday scan only while 3 s guard + 10 s setup + 35 s shortlist refresh + a 45 s
@@ -41,7 +42,7 @@ without explicit operator sign-off recorded here.
   minutes apart. On 11-23 and 11-24 the scan had run in about half of its 15-minute slots.
   Which maintenance step takes the 64 to 68 s, and why 11-25 was slower than 11-24, is not
   known: the per-step events go to the run-log table only.
-- **Built 11-25, deployed after the close (not during the session):**
+- **Built 11-25, pushed to the deploy branch 21:12 UTC, after the close:**
   1. `INTRADAY_MIN_SCAN_SECONDS = 20` in `app/workflow/cadence_budget.py`, used for the
      intraday bucket's admission and for its backstop in `run_scan_task`
      (`scan_fits(task)`). The intraday scan may now start up to 97 s into a tick (132 s with
