@@ -638,10 +638,11 @@ def test_cadence_budget_keeps_the_post_scan_reserve_inside_the_job_timeout(tmp_p
     assert budget.admits("swing_hourly", settings)
     now["t"] = 107.1
     assert not budget.admits("swing_hourly", settings)
-    # Intraday also pays the ~30 s active-mover refresh before its guard -> up to 72 s.
-    now["t"] = 72.0
+    # Intraday also pays the ~30 s active-mover refresh before its guard, but its short batch
+    # needs only a 20 s scan (11-25: with 45 s the limit was 72 s and it never ran) -> up to 97 s.
+    now["t"] = 97.0
     assert budget.admits("intraday_rotation", settings)
-    now["t"] = 72.1
+    now["t"] = 97.1
     assert not budget.admits("intraday_rotation", settings)
     # The backstop in run_scan_task (guard already paid) agrees: a swing admitted at
     # 107 s still fits when it reaches run_scan_task ~3 s later.
@@ -671,7 +672,7 @@ def test_cadence_admits_by_bucket_cost_and_scan_stops_for_the_reserve(tmp_path, 
     monkeypatch.setattr(workflow, "_bucket_due", lambda name: name in {"maintenance", "intraday_rotation", "swing_hourly"})
     workflow.run_scheduled_tasks()
 
-    # Intraday (needs ~90 s before a useful scan) is deferred; swing (~55 s) still runs.
+    # Intraday (needs ~68 s before a useful scan) is deferred; swing (~58 s) still runs.
     deferred = [payload for event, payload in logs.items if event == "workflow_cadence_deferred"]
     assert deferred and deferred[0]["deferred_buckets"] == ["intraday_rotation"]
     assert len(screener.calls) == 1

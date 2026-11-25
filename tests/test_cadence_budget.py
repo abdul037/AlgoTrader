@@ -21,10 +21,14 @@ def test_admission_windows_follow_bucket_cost(tmp_path, monkeypatch) -> None:
     off = make_settings(tmp_path / "off", intraday_active_mover_shortlist_enabled=False)
     budget = cb.CadenceBudget.for_tick(on, 0.0)
     for t, swing, intraday_on, intraday_off in [
-        (72.0, True, True, True),  # 87 / 122 s until the post-scan reserve went 60 -> 75 s (11-10)
-        (72.1, True, False, True),
-        (107.0, True, False, True),
-        (107.1, False, False, False),
+        (72.0, True, True, True),  # the intraday limit until 11-25, with the 45 s minimum scan
+        (81.0, True, True, True),  # where the quiet ticks of 11-25 reached the scans (78-81 s)
+        (97.0, True, True, True),  # 165 s scan stop - 48 s pre-work - the 20 s intraday minimum
+        (97.1, True, False, True),
+        (107.0, True, False, True),  # swing: 165 - 13 - 45 (122 s until the reserve went 60 -> 75)
+        (107.1, False, False, True),
+        (132.0, False, False, True),  # intraday without the shortlist refresh: 165 - 13 - 20
+        (132.1, False, False, False),
     ]:
         now["t"] = t
         assert budget.admits("swing_hourly", on) is swing, t
@@ -101,3 +105,34 @@ def test_a_late_step_that_would_overrun_is_logged_and_stays_due(tmp_path, monkey
     assert logged == [("maintenance_step_deferred", {"step": "daily_summary"})]
     del service._tick_started_at  # a manual maintenance run: no tick, no deferral
     assert cb.CadenceBudget.late_step_runs(service, "open_signal_check")
+
+
+def test_the_intraday_minimum_is_shorter_and_the_backstop_agrees(tmp_path, monkeypatch) -> None:
+    """11-25: the intraday scan never started (72 s limit, reached at 78-81 s). Only its minimum
+    scan changed: the scan stop and the post-scan reserve are where they were."""
+
+    now = _clock(monkeypatch)
+    settings = make_settings(tmp_path, intraday_active_mover_shortlist_enabled=True)
+    budget = cb.CadenceBudget.for_tick(settings, 0.0)
+    assert budget.scan_stop_at == 165.0 and cb.POST_SCAN_RESERVE_SECONDS == 75.0
+    assert cb.min_scan_seconds("intraday_rotation") == cb.INTRADAY_MIN_SCAN_SECONDS == 20.0
+    assert cb.min_scan_seconds("intraday_scan") == 20.0  # the task name run_scan_task passes
+    for name in ("swing_hourly", "swing_scan", "premarket_scan", "crypto_rotation", None):
+        assert cb.min_scan_seconds(name) == cb.MIN_USEFUL_SCAN_SECONDS == 45.0
+    # Admitted at the limit, then the shortlist refresh and the guard at their budgeted cost:
+    # the backstop in run_scan_task still passes it (and not a second later).
+    at_backstop = 97.0 + cb.INTRADAY_PRESTART_SECONDS + cb.GUARD_SETUP_SECONDS
+    now["t"] = at_backstop
+    assert budget.scan_fits("intraday_scan")
+    assert not budget.scan_fits("swing_scan") and not budget.scan_fits()
+    now["t"] = at_backstop + 0.1
+    assert not budget.scan_fits("intraday_scan")
+    now["t"] = 110.0  # every other task keeps the 45 s minimum
+    assert budget.scan_fits("swing_scan") and budget.scan_fits()
+    now["t"] = 110.1
+    assert not budget.scan_fits("swing_scan") and not budget.scan_fits()
+    legacy = cb.CadenceBudget.for_tick(
+        make_settings(tmp_path / "legacy", scheduler_cadence_soft_budget_seconds=100.0), 0.0
+    )
+    now["t"] = 500.0
+    assert legacy.scan_fits("intraday_scan") and legacy.scan_fits()  # legacy mode: no backstop

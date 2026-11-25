@@ -34,7 +34,7 @@ def run_scan_task(
     from app.workflow.swing_focus import advance_symbols, focused_spec_batch, rotate_symbols
 
     budget = current_budget()  # set only inside a scheduled cadence tick
-    if budget is not None and not budget.scan_fits():
+    if budget is not None and not budget.scan_fits(task):
         # Before the spec batch and swing cursors move; run_intraday_scan restores its offset.
         service.run_logs.log("workflow_scan_budget_deferred", {"task": task, **budget.describe()})
         return WorkflowTaskResponse(

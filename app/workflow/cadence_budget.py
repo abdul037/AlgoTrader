@@ -64,6 +64,18 @@ SCAN_SETUP_SECONDS = 10.0
 INTRADAY_PRESTART_SECONDS = 35.0
 # Below this a scan reaches too few symbol/spec pairs to be worth its fixed costs.
 MIN_USEFUL_SCAN_SECONDS = 45.0
+# The intraday scan is one short explicit batch (its whole bucket ran in 27 s on 11-24), so a
+# shorter window is still worth starting. 2026-11-25: with 45 s it had to start by 72 s into the
+# tick, the quiet ticks reached it at 78-81 s (maintenance alone 64-68 s), and it did not run once
+# all session. With 20 s it may start up to 97 s in; the scan stop and the reserve do not move.
+INTRADAY_MIN_SCAN_SECONDS = 20.0
+_INTRADAY = {"intraday_rotation", "intraday_scan"}  # the bucket's name and its task's
+
+
+def min_scan_seconds(name: str | None) -> float:
+    """The shortest scan worth starting for a bucket or task name."""
+
+    return INTRADAY_MIN_SCAN_SECONDS if name in _INTRADAY else MIN_USEFUL_SCAN_SECONDS
 
 _local = threading.local()
 
@@ -106,7 +118,7 @@ class CadenceBudget:
             getattr(settings, "intraday_active_mover_shortlist_enabled", False)
         ):
             prestart += INTRADAY_PRESTART_SECONDS
-        return self.scan_seconds_left(prestart) >= MIN_USEFUL_SCAN_SECONDS
+        return self.scan_seconds_left(prestart) >= min_scan_seconds(bucket_name)
 
     @staticmethod
     def late_step_runs(service: Any, step: str) -> bool:
@@ -120,12 +132,13 @@ class CadenceBudget:
         service.run_logs.log("maintenance_step_deferred", {"step": step})
         return False
 
-    def scan_fits(self) -> bool:
-        """Backstop in run_scan_task, where the bucket's real pre-work is already spent."""
+    def scan_fits(self, task: str | None = None) -> bool:
+        """Backstop in run_scan_task, where the bucket's real pre-work is already spent
+        (``task`` picks the same minimum scan that admitted its bucket)."""
 
         if not self.enforces_scan_stop:
             return True
-        return self.scan_seconds_left(SCAN_SETUP_SECONDS) >= MIN_USEFUL_SCAN_SECONDS
+        return self.scan_seconds_left(SCAN_SETUP_SECONDS) >= min_scan_seconds(task)
 
     def describe(self) -> dict[str, float]:
         return {

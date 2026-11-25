@@ -52,6 +52,7 @@ from app.workflow.schedule import (
     schedule_zone,
 )
 from app.workflow.swing_focus import swing_interval_minutes
+from app.workflow.tick_trace import end_tick, start_tick, step
 
 
 class LedgerRecordingError(RuntimeError):
@@ -109,9 +110,9 @@ class SignalWorkflowService:
 
     def run_scheduled_tasks(self) -> dict[str, int]:
         summary = {"alerts_sent": 0, "closed_signals": 0, "ledger_cycles": 0, "buckets_run": 0}
-        started_at = self._tick_started_at = time.monotonic()  # the budget counts maintenance too
-        flatten_intraday_before_close(self)  # risk-reducing, so it runs even while paused
-        close_held_past_max_hold(self)  # a strategy's time stop (1d max_hold_bars), also while paused
+        started_at = self._tick_started_at = start_tick(time.monotonic())  # the budget counts maintenance too
+        step("flatten", flatten_intraday_before_close, self)  # risk-reducing, so it runs even while paused
+        step("max_hold", close_held_past_max_hold, self)  # a strategy's time stop (1d max_hold_bars), also while paused
         if self.automation is not None:
             blockers = self.automation.scan_blockers()
             if blockers and try_auto_recover(self, blockers):  # paper-only breaker self-healing
@@ -120,11 +121,11 @@ class SignalWorkflowService:
                 self.run_logs.log("workflow_scheduler_paused", {"blockers": blockers})
                 for bucket_name in self.SCAN_BUCKETS:
                     self._record_bucket_state(bucket_name, status="paused", error=",".join(blockers))
-                return summary
+                return end_tick(summary, ["paused"])
 
-        run_deferred_exploration(self)  # paper exploration a full scan left no time for (11-13)
+        step("deferred_exploration", run_deferred_exploration, self)  # paper exploration a full scan left no time for (11-13)
         if self._bucket_due("maintenance"):
-            result = self.run_maintenance(notify=True)
+            result = step("maintenance", self.run_maintenance, notify=True)
             if result.status == "ok":
                 summary["alerts_sent"] += result.alerts_sent
                 summary["closed_signals"] += result.closed_signals
@@ -132,7 +133,7 @@ class SignalWorkflowService:
                 summary["buckets_run"] += 1
 
         if not self.settings.screener_scheduler_enabled:
-            return summary
+            return end_tick(summary)
 
         # Budget-aware dispatch: app/workflow/cadence_budget.py (the 10-07..10-09 timeouts).
         budget = CadenceBudget.for_tick(self.settings, started_at)
@@ -144,14 +145,14 @@ class SignalWorkflowService:
                 deferred.append(bucket_name)
                 continue
             with tick_budget(budget):
-                result = self.run_bucket(bucket_name, notify=True, force_refresh=bucket_name in {"premarket_scan", "market_open_scan", "end_of_day_scan"})
+                result = step(bucket_name, self.run_bucket, bucket_name, notify=True, force_refresh=bucket_name in {"premarket_scan", "market_open_scan", "end_of_day_scan"})
             summary["alerts_sent"] += result.alerts_sent
             if result.status == "ok":
                 summary["buckets_run"] += 1
         if deferred and budget is not None:
             self.run_logs.log("workflow_cadence_deferred", {"deferred_buckets": deferred, **budget.describe()})
-        run_open_shadow(self, started_at=started_at, deferred=deferred)  # Phase 3 shadow: last; never raises
-        return summary
+        step("open_shadow", run_open_shadow, self, started_at=started_at, deferred=deferred)  # Phase 3 shadow: last; never raises
+        return end_tick(summary, deferred)
 
     def run_premarket_scan(self, *, notify: bool = True, force_refresh: bool = False) -> WorkflowTaskResponse:
         return self._execute_guarded(
@@ -219,7 +220,7 @@ class SignalWorkflowService:
 
     def run_intraday_scan(self, *, notify: bool = True, force_refresh: bool = False) -> WorkflowTaskResponse:
         prior_offset = self.runtime_state.get("workflow:intraday_scan_offset")
-        symbols = self._intraday_scan_symbols()  # advances the offset
+        symbols = step("intraday_symbols", self._intraday_scan_symbols)  # advances the offset
         result = self._execute_guarded(
             "intraday_scan",
             lambda: self._run_scan_task(
@@ -260,10 +261,7 @@ class SignalWorkflowService:
         )
 
     def send_daily_summary(self, *, notify: bool = True) -> WorkflowTaskResponse:
-        return self._execute_guarded(
-            "daily_summary",
-            lambda: self._send_daily_summary_impl(notify=notify),
-        )
+        return self._execute_guarded("daily_summary", lambda: self._send_daily_summary_impl(notify=notify))
 
     def run_ledger_cycle(self) -> WorkflowTaskResponse:
         return self._execute_guarded(
@@ -280,14 +278,14 @@ class SignalWorkflowService:
             errors: list[str] = []
 
             if self._ledger_cycle_due():
-                result = self.run_ledger_cycle()
+                result = step("ledger_cycle", self.run_ledger_cycle)
                 completed.append("ledger_cycle")
                 errors.extend(result.errors)
             if self.reconciliation is not None and self._is_due(
                 "reconciliation:last_run_at",
                 max(int(getattr(self.settings, "alpaca_reconciliation_interval_seconds", 60)) // 60, 1),
             ):
-                reconciliation = self.reconciliation.reconcile()
+                reconciliation = step("alpaca_reconciliation", self.reconciliation.reconcile)
                 completed.append("alpaca_reconciliation")
                 if reconciliation.get("status") == "error":
                     errors.extend(list(reconciliation.get("issues") or []))
@@ -295,31 +293,31 @@ class SignalWorkflowService:
                 "etoro_demo_reconciliation:last_run_at",
                 max(int(getattr(self.settings, "alpaca_reconciliation_interval_seconds", 60)) // 60, 1),
             ):
-                reconciliation = self.etoro_reconciliation.reconcile()
+                reconciliation = step("etoro_demo_reconciliation", self.etoro_reconciliation.reconcile)
                 completed.append("etoro_demo_reconciliation")
                 if reconciliation.get("status") == "error":
                     errors.extend(list(reconciliation.get("issues") or []))
             # Refresh the auto-demote set (observe-only unless the flag is set).
             if self._is_due("strategy_demote:last_run_at", 15):
-                refresh_demoted_strategies(self, completed, errors)
+                step("strategy_demote", refresh_demoted_strategies, self, completed, errors)
             if self.auto_trading is not None:
-                health = self.auto_trading.refresh_strategy_health()
+                health = step("strategy_health", self.auto_trading.refresh_strategy_health)
                 if health:
                     completed.append("strategy_health")
-                processed = self.auto_trading.process_ready_queue()
+                processed = step("execution_queue", self.auto_trading.process_ready_queue)
                 if processed:
                     completed.append("auto_execution_queue")
             if self.learning is not None:
-                scheduled = self.learning.schedule_due_jobs()
+                scheduled = step("learning_schedule", self.learning.schedule_due_jobs)
                 if scheduled:
                     completed.append("learning_jobs_scheduled")
-                processed_learning = self.learning.process_jobs(limit=10)
+                processed_learning = step("learning_jobs", self.learning.process_jobs, limit=10)
                 if processed_learning:
                     completed.append("learning_jobs_processed")
             if self.rl_policy is not None:
                 if bool(getattr(self.settings, "rl_policy_training_enabled", False)) and self._rl_policy_training_due():
                     try:
-                        policy = self.rl_policy.train()
+                        policy = step("rl_train", self.rl_policy.train)
                         completed.append("rl_policy_training")
                         self.runtime_state.set("rl_policy:last_train_at", utc_now().isoformat())
                         if getattr(policy, "blockers", None):
@@ -329,7 +327,7 @@ class SignalWorkflowService:
                         self.run_logs.log("rl_policy_training_error", {"error": str(exc)})
                 if bool(getattr(self.settings, "rl_policy_paper_proposals_enabled", False)):
                     try:
-                        proposal = self.rl_policy.propose()
+                        proposal = step("rl_propose", self.rl_policy.propose)
                         completed.append("rl_policy_proposal_check")
                         if getattr(proposal, "status", "") == "queued":
                             completed.append("rl_policy_proposal_queued")
@@ -337,13 +335,13 @@ class SignalWorkflowService:
                         errors.append(f"rl_policy_proposal:{exc}")
                         self.run_logs.log("rl_policy_proposal_error", {"error": str(exc)})
             if self._is_due("workflow:last_open_signal_check_at", self.settings.open_signal_check_interval_minutes) and CadenceBudget.late_step_runs(self, "open_signal_check"):
-                result = self.check_open_signals(notify=notify)
+                result = step("open_signal_check", self.check_open_signals, notify=notify)
                 completed.append("open_signal_check")
                 alerts_sent += result.alerts_sent
                 closed_signals += result.closed_signals
                 errors.extend(result.errors)
             if self._daily_summary_due() and CadenceBudget.late_step_runs(self, "daily_summary"):
-                result = self.send_daily_summary(notify=notify)
+                result = step("daily_summary", self.send_daily_summary, notify=notify)
                 completed.append("daily_summary")
                 alerts_sent += result.alerts_sent
                 errors.extend(result.errors)

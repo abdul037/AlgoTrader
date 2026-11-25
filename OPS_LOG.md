@@ -12,7 +12,7 @@ without explicit operator sign-off recorded here.
 
 ---
 
-## 2026-11-25 (Wed) — one cadence timeout 14 minutes after the 11-24 deploy
+## 2026-11-25 (Wed) — one cadence timeout after the 11-24 deploy; intraday scan starved all session
 
 - **Daily safety check 04:42 UTC:** bot alive on `b7bf67c` (ready, scheduler heartbeat fresh,
   reconciliation ok 04:40, no halt, no breaker, paper mode, real trading off); no safety event
@@ -24,6 +24,46 @@ without explicit operator sign-off recorded here.
   focus key is intraday (`intraday_entry_too_late`) and, with 4 exploration positions open, every
   other key meets `focus_reserve`; both are refused before the read. Read as the restart's
   first long maintenance pass. Watch the 11-25 session for a repeat.
+- **The intraday scan did not run once in the 11-25 session.** `intraday_rotation` last ran
+  11-24 20:18:55 UTC (27 s for the whole bucket); the active-mover shortlist is from 20:18:53;
+  `/workflow/health` reports `scheduler_bucket_stale:intraday_rotation`. So the exploration
+  focus (intraday 5m/10m/15m keys) had no candidate all day. No safety event, no cadence
+  timeout in the session, worker running, reconciliation ok.
+- **Why (read from `/workflow/schedule` and `/health/ready`, 15:57 to 16:06 UTC):** a tick
+  admits the intraday scan only while 3 s guard + 10 s setup + 35 s shortlist refresh + a 45 s
+  minimum scan still fit before the scan stop at 165 s, that is up to 72 s into the tick (87 s
+  until the post-scan reserve went 60 to 75 s on 11-10). Maintenance runs on every tick (the
+  Alpaca reconciliation is due each minute) and took 64 and 68 s on the two quiet ticks seen;
+  the swing scan, next in line, began 81 s after the tick was dispatched. Ticks with the ledger
+  cycle or the open-signal check (105 open signals) were longer still. Ticks came 3 to 4.7
+  minutes apart. On 11-23 and 11-24 the scan had run in about half of its 15-minute slots.
+  Which maintenance step takes the 64 to 68 s, and why 11-25 was slower than 11-24, is not
+  known: the per-step events go to the run-log table only.
+- **Built 11-25, deployed after the close (not during the session):**
+  1. `INTRADAY_MIN_SCAN_SECONDS = 20` in `app/workflow/cadence_budget.py`, used for the
+     intraday bucket's admission and for its backstop in `run_scan_task`
+     (`scan_fits(task)`). The intraday scan may now start up to 97 s into a tick (132 s with
+     the shortlist off). The scan stop (165 s), the post-scan reserve (75 s), the 240 s job cap
+     and every other bucket's 45 s minimum are unchanged, and no entry rule or risk gate is
+     touched. A scan admitted late has less time; symbols past the stop are not scanned that
+     run, as before.
+  2. `app/workflow/tick_trace.py`: one INFO line per cadence tick in the process log (readable
+     in Railway), `cadence_tick total=… deferred=… steps=name@start+seconds …`, covering the
+     pre-close flatten, the max-hold close, the deferred exploration pass, maintenance and each
+     of its steps (ledger cycle, both reconciliations, demote refresh, strategy health,
+     execution queue, learning, RL, open-signal check, daily summary), each scan bucket, the
+     intraday symbol list and the open shadow. Timing only: results and exceptions pass through,
+     and outside a tick a step is a plain call. A paused tick logs `deferred=paused`.
+  3. `app/workflow/service.py` went 1,039 to 1,037 lines (ceiling lowered to match).
+- **Tests:** `tests/test_tick_trace.py` (10 cases: the trace; the 11-25 quiet tick at 80 s now
+  runs the intraday scan with the same scan stop; a tick at 97.5 s defers it and still runs
+  swing; the backstop passes a late intraday scan and stops a swing scan; a paused tick; real
+  maintenance names its steps) and the window tests in `tests/test_cadence_budget.py` and
+  `tests/test_workflow_service.py` moved from 72 to 97 s. Full suite: still running when this was committed; result in the follow-up commit.
+- **Next:** Thursday 11-26 is Thanksgiving (no session); Friday 11-27 closes 18:00 UTC. Read the
+  `cadence_tick` lines then: whether the intraday scan starts, and which maintenance step is
+  slow. If quiet ticks still reach it after 97 s, the next change is to that step, not to the
+  window.
 
 ## 2026-11-24 (Tue) — exploration lane: fail fast on an entry the market has already left
 
