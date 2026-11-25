@@ -12,6 +12,19 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-11-25 (Wed) — one cadence timeout 14 minutes after the 11-24 deploy
+
+- **Daily safety check 04:42 UTC:** bot alive on `b7bf67c` (ready, scheduler heartbeat fresh,
+  reconciliation ok 04:40, no halt, no breaker, paper mode, real trading off); no safety event
+  in 24 h; paper's 4 positions and eToro's PYPL and SPY unchanged.
+- **One `workflow_cadence` 240 s timeout at 22:07:38 UTC on 11-24** (the tick began about
+  22:03:38, 10 minutes after the 21:53 boot; its ledger cycle ran 22:03:50 to 22:04:51). None
+  in the 6.5 h since, and none in the previous deployment's 40 h (Railway logs, 11-23 05:30 to
+  11-24 21:50). The new fail-fast read cannot have run in that tick: after 15:30 New York every
+  focus key is intraday (`intraday_entry_too_late`) and, with 4 exploration positions open, every
+  other key meets `focus_reserve`; both are refused before the read. Read as the restart's
+  first long maintenance pass. Watch the 11-25 session for a repeat.
+
 ## 2026-11-24 (Tue) — exploration lane: fail fast on an entry the market has already left
 
 - **11-23 session (the focus's first):** no exploration entry. Before 15:30 New York all 52
