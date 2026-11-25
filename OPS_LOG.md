@@ -63,6 +63,11 @@ without explicit operator sign-off recorded here.
   swing; the backstop passes a late intraday scan and stops a swing scan; a paused tick; real
   maintenance names its steps) and the window tests in `tests/test_cadence_budget.py` and
   `tests/test_workflow_service.py` moved from 72 to 97 s. Full suite: 2,171 passed, 6 skipped (5 need a Postgres URL, 1 a commit missing from the shallow clone).
+- **Deployed:** pushed `b7bf67c..636d9e9` at 21:12:39 UTC, live 21:19:52 UTC (Railway deployment
+  `84e35ca1`). `/version` 636d9e9, `/health/ready` ready (database ok, scheduler ok), worker
+  running with no error, `/workflow/health` ok with no blocker. The first tick's line is in the
+  Railway log: `cadence_tick total=5.9s deferred=- steps=flatten@0.0+0.2 max_hold@0.2+0.1
+  deferred_exploration@1.5+0.0 open_shadow@5.9+0.0`.
 - **Next:** Thursday 11-26 is Thanksgiving (no session); Friday 11-27 closes 18:00 UTC. Read the
   `cadence_tick` lines then: whether the intraday scan starts, and which maintenance step is
   slow. If quiet ticks still reach it after 97 s, the next change is to that step, not to the
