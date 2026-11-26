@@ -12,6 +12,14 @@ without explicit operator sign-off recorded here.
 
 ---
 
+## 2026-11-26 (Thu — Thanksgiving, market closed)
+
+- **Daily safety check 04:42 UTC:** bot alive on `636d9e9` (ready, scheduler heartbeat fresh,
+  reconciliation ok 04:41, no halt, no breaker, paper mode, real trading off); no safety event
+  in 24 h. The only worker error is the 21:34 UTC timeout of 11-25 (the first maintenance run
+  after the deploy, logged below); none in the 7 h since. Paper's COST, WMT and DIS and eToro's
+  PYPL and SPY unchanged.
+
 ## 2026-11-25 (Wed) — one cadence timeout after the 11-24 deploy; intraday scan ran twice all session
 
 - **Daily safety check 04:42 UTC:** bot alive on `b7bf67c` (ready, scheduler heartbeat fresh,
