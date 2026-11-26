@@ -36,7 +36,14 @@ without explicit operator sign-off recorded here.
   without the database), but it worked until the first intraday scan of the closed session.
   The bot itself was unaffected: `/health/ready` ready, `/workflow/health` ok, the scorecard
   data served. Fix built: the snapshot sends non-finite numbers as null (`_json_safe`), with a
-  regression test in `tests/test_dashboard.py`. To deploy after 21:00 UTC.
+  regression test in `tests/test_dashboard.py`. The page answered again from 18:53 UTC on
+  its own (the row left the 30 most recent scan decisions it reads).
+- **Deployed:** full suite 2,172 passed, 6 skipped; pushed `636d9e9..ae833ad` at 21:06:36 UTC,
+  live 21:13:33 UTC (Railway deployment `8b7e5780`). `/version` ae833ad, `/health/ready` ready
+  (database ok, scheduler ok), worker running with no error, `/workflow/health` ok with no
+  blocker, `/dashboard/data` 200 (paper mode, real trading off). As after the last two
+  deploys, expect maintenance to be skipped for about 10 minutes and one cadence timeout on
+  its first run.
 
 ## 2026-11-25 (Wed) — one cadence timeout after the 11-24 deploy; intraday scan ran twice all session
 
