@@ -19,6 +19,24 @@ without explicit operator sign-off recorded here.
   in 24 h. The only worker error is the 21:34 UTC timeout of 11-25 (the first maintenance run
   after the deploy, logged below); none in the 7 h since. Paper's COST, WMT and DIS and eToro's
   PYPL and SPY unchanged.
+- **The schedule does not know market holidays** (`is_market_day` is "a weekday"): the swing
+  and intraday scans ran today on yesterday's bars. No entry can follow: the unattended check
+  asks Alpaca's clock (`auto_execution_regular_hours_only`) and the market is closed. No
+  proposal, no trade, positions unchanged. Not changed today; a holiday and half-day calendar
+  for the schedule is a follow-up (Friday's 13:00 New York close has the same gap after 18:00
+  UTC).
+- **The 11-25 intraday window at work (from the `cadence_tick` lines):** the tick of 17:38:28
+  UTC finished maintenance 76.5 s in and admitted `intraday_rotation` at 78.3 s (the old limit
+  was 72 s); the bucket took 75.7 s (symbol list 27.0 s) and the tick 155.1 s. Ticks that
+  reached it at 97.9, 103.4 and 108.3 s deferred it, as designed.
+- **`/dashboard/data` answered 500 from some time after 16:52 UTC** (found 17:53):
+  `ValueError: Out of range float values are not JSON compliant: inf` at
+  `JSONResponse(payload)` in `app/dashboard/routes.py`. One of the rows the snapshot reads
+  holds an infinite number; which row is not known (the endpoint is the only reader available
+  without the database), but it worked until the first intraday scan of the closed session.
+  The bot itself was unaffected: `/health/ready` ready, `/workflow/health` ok, the scorecard
+  data served. Fix built: the snapshot sends non-finite numbers as null (`_json_safe`), with a
+  regression test in `tests/test_dashboard.py`. To deploy after 21:00 UTC.
 
 ## 2026-11-25 (Wed) — one cadence timeout after the 11-24 deploy; intraday scan ran twice all session
 

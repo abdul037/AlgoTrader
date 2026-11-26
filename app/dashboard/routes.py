@@ -7,6 +7,7 @@ read-only (no control-token needed, no mutations) so it is safe to leave open.
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Any
 
@@ -50,6 +51,20 @@ def _safe(fn: Any, default: Any) -> Any:
         return fn()
     except Exception:  # noqa: BLE001 - the dashboard must never 500 on one bad section
         return default
+
+
+def _json_safe(value: Any) -> Any:
+    """``value`` with every non-finite float (inf, -inf, nan) replaced by None. JSON has no
+    such numbers, so one of them anywhere made the whole snapshot a 500 (2026-11-26: an
+    infinite number in a row written by a scan that ran while the market was closed)."""
+
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 def _model_list(items: Any) -> list[dict[str, Any]]:
@@ -164,7 +179,7 @@ def dashboard_data(request: Request) -> JSONResponse:
         "gated_features": gated_features,
         "scan_funnel": scan_funnel,
     }
-    return JSONResponse(payload)
+    return JSONResponse(_json_safe(payload))
 
 
 def _stage3(state: Any) -> dict[str, Any] | None:

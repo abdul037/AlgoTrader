@@ -67,6 +67,38 @@ def test_dashboard_data_snapshot_shape(tmp_path: Path) -> None:
     assert "commit" in data["build"]
 
 
+def test_dashboard_data_survives_non_finite_numbers(tmp_path: Path) -> None:
+    """2026-11-26: a scan that ran while the market was closed stored an infinite number and
+    every /dashboard/data request answered 500 ("Out of range float values are not JSON
+    compliant: inf"). Such numbers are sent as null; everything else is unchanged."""
+
+    from app.dashboard.routes import _json_safe
+
+    inf, nan = float("inf"), float("nan")
+    assert _json_safe({"a": [1.5, inf, -inf, nan, 0.0], "b": (inf, "inf"), "c": {"d": nan}}) == {
+        "a": [1.5, None, None, None, 0.0],
+        "b": [None, "inf"],
+        "c": {"d": None},
+    }
+    assert _json_safe([3, True, None, "x", 2.25]) == [3, True, None, "x", 2.25]
+
+    app = create_app(settings=_settings(tmp_path), enable_background_jobs=False)
+    row = {
+        "symbol": "NVDA",
+        "final_score": nan,
+        "payload": {"relative_volume": inf, "reward_to_risk": 2.4, "levels": [inf, 101.5]},
+    }
+    app.state.scan_decision_repository.list = lambda limit=30: [row]
+    response = TestClient(app).get("/dashboard/data")
+    assert response.status_code == 200
+    (scan,) = response.json()["scans"]
+    assert scan == {
+        "symbol": "NVDA",
+        "final_score": None,
+        "payload": {"relative_volume": None, "reward_to_risk": 2.4, "levels": [None, 101.5]},
+    }
+
+
 def test_version_endpoint(tmp_path: Path) -> None:
     app = create_app(settings=_settings(tmp_path), enable_background_jobs=False)
     client = TestClient(app)
