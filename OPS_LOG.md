@@ -20,6 +20,23 @@ without explicit operator sign-off recorded here.
   minutes after the 21:13 deploy, the first maintenance run after the lock left by the stopped
   container, as after the two deploys before it; none in the 7 h since. Paper's COST, WMT and
   DIS and eToro's PYPL and SPY unchanged.
+- **First session with the 11-25 intraday window (from the `cadence_tick` lines, deployment
+  `8b7e5780`):** `intraday_rotation` ran 8 times between 15:00 and 18:00 UTC (12 slots), at about
+  15:06, 15:30, 15:56, 16:15, 16:35, 16:58, 17:29 and 17:47, against 2 runs in 22 slots on
+  11-25 (the first at 17:12). Every one was admitted between 75.6 and 82.2 s into its tick, past
+  the old 72 s limit. In the first 53 minutes it was deferred on 4 ticks: 3 with the open-signal
+  check (70 s; maintenance 145 to 183 s) and one that reached it a second past 97 s. The bucket
+  took 75 to 152 s (symbol list 27 to 28 s); ticks with it ran 153 to 230 s, the longest 9.5 s
+  inside the 240 s cap. No cadence timeout in the session. Swing was deferred on each of those
+  ticks and ran on others.
+- **Scans:** 10 scans had candidates (5 intraday, 5 swing), 26 candidates in all, every one
+  refused `exploration_lane_focus_only` (none was a focus key). No proposal, no entry, no close.
+  The SPY reserve check ran and bought nothing (eToro cash unchanged at $2,990.20).
+- **After the 13:00 New York close** the schedule kept going (no half-day calendar): an
+  intraday scan ran at about 18:06 UTC. No entry can follow (the Alpaca clock gate).
+- **Still the constraint:** maintenance took 70 to 91 s on quiet ticks (Alpaca reconciliation
+  32 to 49 s, once 66 s) and 145 to 183 s with the open-signal check. Both are database round
+  trips; the database-region decision is with the operator.
 
 ## 2026-11-26 (Thu — Thanksgiving, market closed)
 
